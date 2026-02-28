@@ -89,6 +89,14 @@ const EARTH_LOCATION_MARKER = {
 const EARTH_LOCATION_MARKER_HEIGHT_RATIO = 1.015;
 const EARTH_LOCATION_MARKER_DOT_RADIUS_RATIO = 0.012;
 const EARTH_LOCATION_MARKER_GLOW_SIZE_RATIO = 0.09;
+const SUN_LIGHT_INTENSITY_TRUE_SCALE = 320_000;
+const SUN_LIGHT_INTENSITY_DEFAULT_SCALE = 0.62;
+const SUN_LIGHT_SHADOW_FAR_TRUE_SCALE = 12_000;
+const SUN_LIGHT_SHADOW_FAR_DEFAULT_SCALE = 500;
+const AMBIENT_LIGHT_INTENSITY_TRUE_SCALE = 0.028;
+const AMBIENT_LIGHT_INTENSITY_DEFAULT_SCALE = 0.022;
+const HEMISPHERE_LIGHT_INTENSITY_TRUE_SCALE = 0.035;
+const HEMISPHERE_LIGHT_INTENSITY_DEFAULT_SCALE = 0.03;
 
 const TEX_ROOT = "https://cdn.jsdelivr.net/gh/jeromeetienne/threex.planets@master/images/";
 const THREE_TEX_ROOTS = [
@@ -391,7 +399,7 @@ function setupScene(THREE) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ReinhardToneMapping;
-  renderer.toneMappingExposure = 0.7;
+  renderer.toneMappingExposure = TRUE_SCALE_MODE ? 0.82 : 0.7;
   renderer.physicallyCorrectLights = true;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -399,15 +407,27 @@ function setupScene(THREE) {
   textureLoader = new THREE.TextureLoader();
   textureLoader.setCrossOrigin("anonymous");
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.022));
-  const hemisphere = new THREE.HemisphereLight(0x20334a, 0x030508, 0.03);
+  scene.add(new THREE.AmbientLight(
+    0xffffff,
+    TRUE_SCALE_MODE ? AMBIENT_LIGHT_INTENSITY_TRUE_SCALE : AMBIENT_LIGHT_INTENSITY_DEFAULT_SCALE,
+  ));
+  const hemisphere = new THREE.HemisphereLight(
+    0x20334a,
+    0x030508,
+    TRUE_SCALE_MODE ? HEMISPHERE_LIGHT_INTENSITY_TRUE_SCALE : HEMISPHERE_LIGHT_INTENSITY_DEFAULT_SCALE,
+  );
   scene.add(hemisphere);
-  sunLight = new THREE.PointLight(0xfff2de, 0.62, 0, 1.0);
+  sunLight = new THREE.PointLight(
+    0xfff2de,
+    TRUE_SCALE_MODE ? SUN_LIGHT_INTENSITY_TRUE_SCALE : SUN_LIGHT_INTENSITY_DEFAULT_SCALE,
+    0,
+    2.0,
+  );
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.width = 2048;
   sunLight.shadow.mapSize.height = 2048;
   sunLight.shadow.camera.near = 0.01;
-  sunLight.shadow.camera.far = 500;
+  sunLight.shadow.camera.far = TRUE_SCALE_MODE ? SUN_LIGHT_SHADOW_FAR_TRUE_SCALE : SUN_LIGHT_SHADOW_FAR_DEFAULT_SCALE;
   sunLight.shadow.bias = -0.00002;
   sunLight.shadow.normalBias = 0.002;
   scene.add(sunLight);
