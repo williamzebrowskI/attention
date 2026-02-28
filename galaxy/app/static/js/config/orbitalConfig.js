@@ -119,6 +119,22 @@ export const ROTATION_PERIOD_HOURS = {
   nereid: 11.52,
 };
 
+// IAU/NAIF prime-meridian rotation model: W(t) = W0 + Wdot * d
+// where d is days since J2000 (JD 2451545.0). Bodies not listed here
+// fall back to sidereal-period-derived rates in runtime code.
+export const PRIME_MERIDIAN_W_DEG = {
+  sun: { w0Deg: 84.176, wRateDegPerDay: 14.1844 },
+  mercury: { w0Deg: 329.5988, wRateDegPerDay: 6.1385108 },
+  venus: { w0Deg: 160.2, wRateDegPerDay: -1.4813688 },
+  earth: { w0Deg: 190.147, wRateDegPerDay: 360.9856235 },
+  moon: { w0Deg: 38.3213, wRateDegPerDay: 13.17635815 },
+  mars: { w0Deg: 176.63, wRateDegPerDay: 350.89198226 },
+  jupiter: { w0Deg: 284.95, wRateDegPerDay: 870.536 },
+  saturn: { w0Deg: 38.9, wRateDegPerDay: 810.7939024 },
+  uranus: { w0Deg: 203.81, wRateDegPerDay: -501.1600928 },
+  neptune: { w0Deg: 253.18, wRateDegPerDay: 536.3128492 },
+};
+
 export const MOON_ORBIT_DIRECTION = {
   triton: -1,
   phoebe: -1,
@@ -195,7 +211,7 @@ export const ROTATION_TIME_SCALE_OVERRIDE = {
 };
 
 export const ORBITAL_CONFIG_LOCK_ENFORCED = true;
-export const ORBITAL_CONFIG_LOCK_HASH = "5fd5ebd4";
+export const ORBITAL_CONFIG_LOCK_HASH = "a6845a36";
 
 function stableStringify(value) {
   if (Array.isArray(value)) {
@@ -223,6 +239,7 @@ export function computeOrbitalConfigLockHash() {
     SPIN_AXIS_EQUATORIAL_DEG,
     ECLIPTIC_OBLIQUITY_DEG,
     ROTATION_PERIOD_HOURS,
+    PRIME_MERIDIAN_W_DEG,
     MOON_ORBIT_DIRECTION,
     MOON_ORBITAL_ELEMENTS,
     ORBIT_ECCENTRICITY,

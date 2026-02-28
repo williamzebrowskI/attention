@@ -7,6 +7,7 @@ import {
   ROTATION_SOLAR_DAY_HOURS,
   SPIN_AXIS_EQUATORIAL_DEG,
   ROTATION_TIME_SCALE_OVERRIDE,
+  PRIME_MERIDIAN_W_DEG,
   assertOrbitalConfigLock,
 } from "./config/orbitalConfig.js";
 import {
@@ -64,6 +65,7 @@ const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
 const LIGHT_MODEL_EXCLUDED_IDS = new Set(["sun"]);
 const OUTER_PLANET_IDS = new Set(["jupiter", "saturn", "uranus", "neptune"]);
+const PRIME_MERIDIAN_CALIBRATE_FROM_CURRENT_FOR_IDS = new Set(["earth", "moon"]);
 const EARTH_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const MOON_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const EARTH_NIGHTSIDE_VISIBILITY_FLOOR = 0.08;
@@ -262,6 +264,7 @@ let photorealRetryCount = new Map();
 let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
 let illuminationById = new Map();
+let primeMeridianSpinOffsetRadById = new Map();
 
 let socket = null;
 let reconnectTimer = null;
@@ -456,6 +459,7 @@ async function rebuildMeshes() {
     disposeBodyVisual(visual);
   }
   bodyVisuals = new Map();
+  primeMeridianSpinOffsetRadById = new Map();
 
   const visuals = await Promise.all(bodies.map((body) => createBodyVisual(body)));
   for (const visual of visuals) {
@@ -2737,12 +2741,12 @@ function bodyLongitudeInAxisFrameRadians(bodyVisual, directionFromBodyKm) {
   return Math.atan2(-toSunWorld.z, toSunWorld.x);
 }
 
-function syncEarthSpinToSubsolarLongitude(nowMs) {
+function computeEarthSunSyncedSpinRadians(nowMs) {
   const earthVisual = bodyVisuals.get("earth");
   const earthKm = lightCoordsById("earth");
   const sunKm = lightCoordsById("sun");
   if (!earthVisual || !earthKm || !sunKm) {
-    return;
+    return null;
   }
   const sunFromEarthKm = {
     x: sunKm.x - earthKm.x,
@@ -2751,22 +2755,21 @@ function syncEarthSpinToSubsolarLongitude(nowMs) {
   };
   const sunLonAxis = sunLongitudeInEarthAxisFrameRadians(earthVisual, sunFromEarthKm);
   if (!Number.isFinite(sunLonAxis)) {
-    return;
+    return null;
   }
   const timestampMs = modelTimestampMs(nowMs);
   const subsolarLon = subsolarLongitudeEastRadians(sunFromEarthKm, timestampMs);
-  const desiredSpin = normalizeAngle(
+  return normalizeAngle(
     sunLonAxis - subsolarLon - rad(EARTH_TEXTURE_LONGITUDE_OFFSET_DEG),
   );
-  earthVisual.spinGroup.rotation.y = desiredSpin;
 }
 
-function syncMoonSpinToEarthDirection() {
+function computeMoonEarthLockedSpinRadians() {
   const moonVisual = bodyVisuals.get("moon");
   const moonKm = lightCoordsById("moon");
   const earthKm = lightCoordsById("earth");
   if (!moonVisual || !moonKm || !earthKm) {
-    return;
+    return null;
   }
   const earthFromMoonKm = {
     x: earthKm.x - moonKm.x,
@@ -2775,10 +2778,98 @@ function syncMoonSpinToEarthDirection() {
   };
   const earthLonAxis = bodyLongitudeInAxisFrameRadians(moonVisual, earthFromMoonKm);
   if (!Number.isFinite(earthLonAxis)) {
-    return;
+    return null;
   }
-  const desiredSpin = normalizeAngle(earthLonAxis - rad(MOON_TEXTURE_LONGITUDE_OFFSET_DEG));
-  moonVisual.spinGroup.rotation.y = desiredSpin;
+  return normalizeAngle(earthLonAxis - rad(MOON_TEXTURE_LONGITUDE_OFFSET_DEG));
+}
+
+function primeMeridianModelForBody(body) {
+  if (!body) {
+    return null;
+  }
+  const explicit = PRIME_MERIDIAN_W_DEG?.[body.id];
+  const explicitW0 = Number(explicit?.w0Deg);
+  const explicitRate = Number(explicit?.wRateDegPerDay);
+  if (Number.isFinite(explicitW0) && Number.isFinite(explicitRate)) {
+    return {
+      w0Deg: explicitW0,
+      wRateDegPerDay: explicitRate,
+    };
+  }
+  const rotationHours = getRotationPeriodHours(body);
+  if (!Number.isFinite(rotationHours) || Math.abs(rotationHours) < 1e-9) {
+    return null;
+  }
+  return {
+    w0Deg: 0,
+    wRateDegPerDay: (360 * 24) / rotationHours,
+  };
+}
+
+function primeMeridianTextureOffsetDeg(bodyId) {
+  if (bodyId === "earth") {
+    return EARTH_TEXTURE_LONGITUDE_OFFSET_DEG;
+  }
+  if (bodyId === "moon") {
+    return MOON_TEXTURE_LONGITUDE_OFFSET_DEG;
+  }
+  return 0;
+}
+
+function primeMeridianSpinRadians(body, nowMs) {
+  const model = primeMeridianModelForBody(body);
+  if (!model) {
+    return null;
+  }
+  const daysSinceJ2000 = julianDayFromUnixMs(nowMs) - 2_451_545.0;
+  const meridianDeg = normalizeDegrees(
+    model.w0Deg +
+      (model.wRateDegPerDay * daysSinceJ2000) +
+      primeMeridianTextureOffsetDeg(body?.id),
+  );
+  return normalizeAngle(rad(meridianDeg));
+}
+
+function calibratedReferenceSpinRadians(bodyId, nowMs) {
+  if (bodyId === "earth") {
+    return computeEarthSunSyncedSpinRadians(nowMs);
+  }
+  if (bodyId === "moon") {
+    return computeMoonEarthLockedSpinRadians();
+  }
+  return null;
+}
+
+function updatePrimeMeridianSpins(nowMs, deltaSeconds) {
+  for (const visual of bodyVisuals.values()) {
+    const bodyId = visual.body.id;
+    const spinScale = spinScaleForBody(visual.body);
+    const deltaSpin = deltaSeconds * spinScale * visual.rotationSpeedRadPerSecond;
+    const modelSpin = primeMeridianSpinRadians(visual.body, nowMs);
+
+    if (Number.isFinite(modelSpin)) {
+      let offset = primeMeridianSpinOffsetRadById.get(bodyId);
+      if (offset === undefined) {
+        let referenceSpin = null;
+        if (PRIME_MERIDIAN_CALIBRATE_FROM_CURRENT_FOR_IDS.has(bodyId)) {
+          referenceSpin = calibratedReferenceSpinRadians(bodyId, nowMs);
+        }
+        if (!Number.isFinite(referenceSpin)) {
+          referenceSpin = Number(visual.spinGroup?.rotation?.y) || 0;
+        }
+        offset = normalizeAngle(referenceSpin - modelSpin);
+        primeMeridianSpinOffsetRadById.set(bodyId, offset);
+      }
+      visual.spinGroup.rotation.y = normalizeAngle(modelSpin + offset);
+    } else if (deltaSpin) {
+      visual.spinGroup.rotation.y += deltaSpin;
+    }
+
+    if (deltaSpin && visual.cloudMesh) {
+      visual.cloudMesh.rotation.y += visual.body.id === "earth" ? deltaSpin * 0.12 : deltaSpin * 1.15;
+    }
+    visual.lod.update(camera);
+  }
 }
 
 function computeIlluminationForBody(bodyId) {
@@ -2913,23 +3004,8 @@ function animate(timestampMs = 0) {
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
     applyScenePositions(runtimeCoordsKmById);
   }
-  syncEarthSpinToSubsolarLongitude(nowMs);
+  updatePrimeMeridianSpins(nowMs, deltaSeconds);
   updateSunlightModel();
-
-  for (const visual of bodyVisuals.values()) {
-    const spinScale = spinScaleForBody(visual.body);
-    const deltaSpin = deltaSeconds * spinScale * visual.rotationSpeedRadPerSecond;
-    if (deltaSpin && visual.body.id !== "earth" && visual.body.id !== "moon") {
-      visual.spinGroup.rotation.y += deltaSpin;
-      if (visual.cloudMesh) {
-        visual.cloudMesh.rotation.y += deltaSpin * 1.15;
-      }
-    } else if (deltaSpin && visual.body.id === "earth" && visual.cloudMesh) {
-      visual.cloudMesh.rotation.y += deltaSpin * 0.12;
-    }
-    visual.lod.update(camera);
-  }
-  syncMoonSpinToEarthDirection();
 
   for (const orbitVisual of orbitVisuals.values()) {
     updateOrbitMarkerFromTime(orbitVisual, nowMs);
