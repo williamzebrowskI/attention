@@ -2,6 +2,18 @@ const TWO_PI = Math.PI * 2;
 const EPSILON = 1e-12;
 
 const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
+  mercury: Object.freeze({
+    // Approximate normalized principal moments (M*R^2) for Mercury.
+    inertiaFactors: Object.freeze({ x: 0.343000, y: 0.343100, z: 0.346000 }),
+    sourceIds: Object.freeze(["sun"]),
+    tidalDamping: 0,
+  }),
+  venus: Object.freeze({
+    // Approximate normalized principal moments (M*R^2) for Venus.
+    inertiaFactors: Object.freeze({ x: 0.336900, y: 0.336950, z: 0.337200 }),
+    sourceIds: Object.freeze(["sun"]),
+    tidalDamping: 0,
+  }),
   earth: Object.freeze({
     // Principal moments normalized by M*R^2 (J2000-era geodesy approximation).
     inertiaFactors: Object.freeze({ x: 0.329620, y: 0.329628, z: 0.330705 }),
