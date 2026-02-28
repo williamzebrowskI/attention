@@ -21,6 +21,7 @@ import {
   rotateXZ,
   solveKepler,
 } from "./physics/celestialPhysics.js";
+import { createRigidBodyAttitudeController } from "./physics/rigidBodyAttitude.js";
 import { createTidalOverlayController } from "./physics/overlays/tidalOverlay.js";
 import { createLagrangeOverlayController } from "./physics/overlays/lagrangeOverlay.js";
 import {
@@ -90,6 +91,8 @@ const N_BODY_STATIC_SOURCE_IDS = new Set();
 const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
+const RIGID_BODY_ATTITUDE_ENABLED = true;
+const RIGID_BODY_ATTITUDE_IDS = Object.freeze(["earth", "moon"]);
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
@@ -394,6 +397,7 @@ let gravityArrowsLegendActivated = false;
 let tidalOverlayController = null;
 let lagrangeOverlayController = null;
 let primeMeridianSpinOffsetRadById = new Map();
+let rigidBodyAttitudeController = null;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
@@ -451,10 +455,37 @@ async function init() {
   setupObservationControls();
   setupPhysicsOverlayControls();
   await loadSnapshot();
+  setupRigidBodyAttitudeModel();
   if (!HORIZONS_STARTUP_FETCH_ONLY) {
     connectWebSocket();
   }
   animate();
+}
+
+function setupRigidBodyAttitudeModel() {
+  if (!RIGID_BODY_ATTITUDE_ENABLED) {
+    rigidBodyAttitudeController = null;
+    return;
+  }
+  rigidBodyAttitudeController = createRigidBodyAttitudeController({
+    THREE: THREE_NS,
+    bodyIds: [...RIGID_BODY_ATTITUDE_IDS],
+    getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
+    getBodyMeta: (bodyId) => metaById.get(bodyId),
+    getCoordinatesKm: (bodyId) => runtimeCoordsOrLiveById(bodyId),
+    getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
+    getInitialAxisVector: (bodyId) => spinAxisSceneVectorForBody(bodyId),
+    getInitialSpinRadians: (bodyId, nowMs) => {
+      const body = metaById.get(bodyId);
+      return body ? primeMeridianSpinRadians(body, nowMs) : null;
+    },
+    getInitialRotationPeriodHours: (bodyId) => getRotationPeriodHours(metaById.get(bodyId)),
+    gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+    maxFrameSeconds: N_BODY_MAX_FRAME_SECONDS,
+    stepSeconds: 0.25,
+    timeScale: SPIN_TIME_SCALE,
+  });
+  rigidBodyAttitudeController.initialize(Date.now());
 }
 
 function assertPhysicsLockInvariants() {
@@ -676,6 +707,9 @@ async function rebuildMeshes() {
     }
     scene.add(visual.root);
     bodyVisuals.set(visual.id, visual);
+  }
+  if (RIGID_BODY_ATTITUDE_ENABLED && rigidBodyAttitudeController) {
+    setupRigidBodyAttitudeModel();
   }
   rebuildPhysicsOverlays();
 }
@@ -4770,8 +4804,13 @@ function calibratedReferenceSpinRadians(bodyId, nowMs) {
 }
 
 function updatePrimeMeridianSpins(nowMs, deltaSeconds) {
+  rigidBodyAttitudeController?.update(deltaSeconds);
   for (const visual of bodyVisuals.values()) {
     const bodyId = visual.body.id;
+    if (rigidBodyAttitudeController?.isManagedBody(bodyId)) {
+      primeMeridianSpinOffsetRadById.delete(bodyId);
+      continue;
+    }
     const spinScale = spinScaleForBody(visual.body);
     const deltaSpin = deltaSeconds * spinScale * visual.rotationSpeedRadPerSecond;
     const modelSpin = primeMeridianSpinRadians(visual.body, nowMs);
