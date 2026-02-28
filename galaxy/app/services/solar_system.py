@@ -10,7 +10,6 @@ from app.services.catalog import BODY_BY_ID, BODY_DEFINITIONS, BodyDefinition
 from app.services.horizons import HorizonsClient, HorizonsError, HorizonsVector
 
 AU_IN_KM = 149_597_870.7
-J2000 = datetime(2000, 1, 1, 12, tzinfo=timezone.utc)
 SUN_CENTER_CODE = "500@10"
 
 
@@ -106,10 +105,8 @@ class SolarSystemService:
         for body in bodies:
             if body.id in body_positions:
                 continue
-            fallback = self._approximate_position(body, at_utc, body_positions)
-            body_positions[body.id] = fallback
-            body_velocities.setdefault(body.id, (0.0, 0.0, 0.0))
-            source_by_id[body.id] = "APPROXIMATE"
+            source_by_id.setdefault(body.id, "UNAVAILABLE")
+            errors_by_id.setdefault(body.id, "No live Horizons data and no cached coordinates available.")
 
         payload = {
             "timestamp_utc": at_utc.isoformat(),
@@ -118,7 +115,7 @@ class SolarSystemService:
             "bodies": [
                 self._build_body_payload(
                     body=body,
-                    position=body_positions[body.id],
+                    position=body_positions.get(body.id),
                     velocity=body_velocities.get(body.id),
                     parent_position=body_positions.get(body.parent) if body.parent else None,
                     parent_velocity=body_velocities.get(body.parent) if body.parent else None,
@@ -177,7 +174,6 @@ class SolarSystemService:
 
             self._apply_moon_vector(
                 moon=moon,
-                at_utc=at_utc,
                 vector=vector,
                 body_positions=body_positions,
                 body_velocities=body_velocities,
@@ -185,8 +181,8 @@ class SolarSystemService:
                 errors_by_id=errors_by_id,
             )
 
-        # Give uncached moon failures extra attempts before falling back to
-        # approximation so first-load moon placement is as live-accurate as possible.
+        # Give uncached moon failures extra attempts before marking them
+        # unavailable, so first-load moon placement stays as live-accurate as possible.
         for moon in uncached_failed_moons:
             success = False
             last_exc: Exception | None = None
@@ -203,7 +199,6 @@ class SolarSystemService:
                     continue
                 success = self._apply_moon_vector(
                     moon=moon,
-                    at_utc=at_utc,
                     vector=vector,
                     body_positions=body_positions,
                     body_velocities=body_velocities,
@@ -231,7 +226,6 @@ class SolarSystemService:
     def _apply_moon_vector(
         self,
         moon: BodyDefinition,
-        at_utc: datetime,
         vector: HorizonsVector,
         body_positions: dict[str, tuple[float, float, float]],
         body_velocities: dict[str, tuple[float, float, float]],
@@ -241,14 +235,9 @@ class SolarSystemService:
         parent_id = moon.parent or "sun"
         parent_position = body_positions.get(parent_id)
         if parent_position is None:
-            parent_body = BODY_BY_ID.get(parent_id)
-            if parent_body is None:
-                errors_by_id[moon.id] = f"Parent position unavailable for {parent_id}"
-                return False
-            parent_position = self._approximate_position(parent_body, at_utc, body_positions)
-            body_positions[parent_id] = parent_position
-            body_velocities.setdefault(parent_id, (0.0, 0.0, 0.0))
-            source_by_id.setdefault(parent_id, "APPROXIMATE")
+            errors_by_id[moon.id] = f"Parent position unavailable for {parent_id}"
+            source_by_id.setdefault(moon.id, "UNAVAILABLE")
+            return False
 
         parent_velocity = body_velocities.get(parent_id) or (0.0, 0.0, 0.0)
         rel_x, rel_y, rel_z = vector.position_km
@@ -271,48 +260,38 @@ class SolarSystemService:
         errors_by_id.pop(moon.id, None)
         return True
 
-    def _approximate_position(
-        self,
-        body: BodyDefinition,
-        at: datetime,
-        known_positions: dict[str, tuple[float, float, float]],
-    ) -> tuple[float, float, float]:
-        if body.id == "sun":
-            return 0.0, 0.0, 0.0
-
-        if not body.semimajor_axis_km or not body.orbital_period_days:
-            return known_positions.get(body.parent or "sun", (0.0, 0.0, 0.0))
-
-        elapsed_days = (at - J2000).total_seconds() / 86_400.0
-        angle = 2.0 * math.pi * ((elapsed_days / body.orbital_period_days) + body.phase)
-        local_x = body.semimajor_axis_km * math.cos(angle)
-        local_y = body.semimajor_axis_km * math.sin(angle)
-        local_z = 0.0
-
-        if not body.parent or body.parent == "sun":
-            return local_x, local_y, local_z
-
-        parent_position = known_positions.get(body.parent)
-        if parent_position is None:
-            parent_body = BODY_BY_ID[body.parent]
-            parent_position = self._approximate_position(parent_body, at, known_positions)
-            known_positions[body.parent] = parent_position
-        return (
-            parent_position[0] + local_x,
-            parent_position[1] + local_y,
-            parent_position[2] + local_z,
-        )
-
     @staticmethod
     def _build_body_payload(
         body: BodyDefinition,
-        position: tuple[float, float, float],
+        position: tuple[float, float, float] | None,
         velocity: tuple[float, float, float] | None,
         parent_position: tuple[float, float, float] | None,
         parent_velocity: tuple[float, float, float] | None,
         source: str,
         error: str | None,
     ) -> dict[str, Any]:
+        if position is None:
+            output = {
+                "id": body.id,
+                "name": body.name,
+                "type": body.body_type,
+                "parent": body.parent,
+                "coordinates_km": None,
+                "coordinates_velocity_km_s": None,
+                "distance_from_sun_km": None,
+                "distance_from_sun_au": None,
+                "source": source,
+                "radius_km": body.radius_km,
+                "mass_kg": body.mass_kg,
+                "orbital_period_days": body.orbital_period_days,
+                "semimajor_axis_km": body.semimajor_axis_km,
+                "color": body.color,
+                "description": body.description,
+            }
+            if error:
+                output["source_error"] = error
+            return output
+
         x, y, z = position
         distance_km = math.sqrt((x * x) + (y * y) + (z * z))
         output = {
@@ -350,7 +329,7 @@ class SolarSystemService:
                     "z": velocity[2] - parent_velocity[2],
                 }
             output["distance_from_parent_km"] = math.sqrt((rel_x * rel_x) + (rel_y * rel_y) + (rel_z * rel_z))
-        if error and source == "APPROXIMATE":
+        if error:
             output["source_error"] = error
         return output
 

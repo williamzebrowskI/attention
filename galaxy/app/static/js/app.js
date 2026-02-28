@@ -2162,18 +2162,22 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
     return runtimeCoords.get(bodyId);
   }
   if (resolving.has(bodyId)) {
-    return { x: 0, y: 0, z: 0 };
+    return null;
   }
   resolving.add(bodyId);
 
   const state = orbitalStateById.get(bodyId);
   const meta = metaById.get(bodyId);
   const live = positionsById.get(bodyId)?.coordinates_km;
-  if (SCIENTIFIC_ACCURACY_MODE && live) {
-    const propagatedLive = propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs);
-    runtimeCoords.set(bodyId, propagatedLive);
+  if (SCIENTIFIC_ACCURACY_MODE) {
+    if (live) {
+      const propagatedLive = propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs);
+      runtimeCoords.set(bodyId, propagatedLive);
+      resolving.delete(bodyId);
+      return propagatedLive;
+    }
     resolving.delete(bodyId);
-    return propagatedLive;
+    return null;
   }
   if (!state || !meta) {
     const fallback = live
@@ -2182,7 +2186,11 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
           y: live.y,
           z: live.z,
         }
-      : { x: 0, y: 0, z: 0 };
+      : null;
+    if (!fallback) {
+      resolving.delete(bodyId);
+      return null;
+    }
     runtimeCoords.set(bodyId, fallback);
     resolving.delete(bodyId);
     return fallback;
@@ -2190,6 +2198,10 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
 
   const parentId = state.parentId || meta.parent || "sun";
   const parentCoords = resolveRuntimeCoordinates(parentId, runtimeCoords, resolving, nowMs);
+  if (!parentCoords) {
+    resolving.delete(bodyId);
+    return null;
+  }
   const dtSeconds = clamp(
     ((nowMs - state.baseTimestampMs) / 1000) * ORBIT_TIME_SCALE,
     -ORBIT_PROPAGATION_MAX_SECONDS,
@@ -2382,8 +2394,10 @@ function applyScenePositions(runtimeCoordsKm) {
     }
     const coordsKm = runtimeCoordsKm.get(bodyId) || positionsById.get(bodyId)?.coordinates_km;
     if (!coordsKm) {
+      visual.root.visible = false;
       continue;
     }
+    visual.root.visible = true;
     if (body.body_type === "moon" && body.parent) {
       deferredMoons.push([bodyId, body.parent, coordsKm]);
       continue;
@@ -2425,6 +2439,11 @@ function applyScenePositions(runtimeCoordsKm) {
     if (!visual) {
       continue;
     }
+    if (!moonCoords) {
+      visual.root.visible = false;
+      continue;
+    }
+    visual.root.visible = true;
     if (parentVisual && parentCoords) {
       const relX = moonCoords.x - parentCoords.x;
       const relY = moonCoords.y - parentCoords.y;
@@ -2722,11 +2741,16 @@ function setSelected(bodyId, moveCamera) {
     return;
   }
 
-  orbit.minDistance = minOrbitDistanceForVisual(visual);
-  orbit.target.copy(visual.root.position);
+  const liveCoords = runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
+  if (liveCoords) {
+    orbit.minDistance = minOrbitDistanceForVisual(visual);
+    orbit.target.copy(visual.root.position);
+  }
   if (moveCamera) {
-    orbit.radius = preferredCameraDistanceForSelection(visual);
-    orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
+    if (liveCoords) {
+      orbit.radius = preferredCameraDistanceForSelection(visual);
+      orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
+    }
   }
   updateCameraFromOrbit();
 }
@@ -3371,12 +3395,19 @@ function animate(timestampMs = 0) {
 
 function findFocusBodyForDetails() {
   if (selectedId) {
-    return selectedId;
+    const selectedLive = runtimeCoordsKmById.get(selectedId) || positionsById.get(selectedId)?.coordinates_km;
+    if (selectedLive) {
+      return selectedId;
+    }
+    return null;
   }
 
   let bestId = null;
   let bestRatio = Number.POSITIVE_INFINITY;
   for (const [bodyId, visual] of bodyVisuals.entries()) {
+    if (!visual.root.visible) {
+      continue;
+    }
     const threshold = detailThreshold(visual.renderRadius);
     const distance = camera.position.distanceTo(visual.root.position);
     const ratio = distance / threshold;
@@ -3417,9 +3448,22 @@ function updateInfoOverlay() {
   }
 
   const cameraDistance = camera.position.distanceTo(visual.root.position);
-  const coords = runtimeCoordsKmById.get(detailBodyId) || live.coordinates_km || { x: 0, y: 0, z: 0 };
-  const sunCoords = runtimeCoordsKmById.get("sun") || positionsById.get("sun")?.coordinates_km || { x: 0, y: 0, z: 0 };
-  const distanceFromSunKm = Math.hypot(coords.x - sunCoords.x, coords.y - sunCoords.y, coords.z - sunCoords.z);
+  const coords = runtimeCoordsKmById.get(detailBodyId) || live.coordinates_km || null;
+  const sunCoords = runtimeCoordsKmById.get("sun") || positionsById.get("sun")?.coordinates_km || null;
+  const hasCoords =
+    Boolean(coords) &&
+    Number.isFinite(Number(coords?.x)) &&
+    Number.isFinite(Number(coords?.y)) &&
+    Number.isFinite(Number(coords?.z));
+  const hasSunCoords =
+    Boolean(sunCoords) &&
+    Number.isFinite(Number(sunCoords?.x)) &&
+    Number.isFinite(Number(sunCoords?.y)) &&
+    Number.isFinite(Number(sunCoords?.z));
+  const distanceFromSunKm =
+    hasCoords && hasSunCoords
+      ? Math.hypot(coords.x - sunCoords.x, coords.y - sunCoords.y, coords.z - sunCoords.z)
+      : null;
   const tilt = axialTiltDegreesForBody(meta.id, Date.now());
   const rotationHours = getRotationPeriodHours(meta);
   const orbitalPeriod = meta.orbital_period_days;
@@ -3476,7 +3520,7 @@ function updateInfoOverlay() {
     <p class="line">Parent Body: ${parent}</p>
     <p class="line">Data Source: ${live.source}${sourceError}</p>
     <p class="line">Surface Rendering: ${surfaceRenderingLabel(visual.textureMode)}</p>
-    <p class="line">Distance from Sun: ${formatNumber(distanceFromSunKm)} km</p>
+    <p class="line">Distance from Sun: ${distanceFromSunKm !== null ? `${formatNumber(distanceFromSunKm)} km` : "n/a"}</p>
     <p class="line">Semi-Major Axis: ${semimajor ? `${formatNumber(semimajor)} km` : "n/a"}</p>
     <p class="line">Orbital Period: ${orbitalPeriod ? `${formatNumber(orbitalPeriod)} days` : "n/a"}</p>
     <p class="line">Radius: ${formatNumber(meta.radius_km)} km</p>
@@ -3492,7 +3536,7 @@ function updateInfoOverlay() {
     <p class="line">Current Rotation: ${formatNumber(currentRotationAngleDeg)}° (${formatNumber(currentSiderealCompletionPct)}% of sidereal cycle)</p>
     <p class="line">Camera Distance: ${formatNumber(cameraDistance)} scene units</p>
     ${orbitProgressLine}
-    <p class="line">XYZ (km): ${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}</p>
+    <p class="line">XYZ (km): ${hasCoords ? `${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}` : "n/a"}</p>
     <p class="line">${description}</p>
   `;
   infoCard.classList.add("visible");
@@ -3800,7 +3844,11 @@ function rad(degrees) {
 }
 
 function formatNumber(value) {
-  return Number(value).toLocaleString(undefined, {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  return numeric.toLocaleString(undefined, {
     maximumFractionDigits: 2,
   });
 }
