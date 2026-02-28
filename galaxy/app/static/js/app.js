@@ -76,9 +76,9 @@ const GRAVITY_VECTOR_MIN_LENGTH = 0.02;
 const GRAVITY_VECTOR_MAX_LENGTH = 1.6;
 const GRAVITY_VECTOR_BASELINE_MS2 = 0.08;
 const HORIZONS_STARTUP_FETCH_ONLY = true;
-const N_BODY_EARTH_MOON_MODE = true;
-const N_BODY_DYNAMIC_IDS = new Set(["earth", "moon"]);
-const N_BODY_STATIC_SOURCE_IDS = new Set(["sun"]);
+const N_BODY_ALL_BODIES_MODE = true;
+const N_BODY_STATIC_SOURCE_IDS = new Set();
+const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
 const AU_KM = 149_597_870.7;
@@ -336,7 +336,7 @@ let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
 let illuminationById = new Map();
 let gravityById = new Map();
-let earthMoonNBodyState = null;
+let nBodyState = null;
 let primeMeridianSpinOffsetRadById = new Map();
 const bodyEclipseMaterialStates = new Set();
 
@@ -2514,7 +2514,7 @@ function updatePositions(payload) {
   const entries = payload.bodies || [];
   positionsById = new Map(entries.map((body) => [body.id, body]));
   latestSolarTimestampMs = parseTimestampMs(payload.timestamp_utc);
-  initializeEarthMoonNBodyFromSnapshot(Date.now());
+  initializeNBodyFromSnapshot(Date.now());
   syncOrbitalStateFromSnapshot();
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(Date.now());
   applyScenePositions(runtimeCoordsKmById);
@@ -2534,21 +2534,56 @@ function parseVectorFromPayload(entry, fieldName) {
   return { x, y, z };
 }
 
-function initializeEarthMoonNBodyFromSnapshot(nowMs) {
-  if (!N_BODY_EARTH_MOON_MODE) {
-    earthMoonNBodyState = null;
+function neutralizeTotalMomentum(dynamicBodies, anchorId = "sun") {
+  const anchor = dynamicBodies.get(anchorId);
+  if (!anchor || !(anchor.massKg > 0)) {
+    return;
+  }
+
+  let px = 0;
+  let py = 0;
+  let pz = 0;
+  for (const body of dynamicBodies.values()) {
+    px += body.massKg * body.velocity.x;
+    py += body.massKg * body.velocity.y;
+    pz += body.massKg * body.velocity.z;
+  }
+
+  anchor.velocity.x -= px / anchor.massKg;
+  anchor.velocity.y -= py / anchor.massKg;
+  anchor.velocity.z -= pz / anchor.massKg;
+}
+
+function initializeNBodyFromSnapshot(nowMs) {
+  if (!N_BODY_ALL_BODIES_MODE) {
+    nBodyState = null;
     return;
   }
 
   const dynamicBodies = new Map();
-  for (const bodyId of N_BODY_DYNAMIC_IDS) {
+  const staticSources = new Map();
+  for (const body of bodies) {
+    const bodyId = body.id;
+    if (N_BODY_EXCLUDED_IDS.has(bodyId)) {
+      continue;
+    }
     const entry = positionsById.get(bodyId);
     const position = parseVectorFromPayload(entry, "coordinates_km");
-    const velocity = parseVectorFromPayload(entry, "coordinates_velocity_km_s");
     const massKg = bodyMassKgById(bodyId);
-    if (!position || !velocity || !(massKg > 0)) {
-      earthMoonNBodyState = null;
-      return;
+    if (!position || !(massKg > 0)) {
+      continue;
+    }
+    if (N_BODY_STATIC_SOURCE_IDS.has(bodyId)) {
+      staticSources.set(bodyId, {
+        id: bodyId,
+        massKg,
+        position,
+      });
+      continue;
+    }
+    const velocity = parseVectorFromPayload(entry, "coordinates_velocity_km_s");
+    if (!velocity) {
+      continue;
     }
     dynamicBodies.set(bodyId, {
       id: bodyId,
@@ -2557,27 +2592,15 @@ function initializeEarthMoonNBodyFromSnapshot(nowMs) {
       velocity,
     });
   }
-  if (dynamicBodies.size !== N_BODY_DYNAMIC_IDS.size) {
-    earthMoonNBodyState = null;
+
+  if (dynamicBodies.size === 0) {
+    nBodyState = null;
     return;
   }
 
-  const staticSources = new Map();
-  for (const bodyId of N_BODY_STATIC_SOURCE_IDS) {
-    const entry = positionsById.get(bodyId);
-    const position = parseVectorFromPayload(entry, "coordinates_km") || { x: 0, y: 0, z: 0 };
-    const massKg = bodyMassKgById(bodyId);
-    if (!(massKg > 0)) {
-      continue;
-    }
-    staticSources.set(bodyId, {
-      id: bodyId,
-      massKg,
-      position,
-    });
-  }
+  neutralizeTotalMomentum(dynamicBodies, "sun");
 
-  earthMoonNBodyState = {
+  nBodyState = {
     initialized: true,
     lastUpdateMs: nowMs,
     dynamicBodies,
@@ -2585,9 +2608,17 @@ function initializeEarthMoonNBodyFromSnapshot(nowMs) {
   };
 }
 
+function isNBodyDrivenBodyId(bodyId) {
+  const state = nBodyState;
+  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized) {
+    return false;
+  }
+  return state.dynamicBodies.has(bodyId) || state.staticSources.has(bodyId);
+}
+
 function nBodyCoordinatesKmById(bodyId) {
-  const state = earthMoonNBodyState;
-  if (!N_BODY_EARTH_MOON_MODE || !state?.initialized) {
+  const state = nBodyState;
+  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized) {
     return null;
   }
   const dynamicBody = state.dynamicBodies.get(bodyId);
@@ -2652,7 +2683,7 @@ function computeNBodyAccelerationForTarget(state, targetId) {
   return { x: ax, y: ay, z: az };
 }
 
-function integrateEarthMoonNBodyStep(state, dtSeconds) {
+function integrateNBodyStep(state, dtSeconds) {
   const accelerationStartById = new Map();
   for (const bodyId of state.dynamicBodies.keys()) {
     accelerationStartById.set(bodyId, computeNBodyAccelerationForTarget(state, bodyId));
@@ -2677,32 +2708,32 @@ function integrateEarthMoonNBodyStep(state, dtSeconds) {
   }
 }
 
-function updateEarthMoonNBody(nowMs) {
-  if (!N_BODY_EARTH_MOON_MODE || !earthMoonNBodyState?.initialized) {
+function updateNBodySimulation(nowMs) {
+  if (!N_BODY_ALL_BODIES_MODE || !nBodyState?.initialized) {
     return;
   }
 
-  if (!Number.isFinite(earthMoonNBodyState.lastUpdateMs)) {
-    earthMoonNBodyState.lastUpdateMs = nowMs;
+  if (!Number.isFinite(nBodyState.lastUpdateMs)) {
+    nBodyState.lastUpdateMs = nowMs;
     return;
   }
 
   let elapsedSeconds = clamp(
-    (nowMs - earthMoonNBodyState.lastUpdateMs) / 1000,
+    (nowMs - nBodyState.lastUpdateMs) / 1000,
     0,
     N_BODY_MAX_FRAME_SECONDS,
   );
   if (!(elapsedSeconds > 0)) {
-    earthMoonNBodyState.lastUpdateMs = nowMs;
+    nBodyState.lastUpdateMs = nowMs;
     return;
   }
 
   while (elapsedSeconds > 1e-9) {
     const dtSeconds = Math.min(N_BODY_STEP_SECONDS, elapsedSeconds);
-    integrateEarthMoonNBodyStep(earthMoonNBodyState, dtSeconds);
+    integrateNBodyStep(nBodyState, dtSeconds);
     elapsedSeconds -= dtSeconds;
   }
-  earthMoonNBodyState.lastUpdateMs = nowMs;
+  nBodyState.lastUpdateMs = nowMs;
 }
 
 function syncOrbitalStateFromSnapshot() {
@@ -4382,7 +4413,7 @@ function animate(timestampMs = 0) {
   const deltaSeconds = lastFrameTimestampMs ? (timestampMs - lastFrameTimestampMs) / 1000 : 0;
   lastFrameTimestampMs = timestampMs;
   const nowMs = Date.now();
-  updateEarthMoonNBody(nowMs);
+  updateNBodySimulation(nowMs);
 
   if (orbitalStateById.size > 0) {
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
@@ -4531,10 +4562,9 @@ function updateInfoOverlay() {
   const dominantGravityMS2 = Number.isFinite(gravity?.dominantContributionMS2)
     ? gravity.dominantContributionMS2
     : null;
-  const orbitDynamicsLine =
-    N_BODY_EARTH_MOON_MODE && N_BODY_DYNAMIC_IDS.has(meta.id)
-      ? "N-body gravity (startup-seeded from Horizons)"
-      : "Ephemeris / existing propagation";
+  const orbitDynamicsLine = isNBodyDrivenBodyId(meta.id)
+    ? "N-body gravity (startup-seeded from Horizons)"
+    : "Ephemeris / existing propagation";
   const configuredOrbitHours = Number(ORBIT_VISUAL_PERIOD_HOURS?.[meta.id]);
   const configuredSolarDayHours = Number(ROTATION_SOLAR_DAY_HOURS?.[meta.id]);
   let rotationModelLine = "";
