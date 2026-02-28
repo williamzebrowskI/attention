@@ -14,6 +14,24 @@ const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
     sourceIds: Object.freeze(["earth", "sun"]),
     tidalDamping: 0,
   }),
+  mars: Object.freeze({
+    // Near-oblate inertia from Mars' normalized moments.
+    inertiaFactors: Object.freeze({ x: 0.365900, y: 0.366050, z: 0.366200 }),
+    sourceIds: Object.freeze(["sun", "phobos", "deimos"]),
+    tidalDamping: 0,
+  }),
+  phobos: Object.freeze({
+    // Triaxial ellipsoid-derived approximation (27x22x18 km class shape).
+    inertiaFactors: Object.freeze({ x: 0.318000, y: 0.415000, z: 0.478000 }),
+    sourceIds: Object.freeze(["mars", "sun", "deimos"]),
+    tidalDamping: 0,
+  }),
+  deimos: Object.freeze({
+    // Triaxial ellipsoid-derived approximation (15x12.2x11 km class shape).
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.450000, z: 0.486000 }),
+    sourceIds: Object.freeze(["mars", "sun", "phobos"]),
+    tidalDamping: 0,
+  }),
 });
 
 function normalizeAngle(angle) {
