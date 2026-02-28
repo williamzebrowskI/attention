@@ -207,6 +207,97 @@ const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
     sourceIds: Object.freeze(["saturn", "sun", "atlas", "prometheus"]),
     tidalDamping: 0,
   }),
+  uranus: Object.freeze({
+    // Ice-giant oblateness with moderate equatorial bulge.
+    inertiaFactors: Object.freeze({ x: 0.225000, y: 0.225000, z: 0.235000 }),
+    sourceIds: Object.freeze(["sun", "saturn", "neptune", "titania", "oberon", "ariel"]),
+    tidalDamping: 0,
+  }),
+  puck: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "miranda", "portia"]),
+    tidalDamping: 0,
+  }),
+  miranda: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.380000, z: 0.430000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "ariel", "puck"]),
+    tidalDamping: 0,
+  }),
+  ariel: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.350000, z: 0.370000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "umbriel", "miranda", "titania"]),
+    tidalDamping: 0,
+  }),
+  umbriel: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.350000, z: 0.370000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "ariel", "titania"]),
+    tidalDamping: 0,
+  }),
+  titania: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.330000, y: 0.335000, z: 0.345000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "oberon", "umbriel", "ariel"]),
+    tidalDamping: 0,
+  }),
+  oberon: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.330000, y: 0.335000, z: 0.345000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "titania"]),
+    tidalDamping: 0,
+  }),
+  cordelia: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "ophelia", "bianca"]),
+    tidalDamping: 0,
+  }),
+  ophelia: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "cordelia", "bianca"]),
+    tidalDamping: 0,
+  }),
+  bianca: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.310000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "cressida", "ophelia", "cordelia"]),
+    tidalDamping: 0,
+  }),
+  cressida: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "juliet", "bianca", "portia"]),
+    tidalDamping: 0,
+  }),
+  juliet: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "portia", "cressida", "rosalind"]),
+    tidalDamping: 0,
+  }),
+  portia: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "rosalind", "juliet", "belinda"]),
+    tidalDamping: 0,
+  }),
+  rosalind: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "portia", "belinda", "puck"]),
+    tidalDamping: 0,
+  }),
+  belinda: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "perdita", "cupid", "rosalind", "puck"]),
+    tidalDamping: 0,
+  }),
+  perdita: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "belinda", "puck"]),
+    tidalDamping: 0,
+  }),
+  cupid: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "belinda", "portia"]),
+    tidalDamping: 0,
+  }),
+  mab: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["uranus", "sun", "puck", "belinda"]),
+    tidalDamping: 0,
+  }),
 });
 
 function normalizeAngle(angle) {
