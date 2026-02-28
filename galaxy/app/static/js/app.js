@@ -471,6 +471,7 @@ let tidalOverlayController = null;
 let lagrangeOverlayController = null;
 let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
+let startupSeedLocked = false;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
@@ -575,6 +576,7 @@ function assertPhysicsLockInvariants() {
   const invariantChecks = [
     { ok: SCIENTIFIC_ACCURACY_MODE === true, label: "SCIENTIFIC_ACCURACY_MODE must be true" },
     { ok: WS_INTERVAL_SECONDS === 1, label: "WS_INTERVAL_SECONDS must be 1 in lock mode" },
+    { ok: HORIZONS_STARTUP_FETCH_ONLY === true, label: "HORIZONS_STARTUP_FETCH_ONLY must be true" },
     { ok: ORBIT_TIME_SCALE === 1, label: "ORBIT_TIME_SCALE must be 1" },
     { ok: SPIN_TIME_SCALE === 1, label: "SPIN_TIME_SCALE must be 1" },
     { ok: MOON_SPIN_VISUAL_BOOST === 1, label: "MOON_SPIN_VISUAL_BOOST must be 1" },
@@ -766,7 +768,7 @@ async function loadSnapshot() {
     throw new Error(`Position request failed with ${response.status}`);
   }
   const payload = await response.json();
-  updatePositions(payload);
+  updatePositions(payload, "startup_seed");
 }
 
 async function rebuildMeshes() {
@@ -2907,7 +2909,10 @@ function disposeOrbitVisual(orbitVisual) {
   }
 }
 
-function updatePositions(payload) {
+function updatePositions(payload, source = "runtime") {
+  if (HORIZONS_STARTUP_FETCH_ONLY && startupSeedLocked && source !== "startup_seed") {
+    return;
+  }
   const entries = payload.bodies || [];
   positionsById = new Map(entries.map((body) => [body.id, body]));
   latestSolarTimestampMs = parseTimestampMs(payload.timestamp_utc);
@@ -2926,6 +2931,9 @@ function updatePositions(payload) {
   updatePhysicsOverlays();
   updateSunlightModel();
   updateOrbitVisualAnchorsAndPhase();
+  if (source === "startup_seed") {
+    startupSeedLocked = true;
+  }
 }
 
 function parseVectorFromPayload(entry, fieldName) {
@@ -4276,6 +4284,9 @@ function updateCameraFromOrbit() {
 }
 
 function connectWebSocket() {
+  if (HORIZONS_STARTUP_FETCH_ONLY) {
+    return;
+  }
   if (socket) {
     socket.__manualClose = true;
     socket.close();
@@ -4290,7 +4301,7 @@ function connectWebSocket() {
   ws.addEventListener("message", (event) => {
     try {
       const payload = JSON.parse(event.data);
-      updatePositions(payload);
+      updatePositions(payload, "stream");
     } catch (error) {
       console.warn("[solar-system] Failed to parse live payload:", error);
     }
