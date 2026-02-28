@@ -91,6 +91,10 @@ const N_BODY_STATIC_SOURCE_IDS = new Set();
 const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
+const DEBUG_COMPARE_PRE_TESSERAL = true;
+const DEBUG_COMPARE_BODY_IDS = Object.freeze(["earth", "moon"]);
+const DEBUG_COMPARE_TRAIL_POINTS = 720;
+const DEBUG_COMPARE_SAMPLE_INTERVAL_MS = 3000;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
@@ -464,6 +468,7 @@ let runtimeCoordsKmById = new Map();
 let illuminationById = new Map();
 let gravityById = new Map();
 let nBodyState = null;
+let comparisonNBodyState = null;
 let nBodyStartupSnapshotLoaded = false;
 let gravityArrowFocusBodyId = null;
 let gravityArrowsLegendActivated = false;
@@ -472,6 +477,8 @@ let lagrangeOverlayController = null;
 let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
 let startupSeedLocked = false;
+let comparisonOverlay = null;
+let comparisonOverlayLastSampleMs = 0;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
@@ -2971,6 +2978,7 @@ function neutralizeTotalMomentum(dynamicBodies, anchorId = "sun") {
 function initializeNBodyFromSnapshot(nowMs) {
   if (!N_BODY_ALL_BODIES_MODE) {
     nBodyState = null;
+    comparisonNBodyState = null;
     return;
   }
 
@@ -3009,6 +3017,7 @@ function initializeNBodyFromSnapshot(nowMs) {
 
   if (dynamicBodies.size === 0) {
     nBodyState = null;
+    comparisonNBodyState = null;
     return;
   }
 
@@ -3020,6 +3029,51 @@ function initializeNBodyFromSnapshot(nowMs) {
     dynamicBodies,
     staticSources,
   };
+  initializeComparisonNBodyState(nowMs);
+}
+
+function cloneNBodyState(state) {
+  if (!state?.initialized) {
+    return null;
+  }
+  const dynamicBodies = new Map();
+  for (const [bodyId, body] of state.dynamicBodies.entries()) {
+    dynamicBodies.set(bodyId, {
+      id: body.id,
+      massKg: body.massKg,
+      position: { x: body.position.x, y: body.position.y, z: body.position.z },
+      velocity: { x: body.velocity.x, y: body.velocity.y, z: body.velocity.z },
+    });
+  }
+  const staticSources = new Map();
+  for (const [bodyId, source] of state.staticSources.entries()) {
+    staticSources.set(bodyId, {
+      id: source.id,
+      massKg: source.massKg,
+      position: { x: source.position.x, y: source.position.y, z: source.position.z },
+      velocity: source.velocity
+        ? { x: source.velocity.x, y: source.velocity.y, z: source.velocity.z }
+        : null,
+    });
+  }
+  return {
+    initialized: true,
+    lastUpdateMs: state.lastUpdateMs,
+    dynamicBodies,
+    staticSources,
+  };
+}
+
+function initializeComparisonNBodyState(nowMs) {
+  if (!DEBUG_COMPARE_PRE_TESSERAL || !nBodyState?.initialized) {
+    comparisonNBodyState = null;
+    return;
+  }
+  comparisonNBodyState = cloneNBodyState(nBodyState);
+  if (comparisonNBodyState) {
+    comparisonNBodyState.lastUpdateMs = nowMs;
+  }
+  resetComparisonOverlayData();
 }
 
 function isNBodyDrivenBodyId(bodyId) {
@@ -3030,9 +3084,8 @@ function isNBodyDrivenBodyId(bodyId) {
   return state.dynamicBodies.has(bodyId) || state.staticSources.has(bodyId);
 }
 
-function nBodyCoordinatesKmById(bodyId) {
-  const state = nBodyState;
-  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized) {
+function nBodyCoordinatesKmFromStateById(state, bodyId) {
+  if (!state?.initialized) {
     return null;
   }
   const dynamicBody = state.dynamicBodies.get(bodyId);
@@ -3052,6 +3105,21 @@ function nBodyCoordinatesKmById(bodyId) {
     };
   }
   return null;
+}
+
+function nBodyCoordinatesKmById(bodyId) {
+  const state = nBodyState;
+  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized) {
+    return null;
+  }
+  return nBodyCoordinatesKmFromStateById(state, bodyId);
+}
+
+function comparisonNBodyCoordinatesKmById(bodyId) {
+  if (!N_BODY_ALL_BODIES_MODE || !comparisonNBodyState?.initialized) {
+    return null;
+  }
+  return nBodyCoordinatesKmFromStateById(comparisonNBodyState, bodyId);
 }
 
 function nBodyVelocityKmSById(bodyId) {
@@ -3275,7 +3343,9 @@ function computeGravityAccelerationFromSource(
   sourceMassKg,
   sourcePos,
   oblateSourceContextById = null,
+  options = null,
 ) {
+  const includeTesseral = options?.includeTesseral !== false;
   if (!(sourceMassKg > 0) || !targetPos || !sourcePos) {
     return { x: 0, y: 0, z: 0 };
   }
@@ -3328,7 +3398,7 @@ function computeGravityAccelerationFromSource(
     az += coeff4 * ((termR4 * rz) - (termK4 * pole.z));
   }
 
-  if (oblate.c22 || oblate.s22) {
+  if (includeTesseral && (oblate.c22 || oblate.s22)) {
     const xAxis = oblate.xAxis;
     const yAxis = oblate.yAxis;
     if (xAxis && yAxis) {
@@ -3355,6 +3425,15 @@ function computeGravityAccelerationFromSource(
 }
 
 function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById = null) {
+  return computeNBodyAccelerationForTargetWithOptions(state, targetId, oblateSourceContextById, null);
+}
+
+function computeNBodyAccelerationForTargetWithOptions(
+  state,
+  targetId,
+  oblateSourceContextById = null,
+  options = null,
+) {
   const target = state?.dynamicBodies?.get(targetId);
   if (!target?.position) {
     return { x: 0, y: 0, z: 0 };
@@ -3372,6 +3451,7 @@ function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextB
       sourceMassKg,
       sourcePos,
       oblateSourceContextById,
+      options,
     );
     ax += contribution.x;
     ay += contribution.y;
@@ -3391,13 +3471,13 @@ function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextB
   return { x: ax, y: ay, z: az };
 }
 
-function integrateNBodyStep(state, dtSeconds) {
+function integrateNBodyStep(state, dtSeconds, options = null) {
   const oblateSourceContextById = buildOblateSourceContextMapForNBody(state, Date.now());
   const accelerationStartById = new Map();
   for (const bodyId of state.dynamicBodies.keys()) {
     accelerationStartById.set(
       bodyId,
-      computeNBodyAccelerationForTarget(state, bodyId, oblateSourceContextById),
+      computeNBodyAccelerationForTargetWithOptions(state, bodyId, oblateSourceContextById, options),
     );
   }
 
@@ -3413,7 +3493,7 @@ function integrateNBodyStep(state, dtSeconds) {
   }
 
   for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-    const accel = computeNBodyAccelerationForTarget(state, bodyId, oblateSourceContextById);
+    const accel = computeNBodyAccelerationForTargetWithOptions(state, bodyId, oblateSourceContextById, options);
     bodyState.velocity.x += 0.5 * accel.x * dtSeconds;
     bodyState.velocity.y += 0.5 * accel.y * dtSeconds;
     bodyState.velocity.z += 0.5 * accel.z * dtSeconds;
@@ -3446,6 +3526,203 @@ function updateNBodySimulation(nowMs) {
     elapsedSeconds -= dtSeconds;
   }
   nBodyState.lastUpdateMs = nowMs;
+}
+
+function updateComparisonNBodySimulation(nowMs) {
+  if (!DEBUG_COMPARE_PRE_TESSERAL || !comparisonNBodyState?.initialized) {
+    return;
+  }
+  if (!Number.isFinite(comparisonNBodyState.lastUpdateMs)) {
+    comparisonNBodyState.lastUpdateMs = nowMs;
+    return;
+  }
+  let elapsedSeconds = clamp(
+    (nowMs - comparisonNBodyState.lastUpdateMs) / 1000,
+    0,
+    N_BODY_MAX_FRAME_SECONDS,
+  );
+  if (!(elapsedSeconds > 0)) {
+    comparisonNBodyState.lastUpdateMs = nowMs;
+    return;
+  }
+  while (elapsedSeconds > 1e-9) {
+    const dtSeconds = Math.min(N_BODY_STEP_SECONDS, elapsedSeconds);
+    integrateNBodyStep(comparisonNBodyState, dtSeconds, { includeTesseral: false });
+    elapsedSeconds -= dtSeconds;
+  }
+  comparisonNBodyState.lastUpdateMs = nowMs;
+}
+
+function kmCoordinatesToSceneVector(coordsKm) {
+  if (!coordsKm || !THREE_NS) {
+    return null;
+  }
+  return new THREE_NS.Vector3(
+    coordsKm.x * DISTANCE_SCALE,
+    coordsKm.z * DISTANCE_SCALE,
+    coordsKm.y * DISTANCE_SCALE,
+  );
+}
+
+function disposeComparisonOverlay() {
+  if (!comparisonOverlay) {
+    comparisonOverlayLastSampleMs = 0;
+    return;
+  }
+  if (comparisonOverlay.group) {
+    scene.remove(comparisonOverlay.group);
+  }
+  for (const trail of comparisonOverlay.bodyTrails?.values?.() || []) {
+    if (trail.currentGeometry) {
+      trail.currentGeometry.dispose();
+    }
+    if (trail.baselineGeometry) {
+      trail.baselineGeometry.dispose();
+    }
+    const currentMaterial = trail.currentLine?.material;
+    if (currentMaterial && typeof currentMaterial.dispose === "function") {
+      currentMaterial.dispose();
+    }
+    const baselineMaterial = trail.baselineLine?.material;
+    if (baselineMaterial && typeof baselineMaterial.dispose === "function") {
+      baselineMaterial.dispose();
+    }
+  }
+  comparisonOverlay = null;
+  comparisonOverlayLastSampleMs = 0;
+}
+
+function resetComparisonOverlayData() {
+  disposeComparisonOverlay();
+  if (!DEBUG_COMPARE_PRE_TESSERAL || !THREE_NS || !scene || !comparisonNBodyState?.initialized) {
+    return;
+  }
+
+  const group = new THREE_NS.Group();
+  group.name = "debug-comparison-overlay";
+
+  const bodyTrails = new Map();
+  const colorByBodyId = {
+    earth: { current: 0x48ffd7, baseline: 0xff6a9a },
+    moon: { current: 0x8ec0ff, baseline: 0xffb36e },
+  };
+
+  for (const bodyId of DEBUG_COMPARE_BODY_IDS) {
+    if (!metaById.has(bodyId)) {
+      continue;
+    }
+    const colors = colorByBodyId[bodyId] || { current: 0x7dffd4, baseline: 0xff8fb0 };
+    const currentGeometry = new THREE_NS.BufferGeometry();
+    const baselineGeometry = new THREE_NS.BufferGeometry();
+    const currentMaterial = new THREE_NS.LineBasicMaterial({
+      color: colors.current,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+    });
+    const baselineMaterial = new THREE_NS.LineBasicMaterial({
+      color: colors.baseline,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+    });
+    const currentLine = new THREE_NS.Line(currentGeometry, currentMaterial);
+    const baselineLine = new THREE_NS.Line(baselineGeometry, baselineMaterial);
+    currentLine.frustumCulled = false;
+    baselineLine.frustumCulled = false;
+    currentLine.renderOrder = 88;
+    baselineLine.renderOrder = 87;
+    currentLine.userData.isDebugComparisonTrail = true;
+    baselineLine.userData.isDebugComparisonTrail = true;
+    currentLine.userData.bodyId = bodyId;
+    baselineLine.userData.bodyId = bodyId;
+    group.add(baselineLine);
+    group.add(currentLine);
+
+    bodyTrails.set(bodyId, {
+      bodyId,
+      currentGeometry,
+      baselineGeometry,
+      currentLine,
+      baselineLine,
+      currentPoints: [],
+      baselinePoints: [],
+    });
+  }
+
+  if (bodyTrails.size === 0) {
+    disposeComparisonOverlay();
+    return;
+  }
+
+  scene.add(group);
+  comparisonOverlay = { group, bodyTrails };
+  comparisonOverlayLastSampleMs = 0;
+  updateComparisonOverlay(Date.now(), true);
+}
+
+function appendComparisonTrailPoint(points, nextPoint) {
+  if (!points || !nextPoint) {
+    return;
+  }
+  points.push(nextPoint.clone());
+  const overflow = points.length - DEBUG_COMPARE_TRAIL_POINTS;
+  if (overflow > 0) {
+    points.splice(0, overflow);
+  }
+}
+
+function updateComparisonTrailGeometry(geometry, points) {
+  if (!geometry) {
+    return;
+  }
+  if (!points || points.length === 0) {
+    geometry.setFromPoints([]);
+    return;
+  }
+  if (points.length === 1) {
+    geometry.setFromPoints([points[0], points[0]]);
+    return;
+  }
+  geometry.setFromPoints(points);
+}
+
+function updateComparisonOverlay(nowMs, forceSample = false) {
+  if (!DEBUG_COMPARE_PRE_TESSERAL || !comparisonOverlay?.bodyTrails || !comparisonNBodyState?.initialized) {
+    return;
+  }
+  if (!forceSample && Number.isFinite(comparisonOverlayLastSampleMs) && comparisonOverlayLastSampleMs > 0) {
+    if (nowMs - comparisonOverlayLastSampleMs < DEBUG_COMPARE_SAMPLE_INTERVAL_MS) {
+      return;
+    }
+  }
+  comparisonOverlayLastSampleMs = nowMs;
+
+  for (const [bodyId, trail] of comparisonOverlay.bodyTrails.entries()) {
+    const currentCoordsKm =
+      nBodyCoordinatesKmById(bodyId)
+      || runtimeCoordsKmById.get(bodyId)
+      || positionsById.get(bodyId)?.coordinates_km;
+    const baselineCoordsKm = comparisonNBodyCoordinatesKmById(bodyId);
+    if (!currentCoordsKm || !baselineCoordsKm) {
+      continue;
+    }
+
+    const currentScene = kmCoordinatesToSceneVector(currentCoordsKm);
+    const baselineScene = kmCoordinatesToSceneVector(baselineCoordsKm);
+    if (!currentScene || !baselineScene) {
+      continue;
+    }
+
+    appendComparisonTrailPoint(trail.currentPoints, currentScene);
+    appendComparisonTrailPoint(trail.baselinePoints, baselineScene);
+    updateComparisonTrailGeometry(trail.currentGeometry, trail.currentPoints);
+    updateComparisonTrailGeometry(trail.baselineGeometry, trail.baselinePoints);
+  }
 }
 
 function syncOrbitalStateFromSnapshot() {
@@ -5172,11 +5449,13 @@ function animate(timestampMs = 0) {
   lastFrameTimestampMs = timestampMs;
   const nowMs = Date.now();
   updateNBodySimulation(nowMs);
+  updateComparisonNBodySimulation(nowMs);
 
   if (orbitalStateById.size > 0) {
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
     applyScenePositions(runtimeCoordsKmById);
   }
+  updateComparisonOverlay(nowMs);
   updateGravityVectors();
   updatePhysicsOverlays();
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
