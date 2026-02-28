@@ -82,6 +82,48 @@ body {
   border-bottom: 1px solid rgba(86, 186, 255, 0.25);
 }
 
+.physics-panel {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(86, 186, 255, 0.25);
+}
+
+.physics-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.physics-toggle-label {
+  color: #a9c9e8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.physics-toggle-button {
+  min-width: 58px;
+  margin: 0;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(86, 186, 255, 0.3);
+  background: rgba(13, 22, 35, 0.8);
+  color: #d7ecff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.physics-toggle-button.on {
+  border-color: rgba(246, 190, 88, 0.9);
+  background: rgba(64, 45, 15, 0.82);
+  color: #ffe7b7;
+}
+
 .observation-label {
   display: block;
   margin: 0 0 4px;

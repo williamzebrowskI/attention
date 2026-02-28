@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260227dq" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260228a" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -28,9 +28,21 @@
         </div>
         <p id="observation-status" class="observation-status"></p>
       </div>
+      <div class="physics-panel" aria-label="Physics overlays">
+        <p class="body-legend-title">Physics Overlays</p>
+        <div class="physics-toggle-row">
+          <span class="physics-toggle-label">Tidal Force</span>
+          <button id="physics-toggle-tidal" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+        </div>
+        <div class="physics-toggle-row">
+          <span class="physics-toggle-label">Lagrange Points</span>
+          <button id="physics-toggle-lagrange" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+        </div>
+        <p id="physics-overlay-status" class="observation-status"></p>
+      </div>
       <p class="body-legend-title">Bodies</p>
       <div id="body-legend-list" class="body-legend-list"></div>
     </aside>
-    <script type="module" src="/static/js/app.js?v=20260227dq"></script>
+    <script type="module" src="/static/js/app.js?v=20260228a"></script>
   </body>
 </html>

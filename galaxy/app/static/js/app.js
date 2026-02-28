@@ -29,6 +29,9 @@ const observationModeSelect = document.getElementById("observation-mode");
 const surfaceObserverRow = document.getElementById("surface-observer-row");
 const surfaceObserverTargetSelect = document.getElementById("surface-observer-target");
 const observationStatusNode = document.getElementById("observation-status");
+const physicsTidalToggleButton = document.getElementById("physics-toggle-tidal");
+const physicsLagrangeToggleButton = document.getElementById("physics-toggle-lagrange");
+const physicsOverlayStatusNode = document.getElementById("physics-overlay-status");
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
@@ -75,6 +78,14 @@ const GRAVITY_VECTOR_COLOR = 0x63ffd8;
 const GRAVITY_VECTOR_MIN_LENGTH = 0.02;
 const GRAVITY_VECTOR_MAX_LENGTH = 1.6;
 const GRAVITY_VECTOR_BASELINE_MS2 = 0.08;
+const TIDAL_OVERLAY_VECTOR_COLOR = 0xff5f8d;
+const TIDAL_OVERLAY_SHELL_COLOR = 0xff8cae;
+const TIDAL_OVERLAY_BASELINE_MS2 = 1.0e-6;
+const TIDAL_OVERLAY_MAX_LENGTH = 0.14;
+const LAGRANGE_MARKER_BASE_COLOR = 0x6ad8ff;
+const LAGRANGE_MARKER_EM_COLOR = 0xffd98b;
+const LAGRANGE_MARKER_SIZE_MIN = 0.0005;
+const LAGRANGE_MARKER_SIZE_MAX = 0.012;
 const HORIZONS_STARTUP_FETCH_ONLY = true;
 const N_BODY_ALL_BODIES_MODE = true;
 const N_BODY_STATIC_SOURCE_IDS = new Set();
@@ -152,6 +163,14 @@ const BODY_ECLIPSE_MAX_OCCLUDERS = 32;
 const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
+const TIDAL_TARGET_CONFIG = Object.freeze([
+  Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
+  Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
+]);
+const LAGRANGE_SYSTEM_CONFIG = Object.freeze([
+  Object.freeze({ id: "sun-earth", primaryId: "sun", secondaryId: "earth", color: LAGRANGE_MARKER_BASE_COLOR }),
+  Object.freeze({ id: "earth-moon", primaryId: "earth", secondaryId: "moon", color: LAGRANGE_MARKER_EM_COLOR }),
+]);
 
 const LOCAL_IMAGE_ROOT = "/static/assets/images";
 const LOCAL_PLANET_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/planets/`;
@@ -342,8 +361,14 @@ let nBodyState = null;
 let nBodyStartupSnapshotLoaded = false;
 let gravityArrowFocusBodyId = null;
 let gravityArrowsLegendActivated = false;
+let tidalOverlayVisualsByBodyId = new Map();
+let lagrangeOverlayVisualsBySystemId = new Map();
 let primeMeridianSpinOffsetRadById = new Map();
 const bodyEclipseMaterialStates = new Set();
+const physicsOverlayState = {
+  tidal: false,
+  lagrange: false,
+};
 
 let socket = null;
 let reconnectTimer = null;
@@ -394,6 +419,7 @@ async function init() {
   setupScene(THREE_NS);
   await loadBodyCatalog();
   setupObservationControls();
+  setupPhysicsOverlayControls();
   await loadSnapshot();
   if (!HORIZONS_STARTUP_FETCH_ONLY) {
     connectWebSocket();
@@ -576,6 +602,8 @@ async function rebuildMeshes() {
   for (const visual of bodyVisuals.values()) {
     disposeBodyVisual(visual);
   }
+  clearTidalOverlayVisuals();
+  clearLagrangeOverlayVisuals();
   bodyVisuals = new Map();
   primeMeridianSpinOffsetRadById = new Map();
 
@@ -587,6 +615,7 @@ async function rebuildMeshes() {
     scene.add(visual.root);
     bodyVisuals.set(visual.id, visual);
   }
+  rebuildPhysicsOverlays();
 }
 
 function rebuildOrbitVisuals() {
@@ -806,6 +835,47 @@ function updateLegendGravityArrowIndicators() {
     toggle.textContent = enabled ? "On" : "Off";
     toggle.classList.toggle("on", enabled);
     toggle.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+}
+
+function setupPhysicsOverlayControls() {
+  if (physicsTidalToggleButton) {
+    physicsTidalToggleButton.addEventListener("click", () => {
+      setPhysicsOverlayToggle("tidal", !physicsOverlayState.tidal);
+    });
+  }
+  if (physicsLagrangeToggleButton) {
+    physicsLagrangeToggleButton.addEventListener("click", () => {
+      setPhysicsOverlayToggle("lagrange", !physicsOverlayState.lagrange);
+    });
+  }
+  updatePhysicsOverlayControls();
+}
+
+function setPhysicsOverlayToggle(key, enabled) {
+  if (!(key in physicsOverlayState)) {
+    return;
+  }
+  physicsOverlayState[key] = Boolean(enabled);
+  updatePhysicsOverlayControls();
+  updatePhysicsOverlays();
+}
+
+function updatePhysicsOverlayControls() {
+  if (physicsTidalToggleButton) {
+    physicsTidalToggleButton.textContent = physicsOverlayState.tidal ? "On" : "Off";
+    physicsTidalToggleButton.classList.toggle("on", physicsOverlayState.tidal);
+    physicsTidalToggleButton.setAttribute("aria-pressed", physicsOverlayState.tidal ? "true" : "false");
+  }
+  if (physicsLagrangeToggleButton) {
+    physicsLagrangeToggleButton.textContent = physicsOverlayState.lagrange ? "On" : "Off";
+    physicsLagrangeToggleButton.classList.toggle("on", physicsOverlayState.lagrange);
+    physicsLagrangeToggleButton.setAttribute("aria-pressed", physicsOverlayState.lagrange ? "true" : "false");
+  }
+  if (physicsOverlayStatusNode) {
+    const tidalStatus = physicsOverlayState.tidal ? "On (Earth/Moon)" : "Off";
+    const lagrangeStatus = physicsOverlayState.lagrange ? "On (Sun-Earth + Earth-Moon)" : "Off";
+    physicsOverlayStatusNode.textContent = `Tidal: ${tidalStatus} | Lagrange: ${lagrangeStatus}`;
   }
 }
 
@@ -2561,6 +2631,494 @@ function createGravityVectorHelper(renderRadius) {
   return arrow;
 }
 
+function rebuildPhysicsOverlays() {
+  if (!THREE_NS || !scene) {
+    return;
+  }
+  clearTidalOverlayVisuals();
+  clearLagrangeOverlayVisuals();
+
+  for (const config of TIDAL_TARGET_CONFIG) {
+    const visual = createTidalOverlayVisual(config.bodyId);
+    if (!visual) {
+      continue;
+    }
+    tidalOverlayVisualsByBodyId.set(config.bodyId, visual);
+    scene.add(visual.group);
+  }
+
+  for (const system of LAGRANGE_SYSTEM_CONFIG) {
+    const visual = createLagrangeSystemVisual(system);
+    if (!visual) {
+      continue;
+    }
+    lagrangeOverlayVisualsBySystemId.set(system.id, visual);
+    scene.add(visual.group);
+  }
+
+  updatePhysicsOverlays();
+}
+
+function clearTidalOverlayVisuals() {
+  for (const visual of tidalOverlayVisualsByBodyId.values()) {
+    scene?.remove?.(visual.group);
+    disposeObject3DResources(visual.group);
+  }
+  tidalOverlayVisualsByBodyId = new Map();
+}
+
+function clearLagrangeOverlayVisuals() {
+  for (const visual of lagrangeOverlayVisualsBySystemId.values()) {
+    scene?.remove?.(visual.group);
+    disposeObject3DResources(visual.group);
+  }
+  lagrangeOverlayVisualsBySystemId = new Map();
+}
+
+function disposeObject3DResources(root) {
+  if (!root) {
+    return;
+  }
+  root.traverse((node) => {
+    if (node.geometry) {
+      node.geometry.dispose();
+    }
+    if (Array.isArray(node.material)) {
+      node.material.forEach((material) => material?.dispose?.());
+    } else if (node.material) {
+      node.material.dispose();
+    }
+  });
+}
+
+function createTidalOverlayVisual(bodyId) {
+  const bodyVisual = bodyVisuals.get(bodyId);
+  if (!bodyVisual) {
+    return null;
+  }
+
+  const baseRadius = Math.max(bodyVisual.renderRadius, ORBIT_MIN_DISTANCE_ABSOLUTE * 2.5);
+  const nearArrow = new THREE_NS.ArrowHelper(
+    new THREE_NS.Vector3(1, 0, 0),
+    new THREE_NS.Vector3(0, 0, 0),
+    Math.max(baseRadius * 3.2, 0.01),
+    TIDAL_OVERLAY_VECTOR_COLOR,
+    0.01,
+    0.005,
+  );
+  const farArrow = new THREE_NS.ArrowHelper(
+    new THREE_NS.Vector3(-1, 0, 0),
+    new THREE_NS.Vector3(0, 0, 0),
+    Math.max(baseRadius * 3.2, 0.01),
+    TIDAL_OVERLAY_VECTOR_COLOR,
+    0.01,
+    0.005,
+  );
+  nearArrow.renderOrder = 82;
+  farArrow.renderOrder = 82;
+
+  const shell = new THREE_NS.Mesh(
+    new THREE_NS.SphereGeometry(1, 40, 40),
+    new THREE_NS.MeshBasicMaterial({
+      color: TIDAL_OVERLAY_SHELL_COLOR,
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false,
+      blending: THREE_NS.AdditiveBlending,
+      toneMapped: false,
+    }),
+  );
+  shell.renderOrder = 81;
+
+  const group = new THREE_NS.Group();
+  group.visible = false;
+  group.add(shell);
+  group.add(nearArrow);
+  group.add(farArrow);
+
+  return {
+    bodyId,
+    group,
+    nearArrow,
+    farArrow,
+    shell,
+  };
+}
+
+function createLagrangeSystemVisual(system) {
+  if (!system?.id) {
+    return null;
+  }
+  const group = new THREE_NS.Group();
+  group.visible = false;
+  const markersByLabel = new Map();
+  const labels = ["L1", "L2", "L3", "L4", "L5"];
+  for (const label of labels) {
+    const marker = new THREE_NS.Mesh(
+      new THREE_NS.SphereGeometry(1, 18, 18),
+      new THREE_NS.MeshBasicMaterial({
+        color: system.color || LAGRANGE_MARKER_BASE_COLOR,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+        blending: THREE_NS.AdditiveBlending,
+        toneMapped: false,
+      }),
+    );
+    marker.userData.label = label;
+    marker.renderOrder = 83;
+    markersByLabel.set(label, marker);
+    group.add(marker);
+  }
+  return {
+    id: system.id,
+    primaryId: system.primaryId,
+    secondaryId: system.secondaryId,
+    group,
+    markersByLabel,
+  };
+}
+
+function updatePhysicsOverlays() {
+  if (!THREE_NS) {
+    return;
+  }
+  updateTidalOverlays();
+  updateLagrangeOverlays();
+}
+
+function updateTidalOverlays() {
+  const enabled = physicsOverlayState.tidal;
+  for (const config of TIDAL_TARGET_CONFIG) {
+    const overlay = tidalOverlayVisualsByBodyId.get(config.bodyId);
+    if (!overlay) {
+      continue;
+    }
+    if (!enabled) {
+      overlay.group.visible = false;
+      continue;
+    }
+    const bodyVisual = bodyVisuals.get(config.bodyId);
+    if (!bodyVisual || !bodyVisual.root.visible) {
+      overlay.group.visible = false;
+      continue;
+    }
+    const tidal = computeTidalAxisForBody(config.bodyId, config.sourceIds);
+    if (!tidal || !(tidal.magnitudeMS2 > 0)) {
+      overlay.group.visible = false;
+      continue;
+    }
+
+    const bodyRadius = Math.max(bodyVisual.renderRadius || 0, ORBIT_MIN_DISTANCE_ABSOLUTE * 2.5);
+    const direction = new THREE_NS.Vector3(tidal.axisKmS2.x, tidal.axisKmS2.z, tidal.axisKmS2.y);
+    const axisMagnitude = direction.length();
+    if (!(axisMagnitude > 1e-18)) {
+      overlay.group.visible = false;
+      continue;
+    }
+
+    direction.divideScalar(axisMagnitude);
+    overlay.group.visible = true;
+    overlay.group.position.copy(bodyVisual.root.position);
+
+    const opposite = direction.clone().multiplyScalar(-1);
+    const arrowLength = tidalArrowLengthForAccelerationMS2(tidal.magnitudeMS2, bodyRadius);
+    const arrowHeadLength = clamp(arrowLength * 0.3, 0.004, 0.032);
+    const arrowHeadWidth = clamp(arrowLength * 0.16, 0.003, 0.024);
+
+    overlay.nearArrow.position.copy(direction).multiplyScalar(bodyRadius * 1.07);
+    overlay.nearArrow.setDirection(direction);
+    overlay.nearArrow.setLength(arrowLength, arrowHeadLength, arrowHeadWidth);
+    overlay.nearArrow.visible = true;
+
+    overlay.farArrow.position.copy(opposite).multiplyScalar(bodyRadius * 1.07);
+    overlay.farArrow.setDirection(opposite);
+    overlay.farArrow.setLength(arrowLength, arrowHeadLength, arrowHeadWidth);
+    overlay.farArrow.visible = true;
+
+    overlay.shell.scale.setScalar(bodyRadius * 1.22);
+    const shellHeat = clamp(
+      Math.sqrt(tidal.magnitudeMS2 / TIDAL_OVERLAY_BASELINE_MS2),
+      0,
+      1,
+    );
+    overlay.shell.material.opacity = 0.04 + (0.22 * shellHeat);
+    overlay.shell.visible = true;
+  }
+}
+
+function tidalArrowLengthForAccelerationMS2(accelerationMS2, bodyRadius) {
+  const safeRadius = Math.max(bodyRadius, ORBIT_MIN_DISTANCE_ABSOLUTE * 2.5);
+  if (!(accelerationMS2 > 0)) {
+    return clamp(safeRadius * 2.4, safeRadius * 1.2, TIDAL_OVERLAY_MAX_LENGTH);
+  }
+  const normalized = Math.sqrt(Math.max(accelerationMS2 / TIDAL_OVERLAY_BASELINE_MS2, 0));
+  const scaled = safeRadius * (2.1 + (normalized * 3.8));
+  return clamp(scaled, safeRadius * 1.3, TIDAL_OVERLAY_MAX_LENGTH);
+}
+
+function computeTidalAxisForBody(targetBodyId, sourceIds) {
+  const targetCoords = runtimeCoordsOrLiveById(targetBodyId);
+  const targetRadiusKm = bodyRadiusKmById(targetBodyId);
+  if (!targetCoords || !(targetRadiusKm > 0)) {
+    return null;
+  }
+
+  let axisX = 0;
+  let axisY = 0;
+  let axisZ = 0;
+  for (const sourceId of sourceIds || []) {
+    if (!sourceId || sourceId === targetBodyId) {
+      continue;
+    }
+    const sourceMassKg = bodyMassKgById(sourceId);
+    const sourceCoords = runtimeCoordsOrLiveById(sourceId);
+    if (!(sourceMassKg > 0) || !sourceCoords) {
+      continue;
+    }
+
+    const dx = sourceCoords.x - targetCoords.x;
+    const dy = sourceCoords.y - targetCoords.y;
+    const dz = sourceCoords.z - targetCoords.z;
+    const distanceKm = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
+    if (!(distanceKm > targetRadiusKm * 1.001)) {
+      continue;
+    }
+
+    const ux = dx / distanceKm;
+    const uy = dy / distanceKm;
+    const uz = dz / distanceKm;
+    const nearDistanceKm = Math.max(distanceKm - targetRadiusKm, 1e-7);
+    const farDistanceKm = distanceKm + targetRadiusKm;
+    const nearAccelKmS2 = (GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * sourceMassKg) / (nearDistanceKm * nearDistanceKm);
+    const farAccelKmS2 = (GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * sourceMassKg) / (farDistanceKm * farDistanceKm);
+    const differentialKmS2 = Math.max(nearAccelKmS2 - farAccelKmS2, 0) * 0.5;
+
+    axisX += ux * differentialKmS2;
+    axisY += uy * differentialKmS2;
+    axisZ += uz * differentialKmS2;
+  }
+
+  const magnitudeKmS2 = Math.sqrt((axisX * axisX) + (axisY * axisY) + (axisZ * axisZ));
+  return {
+    axisKmS2: { x: axisX, y: axisY, z: axisZ },
+    magnitudeKmS2,
+    magnitudeMS2: magnitudeKmS2 * 1000,
+  };
+}
+
+function updateLagrangeOverlays() {
+  const enabled = physicsOverlayState.lagrange;
+  for (const system of LAGRANGE_SYSTEM_CONFIG) {
+    const overlay = lagrangeOverlayVisualsBySystemId.get(system.id);
+    if (!overlay) {
+      continue;
+    }
+    if (!enabled) {
+      overlay.group.visible = false;
+      continue;
+    }
+
+    const points = computeLagrangePointsForSystem(system.primaryId, system.secondaryId);
+    if (!points) {
+      overlay.group.visible = false;
+      continue;
+    }
+    const secondaryVisual = bodyVisuals.get(system.secondaryId);
+    const markerRadius = clamp(
+      Math.max(secondaryVisual?.renderRadius || 0, ORBIT_MIN_DISTANCE_ABSOLUTE * 4) * 0.9,
+      LAGRANGE_MARKER_SIZE_MIN,
+      LAGRANGE_MARKER_SIZE_MAX,
+    );
+
+    overlay.group.visible = true;
+    for (const [label, marker] of overlay.markersByLabel.entries()) {
+      const point = points[label];
+      if (!point) {
+        marker.visible = false;
+        continue;
+      }
+      marker.visible = true;
+      marker.position.set(
+        point.x * DISTANCE_SCALE,
+        point.z * DISTANCE_SCALE,
+        point.y * DISTANCE_SCALE,
+      );
+      marker.scale.setScalar(markerRadius);
+    }
+  }
+}
+
+function computeLagrangePointsForSystem(primaryId, secondaryId) {
+  const p1 = runtimeCoordsOrLiveById(primaryId);
+  const p2 = runtimeCoordsOrLiveById(secondaryId);
+  const m1 = bodyMassKgById(primaryId);
+  const m2 = bodyMassKgById(secondaryId);
+  if (!p1 || !p2 || !(m1 > 0) || !(m2 > 0)) {
+    return null;
+  }
+
+  const rx = p2.x - p1.x;
+  const ry = p2.y - p1.y;
+  const rz = p2.z - p1.z;
+  const radiusKm = Math.sqrt((rx * rx) + (ry * ry) + (rz * rz));
+  if (!(radiusKm > 0)) {
+    return null;
+  }
+  const ux = rx / radiusKm;
+  const uy = ry / radiusKm;
+  const uz = rz / radiusKm;
+
+  const normal = lagrangePlaneNormalKm(primaryId, secondaryId, { x: rx, y: ry, z: rz });
+  const tangent = normalizeVectorKm(crossKm(normal, { x: ux, y: uy, z: uz }));
+  if (!tangent) {
+    return null;
+  }
+
+  const l1X = solveCollinearLagrangeX(m1, m2, radiusKm, "L1");
+  const l2X = solveCollinearLagrangeX(m1, m2, radiusKm, "L2");
+  const l3X = solveCollinearLagrangeX(m1, m2, radiusKm, "L3");
+  const midpoint = {
+    x: 0.5 * (p1.x + p2.x),
+    y: 0.5 * (p1.y + p2.y),
+    z: 0.5 * (p1.z + p2.z),
+  };
+  const triangleOffset = (Math.sqrt(3) * 0.5) * radiusKm;
+
+  return {
+    L1: Number.isFinite(l1X) ? pointAlongKm(p1, { x: ux, y: uy, z: uz }, l1X) : null,
+    L2: Number.isFinite(l2X) ? pointAlongKm(p1, { x: ux, y: uy, z: uz }, l2X) : null,
+    L3: Number.isFinite(l3X) ? pointAlongKm(p1, { x: ux, y: uy, z: uz }, l3X) : null,
+    L4: {
+      x: midpoint.x + (tangent.x * triangleOffset),
+      y: midpoint.y + (tangent.y * triangleOffset),
+      z: midpoint.z + (tangent.z * triangleOffset),
+    },
+    L5: {
+      x: midpoint.x - (tangent.x * triangleOffset),
+      y: midpoint.y - (tangent.y * triangleOffset),
+      z: midpoint.z - (tangent.z * triangleOffset),
+    },
+  };
+}
+
+function solveCollinearLagrangeX(m1, m2, radiusKm, label) {
+  if (!(m1 > 0) || !(m2 > 0) || !(radiusKm > 0)) {
+    return null;
+  }
+
+  const q = m2 / m1;
+  const hillApprox = radiusKm * Math.cbrt(Math.max(q / 3, 1e-14));
+  const epsilon = Math.max(radiusKm * 1e-9, 1e-6);
+  let x = 0;
+  let minBound = -radiusKm * 40;
+  let maxBound = radiusKm * 40;
+
+  if (label === "L1") {
+    x = radiusKm - hillApprox;
+    minBound = epsilon;
+    maxBound = radiusKm - epsilon;
+  } else if (label === "L2") {
+    x = radiusKm + hillApprox;
+    minBound = radiusKm + epsilon;
+  } else {
+    x = -radiusKm * (1 + ((5 * q) / 12));
+    maxBound = -epsilon;
+  }
+
+  let estimate = clamp(x, minBound, maxBound);
+  for (let i = 0; i < 48; i += 1) {
+    const f = collinearLagrangeEquation(estimate, m1, m2, radiusKm);
+    if (!Number.isFinite(f)) {
+      return null;
+    }
+    if (Math.abs(f) < 1e-15) {
+      return estimate;
+    }
+    const step = Math.max(radiusKm * 1e-7, 1e-4);
+    const fPlus = collinearLagrangeEquation(estimate + step, m1, m2, radiusKm);
+    const fMinus = collinearLagrangeEquation(estimate - step, m1, m2, radiusKm);
+    const derivative = (fPlus - fMinus) / (2 * step);
+    if (!Number.isFinite(derivative) || Math.abs(derivative) < 1e-20) {
+      break;
+    }
+    const next = clamp(estimate - (f / derivative), minBound, maxBound);
+    if (Math.abs(next - estimate) < Math.max(radiusKm * 1e-12, 1e-7)) {
+      estimate = next;
+      break;
+    }
+    estimate = next;
+  }
+  return Number.isFinite(estimate) ? estimate : null;
+}
+
+function collinearLagrangeEquation(x, m1, m2, radiusKm) {
+  const epsilon = Math.max(radiusKm * 1e-9, 1e-8);
+  const r1 = Math.max(Math.abs(x), epsilon);
+  const r2 = Math.max(Math.abs(x - radiusKm), epsilon);
+  const omega2 = (GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * (m1 + m2)) / (radiusKm * radiusKm * radiusKm);
+  const barycenterFromPrimaryKm = radiusKm * (m2 / (m1 + m2));
+  const termPrimary = -GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * m1 * x / (r1 * r1 * r1);
+  const termSecondary = -GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * m2 * (x - radiusKm) / (r2 * r2 * r2);
+  const termRotating = omega2 * (x - barycenterFromPrimaryKm);
+  return termPrimary + termSecondary + termRotating;
+}
+
+function lagrangePlaneNormalKm(primaryId, secondaryId, relativeVectorKm) {
+  const primaryVelocity = liveVelocityForBody(primaryId);
+  const secondaryVelocity = liveVelocityForBody(secondaryId);
+  const relativeVelocity = {
+    x: secondaryVelocity.x - primaryVelocity.x,
+    y: secondaryVelocity.y - primaryVelocity.y,
+    z: secondaryVelocity.z - primaryVelocity.z,
+  };
+  const dynamicNormal = normalizeVectorKm(crossKm(relativeVectorKm, relativeVelocity));
+  if (dynamicNormal) {
+    return dynamicNormal;
+  }
+
+  const fallbackA = normalizeVectorKm(crossKm(relativeVectorKm, { x: 0, y: 0, z: 1 }));
+  if (fallbackA) {
+    return fallbackA;
+  }
+  const fallbackB = normalizeVectorKm(crossKm(relativeVectorKm, { x: 0, y: 1, z: 0 }));
+  if (fallbackB) {
+    return fallbackB;
+  }
+  return { x: 0, y: 0, z: 1 };
+}
+
+function pointAlongKm(origin, direction, distanceKm) {
+  return {
+    x: origin.x + (direction.x * distanceKm),
+    y: origin.y + (direction.y * distanceKm),
+    z: origin.z + (direction.z * distanceKm),
+  };
+}
+
+function crossKm(a, b) {
+  return {
+    x: (a.y * b.z) - (a.z * b.y),
+    y: (a.z * b.x) - (a.x * b.z),
+    z: (a.x * b.y) - (a.y * b.x),
+  };
+}
+
+function normalizeVectorKm(vector) {
+  if (!vector) {
+    return null;
+  }
+  const magnitude = Math.sqrt((vector.x * vector.x) + (vector.y * vector.y) + (vector.z * vector.z));
+  if (!(magnitude > 1e-12)) {
+    return null;
+  }
+  return {
+    x: vector.x / magnitude,
+    y: vector.y / magnitude,
+    z: vector.z / magnitude,
+  };
+}
+
 function getCircularGlowTexture() {
   const cacheKey = "earth-location-glow-texture";
   const cached = textureCache.get(cacheKey);
@@ -2652,6 +3210,7 @@ function updatePositions(payload) {
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(Date.now());
   applyScenePositions(runtimeCoordsKmById);
   updateGravityVectors();
+  updatePhysicsOverlays();
   updateSunlightModel();
   updateOrbitVisualAnchorsAndPhase();
 }
@@ -4586,6 +5145,7 @@ function animate(timestampMs = 0) {
     applyScenePositions(runtimeCoordsKmById);
   }
   updateGravityVectors();
+  updatePhysicsOverlays();
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
   updateBodyEclipseUniforms();
   updateSunlightModel();
