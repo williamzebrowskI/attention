@@ -4163,14 +4163,11 @@ function computeEarthshineScaleForMoon(moonCoordsKm, sunCoordsKm) {
 }
 
 function computeGravityById() {
-  const activeBodies = [];
+  const targetBodies = [];
+  const sourceBodies = [];
   for (const body of bodies) {
     const coords = runtimeCoordsOrLiveById(body.id);
     if (!coords) {
-      continue;
-    }
-    const massKg = bodyMassKgById(body.id);
-    if (!(massKg > 0)) {
       continue;
     }
     const x = Number(coords.x);
@@ -4179,24 +4176,33 @@ function computeGravityById() {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       continue;
     }
-    activeBodies.push({
+    targetBodies.push({
       id: body.id,
-      massKg,
       x,
       y,
       z,
     });
+    const massKg = bodyMassKgById(body.id);
+    if (massKg > 0) {
+      sourceBodies.push({
+        id: body.id,
+        massKg,
+        x,
+        y,
+        z,
+      });
+    }
   }
 
   const nextGravity = new Map();
-  for (const target of activeBodies) {
+  for (const target of targetBodies) {
     let ax = 0;
     let ay = 0;
     let az = 0;
     let dominantBodyId = null;
     let dominantContributionKmS2 = 0;
 
-    for (const source of activeBodies) {
+    for (const source of sourceBodies) {
       if (source.id === target.id) {
         continue;
       }
@@ -4237,12 +4243,14 @@ function computeGravityById() {
   return nextGravity;
 }
 
-function gravityArrowLengthForAccelerationMs2(accelerationMS2) {
+function gravityArrowLengthForAccelerationMs2(accelerationMS2, bodyRenderRadius = 0) {
   if (!(accelerationMS2 > 0)) {
-    return GRAVITY_VECTOR_MIN_LENGTH;
+    return Math.max(GRAVITY_VECTOR_MIN_LENGTH, bodyRenderRadius * 0.28);
   }
   const normalized = Math.sqrt(Math.max(accelerationMS2 / GRAVITY_VECTOR_BASELINE_MS2, 0));
-  return clamp(normalized * 0.42, GRAVITY_VECTOR_MIN_LENGTH, GRAVITY_VECTOR_MAX_LENGTH);
+  const scaled = normalized * 0.42;
+  const bodyMin = Math.max(GRAVITY_VECTOR_MIN_LENGTH, bodyRenderRadius * 0.28);
+  return clamp(Math.max(scaled, bodyMin), GRAVITY_VECTOR_MIN_LENGTH, GRAVITY_VECTOR_MAX_LENGTH);
 }
 
 function updateGravityVectors() {
@@ -4289,7 +4297,9 @@ function updateGravityVectors() {
     arrow.visible = true;
     direction.divideScalar(magnitude);
     arrow.setDirection(direction);
-    const length = gravityArrowLengthForAccelerationMs2(gravity.magnitudeMS2);
+    const bodyRadius = Math.max(visual.renderRadius || 0, 0);
+    arrow.position.copy(direction).multiplyScalar(bodyRadius * 1.04);
+    const length = gravityArrowLengthForAccelerationMs2(gravity.magnitudeMS2, bodyRadius);
     arrow.setLength(
       length,
       clamp(length * 0.3, 0.008, 0.24),
