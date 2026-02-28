@@ -95,58 +95,23 @@ const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
 
-const TEX_ROOT = "https://cdn.jsdelivr.net/gh/jeromeetienne/threex.planets@master/images/";
-const THREE_TEX_ROOTS = [
-  "https://threejs.org/examples/textures/planets/",
-  "https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/",
-  "https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/",
-];
-const LOCAL_PLANET_TEXTURE_ROOT = "/static/assets/textures/planets/";
-const LOCAL_TEXTURE_ASSET_VERSION = "20260227-local8k-v2";
-const SOLARSYSTEM_SCOPE_TEXTURE_ROOT = "https://www.solarsystemscope.com/textures/download/";
-const MOON_TEXTURE_SLUG_BY_ID = Object.freeze({
-  moon: "moon",
-  phobos: "phobos",
-  deimos: "deimos",
-  io: "io",
-  europa: "europa",
-  ganymede: "ganymede",
-  callisto: "callisto",
-  amalthea: "amalthea",
-  mimas: "mimas",
-  enceladus: "enceladus",
-  tethys: "tethys",
-  dione: "dione",
-  rhea: "rhea",
-  titan: "titan",
-  hyperion: "hyperion",
-  iapetus: "iapetus",
-  phoebe: "phoebe",
-  puck: "puck",
-  miranda: "miranda",
-  ariel: "ariel",
-  umbriel: "umbriel",
-  titania: "titania",
-  oberon: "oberon",
-  naiad: "naiad",
-  thalassa: "thalassa",
-  despina: "despina",
-  galatea: "galatea",
-  larissa: "larissa",
-  proteus: "proteus",
-  triton: "triton",
-  nereid: "nereid",
-});
+const LOCAL_IMAGE_ROOT = "/static/assets/images";
+const LOCAL_PLANET_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/planets/`;
+const LOCAL_MOON_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/moons/`;
+const LOCAL_RING_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/rings/`;
+const LOCAL_META_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/meta/`;
+const LOCAL_TEXTURE_ASSET_VERSION = "20260227-local-pack-v1";
+
+function localTexture(relativePath) {
+  return `${LOCAL_IMAGE_ROOT}/${relativePath}?v=${LOCAL_TEXTURE_ASSET_VERSION}`;
+}
+
 const MOON_TEXTURE_OVERRIDES = Object.freeze({
   moon: {
     map: [
-      `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}8k_moon.jpg`,
-      `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}4k_moon.jpg`,
-      `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}2k_moon.jpg`,
-      ...planetTextureCandidates("moon_1024.jpg"),
-      `${TEX_ROOT}moonmap1k.jpg`,
+      localTexture("moons/moon_8k.jpg"),
     ],
-    bump: [`${TEX_ROOT}moonbump1k.jpg`],
+    bump: [localTexture("moons/moon_bump_1k.jpg")],
     bumpScale: 0.065,
   },
 });
@@ -156,74 +121,64 @@ const EARTH_LOCAL_DAY_MAPS = [
 const VENUS_LOCAL_SURFACE_MAPS = [
   `${LOCAL_PLANET_TEXTURE_ROOT}venus_surface_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
 ];
-const EARTH_8K_NIGHT_MAPS = [
-  "https://www.solarsystemscope.com/textures/download/8k_earth_nightmap.jpg",
-  "https://upload.wikimedia.org/wikipedia/commons/9/92/Solarsystemscope_texture_8k_earth_nightmap.jpg",
-];
-const EARTH_8K_CLOUD_MAPS = [
-  "https://www.solarsystemscope.com/textures/download/8k_earth_clouds.jpg",
-];
-const EARTH_8K_NORMAL_MAPS = [
-  "https://www.solarsystemscope.com/textures/download/8k_earth_normal_map.tif",
-];
-const EARTH_8K_SPECULAR_MAPS = [
-  "https://www.solarsystemscope.com/textures/download/8k_earth_specular_map.tif",
-];
-const SUN_8K_MAPS = [
-  "https://www.solarsystemscope.com/textures/download/8k_sun.jpg",
-  "https://upload.wikimedia.org/wikipedia/commons/c/cb/Solarsystemscope_texture_8k_sun.jpg",
-];
+const EARTH_LOCAL_NIGHT_MAPS = [`${LOCAL_PLANET_TEXTURE_ROOT}earth_night_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`];
+const EARTH_LOCAL_CLOUD_MAPS = [`${LOCAL_PLANET_TEXTURE_ROOT}earth_clouds_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`];
+const EARTH_LOCAL_NORMAL_MAPS = [`${LOCAL_PLANET_TEXTURE_ROOT}earth_normal_2048.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`];
+const EARTH_LOCAL_SPECULAR_MAPS = [`${LOCAL_PLANET_TEXTURE_ROOT}earth_spec_1k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`];
+const SUN_LOCAL_MAPS = [`${LOCAL_PLANET_TEXTURE_ROOT}sun_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`];
 
 const BODY_TEXTURE_CONFIG = {
   sun: {
-    map: [...SUN_8K_MAPS, ...planetTextureCandidates("sun.jpg"), `${TEX_ROOT}sunmap.jpg`],
-    emissive: [...SUN_8K_MAPS, `${TEX_ROOT}sunmap.jpg`],
+    map: [...SUN_LOCAL_MAPS],
+    emissive: [...SUN_LOCAL_MAPS],
     isSun: true,
     atmosphereColor: 0xffad4d,
   },
   mercury: {
-    map: [...planetTextureCandidates("mercury.jpg"), `${TEX_ROOT}mercurymap.jpg`],
-    bump: [`${TEX_ROOT}mercurybump.jpg`],
+    map: [`${LOCAL_PLANET_TEXTURE_ROOT}mercury_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    bump: [`${LOCAL_PLANET_TEXTURE_ROOT}mercury_bump.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
     bumpScale: 0.06,
   },
   venus: {
     map: [...VENUS_LOCAL_SURFACE_MAPS],
-    bump: [`${TEX_ROOT}venusbump.jpg`],
+    bump: [`${LOCAL_PLANET_TEXTURE_ROOT}venus_bump.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
     bumpScale: 0.03,
-    clouds: [`${TEX_ROOT}venusatmosphere.jpg`],
+    clouds: [`${LOCAL_PLANET_TEXTURE_ROOT}venus_atmosphere_4k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
     atmosphereColor: 0xd9ae76,
   },
   earth: {
     map: [...EARTH_LOCAL_DAY_MAPS],
-    bump: [`${TEX_ROOT}earthbump1k.jpg`],
-    specular: [...EARTH_8K_SPECULAR_MAPS, ...planetTextureCandidates("earth_specular_2048.jpg"), `${TEX_ROOT}earthspec1k.jpg`],
-    normal: [...EARTH_8K_NORMAL_MAPS, ...planetTextureCandidates("earth_normal_2048.jpg")],
-    emissive: [...EARTH_8K_NIGHT_MAPS, ...planetTextureCandidates("earth_lights_2048.png")],
-    clouds: [...EARTH_8K_CLOUD_MAPS, `${TEX_ROOT}earthcloudmaptrans.jpg`],
+    bump: [`${LOCAL_PLANET_TEXTURE_ROOT}earth_bump_1k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    specular: [...EARTH_LOCAL_SPECULAR_MAPS],
+    normal: [...EARTH_LOCAL_NORMAL_MAPS],
+    emissive: [
+      ...EARTH_LOCAL_NIGHT_MAPS,
+      `${LOCAL_PLANET_TEXTURE_ROOT}earth_lights_2048.png?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
+    ],
+    clouds: [...EARTH_LOCAL_CLOUD_MAPS],
     bumpScale: 0.035,
     atmosphereColor: 0x4e8ee9,
   },
   mars: {
-    map: [...planetTextureCandidates("mars_1k_color.jpg"), `${TEX_ROOT}marsmap1k.jpg`],
-    bump: [`${TEX_ROOT}marsbump1k.jpg`],
-    normal: [...planetTextureCandidates("mars_1k_normal.jpg")],
+    map: [`${LOCAL_PLANET_TEXTURE_ROOT}mars_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    bump: [`${LOCAL_PLANET_TEXTURE_ROOT}mars_bump_1k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
     bumpScale: 0.055,
   },
   jupiter: {
-    map: [...planetTextureCandidates("jupiter.jpg"), `${TEX_ROOT}jupitermap.jpg`],
-    ringColor: ["https://upload.wikimedia.org/wikipedia/commons/b/bf/JupiterRings.png"],
+    map: [`${LOCAL_PLANET_TEXTURE_ROOT}jupiter_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    ringColor: [`${LOCAL_RING_TEXTURE_ROOT}jupiter_ring_color.png?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
   },
   saturn: {
-    map: [...planetTextureCandidates("saturn.jpg"), `${TEX_ROOT}saturnmap.jpg`],
-    ringColor: [...planetTextureCandidates("saturnringcolor.jpg"), `${TEX_ROOT}saturnringcolor.jpg`],
-    ringAlpha: [...planetTextureCandidates("saturnringpattern.gif"), `${TEX_ROOT}saturnringpattern.gif`],
+    map: [`${LOCAL_PLANET_TEXTURE_ROOT}saturn_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    ringColor: [`${LOCAL_RING_TEXTURE_ROOT}saturn_ring_color.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    ringAlpha: [`${LOCAL_RING_TEXTURE_ROOT}saturn_ring_alpha_8k.png?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
   },
   uranus: {
-    map: [...planetTextureCandidates("uranus.jpg"), `${TEX_ROOT}uranusmap.jpg`],
-    ringColor: [...planetTextureCandidates("uranusringcolour.jpg"), `${TEX_ROOT}uranusringcolour.jpg`],
+    map: [`${LOCAL_PLANET_TEXTURE_ROOT}uranus_2k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
+    ringColor: [`${LOCAL_RING_TEXTURE_ROOT}uranus_ring_color.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
   },
   neptune: {
-    map: [...planetTextureCandidates("neptune.jpg"), `${TEX_ROOT}neptunemap.jpg`],
+    map: [`${LOCAL_PLANET_TEXTURE_ROOT}neptune_2k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`],
   },
 };
 
@@ -493,7 +448,9 @@ function setupScene(THREE) {
 
 function addStarfield(THREE) {
   const sphereGeometry = new THREE.SphereGeometry(14000, 48, 48);
-  const texture = new THREE.TextureLoader().load(`${TEX_ROOT}galaxy_starfield.png`);
+  const texture = new THREE.TextureLoader().load(
+    `${LOCAL_META_TEXTURE_ROOT}galaxy_starfield.png?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
+  );
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.MeshBasicMaterial({
     map: texture,
@@ -904,15 +861,13 @@ function buildUniqueMoonTexturePlan(moonId) {
       ringAlpha: uniqueTextureUrlList(override.ringAlpha),
     };
   }
-
-  const slug = MOON_TEXTURE_SLUG_BY_ID[moonId] || moonId;
-  const map = uniqueTextureUrlList([
-    `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}8k_${slug}.jpg`,
-    `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}4k_${slug}.jpg`,
-    `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}2k_${slug}.jpg`,
-  ]);
   return {
-    map,
+    map: [
+      `${LOCAL_MOON_TEXTURE_ROOT}${moonId}_surface_local.png?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
+    ],
+    bump: [
+      `${LOCAL_MOON_TEXTURE_ROOT}${moonId}_bump_local.png?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
+    ],
     bumpScale: 0.07,
   };
 }
@@ -1028,10 +983,6 @@ function normalizeTextureUrls(urlOrUrls) {
     return [urlOrUrls];
   }
   return urlOrUrls.filter((candidate) => typeof candidate === "string" && candidate.length > 0);
-}
-
-function planetTextureCandidates(filename) {
-  return THREE_TEX_ROOTS.map((root) => `${root}${filename}`);
 }
 
 function buildCloudMesh(bodyId, renderRadius, cloudMap) {
