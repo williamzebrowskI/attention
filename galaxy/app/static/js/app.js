@@ -338,6 +338,7 @@ let illuminationById = new Map();
 let gravityById = new Map();
 let nBodyState = null;
 let nBodyStartupSnapshotLoaded = false;
+let gravityArrowFocusBodyId = null;
 let primeMeridianSpinOffsetRadById = new Map();
 const bodyEclipseMaterialStates = new Set();
 
@@ -662,7 +663,9 @@ function createLegendButton(body, isMoon) {
   button.textContent = body.name;
   button.title = `${body.name} (${body.body_type})`;
   button.addEventListener("click", () => {
+    gravityArrowFocusBodyId = body.id;
     setSelected(body.id, true);
+    updateGravityVectors();
   });
   legendButtonsById.set(body.id, button);
   return button;
@@ -4132,6 +4135,17 @@ function updateGravityVectors() {
   for (const [bodyId, visual] of bodyVisuals.entries()) {
     const arrow = visual.gravityArrow;
     if (!arrow) {
+      continue;
+    }
+
+    const shouldShowThisBodyArrow = Boolean(
+      gravityArrowFocusBodyId &&
+      selectedId &&
+      gravityArrowFocusBodyId === bodyId &&
+      selectedId === bodyId,
+    );
+    if (!shouldShowThisBodyArrow) {
+      arrow.visible = false;
       continue;
     }
 
