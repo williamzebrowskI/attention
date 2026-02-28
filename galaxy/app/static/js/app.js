@@ -70,6 +70,11 @@ const PHOTOREAL_RETRY_DELAY_MS = 3000;
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
+const GRAVITY_VECTORS_ENABLED = true;
+const GRAVITY_VECTOR_COLOR = 0x63ffd8;
+const GRAVITY_VECTOR_MIN_LENGTH = 0.02;
+const GRAVITY_VECTOR_MAX_LENGTH = 1.6;
+const GRAVITY_VECTOR_BASELINE_MS2 = 0.08;
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
@@ -324,6 +329,7 @@ let photorealRetryCount = new Map();
 let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
 let illuminationById = new Map();
+let gravityById = new Map();
 let primeMeridianSpinOffsetRadById = new Map();
 const bodyEclipseMaterialStates = new Set();
 
@@ -947,6 +953,7 @@ async function createBodyVisual(body) {
     atmosphereMesh: null,
     ringMesh: null,
     pickMesh: null,
+    gravityArrow: null,
     locationMarker: null,
     textureMode: textures.textureMode || "remote",
     ringMode: textures.ringMode || "none",
@@ -976,6 +983,14 @@ async function createBodyVisual(body) {
     if (locationMarker) {
       spinGroup.add(locationMarker);
       visual.locationMarker = locationMarker;
+    }
+  }
+
+  if (GRAVITY_VECTORS_ENABLED) {
+    const gravityArrow = createGravityVectorHelper(renderRadius);
+    if (gravityArrow) {
+      root.add(gravityArrow);
+      visual.gravityArrow = gravityArrow;
     }
   }
 
@@ -2390,6 +2405,27 @@ function createEarthLocationMarker(renderRadius, markerConfig) {
   return markerGroup;
 }
 
+function createGravityVectorHelper(renderRadius) {
+  if (!GRAVITY_VECTORS_ENABLED || !THREE_NS) {
+    return null;
+  }
+  const baseLength = Math.max(renderRadius * 1.2, GRAVITY_VECTOR_MIN_LENGTH);
+  const headLength = clamp(baseLength * 0.3, 0.008, 0.24);
+  const headWidth = clamp(baseLength * 0.16, 0.004, 0.12);
+  const arrow = new THREE_NS.ArrowHelper(
+    new THREE_NS.Vector3(1, 0, 0),
+    new THREE_NS.Vector3(0, 0, 0),
+    baseLength,
+    GRAVITY_VECTOR_COLOR,
+    headLength,
+    headWidth,
+  );
+  arrow.visible = false;
+  arrow.renderOrder = 75;
+  arrow.userData.isGravityVector = true;
+  return arrow;
+}
+
 function getCircularGlowTexture() {
   const cacheKey = "earth-location-glow-texture";
   const cached = textureCache.get(cacheKey);
@@ -2425,7 +2461,7 @@ function getCircularGlowTexture() {
 function disposeBodyVisual(visual) {
   scene.remove(visual.root);
   visual.root.traverse((node) => {
-    if (!node.isMesh && !node.isSprite) {
+    if (!node.isMesh && !node.isSprite && !node.isLine) {
       return;
     }
     if (node.geometry) {
@@ -2472,6 +2508,7 @@ function updatePositions(payload) {
   syncOrbitalStateFromSnapshot();
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(Date.now());
   applyScenePositions(runtimeCoordsKmById);
+  updateGravityVectors();
   updateSunlightModel();
   updateOrbitVisualAnchorsAndPhase();
 }
@@ -3745,6 +3782,130 @@ function computeEarthshineScaleForMoon(moonCoordsKm, sunCoordsKm) {
   return EARTHSHINE_LAMBERT_FACTOR * EARTH_BOND_ALBEDO * solarAtEarth * geometricScale * earthPhaseFromMoon;
 }
 
+function computeGravityById() {
+  const activeBodies = [];
+  for (const body of bodies) {
+    const coords = runtimeCoordsOrLiveById(body.id);
+    if (!coords) {
+      continue;
+    }
+    const massKg = bodyMassKgById(body.id);
+    if (!(massKg > 0)) {
+      continue;
+    }
+    const x = Number(coords.x);
+    const y = Number(coords.y);
+    const z = Number(coords.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      continue;
+    }
+    activeBodies.push({
+      id: body.id,
+      massKg,
+      x,
+      y,
+      z,
+    });
+  }
+
+  const nextGravity = new Map();
+  for (const target of activeBodies) {
+    let ax = 0;
+    let ay = 0;
+    let az = 0;
+    let dominantBodyId = null;
+    let dominantContributionKmS2 = 0;
+
+    for (const source of activeBodies) {
+      if (source.id === target.id) {
+        continue;
+      }
+      const dx = source.x - target.x;
+      const dy = source.y - target.y;
+      const dz = source.z - target.z;
+      const radiusSq = (dx * dx) + (dy * dy) + (dz * dz);
+      if (!(radiusSq > 1e-10)) {
+        continue;
+      }
+      const invRadius = 1 / Math.sqrt(radiusSq);
+      const invRadiusCubed = invRadius / radiusSq;
+      const scalar = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * source.massKg * invRadiusCubed;
+      const cax = dx * scalar;
+      const cay = dy * scalar;
+      const caz = dz * scalar;
+      const contributionKmS2 = Math.sqrt((cax * cax) + (cay * cay) + (caz * caz));
+      if (contributionKmS2 > dominantContributionKmS2) {
+        dominantContributionKmS2 = contributionKmS2;
+        dominantBodyId = source.id;
+      }
+      ax += cax;
+      ay += cay;
+      az += caz;
+    }
+
+    const magnitudeKmS2 = Math.sqrt((ax * ax) + (ay * ay) + (az * az));
+    nextGravity.set(target.id, {
+      axKmS2: ax,
+      ayKmS2: ay,
+      azKmS2: az,
+      magnitudeKmS2,
+      magnitudeMS2: magnitudeKmS2 * 1000,
+      dominantBodyId,
+      dominantContributionMS2: dominantContributionKmS2 * 1000,
+    });
+  }
+  return nextGravity;
+}
+
+function gravityArrowLengthForAccelerationMs2(accelerationMS2) {
+  if (!(accelerationMS2 > 0)) {
+    return GRAVITY_VECTOR_MIN_LENGTH;
+  }
+  const normalized = Math.sqrt(Math.max(accelerationMS2 / GRAVITY_VECTOR_BASELINE_MS2, 0));
+  return clamp(normalized * 0.42, GRAVITY_VECTOR_MIN_LENGTH, GRAVITY_VECTOR_MAX_LENGTH);
+}
+
+function updateGravityVectors() {
+  if (!GRAVITY_VECTORS_ENABLED || !THREE_NS) {
+    gravityById = new Map();
+    return;
+  }
+
+  const nextGravity = computeGravityById();
+  gravityById = nextGravity;
+
+  const direction = new THREE_NS.Vector3();
+  for (const [bodyId, visual] of bodyVisuals.entries()) {
+    const arrow = visual.gravityArrow;
+    if (!arrow) {
+      continue;
+    }
+
+    const gravity = nextGravity.get(bodyId);
+    if (!visual.root.visible || !gravity || !(gravity.magnitudeKmS2 > 0)) {
+      arrow.visible = false;
+      continue;
+    }
+
+    direction.set(gravity.axKmS2, gravity.azKmS2, gravity.ayKmS2);
+    const magnitude = direction.length();
+    if (!(magnitude > 1e-14)) {
+      arrow.visible = false;
+      continue;
+    }
+
+    arrow.visible = true;
+    direction.divideScalar(magnitude);
+    arrow.setDirection(direction);
+    const length = gravityArrowLengthForAccelerationMs2(gravity.magnitudeMS2);
+    arrow.setLength(
+      length,
+      clamp(length * 0.3, 0.008, 0.24),
+      clamp(length * 0.16, 0.004, 0.12),
+    );
+  }
+}
+
 function wrapRadiansPi(value) {
   const tau = Math.PI * 2;
   let wrapped = ((value + Math.PI) % tau + tau) % tau;
@@ -4021,6 +4182,7 @@ function animate(timestampMs = 0) {
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
     applyScenePositions(runtimeCoordsKmById);
   }
+  updateGravityVectors();
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
   updateBodyEclipseUniforms();
   updateSunlightModel();
@@ -4152,6 +4314,17 @@ function updateInfoOverlay() {
     hasPhysicalIllumination && meta.id === "moon" && Number.isFinite(illumination.earthshine)
       ? Math.max(0, illumination.earthshine) * 100
       : null;
+  const gravity = gravityById.get(meta.id) || null;
+  const gravityMagnitudeMS2 = Number.isFinite(gravity?.magnitudeMS2) ? gravity.magnitudeMS2 : null;
+  const gravityVectorLine = gravity
+    ? `${formatAcceleration(gravity.axKmS2 * 1000)}, ${formatAcceleration(gravity.ayKmS2 * 1000)}, ${formatAcceleration(gravity.azKmS2 * 1000)}`
+    : "n/a";
+  const dominantGravityBody = gravity?.dominantBodyId
+    ? (metaById.get(gravity.dominantBodyId)?.name || gravity.dominantBodyId)
+    : null;
+  const dominantGravityMS2 = Number.isFinite(gravity?.dominantContributionMS2)
+    ? gravity.dominantContributionMS2
+    : null;
   const configuredOrbitHours = Number(ORBIT_VISUAL_PERIOD_HOURS?.[meta.id]);
   const configuredSolarDayHours = Number(ROTATION_SOLAR_DAY_HOURS?.[meta.id]);
   let rotationModelLine = "";
@@ -4205,6 +4378,9 @@ function updateInfoOverlay() {
     <p class="line">Sunlight Exposure: ${totalSolarPct !== null ? `${formatNumber(totalSolarPct)}% of 1AU baseline` : "n/a"}</p>
     <p class="line">Direct Solar Flux: ${directSolarPct !== null ? `${formatNumber(directSolarPct)}% of 1AU baseline` : "n/a"}</p>
     <p class="line">Sun Occlusion: ${occlusionPct !== null ? `${formatNumber(occlusionPct)}%` : "n/a"}</p>
+    <p class="line">Net Gravity Acceleration: ${gravityMagnitudeMS2 !== null ? `${formatAcceleration(gravityMagnitudeMS2)} m/s²` : "n/a"}</p>
+    <p class="line">Gravity Vector (m/s²): ${gravityVectorLine}</p>
+    <p class="line">Dominant Gravity Source: ${dominantGravityBody ? `${dominantGravityBody}${dominantGravityMS2 !== null ? ` (${formatAcceleration(dominantGravityMS2)} m/s²)` : ""}` : "n/a"}</p>
     ${eclipseLine}
     <p class="line">Earthshine (Moon): ${earthshinePct !== null ? `${formatNumber(earthshinePct)}% of 1AU baseline` : "n/a"}</p>
     <p class="line">Visual Spin Rate: ${formatNumber(visualSpinDegPerSec)} °/s</p>
@@ -4526,6 +4702,24 @@ function formatNumber(value) {
   return numeric.toLocaleString(undefined, {
     maximumFractionDigits: 2,
   });
+}
+
+function formatAcceleration(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  const abs = Math.abs(numeric);
+  if (abs === 0) {
+    return "0";
+  }
+  if (abs >= 1) {
+    return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  if (abs >= 0.001) {
+    return numeric.toLocaleString(undefined, { maximumFractionDigits: 7 });
+  }
+  return numeric.toExponential(3);
 }
 
 function formatMass(value) {
