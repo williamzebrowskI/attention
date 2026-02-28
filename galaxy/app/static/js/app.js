@@ -102,6 +102,7 @@ const THREE_TEX_ROOTS = [
   "https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/",
 ];
 const LOCAL_PLANET_TEXTURE_ROOT = "/static/assets/textures/planets/";
+const LOCAL_TEXTURE_ASSET_VERSION = "20260227-local8k-v2";
 const SOLARSYSTEM_SCOPE_TEXTURE_ROOT = "https://www.solarsystemscope.com/textures/download/";
 const MOON_TEXTURE_SLUG_BY_ID = Object.freeze({
   moon: "moon",
@@ -150,10 +151,10 @@ const MOON_TEXTURE_OVERRIDES = Object.freeze({
   },
 });
 const EARTH_LOCAL_DAY_MAPS = [
-  `${LOCAL_PLANET_TEXTURE_ROOT}earth_day_8k.jpg`,
+  `${LOCAL_PLANET_TEXTURE_ROOT}earth_day_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
 ];
 const VENUS_LOCAL_SURFACE_MAPS = [
-  `${LOCAL_PLANET_TEXTURE_ROOT}venus_surface_8k.jpg`,
+  `${LOCAL_PLANET_TEXTURE_ROOT}venus_surface_8k.jpg?v=${LOCAL_TEXTURE_ASSET_VERSION}`,
 ];
 const EARTH_8K_NIGHT_MAPS = [
   "https://www.solarsystemscope.com/textures/download/8k_earth_nightmap.jpg",
@@ -824,6 +825,7 @@ async function createBodyVisual(body) {
     locationMarker: null,
     textureMode: textures.textureMode || "remote",
     ringMode: textures.ringMode || "none",
+    mapSource: textures?.map?.userData?.sourceUrl || null,
   };
 
   if (textures.clouds) {
@@ -999,6 +1001,10 @@ function loadTextureFromUrl(url, srgb, timeoutMs = TEXTURE_LOAD_TIMEOUT_MS) {
         texture.anisotropy = maxTextureAnisotropy();
         texture.wrapS = THREE_NS.RepeatWrapping;
         texture.wrapT = THREE_NS.ClampToEdgeWrapping;
+        if (!texture.userData) {
+          texture.userData = {};
+        }
+        texture.userData.sourceUrl = url;
         resolve(texture);
       },
       undefined,
@@ -1107,6 +1113,7 @@ async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius
     }
 
     visual.textureMode = "photoreal_hd";
+    visual.mapSource = remote.map?.userData?.sourceUrl || visual.mapSource;
     photorealRetryCount.delete(body.id);
   } catch (error) {
     console.warn(`[solar-system] Could not upgrade ${body.id} to photoreal textures:`, error);
@@ -3597,6 +3604,7 @@ function updateInfoOverlay() {
     <p class="line">Parent Body: ${parent}</p>
     <p class="line">Data Source: ${live.source}${sourceError}</p>
     <p class="line">Surface Rendering: ${surfaceRenderingLabel(visual.textureMode)}</p>
+    <p class="line">Map Texture Source: ${visual.mapSource || "n/a"}</p>
     <p class="line">Distance from Sun: ${distanceFromSunKm !== null ? `${formatNumber(distanceFromSunKm)} km` : "n/a"}</p>
     <p class="line">Semi-Major Axis: ${semimajor ? `${formatNumber(semimajor)} km` : "n/a"}</p>
     <p class="line">Orbital Period: ${orbitalPeriod ? `${formatNumber(orbitalPeriod)} days` : "n/a"}</p>
