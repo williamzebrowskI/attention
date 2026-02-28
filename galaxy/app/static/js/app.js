@@ -337,6 +337,7 @@ let runtimeCoordsKmById = new Map();
 let illuminationById = new Map();
 let gravityById = new Map();
 let nBodyState = null;
+let nBodyStartupSnapshotLoaded = false;
 let primeMeridianSpinOffsetRadById = new Map();
 const bodyEclipseMaterialStates = new Set();
 
@@ -650,6 +651,7 @@ function rebuildBodyLegend() {
 
   bodyLegendList.appendChild(fragment);
   updateLegendSelection();
+  updateLegendFallbackIndicators();
 }
 
 function createLegendButton(body, isMoon) {
@@ -680,6 +682,20 @@ function sortBySemimajorAxisThenName(a, b) {
 function updateLegendSelection() {
   for (const [bodyId, button] of legendButtonsById.entries()) {
     button.classList.toggle("selected", bodyId === selectedId);
+  }
+}
+
+function isBodyNBodyFallback(bodyId) {
+  if (!N_BODY_ALL_BODIES_MODE || !nBodyStartupSnapshotLoaded) {
+    return false;
+  }
+  return !isNBodyDrivenBodyId(bodyId);
+}
+
+function updateLegendFallbackIndicators() {
+  for (const [bodyId, button] of legendButtonsById.entries()) {
+    const fallback = isBodyNBodyFallback(bodyId);
+    button.classList.toggle("fallback", fallback);
   }
 }
 
@@ -2514,7 +2530,9 @@ function updatePositions(payload) {
   const entries = payload.bodies || [];
   positionsById = new Map(entries.map((body) => [body.id, body]));
   latestSolarTimestampMs = parseTimestampMs(payload.timestamp_utc);
+  nBodyStartupSnapshotLoaded = true;
   initializeNBodyFromSnapshot(Date.now());
+  updateLegendFallbackIndicators();
   syncOrbitalStateFromSnapshot();
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(Date.now());
   applyScenePositions(runtimeCoordsKmById);

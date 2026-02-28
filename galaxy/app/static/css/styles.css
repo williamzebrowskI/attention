@@ -131,7 +131,7 @@ body {
   width: 100%;
   display: block;
   margin: 0 0 4px;
-  padding: 6px 8px;
+  padding: 6px 24px 6px 8px;
   border-radius: 8px;
   border: 1px solid rgba(86, 186, 255, 0.2);
   background: rgba(7, 15, 26, 0.65);
@@ -142,6 +142,7 @@ body {
   text-align: left;
   cursor: pointer;
   transition: border-color 110ms linear, background 110ms linear, color 110ms linear;
+  position: relative;
 }
 
 .legend-button:hover {
@@ -160,6 +161,19 @@ body {
   width: calc(100% - 12px);
   border-color: rgba(119, 154, 198, 0.28);
   color: #c8d9f0;
+}
+
+.legend-button.fallback::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: #ff4b4b;
+  box-shadow: 0 0 8px rgba(255, 75, 75, 0.86);
 }
 
 @media (max-width: 880px) {
