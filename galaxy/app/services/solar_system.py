@@ -149,6 +149,7 @@ class SolarSystemService:
         if not moon_targets:
             return
 
+        uncached_failed_moons: list[BodyDefinition] = []
         moon_vectors = await asyncio.gather(
             *(
                 self._horizons.fetch_vector(
@@ -162,17 +163,6 @@ class SolarSystemService:
         )
 
         for moon, vector in zip(moon_targets, moon_vectors, strict=False):
-            parent_id = moon.parent or "sun"
-            parent_body = BODY_BY_ID.get(parent_id)
-            parent_position = body_positions.get(parent_id)
-            parent_velocity = body_velocities.get(parent_id)
-            if parent_position is None and parent_body:
-                parent_position = self._approximate_position(parent_body, at_utc, body_positions)
-                body_positions[parent_id] = parent_position
-                body_velocities.setdefault(parent_id, (0.0, 0.0, 0.0))
-                source_by_id.setdefault(parent_id, "APPROXIMATE")
-                parent_velocity = body_velocities.get(parent_id)
-
             if isinstance(vector, Exception):
                 cached = self._last_horizons_positions.get(moon.id)
                 if cached is not None:
@@ -182,31 +172,48 @@ class SolarSystemService:
                     errors_by_id.pop(moon.id, None)
                 else:
                     errors_by_id[moon.id] = self._format_source_error(vector)
+                    uncached_failed_moons.append(moon)
                 continue
 
-            if parent_position is None:
-                errors_by_id[moon.id] = f"Parent position unavailable for {parent_id}"
-                continue
+            self._apply_moon_vector(
+                moon=moon,
+                at_utc=at_utc,
+                vector=vector,
+                body_positions=body_positions,
+                body_velocities=body_velocities,
+                source_by_id=source_by_id,
+                errors_by_id=errors_by_id,
+            )
 
-            rel_x, rel_y, rel_z = vector.position_km
-            absolute = (
-                parent_position[0] + rel_x,
-                parent_position[1] + rel_y,
-                parent_position[2] + rel_z,
-            )
-            parent_velocity = parent_velocity or (0.0, 0.0, 0.0)
-            rel_vx, rel_vy, rel_vz = vector.velocity_km_s
-            absolute_velocity = (
-                parent_velocity[0] + rel_vx,
-                parent_velocity[1] + rel_vy,
-                parent_velocity[2] + rel_vz,
-            )
-            body_positions[moon.id] = absolute
-            body_velocities[moon.id] = absolute_velocity
-            self._last_horizons_positions[moon.id] = absolute
-            self._last_horizons_velocities[moon.id] = absolute_velocity
-            source_by_id[moon.id] = "HORIZONS"
-            errors_by_id.pop(moon.id, None)
+        # Give uncached moon failures extra attempts before falling back to
+        # approximation so first-load moon placement is as live-accurate as possible.
+        for moon in uncached_failed_moons:
+            success = False
+            last_exc: Exception | None = None
+            for _ in range(2):
+                try:
+                    vector = await self._horizons.fetch_vector(
+                        command=moon.command or "",
+                        at=at_utc,
+                        center=self._moon_center_code(moon),
+                    )
+                except Exception as exc:  # noqa: BLE001 - preserve stream resilience
+                    last_exc = exc
+                    await asyncio.sleep(0.2)
+                    continue
+                success = self._apply_moon_vector(
+                    moon=moon,
+                    at_utc=at_utc,
+                    vector=vector,
+                    body_positions=body_positions,
+                    body_velocities=body_velocities,
+                    source_by_id=source_by_id,
+                    errors_by_id=errors_by_id,
+                )
+                if success:
+                    break
+            if not success and last_exc is not None:
+                errors_by_id[moon.id] = self._format_source_error(last_exc)
 
     @staticmethod
     def _filter_bodies(include_moons: bool) -> list[BodyDefinition]:
@@ -220,6 +227,49 @@ class SolarSystemService:
         if parent and parent.command:
             return f"500@{parent.command}"
         return SUN_CENTER_CODE
+
+    def _apply_moon_vector(
+        self,
+        moon: BodyDefinition,
+        at_utc: datetime,
+        vector: HorizonsVector,
+        body_positions: dict[str, tuple[float, float, float]],
+        body_velocities: dict[str, tuple[float, float, float]],
+        source_by_id: dict[str, str],
+        errors_by_id: dict[str, str],
+    ) -> bool:
+        parent_id = moon.parent or "sun"
+        parent_position = body_positions.get(parent_id)
+        if parent_position is None:
+            parent_body = BODY_BY_ID.get(parent_id)
+            if parent_body is None:
+                errors_by_id[moon.id] = f"Parent position unavailable for {parent_id}"
+                return False
+            parent_position = self._approximate_position(parent_body, at_utc, body_positions)
+            body_positions[parent_id] = parent_position
+            body_velocities.setdefault(parent_id, (0.0, 0.0, 0.0))
+            source_by_id.setdefault(parent_id, "APPROXIMATE")
+
+        parent_velocity = body_velocities.get(parent_id) or (0.0, 0.0, 0.0)
+        rel_x, rel_y, rel_z = vector.position_km
+        rel_vx, rel_vy, rel_vz = vector.velocity_km_s
+        absolute = (
+            parent_position[0] + rel_x,
+            parent_position[1] + rel_y,
+            parent_position[2] + rel_z,
+        )
+        absolute_velocity = (
+            parent_velocity[0] + rel_vx,
+            parent_velocity[1] + rel_vy,
+            parent_velocity[2] + rel_vz,
+        )
+        body_positions[moon.id] = absolute
+        body_velocities[moon.id] = absolute_velocity
+        self._last_horizons_positions[moon.id] = absolute
+        self._last_horizons_velocities[moon.id] = absolute_velocity
+        source_by_id[moon.id] = "HORIZONS"
+        errors_by_id.pop(moon.id, None)
+        return True
 
     def _approximate_position(
         self,
