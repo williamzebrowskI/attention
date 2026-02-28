@@ -656,6 +656,7 @@ function rebuildBodyLegend() {
   bodyLegendList.appendChild(fragment);
   updateLegendSelection();
   updateLegendFallbackIndicators();
+  updateLegendGravityArrowIndicators();
 }
 
 function createLegendButton(body, isMoon) {
@@ -666,9 +667,16 @@ function createLegendButton(body, isMoon) {
   button.textContent = body.name;
   button.title = `${body.name} (${body.body_type})`;
   button.addEventListener("click", () => {
-    gravityArrowsLegendActivated = true;
-    gravityArrowFocusBodyId = body.id;
+    const shouldHideArrows = gravityArrowsLegendActivated && gravityArrowFocusBodyId === body.id;
+    if (shouldHideArrows) {
+      gravityArrowsLegendActivated = false;
+      gravityArrowFocusBodyId = null;
+    } else {
+      gravityArrowsLegendActivated = true;
+      gravityArrowFocusBodyId = body.id;
+    }
     setSelected(body.id, true);
+    updateLegendGravityArrowIndicators();
     updateGravityVectors();
   });
   legendButtonsById.set(body.id, button);
@@ -703,6 +711,16 @@ function updateLegendFallbackIndicators() {
   for (const [bodyId, button] of legendButtonsById.entries()) {
     const fallback = isBodyNBodyFallback(bodyId);
     button.classList.toggle("fallback", fallback);
+  }
+}
+
+function updateLegendGravityArrowIndicators() {
+  for (const [bodyId, button] of legendButtonsById.entries()) {
+    const isArrowEnabled = Boolean(
+      gravityArrowsLegendActivated &&
+      gravityArrowFocusBodyId === bodyId,
+    );
+    button.classList.toggle("gravity-arrow-enabled", isArrowEnabled);
   }
 }
 
@@ -2544,6 +2562,7 @@ function updatePositions(payload) {
   nBodyStartupSnapshotLoaded = true;
   initializeNBodyFromSnapshot(Date.now());
   updateLegendFallbackIndicators();
+  updateLegendGravityArrowIndicators();
   syncOrbitalStateFromSnapshot();
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(Date.now());
   applyScenePositions(runtimeCoordsKmById);
@@ -4140,19 +4159,19 @@ function updateGravityVectors() {
   gravityById = nextGravity;
 
   const direction = new THREE_NS.Vector3();
+  const activeArrowBodyId =
+    gravityArrowsLegendActivated &&
+    selectedId &&
+    gravityArrowFocusBodyId === selectedId
+      ? selectedId
+      : null;
   for (const [bodyId, visual] of bodyVisuals.entries()) {
     const arrow = visual.gravityArrow;
     if (!arrow) {
       continue;
     }
 
-    const shouldShowThisBodyArrow = Boolean(
-      gravityArrowsLegendActivated &&
-      gravityArrowFocusBodyId &&
-      selectedId &&
-      gravityArrowFocusBodyId === bodyId &&
-      selectedId === bodyId,
-    );
+    const shouldShowThisBodyArrow = Boolean(activeArrowBodyId && bodyId === activeArrowBodyId);
     if (!shouldShowThisBodyArrow) {
       arrow.visible = false;
       continue;

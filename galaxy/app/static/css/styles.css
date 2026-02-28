@@ -156,6 +156,11 @@ body {
   color: #dfffea;
 }
 
+.legend-button.gravity-arrow-enabled {
+  border-color: rgba(246, 190, 88, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(246, 190, 88, 0.35);
+}
+
 .legend-button.moon {
   margin-left: 12px;
   width: calc(100% - 12px);
