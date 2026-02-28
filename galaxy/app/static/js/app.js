@@ -80,6 +80,34 @@ const GRAVITY_VECTOR_COLOR = 0x63ffd8;
 const GRAVITY_VECTOR_MIN_LENGTH = 0.02;
 const GRAVITY_VECTOR_MAX_LENGTH = 1.6;
 const GRAVITY_VECTOR_BASELINE_MS2 = 0.08;
+const OBLATE_GRAVITY_ENABLED = true;
+const OBLATE_GRAVITY_MODEL = Object.freeze({
+  earth: Object.freeze({
+    j2: 1.08262668e-3,
+    j4: -1.61962159137e-6,
+    equatorialRadiusKm: 6378.137,
+  }),
+  jupiter: Object.freeze({
+    j2: 1.469643e-2,
+    j4: -5.87e-4,
+    equatorialRadiusKm: 71492,
+  }),
+  saturn: Object.freeze({
+    j2: 1.6298e-2,
+    j4: -9.358e-4,
+    equatorialRadiusKm: 60268,
+  }),
+  uranus: Object.freeze({
+    j2: 3.34343e-3,
+    j4: -2.9e-5,
+    equatorialRadiusKm: 25559,
+  }),
+  neptune: Object.freeze({
+    j2: 3.411e-3,
+    j4: -3.3e-5,
+    equatorialRadiusKm: 24764,
+  }),
+});
 const HORIZONS_STARTUP_FETCH_ONLY = true;
 const N_BODY_ALL_BODIES_MODE = true;
 const N_BODY_STATIC_SOURCE_IDS = new Set();
@@ -2897,7 +2925,148 @@ function nBodyCoordinatesKmById(bodyId) {
   return null;
 }
 
-function computeNBodyAccelerationForTarget(state, targetId) {
+function oblateModelForBody(bodyId) {
+  if (!OBLATE_GRAVITY_ENABLED) {
+    return null;
+  }
+  const model = OBLATE_GRAVITY_MODEL?.[bodyId];
+  if (!model) {
+    return null;
+  }
+  const j2 = Number(model.j2);
+  const j4 = Number(model.j4);
+  if (!(Number.isFinite(j2) || Number.isFinite(j4))) {
+    return null;
+  }
+  const fallbackRadius = Number(metaById.get(bodyId)?.radius_km);
+  const equatorialRadiusKm = Number(model.equatorialRadiusKm);
+  const referenceRadiusKm =
+    Number.isFinite(equatorialRadiusKm) && equatorialRadiusKm > 0
+      ? equatorialRadiusKm
+      : (Number.isFinite(fallbackRadius) && fallbackRadius > 0 ? fallbackRadius : null);
+  if (!(referenceRadiusKm > 0)) {
+    return null;
+  }
+  return {
+    j2: Number.isFinite(j2) ? j2 : 0,
+    j4: Number.isFinite(j4) ? j4 : 0,
+    referenceRadiusKm,
+  };
+}
+
+function sourcePoleUnitVectorEclipticForBody(bodyId, timestampMs = Date.now()) {
+  const pole = currentPoleEquatorialDegForBody(bodyId, timestampMs);
+  if (!pole) {
+    return null;
+  }
+  return equatorialPoleToEclipticVector(
+    Number(pole.raDeg),
+    Number(pole.decDeg),
+    ECLIPTIC_OBLIQUITY_DEG,
+  );
+}
+
+function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now()) {
+  const contextById = new Map();
+  if (!OBLATE_GRAVITY_ENABLED) {
+    return contextById;
+  }
+  for (const sourceId of sourceIds || []) {
+    if (!sourceId || contextById.has(sourceId)) {
+      continue;
+    }
+    const model = oblateModelForBody(sourceId);
+    if (!model) {
+      continue;
+    }
+    const pole = sourcePoleUnitVectorEclipticForBody(sourceId, timestampMs);
+    if (!pole) {
+      continue;
+    }
+    contextById.set(sourceId, {
+      j2: model.j2,
+      j4: model.j4,
+      referenceRadiusKm: model.referenceRadiusKm,
+      pole,
+    });
+  }
+  return contextById;
+}
+
+function buildOblateSourceContextMapForNBody(state, timestampMs = Date.now()) {
+  const sourceIds = [];
+  for (const sourceId of state?.dynamicBodies?.keys?.() || []) {
+    sourceIds.push(sourceId);
+  }
+  for (const sourceId of state?.staticSources?.keys?.() || []) {
+    sourceIds.push(sourceId);
+  }
+  return buildOblateSourceContextMapFromIds(sourceIds, timestampMs);
+}
+
+function computeGravityAccelerationFromSource(
+  targetPos,
+  sourceId,
+  sourceMassKg,
+  sourcePos,
+  oblateSourceContextById = null,
+) {
+  if (!(sourceMassKg > 0) || !targetPos || !sourcePos) {
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  const rx = targetPos.x - sourcePos.x;
+  const ry = targetPos.y - sourcePos.y;
+  const rz = targetPos.z - sourcePos.z;
+  const radiusSq = (rx * rx) + (ry * ry) + (rz * rz);
+  if (!(radiusSq > 1e-10)) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const radius = Math.sqrt(radiusSq);
+  const invRadius = 1 / radius;
+  const invRadiusCubed = invRadius / radiusSq;
+  const muOverR3 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * sourceMassKg * invRadiusCubed;
+
+  let ax = -muOverR3 * rx;
+  let ay = -muOverR3 * ry;
+  let az = -muOverR3 * rz;
+
+  const oblate = oblateSourceContextById?.get(sourceId);
+  if (!oblate) {
+    return { x: ax, y: ay, z: az };
+  }
+  const pole = oblate.pole;
+  const poleDotRel = (pole.x * rx) + (pole.y * ry) + (pole.z * rz);
+  const u = poleDotRel * invRadius;
+  const u2 = u * u;
+  const refOverR = oblate.referenceRadiusKm * invRadius;
+  const refOverR2 = refOverR * refOverR;
+
+  if (oblate.j2) {
+    const coeff2 = muOverR3 * oblate.j2 * refOverR2;
+    const termR2 = 1.5 * ((5 * u2) - 1);
+    const termK2 = 3 * u * radius;
+    ax += coeff2 * ((termR2 * rx) - (termK2 * pole.x));
+    ay += coeff2 * ((termR2 * ry) - (termK2 * pole.y));
+    az += coeff2 * ((termR2 * rz) - (termK2 * pole.z));
+  }
+
+  if (oblate.j4) {
+    const u3 = u2 * u;
+    const u4 = u2 * u2;
+    const refOverR4 = refOverR2 * refOverR2;
+    const coeff4 = muOverR3 * oblate.j4 * refOverR4;
+    const termR4 = (15 / 8) * ((21 * u4) - (14 * u2) + 1);
+    const termK4 = 0.5 * ((35 * u3) - (15 * u)) * radius;
+    ax += coeff4 * ((termR4 * rx) - (termK4 * pole.x));
+    ay += coeff4 * ((termR4 * ry) - (termK4 * pole.y));
+    az += coeff4 * ((termR4 * rz) - (termK4 * pole.z));
+  }
+
+  return { x: ax, y: ay, z: az };
+}
+
+function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById = null) {
   const target = state?.dynamicBodies?.get(targetId);
   if (!target?.position) {
     return { x: 0, y: 0, z: 0 };
@@ -2908,42 +3077,40 @@ function computeNBodyAccelerationForTarget(state, targetId) {
   let az = 0;
   const targetPos = target.position;
 
-  const addSourceAcceleration = (sourceMassKg, sourcePos) => {
-    if (!(sourceMassKg > 0) || !sourcePos) {
-      return;
-    }
-    const dx = sourcePos.x - targetPos.x;
-    const dy = sourcePos.y - targetPos.y;
-    const dz = sourcePos.z - targetPos.z;
-    const radiusSq = (dx * dx) + (dy * dy) + (dz * dz);
-    if (!(radiusSq > 1e-10)) {
-      return;
-    }
-    const invRadius = 1 / Math.sqrt(radiusSq);
-    const invRadiusCubed = invRadius / radiusSq;
-    const scalar = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * sourceMassKg * invRadiusCubed;
-    ax += dx * scalar;
-    ay += dy * scalar;
-    az += dz * scalar;
+  const addSourceAcceleration = (sourceId, sourceMassKg, sourcePos) => {
+    const contribution = computeGravityAccelerationFromSource(
+      targetPos,
+      sourceId,
+      sourceMassKg,
+      sourcePos,
+      oblateSourceContextById,
+    );
+    ax += contribution.x;
+    ay += contribution.y;
+    az += contribution.z;
   };
 
   for (const [sourceId, source] of state.dynamicBodies.entries()) {
     if (sourceId === targetId) {
       continue;
     }
-    addSourceAcceleration(source.massKg, source.position);
+    addSourceAcceleration(sourceId, source.massKg, source.position);
   }
-  for (const source of state.staticSources.values()) {
-    addSourceAcceleration(source.massKg, source.position);
+  for (const [sourceId, source] of state.staticSources.entries()) {
+    addSourceAcceleration(sourceId, source.massKg, source.position);
   }
 
   return { x: ax, y: ay, z: az };
 }
 
 function integrateNBodyStep(state, dtSeconds) {
+  const oblateSourceContextById = buildOblateSourceContextMapForNBody(state, Date.now());
   const accelerationStartById = new Map();
   for (const bodyId of state.dynamicBodies.keys()) {
-    accelerationStartById.set(bodyId, computeNBodyAccelerationForTarget(state, bodyId));
+    accelerationStartById.set(
+      bodyId,
+      computeNBodyAccelerationForTarget(state, bodyId, oblateSourceContextById),
+    );
   }
 
   for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
@@ -2958,7 +3125,7 @@ function integrateNBodyStep(state, dtSeconds) {
   }
 
   for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-    const accel = computeNBodyAccelerationForTarget(state, bodyId);
+    const accel = computeNBodyAccelerationForTarget(state, bodyId, oblateSourceContextById);
     bodyState.velocity.x += 0.5 * accel.x * dtSeconds;
     bodyState.velocity.y += 0.5 * accel.y * dtSeconds;
     bodyState.velocity.z += 0.5 * accel.z * dtSeconds;
@@ -4317,6 +4484,10 @@ function computeGravityById() {
       });
     }
   }
+  const oblateSourceContextById = buildOblateSourceContextMapFromIds(
+    sourceBodies.map((source) => source.id),
+    Date.now(),
+  );
 
   const nextGravity = new Map();
   for (const target of targetBodies) {
@@ -4330,19 +4501,16 @@ function computeGravityById() {
       if (source.id === target.id) {
         continue;
       }
-      const dx = source.x - target.x;
-      const dy = source.y - target.y;
-      const dz = source.z - target.z;
-      const radiusSq = (dx * dx) + (dy * dy) + (dz * dz);
-      if (!(radiusSq > 1e-10)) {
-        continue;
-      }
-      const invRadius = 1 / Math.sqrt(radiusSq);
-      const invRadiusCubed = invRadius / radiusSq;
-      const scalar = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * source.massKg * invRadiusCubed;
-      const cax = dx * scalar;
-      const cay = dy * scalar;
-      const caz = dz * scalar;
+      const contribution = computeGravityAccelerationFromSource(
+        target,
+        source.id,
+        source.massKg,
+        source,
+        oblateSourceContextById,
+      );
+      const cax = contribution.x;
+      const cay = contribution.y;
+      const caz = contribution.z;
       const contributionKmS2 = Math.sqrt((cax * cax) + (cay * cay) + (caz * caz));
       if (contributionKmS2 > dominantContributionKmS2) {
         dominantContributionKmS2 = contributionKmS2;
@@ -4854,7 +5022,7 @@ function updateInfoOverlay() {
     ? gravity.dominantContributionMS2
     : null;
   const orbitDynamicsLine = isNBodyDrivenBodyId(meta.id)
-    ? "N-body gravity (startup-seeded from Horizons)"
+    ? `N-body gravity (startup-seeded from Horizons${OBLATE_GRAVITY_ENABLED ? ", J2/J4 zonal terms" : ""})`
     : "Ephemeris / existing propagation";
   const configuredOrbitHours = Number(ORBIT_VISUAL_PERIOD_HOURS?.[meta.id]);
   const configuredSolarDayHours = Number(ROTATION_SOLAR_DAY_HOURS?.[meta.id]);
