@@ -76,8 +76,49 @@ body {
   letter-spacing: 0.02em;
 }
 
+.observation-panel {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(86, 186, 255, 0.25);
+}
+
+.observation-label {
+  display: block;
+  margin: 0 0 4px;
+  color: #a9c9e8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.observation-select {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(86, 186, 255, 0.25);
+  background: rgba(7, 15, 26, 0.82);
+  color: #e4f1ff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.surface-observer-row.hidden {
+  display: none;
+}
+
+.observation-status {
+  margin: 2px 0 0;
+  min-height: 16px;
+  color: #9fc6e8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 .body-legend-list {
-  max-height: calc(100vh - 92px);
+  max-height: calc(100vh - 220px);
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -130,6 +171,6 @@ body {
   }
 
   .body-legend-list {
-    max-height: calc(46vh - 36px);
+    max-height: calc(46vh - 150px);
   }
 }

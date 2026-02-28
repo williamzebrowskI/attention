@@ -25,6 +25,10 @@ import {
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
 const bodyLegendList = document.getElementById("body-legend-list");
+const observationModeSelect = document.getElementById("observation-mode");
+const surfaceObserverRow = document.getElementById("surface-observer-row");
+const surfaceObserverTargetSelect = document.getElementById("surface-observer-target");
+const observationStatusNode = document.getElementById("observation-status");
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
@@ -83,6 +87,45 @@ const EARTH_LOCATION_MARKER = {
 const EARTH_LOCATION_MARKER_HEIGHT_RATIO = 1.015;
 const EARTH_LOCATION_MARKER_DOT_RADIUS_RATIO = 0.012;
 const EARTH_LOCATION_MARKER_GLOW_SIZE_RATIO = 0.09;
+const OBSERVATION_MODES = Object.freeze({
+  BODY_LOCK: "body_lock",
+  FREE: "free",
+  SURFACE: "surface",
+});
+const SURFACE_OBSERVER_PRESETS = Object.freeze({
+  philadelphia: {
+    id: "philadelphia",
+    label: "Philadelphia, Earth",
+    kind: "surface",
+    bodyId: "earth",
+    latitudeDeg: 39.9526,
+    longitudeDeg: -75.1652,
+    altitudeKm: 1.4,
+  },
+  iss: {
+    id: "iss",
+    label: "ISS",
+    kind: "orbital",
+    bodyId: "earth",
+    altitudeKm: 420,
+    inclinationDeg: 51.64,
+    periodMinutes: 92.68,
+    raanDeg: 23,
+    phaseDeg: 91,
+    epochIso: "2026-01-01T00:00:00Z",
+  },
+  moon_surface: {
+    id: "moon_surface",
+    label: "Moon Surface",
+    kind: "surface",
+    bodyId: "moon",
+    latitudeDeg: 2.5,
+    longitudeDeg: 23,
+    altitudeKm: 1.2,
+  },
+});
+const SURFACE_OBSERVER_PITCH_MIN = rad(-83);
+const SURFACE_OBSERVER_PITCH_MAX = rad(83);
 const SUN_LIGHT_INTENSITY_TRUE_SCALE = 320_000;
 const SUN_LIGHT_INTENSITY_DEFAULT_SCALE = 0.62;
 const SUN_LIGHT_SHADOW_FAR_TRUE_SCALE = 12_000;
@@ -305,6 +348,13 @@ const orbit = {
   rotateSpeed: 0.0052,
   wheelSpeed: 0.0042,
 };
+const observation = {
+  mode: OBSERVATION_MODES.BODY_LOCK,
+  surfacePresetId: "philadelphia",
+  surfaceYaw: 0,
+  surfacePitch: rad(2),
+  surfaceAltitudeScale: 1,
+};
 
 window.addEventListener("resize", onResize);
 
@@ -320,6 +370,7 @@ async function init() {
   THREE_NS = await loadThreeModule();
   setupScene(THREE_NS);
   await loadBodyCatalog();
+  setupObservationControls();
   await loadSnapshot();
   connectWebSocket();
   animate();
@@ -610,6 +661,118 @@ function updateLegendSelection() {
   for (const [bodyId, button] of legendButtonsById.entries()) {
     button.classList.toggle("selected", bodyId === selectedId);
   }
+}
+
+function setupObservationControls() {
+  if (observationModeSelect) {
+    observationModeSelect.value = observation.mode;
+    observationModeSelect.addEventListener("change", () => {
+      setObservationMode(observationModeSelect.value);
+    });
+  }
+  if (surfaceObserverTargetSelect) {
+    surfaceObserverTargetSelect.value = observation.surfacePresetId;
+    surfaceObserverTargetSelect.addEventListener("change", () => {
+      setSurfaceObserverPreset(surfaceObserverTargetSelect.value);
+    });
+  }
+  updateObservationControlVisibility();
+  updateObservationStatus();
+}
+
+function setObservationMode(mode) {
+  const nextMode = Object.values(OBSERVATION_MODES).includes(mode)
+    ? mode
+    : OBSERVATION_MODES.BODY_LOCK;
+  if (observation.mode === nextMode) {
+    return;
+  }
+  const previousMode = observation.mode;
+  observation.mode = nextMode;
+  updateObservationControlVisibility();
+
+  if (previousMode === OBSERVATION_MODES.SURFACE && nextMode !== OBSERVATION_MODES.SURFACE) {
+    syncOrbitFromCurrentCamera();
+  }
+  if (nextMode === OBSERVATION_MODES.SURFACE) {
+    const preset = SURFACE_OBSERVER_PRESETS[observation.surfacePresetId];
+    if (preset?.bodyId && metaById.has(preset.bodyId)) {
+      setSelected(preset.bodyId, false);
+    }
+  }
+  if (nextMode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
+    const visual = bodyVisuals.get(selectedId);
+    if (visual) {
+      orbit.target.copy(visual.root.position);
+      orbit.minDistance = minOrbitDistanceForVisual(visual);
+    }
+  }
+  updateObservationStatus();
+}
+
+function setSurfaceObserverPreset(presetId) {
+  const preset = SURFACE_OBSERVER_PRESETS[presetId];
+  if (!preset) {
+    return;
+  }
+  observation.surfacePresetId = preset.id;
+  observation.surfaceAltitudeScale = 1;
+  observation.surfaceYaw = 0;
+  observation.surfacePitch = rad(2);
+  if (observation.mode === OBSERVATION_MODES.SURFACE && metaById.has(preset.bodyId)) {
+    setSelected(preset.bodyId, false);
+  }
+  updateObservationStatus();
+}
+
+function updateObservationControlVisibility() {
+  if (surfaceObserverRow) {
+    surfaceObserverRow.classList.toggle("hidden", observation.mode !== OBSERVATION_MODES.SURFACE);
+  }
+  if (observationModeSelect && observationModeSelect.value !== observation.mode) {
+    observationModeSelect.value = observation.mode;
+  }
+  if (surfaceObserverTargetSelect && surfaceObserverTargetSelect.value !== observation.surfacePresetId) {
+    surfaceObserverTargetSelect.value = observation.surfacePresetId;
+  }
+}
+
+function updateObservationStatus(anchor = null) {
+  if (!observationStatusNode) {
+    return;
+  }
+  if (observation.mode === OBSERVATION_MODES.FREE) {
+    observationStatusNode.textContent = "Free camera. Drag rotates around current target.";
+    return;
+  }
+  if (observation.mode === OBSERVATION_MODES.BODY_LOCK) {
+    const bodyName = selectedId && metaById.has(selectedId) ? metaById.get(selectedId).name : "Sun";
+    observationStatusNode.textContent = `Body lock: ${bodyName}`;
+    return;
+  }
+  const preset = SURFACE_OBSERVER_PRESETS[observation.surfacePresetId];
+  if (!preset) {
+    observationStatusNode.textContent = "Surface observer: n/a";
+    return;
+  }
+  const altitude = Number(anchor?.altitudeKm) || ((preset.altitudeKm || 1) * observation.surfaceAltitudeScale);
+  const source = anchor?.label || preset.label;
+  observationStatusNode.textContent = `Observer: ${source} (${formatNumber(altitude)} km alt)`;
+}
+
+function syncOrbitFromCurrentCamera() {
+  if (!camera || !orbit.target) {
+    return;
+  }
+  const offset = camera.position.clone().sub(orbit.target);
+  const radius = offset.length();
+  if (!(radius > 1e-12)) {
+    return;
+  }
+  orbit.radius = clamp(radius, orbit.minDistance, orbit.maxDistance);
+  const radialXZ = Math.hypot(offset.x, offset.z);
+  orbit.polar = clamp(Math.atan2(radialXZ, offset.y), orbit.minPolar, orbit.maxPolar);
+  orbit.azimuth = normalizeAngle(Math.atan2(offset.x, offset.z));
 }
 
 function isSunOrbitPlanet(body) {
@@ -2520,7 +2683,7 @@ function applyScenePositions(runtimeCoordsKm) {
     sunLight.position.copy(sun.root.position);
   }
 
-  if (selectedId) {
+  if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
     const selected = bodyVisuals.get(selectedId);
     if (selected) {
       orbit.target.copy(selected.root.position);
@@ -2593,8 +2756,18 @@ function onPointerMove(event) {
     return;
   }
 
-  orbit.azimuth = normalizeAngle(orbit.azimuth - dx * orbit.rotateSpeed);
-  orbit.polar = clamp(orbit.polar - dy * orbit.rotateSpeed, orbit.minPolar, orbit.maxPolar);
+  if (observation.mode === OBSERVATION_MODES.SURFACE) {
+    observation.surfaceYaw = normalizeAngle(observation.surfaceYaw - dx * orbit.rotateSpeed);
+    observation.surfacePitch = clamp(
+      observation.surfacePitch + (dy * orbit.rotateSpeed),
+      SURFACE_OBSERVER_PITCH_MIN,
+      SURFACE_OBSERVER_PITCH_MAX,
+    );
+    updateObservationStatus();
+  } else {
+    orbit.azimuth = normalizeAngle(orbit.azimuth - dx * orbit.rotateSpeed);
+    orbit.polar = clamp(orbit.polar - dy * orbit.rotateSpeed, orbit.minPolar, orbit.maxPolar);
+  }
   updateCameraFromOrbit();
 }
 
@@ -2712,15 +2885,23 @@ function findBodyIdFromHit(object) {
 
 function onWheel(event) {
   event.preventDefault();
+  if (observation.mode === OBSERVATION_MODES.SURFACE) {
+    const nextScale = observation.surfaceAltitudeScale * Math.exp(event.deltaY * 0.00135);
+    observation.surfaceAltitudeScale = clamp(nextScale, 0.12, 120);
+    updateObservationStatus();
+    updateCameraFromOrbit();
+    return;
+  }
   const zoomFactor = clamp(1 + Math.log10(orbit.radius + 1), 0.55, 3.2);
   const adaptiveSpeed = orbit.wheelSpeed * zoomFactor;
   const next = orbit.radius * Math.exp(event.deltaY * adaptiveSpeed);
   orbit.radius = clamp(next, orbit.minDistance, orbit.maxDistance);
-  if (selectedId && orbit.radius >= OVERVIEW_SWITCH_RADIUS) {
+  if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId && orbit.radius >= OVERVIEW_SWITCH_RADIUS) {
     const sunVisual = bodyVisuals.get("sun");
     if (sunVisual) {
       selectedId = null;
       updateLegendSelection();
+      updateObservationStatus();
       orbit.minDistance = ORBIT_MIN_DISTANCE_BASE;
       orbit.target.copy(sunVisual.root.position);
     }
@@ -2777,22 +2958,164 @@ function setSelected(bodyId, moveCamera) {
   }
 
   const liveCoords = runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
-  if (liveCoords) {
+  const canReframe = observation.mode === OBSERVATION_MODES.BODY_LOCK;
+  if (canReframe && liveCoords) {
     orbit.minDistance = minOrbitDistanceForVisual(visual);
     orbit.target.copy(visual.root.position);
   }
-  if (moveCamera) {
+  if (moveCamera && canReframe) {
     if (liveCoords) {
       orbit.radius = preferredCameraDistanceForSelection(visual);
       orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
     }
   }
+  updateObservationStatus();
   updateCameraFromOrbit();
+}
+
+function resolveSurfaceObserverAnchor(nowMs = Date.now()) {
+  const preset = SURFACE_OBSERVER_PRESETS[observation.surfacePresetId];
+  if (!preset) {
+    return null;
+  }
+  if (preset.kind === "orbital") {
+    return resolveOrbitalObserverAnchor(preset, nowMs);
+  }
+  return resolveSurfaceObserverAnchorOnBody(preset);
+}
+
+function resolveSurfaceObserverAnchorOnBody(preset) {
+  const visual = bodyVisuals.get(preset.bodyId);
+  if (!visual || !visual.root.visible) {
+    return null;
+  }
+  const altitudeKm = Math.max(0.02, Number(preset.altitudeKm) || 1) * observation.surfaceAltitudeScale;
+  const altitudeScene = altitudeKm * DISTANCE_SCALE;
+  const radius = Math.max(visual.renderRadius + altitudeScene, visual.renderRadius * 1.0015);
+  const latitudeDeg = Number(preset.latitudeDeg) || 0;
+  const longitudeDeg = Number(preset.longitudeDeg) || 0;
+  const latRad = rad(clamp(latitudeDeg, -90, 90));
+  const lonRad = rad(longitudeDeg);
+
+  const upLocal = latLonToEarthVector(latitudeDeg, longitudeDeg, 1).normalize();
+  const positionLocal = upLocal.clone().multiplyScalar(radius);
+  const eastLocal = new THREE_NS.Vector3(
+    -Math.sin(lonRad),
+    0,
+    -Math.cos(lonRad),
+  ).normalize();
+  const northLocal = new THREE_NS.Vector3(
+    -Math.sin(latRad) * Math.cos(lonRad),
+    Math.cos(latRad),
+    Math.sin(latRad) * Math.sin(lonRad),
+  ).normalize();
+
+  const worldQuat = new THREE_NS.Quaternion();
+  visual.spinGroup.getWorldQuaternion(worldQuat);
+  const upWorld = upLocal.clone().applyQuaternion(worldQuat).normalize();
+  const eastWorld = eastLocal.clone().applyQuaternion(worldQuat).normalize();
+  const northWorld = northLocal.clone().applyQuaternion(worldQuat).normalize();
+
+  const position = positionLocal.clone();
+  visual.spinGroup.localToWorld(position);
+  const cameraPosition = position.clone().addScaledVector(upWorld, Math.max(radius * 0.0024, 0.000005));
+
+  let heading = eastWorld.clone().applyAxisAngle(upWorld, observation.surfaceYaw).normalize();
+  if (heading.lengthSq() < 1e-10) {
+    heading = northWorld.clone();
+  }
+  let right = new THREE_NS.Vector3().crossVectors(heading, upWorld).normalize();
+  if (right.lengthSq() < 1e-10) {
+    right = new THREE_NS.Vector3().crossVectors(northWorld, upWorld).normalize();
+  }
+  const forward = heading.clone().applyAxisAngle(right, observation.surfacePitch).normalize();
+  const lookDistance = Math.max(visual.renderRadius * 9, altitudeScene * 12, 0.035);
+  const target = cameraPosition.clone().addScaledVector(forward, lookDistance);
+
+  return {
+    label: preset.label,
+    bodyId: preset.bodyId,
+    altitudeKm,
+    position: cameraPosition,
+    target,
+    up: upWorld,
+  };
+}
+
+function resolveOrbitalObserverAnchor(preset, nowMs) {
+  const earthVisual = bodyVisuals.get(preset.bodyId || "earth");
+  if (!earthVisual || !earthVisual.root.visible) {
+    return null;
+  }
+  const periodMs = Math.max(1, (Number(preset.periodMinutes) || 92.68) * 60 * 1000);
+  const epochMs = Number.isFinite(Date.parse(preset.epochIso || "")) ? Date.parse(preset.epochIso) : 0;
+  const phase = rad(Number(preset.phaseDeg) || 0);
+  const theta = normalizeAngle((((nowMs - epochMs) / periodMs) * Math.PI * 2) + phase);
+  const inclination = rad(Number(preset.inclinationDeg) || 51.64);
+  const altitudeKm = Math.max(80, Number(preset.altitudeKm) || 420) * observation.surfaceAltitudeScale;
+  const radius = Math.max(earthVisual.renderRadius + (altitudeKm * DISTANCE_SCALE), earthVisual.renderRadius * 1.01);
+  const raan = rad(Number(preset.raanDeg) || 0);
+
+  const positionLocal = new THREE_NS.Vector3(
+    radius * Math.cos(theta),
+    radius * Math.sin(theta) * Math.sin(inclination),
+    -radius * Math.sin(theta) * Math.cos(inclination),
+  ).applyAxisAngle(new THREE_NS.Vector3(0, 1, 0), raan);
+
+  const tangentLocal = new THREE_NS.Vector3(
+    -Math.sin(theta),
+    Math.cos(theta) * Math.sin(inclination),
+    -Math.cos(theta) * Math.cos(inclination),
+  ).normalize().applyAxisAngle(new THREE_NS.Vector3(0, 1, 0), raan);
+
+  const worldQuat = new THREE_NS.Quaternion();
+  earthVisual.tiltGroup.getWorldQuaternion(worldQuat);
+
+  const position = positionLocal.clone();
+  earthVisual.tiltGroup.localToWorld(position);
+  const upWorld = position.clone().sub(earthVisual.root.position).normalize();
+  const cameraPosition = position.clone().addScaledVector(upWorld, Math.max(radius * 0.0011, 0.000004));
+
+  let forward = tangentLocal.clone().applyQuaternion(worldQuat).normalize();
+  forward.applyAxisAngle(upWorld, observation.surfaceYaw);
+  let right = new THREE_NS.Vector3().crossVectors(forward, upWorld).normalize();
+  if (right.lengthSq() < 1e-10) {
+    right = new THREE_NS.Vector3(1, 0, 0).applyQuaternion(worldQuat).normalize();
+  }
+  forward = forward.applyAxisAngle(right, observation.surfacePitch).normalize();
+  const lookDistance = Math.max(earthVisual.renderRadius * 16, radius * 0.12, 0.06);
+  const target = cameraPosition.clone().addScaledVector(forward, lookDistance);
+
+  return {
+    label: preset.label,
+    bodyId: preset.bodyId || "earth",
+    altitudeKm,
+    position: cameraPosition,
+    target,
+    up: upWorld,
+  };
 }
 
 function updateCameraFromOrbit() {
   if (!camera || !orbit.target) {
     return;
+  }
+
+  if (observation.mode === OBSERVATION_MODES.SURFACE) {
+    const anchor = resolveSurfaceObserverAnchor(Date.now());
+    if (anchor) {
+      const lookDistance = Math.max(anchor.position.distanceTo(anchor.target), 1e-6);
+      const desiredNear = clamp(lookDistance * 0.015, 0.00000002, 0.008);
+      if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
+        camera.near = desiredNear;
+        camera.updateProjectionMatrix();
+      }
+      camera.up.copy(anchor.up);
+      camera.position.copy(anchor.position);
+      camera.lookAt(anchor.target);
+      updateObservationStatus(anchor);
+      return;
+    }
   }
 
   const desiredNear = clamp(orbit.radius * 0.02, 0.00000005, 0.05);
@@ -2807,6 +3130,7 @@ function updateCameraFromOrbit() {
     orbit.target.y + orbit.radius * Math.cos(orbit.polar),
     orbit.target.z + orbit.radius * sinPolar * Math.cos(orbit.azimuth),
   );
+  camera.up.set(0, 1, 0);
   camera.lookAt(orbit.target);
 }
 
@@ -3506,6 +3830,16 @@ function updateInfoOverlay() {
   const parent = meta.parent || "sun";
   const description = meta.description || "n/a";
   const sourceError = live.source_error ? ` (${live.source_error})` : "";
+  const observationModeLabel =
+    observation.mode === OBSERVATION_MODES.SURFACE
+      ? "Surface Observer"
+      : observation.mode === OBSERVATION_MODES.FREE
+        ? "Free Camera"
+        : "Body Lock";
+  const observerLabel =
+    observation.mode === OBSERVATION_MODES.SURFACE
+      ? (SURFACE_OBSERVER_PRESETS[observation.surfacePresetId]?.label || "n/a")
+      : "n/a";
   const effectiveSpinScale = spinScaleForBody(meta);
   const visualSpinDegPerSec = Math.abs((visual.rotationSpeedRadPerSecond || 0) * effectiveSpinScale * (180 / Math.PI));
   const currentRotationAngleDeg = normalizeDegrees((visual.spinGroup?.rotation?.y || 0) * (180 / Math.PI));
@@ -3554,6 +3888,8 @@ function updateInfoOverlay() {
     <p class="line">Type: ${meta.body_type}</p>
     <p class="line">Parent Body: ${parent}</p>
     <p class="line">Data Source: ${live.source}${sourceError}</p>
+    <p class="line">Observation Mode: ${observationModeLabel}</p>
+    <p class="line">Observer Preset: ${observerLabel}</p>
     <p class="line">Surface Rendering: ${surfaceRenderingLabel(visual.textureMode)}</p>
     <p class="line">Map Texture Source: ${visual.mapSource || "n/a"}</p>
     <p class="line">Distance from Sun: ${distanceFromSunKm !== null ? `${formatNumber(distanceFromSunKm)} km` : "n/a"}</p>

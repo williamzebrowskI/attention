@@ -4,15 +4,33 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260227bp" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260227dq" />
   </head>
   <body>
     <canvas id="scene"></canvas>
     <div id="planet-info" class="planet-info"></div>
     <aside id="body-legend" class="body-legend" aria-label="Solar system bodies">
+      <div class="observation-panel" aria-label="Observation controls">
+        <p class="body-legend-title">Observation</p>
+        <label class="observation-label" for="observation-mode">Mode</label>
+        <select id="observation-mode" class="observation-select">
+          <option value="body_lock">Body Lock</option>
+          <option value="free">Free Camera</option>
+          <option value="surface">Surface Observer</option>
+        </select>
+        <div id="surface-observer-row" class="surface-observer-row">
+          <label class="observation-label" for="surface-observer-target">Observer</label>
+          <select id="surface-observer-target" class="observation-select">
+            <option value="philadelphia">Philadelphia, Earth</option>
+            <option value="iss">ISS</option>
+            <option value="moon_surface">Moon Surface</option>
+          </select>
+        </div>
+        <p id="observation-status" class="observation-status"></p>
+      </div>
       <p class="body-legend-title">Bodies</p>
       <div id="body-legend-list" class="body-legend-list"></div>
     </aside>
-    <script type="module" src="/static/js/app.js?v=20260227cp"></script>
+    <script type="module" src="/static/js/app.js?v=20260227dq"></script>
   </body>
 </html>
