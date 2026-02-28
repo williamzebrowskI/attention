@@ -3108,7 +3108,9 @@ function oblateModelForBody(bodyId) {
   }
   const j2 = Number(model.j2);
   const j4 = Number(model.j4);
-  if (!(Number.isFinite(j2) || Number.isFinite(j4))) {
+  const c22 = Number(model.c22);
+  const s22 = Number(model.s22);
+  if (!(Number.isFinite(j2) || Number.isFinite(j4) || Number.isFinite(c22) || Number.isFinite(s22))) {
     return null;
   }
   const fallbackRadius = Number(metaById.get(bodyId)?.radius_km);
@@ -3123,6 +3125,8 @@ function oblateModelForBody(bodyId) {
   return {
     j2: Number.isFinite(j2) ? j2 : 0,
     j4: Number.isFinite(j4) ? j4 : 0,
+    c22: Number.isFinite(c22) ? c22 : 0,
+    s22: Number.isFinite(s22) ? s22 : 0,
     referenceRadiusKm,
   };
 }
@@ -3137,6 +3141,89 @@ function sourcePoleUnitVectorEclipticForBody(bodyId, timestampMs = Date.now()) {
     Number(pole.decDeg),
     ECLIPTIC_OBLIQUITY_DEG,
   );
+}
+
+function dotVector3(a, b) {
+  return (a.x * b.x) + (a.y * b.y) + (a.z * b.z);
+}
+
+function crossVector3(a, b) {
+  return {
+    x: (a.y * b.z) - (a.z * b.y),
+    y: (a.z * b.x) - (a.x * b.z),
+    z: (a.x * b.y) - (a.y * b.x),
+  };
+}
+
+function normalizeVector3OrNull(vector) {
+  if (!vector) {
+    return null;
+  }
+  const magSq = (vector.x * vector.x) + (vector.y * vector.y) + (vector.z * vector.z);
+  if (!(magSq > 1e-18)) {
+    return null;
+  }
+  const invMag = 1 / Math.sqrt(magSq);
+  return {
+    x: vector.x * invMag,
+    y: vector.y * invMag,
+    z: vector.z * invMag,
+  };
+}
+
+function sourceBodyFixedAxesEclipticForBody(bodyId, pole, timestampMs = Date.now()) {
+  const poleUnit = normalizeVector3OrNull(pole);
+  if (!poleUnit) {
+    return null;
+  }
+
+  const buildBaseAxis = (reference) => {
+    const projection = dotVector3(reference, poleUnit);
+    return normalizeVector3OrNull({
+      x: reference.x - (projection * poleUnit.x),
+      y: reference.y - (projection * poleUnit.y),
+      z: reference.z - (projection * poleUnit.z),
+    });
+  };
+
+  let xBase = buildBaseAxis({ x: 1, y: 0, z: 0 });
+  if (!xBase) {
+    xBase = buildBaseAxis({ x: 0, y: 1, z: 0 });
+  }
+  if (!xBase) {
+    return null;
+  }
+  const yBase = normalizeVector3OrNull(crossVector3(poleUnit, xBase));
+  if (!yBase) {
+    return null;
+  }
+
+  const body = metaById.get(bodyId);
+  const spinModel = primeMeridianModelForBody(body);
+  let spinAngleRad = 0;
+  if (spinModel) {
+    const daysSinceJ2000 = julianDayFromUnixMs(modelTimestampMs(timestampMs)) - 2_451_545.0;
+    spinAngleRad = rad(normalizeDegrees(
+      spinModel.w0Deg + (spinModel.wRateDegPerDay * daysSinceJ2000),
+    ));
+  }
+
+  const c = Math.cos(spinAngleRad);
+  const s = Math.sin(spinAngleRad);
+  const xAxis = normalizeVector3OrNull({
+    x: (xBase.x * c) + (yBase.x * s),
+    y: (xBase.y * c) + (yBase.y * s),
+    z: (xBase.z * c) + (yBase.z * s),
+  });
+  const yAxis = normalizeVector3OrNull({
+    x: (yBase.x * c) - (xBase.x * s),
+    y: (yBase.y * c) - (xBase.y * s),
+    z: (yBase.z * c) - (xBase.z * s),
+  });
+  if (!xAxis || !yAxis) {
+    return null;
+  }
+  return { xAxis, yAxis };
 }
 
 function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now()) {
@@ -3156,11 +3243,16 @@ function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now())
     if (!pole) {
       continue;
     }
+    const fixedAxes = sourceBodyFixedAxesEclipticForBody(sourceId, pole, timestampMs);
     contextById.set(sourceId, {
       j2: model.j2,
       j4: model.j4,
+      c22: model.c22,
+      s22: model.s22,
       referenceRadiusKm: model.referenceRadiusKm,
       pole,
+      xAxis: fixedAxes?.xAxis || null,
+      yAxis: fixedAxes?.yAxis || null,
     });
   }
   return contextById;
@@ -3234,6 +3326,29 @@ function computeGravityAccelerationFromSource(
     ax += coeff4 * ((termR4 * rx) - (termK4 * pole.x));
     ay += coeff4 * ((termR4 * ry) - (termK4 * pole.y));
     az += coeff4 * ((termR4 * rz) - (termK4 * pole.z));
+  }
+
+  if (oblate.c22 || oblate.s22) {
+    const xAxis = oblate.xAxis;
+    const yAxis = oblate.yAxis;
+    if (xAxis && yAxis) {
+      const ux = ((xAxis.x * rx) + (xAxis.y * ry) + (xAxis.z * rz)) * invRadius;
+      const uy = ((yAxis.x * rx) + (yAxis.y * ry) + (yAxis.z * rz)) * invRadius;
+      const uz = u;
+      const c22 = oblate.c22;
+      const s22 = oblate.s22;
+      const q22 = (c22 * ((ux * ux) - (uy * uy))) + (2 * s22 * ux * uy);
+      const termX = (2 * ((c22 * ux) + (s22 * uy))) - (5 * ux * q22);
+      const termY = (2 * ((s22 * ux) - (c22 * uy))) - (5 * uy * q22);
+      const termZ = -5 * uz * q22;
+      const coeff22 = 3 * muOverR3 * refOverR2 * radius;
+      const axBody = coeff22 * termX;
+      const ayBody = coeff22 * termY;
+      const azBody = coeff22 * termZ;
+      ax += (axBody * xAxis.x) + (ayBody * yAxis.x) + (azBody * pole.x);
+      ay += (axBody * xAxis.y) + (ayBody * yAxis.y) + (azBody * pole.y);
+      az += (axBody * xAxis.z) + (ayBody * yAxis.z) + (azBody * pole.z);
+    }
   }
 
   return { x: ax, y: ay, z: az };

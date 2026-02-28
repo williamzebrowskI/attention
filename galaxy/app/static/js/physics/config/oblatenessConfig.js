@@ -4,6 +4,9 @@ export const OBLATE_GRAVITY_MODEL = Object.freeze({
   earth: Object.freeze({
     j2: 1.08262668e-3,
     j4: -1.61962159137e-6,
+    // Degree-2 tesseral terms to model longitudinal gravity asymmetry.
+    c22: 1.57446e-6,
+    s22: -0.90376e-6,
     equatorialRadiusKm: 6378.137,
   }),
   jupiter: Object.freeze({
@@ -31,6 +34,8 @@ export const OBLATE_GRAVITY_MODEL = Object.freeze({
   moon: Object.freeze({
     j2: 2.0326e-4,
     j4: 0,
+    c22: 2.24e-5,
+    s22: 0,
     equatorialRadiusKm: 1738.1,
   }),
   io: Object.freeze({
