@@ -2,6 +2,14 @@ import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./config/rigidBodyConstants.js";
 
 const TWO_PI = Math.PI * 2;
 const EPSILON = 1e-12;
+const MAJOR_TWO_BODY_TIDAL_SYSTEMS = Object.freeze([
+  Object.freeze({ primaryId: "earth", secondaryId: "moon" }),
+  Object.freeze({ primaryId: "jupiter", secondaryId: "io" }),
+  Object.freeze({ primaryId: "jupiter", secondaryId: "europa" }),
+  Object.freeze({ primaryId: "jupiter", secondaryId: "ganymede" }),
+  Object.freeze({ primaryId: "saturn", secondaryId: "titan" }),
+  Object.freeze({ primaryId: "saturn", secondaryId: "enceladus" }),
+]);
 
 const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
   sun: Object.freeze({
@@ -485,6 +493,21 @@ function accumulateDeltaVFromForce(deltaVelocityById, bodyId, forceWorldKmKgPerS
   deltaVelocityById.set(bodyId, entry);
 }
 
+function addTorqueBodyContribution(torqueById, bodyId, torqueBody) {
+  if (!bodyId || !torqueBody) {
+    return;
+  }
+  if (!(torqueBody.x || torqueBody.y || torqueBody.z)) {
+    return;
+  }
+  const accumulated = torqueById.get(bodyId);
+  if (accumulated) {
+    accumulated.add(torqueBody);
+    return;
+  }
+  torqueById.set(bodyId, torqueBody.clone());
+}
+
 function computeGravityGradientTorqueBody(THREE, state, targetPositionKm, sourceMassKg, sourcePositionKm, G) {
   if (!(sourceMassKg > 0) || !targetPositionKm || !sourcePositionKm) {
     return new THREE.Vector3(0, 0, 0);
@@ -596,6 +619,108 @@ function computeConstantTimeLagTidalInteraction(
     .multiplyScalar(1 / radiusSq);
 
   return { torqueBody, backReactionForceTargetWorld };
+}
+
+function applyTwoBodyTidalPairInteraction({
+  THREE,
+  stateById,
+  torqueById,
+  deltaVelocityById,
+  primaryId,
+  secondaryId,
+  dtSeconds,
+  getCoordinatesKm,
+  getVelocityKmS,
+  getBodyMassKg,
+  gravitationalConstantKm3PerKgS2,
+  applyBodyDeltaVelocityKmS,
+}) {
+  const primaryState = stateById.get(primaryId);
+  const secondaryState = stateById.get(secondaryId);
+  if (!primaryState || !secondaryState) {
+    return;
+  }
+
+  const primaryPos = getCoordinatesKm?.(primaryId);
+  const secondaryPos = getCoordinatesKm?.(secondaryId);
+  const primaryVel = getVelocityKmS?.(primaryId);
+  const secondaryVel = getVelocityKmS?.(secondaryId);
+  const primaryMassKg = Number(getBodyMassKg?.(primaryId));
+  const secondaryMassKg = Number(getBodyMassKg?.(secondaryId));
+  if (
+    !primaryPos ||
+    !secondaryPos ||
+    !primaryVel ||
+    !secondaryVel ||
+    !(primaryMassKg > 0) ||
+    !(secondaryMassKg > 0)
+  ) {
+    return;
+  }
+
+  // Tide raised on the primary by the secondary body.
+  const primaryTide = computeConstantTimeLagTidalInteraction(
+    THREE,
+    primaryState,
+    primaryPos,
+    primaryVel,
+    secondaryId,
+    secondaryMassKg,
+    secondaryPos,
+    secondaryVel,
+    gravitationalConstantKm3PerKgS2,
+  );
+  addTorqueBodyContribution(torqueById, primaryId, primaryTide.torqueBody);
+
+  // Tide raised on the secondary by the primary body.
+  const secondaryTide = computeConstantTimeLagTidalInteraction(
+    THREE,
+    secondaryState,
+    secondaryPos,
+    secondaryVel,
+    primaryId,
+    primaryMassKg,
+    primaryPos,
+    primaryVel,
+    gravitationalConstantKm3PerKgS2,
+  );
+  addTorqueBodyContribution(torqueById, secondaryId, secondaryTide.torqueBody);
+
+  if (!applyBodyDeltaVelocityKmS) {
+    return;
+  }
+
+  const forceOnPrimary = primaryTide.backReactionForceTargetWorld;
+  if (forceOnPrimary && (forceOnPrimary.x || forceOnPrimary.y || forceOnPrimary.z)) {
+    accumulateDeltaVFromForce(deltaVelocityById, primaryId, forceOnPrimary, primaryMassKg, dtSeconds);
+    accumulateDeltaVFromForce(
+      deltaVelocityById,
+      secondaryId,
+      {
+        x: -forceOnPrimary.x,
+        y: -forceOnPrimary.y,
+        z: -forceOnPrimary.z,
+      },
+      secondaryMassKg,
+      dtSeconds,
+    );
+  }
+
+  const forceOnSecondary = secondaryTide.backReactionForceTargetWorld;
+  if (forceOnSecondary && (forceOnSecondary.x || forceOnSecondary.y || forceOnSecondary.z)) {
+    accumulateDeltaVFromForce(deltaVelocityById, secondaryId, forceOnSecondary, secondaryMassKg, dtSeconds);
+    accumulateDeltaVFromForce(
+      deltaVelocityById,
+      primaryId,
+      {
+        x: -forceOnSecondary.x,
+        y: -forceOnSecondary.y,
+        z: -forceOnSecondary.z,
+      },
+      primaryMassKg,
+      dtSeconds,
+    );
+  }
 }
 
 function applyBodyStateToVisual(THREE, state, visual) {
@@ -749,7 +874,6 @@ export function createRigidBodyAttitudeController(options) {
           torqueById.set(bodyId, new THREE.Vector3(0, 0, 0));
           continue;
         }
-        const targetVelocityKmS = getVelocityKmS?.(bodyId);
         const totalTorque = new THREE.Vector3(0, 0, 0);
         const sourceIds = resolveTorqueSourceIds(
           state,
@@ -773,47 +897,26 @@ export function createRigidBodyAttitudeController(options) {
             gravitationalConstantKm3PerKgS2,
           );
           totalTorque.add(torque);
-          const sourceVelocityKmS = getVelocityKmS?.(sourceId);
-          const tidalInteraction = computeConstantTimeLagTidalInteraction(
-            THREE,
-            state,
-            targetPos,
-            targetVelocityKmS,
-            sourceId,
-            sourceMass,
-            sourcePos,
-            sourceVelocityKmS,
-            gravitationalConstantKm3PerKgS2,
-          );
-          totalTorque.add(tidalInteraction.torqueBody);
-
-          if (applyBodyDeltaVelocityKmS) {
-            const targetMassKg = Number(state.massKg);
-            const sourceMassKg = Number(sourceMass);
-            const forceTarget = tidalInteraction.backReactionForceTargetWorld;
-            if (forceTarget && (forceTarget.x || forceTarget.y || forceTarget.z)) {
-              accumulateDeltaVFromForce(
-                deltaVelocityById,
-                bodyId,
-                forceTarget,
-                targetMassKg,
-                dt,
-              );
-              accumulateDeltaVFromForce(
-                deltaVelocityById,
-                sourceId,
-                {
-                  x: -forceTarget.x,
-                  y: -forceTarget.y,
-                  z: -forceTarget.z,
-                },
-                sourceMassKg,
-                dt,
-              );
-            }
-          }
         }
         torqueById.set(bodyId, totalTorque);
+      }
+
+      // Explicit two-body tidal coupling for major systems.
+      for (const system of MAJOR_TWO_BODY_TIDAL_SYSTEMS) {
+        applyTwoBodyTidalPairInteraction({
+          THREE,
+          stateById,
+          torqueById,
+          deltaVelocityById,
+          primaryId: system.primaryId,
+          secondaryId: system.secondaryId,
+          dtSeconds: dt,
+          getCoordinatesKm,
+          getVelocityKmS,
+          getBodyMassKg,
+          gravitationalConstantKm3PerKgS2,
+          applyBodyDeltaVelocityKmS,
+        });
       }
 
       for (const [bodyId, state] of stateById.entries()) {

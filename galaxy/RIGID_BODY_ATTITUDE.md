@@ -58,6 +58,25 @@ Back-reaction:
 
 This couples spin damping with orbital angular momentum exchange.
 
+## Major Two-Body Tidal Systems
+
+The runtime explicitly applies bidirectional tidal interactions (both bodies in
+the pair) with orbital back-reaction for:
+
+1. Earth <-> Moon
+2. Jupiter <-> Io
+3. Jupiter <-> Europa
+4. Jupiter <-> Ganymede
+5. Saturn <-> Titan
+6. Saturn <-> Enceladus
+
+For each pair and each substep:
+
+1. Compute tide on primary raised by secondary.
+2. Compute tide on secondary raised by primary.
+3. Add both torques to spin integration.
+4. Apply equal/opposite orbital back-reaction forces for both interactions.
+
 ## Integration Method
 
 `update(deltaSeconds)`:
