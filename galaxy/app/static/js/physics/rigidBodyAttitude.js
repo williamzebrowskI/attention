@@ -50,6 +50,82 @@ const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
     sourceIds: Object.freeze(["mars", "sun", "phobos"]),
     tidalDamping: 0,
   }),
+  jupiter: Object.freeze({
+    // Gas-giant oblateness reflected in larger polar moment.
+    inertiaFactors: Object.freeze({ x: 0.254000, y: 0.254000, z: 0.266000 }),
+    sourceIds: Object.freeze(["sun", "saturn", "io", "europa", "ganymede", "callisto"]),
+    tidalDamping: 0,
+  }),
+  io: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.376000, y: 0.377000, z: 0.378000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "europa", "ganymede"]),
+    tidalDamping: 0,
+  }),
+  europa: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.344000, y: 0.345000, z: 0.346000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "io", "ganymede"]),
+    tidalDamping: 0,
+  }),
+  ganymede: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.311000, y: 0.312000, z: 0.313000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "io", "europa", "callisto"]),
+    tidalDamping: 0,
+  }),
+  callisto: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.354000, y: 0.355000, z: 0.356000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "ganymede", "saturn"]),
+    tidalDamping: 0,
+  }),
+  amalthea: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.286000, y: 0.421000, z: 0.493000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "io"]),
+    tidalDamping: 0,
+  }),
+  thebe: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.470000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "io"]),
+    tidalDamping: 0,
+  }),
+  adrastea: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.310000, y: 0.430000, z: 0.490000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "metis", "io"]),
+    tidalDamping: 0,
+  }),
+  metis: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "adrastea", "io"]),
+    tidalDamping: 0,
+  }),
+  himalia: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.370000, y: 0.390000, z: 0.410000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "elara"]),
+    tidalDamping: 0,
+  }),
+  elara: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.420000, z: 0.470000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "himalia"]),
+    tidalDamping: 0,
+  }),
+  pasiphae: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.320000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "sinope", "carme", "ananke"]),
+    tidalDamping: 0,
+  }),
+  sinope: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.440000, z: 0.500000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "pasiphae"]),
+    tidalDamping: 0,
+  }),
+  carme: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.310000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "pasiphae", "ananke"]),
+    tidalDamping: 0,
+  }),
+  ananke: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["jupiter", "sun", "pasiphae", "carme"]),
+    tidalDamping: 0,
+  }),
 });
 
 function normalizeAngle(angle) {

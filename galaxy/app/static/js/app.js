@@ -101,6 +101,21 @@ const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "mars",
   "phobos",
   "deimos",
+  "jupiter",
+  "io",
+  "europa",
+  "ganymede",
+  "callisto",
+  "amalthea",
+  "thebe",
+  "adrastea",
+  "metis",
+  "himalia",
+  "elara",
+  "pasiphae",
+  "sinope",
+  "carme",
+  "ananke",
 ]);
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
