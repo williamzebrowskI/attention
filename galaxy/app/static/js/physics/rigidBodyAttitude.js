@@ -1,3 +1,5 @@
+import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./config/rigidBodyConstants.js";
+
 const TWO_PI = Math.PI * 2;
 const EPSILON = 1e-12;
 
@@ -422,6 +424,64 @@ function inertiaTensorDiagonalKgKm2(massKg, radiusKm, inertiaFactors) {
   };
 }
 
+function inertiaTensorFromPrincipalMomentsKgKm2(principalMomentsKgKm2) {
+  const a = Number(principalMomentsKgKm2?.A);
+  const b = Number(principalMomentsKgKm2?.B);
+  const c = Number(principalMomentsKgKm2?.C);
+  if (!(a > 0) || !(b > 0) || !(c > 0)) {
+    return null;
+  }
+  return { x: a, y: b, z: c };
+}
+
+function resolveTorqueSourceIds(state, targetPositionKm, allBodyIds, getCoordinatesKm, getBodyMassKg) {
+  const config = state.dynamicTorqueSources;
+  if (!config?.enabled) {
+    return Array.isArray(state.sourceIds) ? state.sourceIds : [];
+  }
+
+  const selected = new Set(Array.isArray(state.sourceIds) ? state.sourceIds : []);
+  if (config.includeSun) {
+    selected.add("sun");
+  }
+  if (config.includeParent && state.parentId) {
+    selected.add(state.parentId);
+  }
+
+  const candidates = [];
+  const minProxy = Number(config.minTorqueProxy);
+  for (const sourceId of allBodyIds) {
+    if (!sourceId || sourceId === state.bodyId || selected.has(sourceId)) {
+      continue;
+    }
+    const sourceMassKg = Number(getBodyMassKg?.(sourceId));
+    const sourcePositionKm = getCoordinatesKm?.(sourceId);
+    if (!(sourceMassKg > 0) || !sourcePositionKm || !targetPositionKm) {
+      continue;
+    }
+    const dx = sourcePositionKm.x - targetPositionKm.x;
+    const dy = sourcePositionKm.y - targetPositionKm.y;
+    const dz = sourcePositionKm.z - targetPositionKm.z;
+    const radiusSq = (dx * dx) + (dy * dy) + (dz * dz);
+    if (!(radiusSq > 1e-18)) {
+      continue;
+    }
+    const radius = Math.sqrt(radiusSq);
+    const torqueProxy = sourceMassKg / (radius * radiusSq);
+    if (Number.isFinite(minProxy) && torqueProxy < minProxy) {
+      continue;
+    }
+    candidates.push({ sourceId, torqueProxy });
+  }
+
+  candidates.sort((a, b) => b.torqueProxy - a.torqueProxy);
+  const topN = Math.max(0, Number(config.topN) || 0);
+  for (let i = 0; i < candidates.length && i < topN; i += 1) {
+    selected.add(candidates[i].sourceId);
+  }
+  return [...selected];
+}
+
 function computeGravityGradientTorqueBody(THREE, state, targetPositionKm, sourceMassKg, sourcePositionKm, G) {
   if (!(sourceMassKg > 0) || !targetPositionKm || !sourcePositionKm) {
     return new THREE.Vector3(0, 0, 0);
@@ -446,6 +506,63 @@ function computeGravityGradientTorqueBody(THREE, state, targetPositionKm, source
     state.inertia.z * nBody.z,
   );
   return nBody.cross(iTimesN).multiplyScalar(3 * G * sourceMassKg * invR3);
+}
+
+function computeConstantTimeLagTidalTorqueBody(
+  THREE,
+  state,
+  targetPositionKm,
+  targetVelocityKmS,
+  sourceId,
+  sourceMassKg,
+  sourcePositionKm,
+  sourceVelocityKmS,
+  G,
+) {
+  const tidal = state.tidalModel;
+  if (!tidal || tidal.model !== "constant_time_lag") {
+    return new THREE.Vector3(0, 0, 0);
+  }
+  if (Array.isArray(tidal.sourceIds) && tidal.sourceIds.length > 0 && !tidal.sourceIds.includes(sourceId)) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+
+  const k2 = Number(tidal.k2);
+  const deltaTSeconds = Number(tidal.deltaTSeconds);
+  if (!(k2 > 0) || !(deltaTSeconds > 0) || !(state.radiusKm > 0)) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+  if (!(sourceMassKg > 0) || !targetPositionKm || !sourcePositionKm || !targetVelocityKmS || !sourceVelocityKmS) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+
+  const rx = sourcePositionKm.x - targetPositionKm.x;
+  const ry = sourcePositionKm.y - targetPositionKm.y;
+  const rz = sourcePositionKm.z - targetPositionKm.z;
+  const radiusSq = (rx * rx) + (ry * ry) + (rz * rz);
+  if (!(radiusSq > 1e-18)) {
+    return new THREE.Vector3(0, 0, 0);
+  }
+
+  const rVec = new THREE.Vector3(rx, ry, rz);
+  const relVel = new THREE.Vector3(
+    sourceVelocityKmS.x - targetVelocityKmS.x,
+    sourceVelocityKmS.y - targetVelocityKmS.y,
+    sourceVelocityKmS.z - targetVelocityKmS.z,
+  );
+  const nWorld = rVec.clone().cross(relVel).multiplyScalar(1 / radiusSq);
+  const omegaWorld = state.omegaBody.clone().applyQuaternion(state.orientation);
+  const deltaOmega = omegaWorld.sub(nWorld);
+
+  const radiusPow6 = radiusSq * radiusSq * radiusSq;
+  const coeff = (3 * G * sourceMassKg * sourceMassKg * (state.radiusKm ** 5) * k2 * deltaTSeconds) / radiusPow6;
+  const tauWorld = deltaOmega.multiplyScalar(-coeff);
+
+  const maxTorque = Number(tidal.maxTorqueKgKm2PerS2);
+  if (maxTorque > 0 && tauWorld.length() > maxTorque) {
+    tauWorld.setLength(maxTorque);
+  }
+  return tauWorld.applyQuaternion(state.orientation.clone().invert());
 }
 
 function applyBodyStateToVisual(THREE, state, visual) {
@@ -510,6 +627,7 @@ export function createRigidBodyAttitudeController(options) {
   const getBodyVisual = options.getBodyVisual;
   const getBodyMeta = options.getBodyMeta;
   const getCoordinatesKm = options.getCoordinatesKm;
+  const getVelocityKmS = options.getVelocityKmS;
   const getBodyMassKg = options.getBodyMassKg;
   const getInitialAxisVector = options.getInitialAxisVector;
   const getInitialSpinRadians = options.getInitialSpinRadians;
@@ -518,6 +636,7 @@ export function createRigidBodyAttitudeController(options) {
   const maxFrameSeconds = Number.isFinite(options.maxFrameSeconds) ? options.maxFrameSeconds : 20;
   const stepSeconds = Number.isFinite(options.stepSeconds) ? options.stepSeconds : 0.25;
   const timeScale = Number.isFinite(options.timeScale) ? options.timeScale : 1;
+  const allBodyIds = [...new Set(bodyIds)];
 
   const stateById = new Map();
 
@@ -530,11 +649,14 @@ export function createRigidBodyAttitudeController(options) {
       const radiusKm = Number(body?.radius_km);
       const model = bodyModelById?.[bodyId];
       const inertiaFactors = model?.inertiaFactors;
-      if (!body || !visual || !(massKg > 0) || !(radiusKm > 0) || !inertiaFactors) {
+      const physicalConstants = RIGID_BODY_PHYSICAL_CONSTANTS?.[bodyId];
+      if (!body || !visual || !(massKg > 0) || !(radiusKm > 0)) {
         continue;
       }
 
-      const inertia = inertiaTensorDiagonalKgKm2(massKg, radiusKm, inertiaFactors);
+      const inertia =
+        inertiaTensorFromPrincipalMomentsKgKm2(physicalConstants?.principalMomentsKgKm2)
+        || inertiaTensorDiagonalKgKm2(massKg, radiusKm, inertiaFactors);
       if (!(inertia.x > 0) || !(inertia.y > 0) || !(inertia.z > 0)) {
         continue;
       }
@@ -556,7 +678,11 @@ export function createRigidBodyAttitudeController(options) {
           y: 1 / inertia.y,
           z: 1 / inertia.z,
         },
+        radiusKm,
+        parentId: body.parent || null,
         sourceIds: Array.isArray(model?.sourceIds) ? [...model.sourceIds] : [],
+        dynamicTorqueSources: physicalConstants?.dynamicTorqueSources || model?.dynamicTorqueSources || null,
+        tidalModel: physicalConstants?.tidal || model?.tidal || null,
         tidalDamping: Number(model?.tidalDamping) || 0,
       };
       stateById.set(bodyId, state);
@@ -583,8 +709,16 @@ export function createRigidBodyAttitudeController(options) {
           torqueById.set(bodyId, new THREE.Vector3(0, 0, 0));
           continue;
         }
+        const targetVelocityKmS = getVelocityKmS?.(bodyId);
         const totalTorque = new THREE.Vector3(0, 0, 0);
-        for (const sourceId of state.sourceIds) {
+        const sourceIds = resolveTorqueSourceIds(
+          state,
+          targetPos,
+          allBodyIds,
+          getCoordinatesKm,
+          getBodyMassKg,
+        );
+        for (const sourceId of sourceIds) {
           if (!sourceId || sourceId === bodyId) {
             continue;
           }
@@ -599,6 +733,19 @@ export function createRigidBodyAttitudeController(options) {
             gravitationalConstantKm3PerKgS2,
           );
           totalTorque.add(torque);
+          const sourceVelocityKmS = getVelocityKmS?.(sourceId);
+          const tidalTorque = computeConstantTimeLagTidalTorqueBody(
+            THREE,
+            state,
+            targetPos,
+            targetVelocityKmS,
+            sourceId,
+            sourceMass,
+            sourcePos,
+            sourceVelocityKmS,
+            gravitationalConstantKm3PerKgS2,
+          );
+          totalTorque.add(tidalTorque);
         }
         torqueById.set(bodyId, totalTorque);
       }

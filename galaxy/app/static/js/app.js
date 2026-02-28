@@ -546,6 +546,7 @@ function setupRigidBodyAttitudeModel() {
     getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
     getBodyMeta: (bodyId) => metaById.get(bodyId),
     getCoordinatesKm: (bodyId) => runtimeCoordsOrLiveById(bodyId),
+    getVelocityKmS: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
     getInitialAxisVector: (bodyId) => spinAxisSceneVectorForBody(bodyId),
     getInitialSpinRadians: (bodyId, nowMs) => {
@@ -555,7 +556,7 @@ function setupRigidBodyAttitudeModel() {
     getInitialRotationPeriodHours: (bodyId) => getRotationPeriodHours(metaById.get(bodyId)),
     gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
     maxFrameSeconds: N_BODY_MAX_FRAME_SECONDS,
-    stepSeconds: 0.25,
+    stepSeconds: 0.1,
     timeScale: SPIN_TIME_SCALE,
   });
   rigidBodyAttitudeController.initialize(Date.now());
@@ -3040,6 +3041,30 @@ function nBodyCoordinatesKmById(bodyId) {
   return null;
 }
 
+function nBodyVelocityKmSById(bodyId) {
+  const state = nBodyState;
+  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized) {
+    return null;
+  }
+  const dynamicBody = state.dynamicBodies.get(bodyId);
+  if (dynamicBody?.velocity) {
+    return {
+      x: dynamicBody.velocity.x,
+      y: dynamicBody.velocity.y,
+      z: dynamicBody.velocity.z,
+    };
+  }
+  const staticSource = state.staticSources.get(bodyId);
+  if (staticSource?.velocity) {
+    return {
+      x: staticSource.velocity.x,
+      y: staticSource.velocity.y,
+      z: staticSource.velocity.z,
+    };
+  }
+  return null;
+}
+
 function oblateModelForBody(bodyId) {
   if (!OBLATE_GRAVITY_ENABLED) {
     return null;
@@ -4408,6 +4433,10 @@ function shouldApplyOcclusionPair(targetBody, occluderBody) {
 
 function runtimeCoordsOrLiveById(bodyId) {
   return runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
+}
+
+function runtimeVelocityKmSOrLiveById(bodyId) {
+  return nBodyVelocityKmSById(bodyId) || positionsById.get(bodyId)?.coordinates_velocity_km_s || null;
 }
 
 function lightCoordsById(bodyId) {
