@@ -69,17 +69,9 @@ const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
 const LIGHT_MODEL_EXCLUDED_IDS = new Set(["sun"]);
-const OUTER_PLANET_IDS = new Set(["jupiter", "saturn", "uranus", "neptune"]);
 const PRIME_MERIDIAN_CALIBRATE_FROM_CURRENT_FOR_IDS = new Set(["earth", "moon"]);
 const EARTH_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const MOON_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
-const EARTH_NIGHTSIDE_VISIBILITY_FLOOR = 0.08;
-const MOON_NIGHTSIDE_VISIBILITY_FLOOR = 0.06;
-const DEFAULT_NIGHTSIDE_VISIBILITY_FLOOR = 0.04;
-const OUTER_PLANET_VISIBILITY_FLOOR = 0.42;
-const OUTER_MOON_VISIBILITY_FLOOR = 0.48;
-const FAR_SYSTEM_BLEND_START_AU = 1.8;
-const FAR_SYSTEM_BLEND_END_AU = 8.5;
 const EARTH_LOCATION_MARKER = {
   latitudeDeg: 39.9526,
   longitudeDeg: -75.1652,
@@ -93,9 +85,9 @@ const SUN_LIGHT_INTENSITY_TRUE_SCALE = 320_000;
 const SUN_LIGHT_INTENSITY_DEFAULT_SCALE = 0.62;
 const SUN_LIGHT_SHADOW_FAR_TRUE_SCALE = 12_000;
 const SUN_LIGHT_SHADOW_FAR_DEFAULT_SCALE = 500;
-const AMBIENT_LIGHT_INTENSITY_TRUE_SCALE = 0.028;
+const AMBIENT_LIGHT_INTENSITY_TRUE_SCALE = 0.004;
 const AMBIENT_LIGHT_INTENSITY_DEFAULT_SCALE = 0.022;
-const HEMISPHERE_LIGHT_INTENSITY_TRUE_SCALE = 0.035;
+const HEMISPHERE_LIGHT_INTENSITY_TRUE_SCALE = 0.006;
 const HEMISPHERE_LIGHT_INTENSITY_DEFAULT_SCALE = 0.03;
 
 const TEX_ROOT = "https://cdn.jsdelivr.net/gh/jeromeetienne/threex.planets@master/images/";
@@ -3158,77 +3150,28 @@ function computeIlluminationForBody(bodyId) {
 }
 
 function applySunlightToVisual(visual, illumination) {
-  const isPhysicalTarget = Boolean(visual.body && !LIGHT_MODEL_EXCLUDED_IDS.has(visual.body.id));
-  const baseVisibilityFloor =
-    visual.body?.id === "earth"
-      ? EARTH_NIGHTSIDE_VISIBILITY_FLOOR
-      : visual.body?.id === "moon"
-        ? MOON_NIGHTSIDE_VISIBILITY_FLOOR
-        : isPhysicalTarget
-          ? DEFAULT_NIGHTSIDE_VISIBILITY_FLOOR
-          : 0;
-  const visibilityFloor = visibilityFloorForBody(visual.body, baseVisibilityFloor);
-  const brightness = isPhysicalTarget
-    ? clamp(Math.max(illumination.total, visibilityFloor), 0, 1.25)
-    : 1;
   const earthNightLightScale =
     visual.body?.id === "earth"
       ? Math.pow(clamp(1 - illumination.directSolar, 0, 1), 0.7)
       : 1;
-  const emissiveScale = visual.body?.id === "moon" ? 0 : earthNightLightScale;
+  const emissiveScale =
+    visual.body?.id === "earth"
+      ? earthNightLightScale
+      : visual.body?.id === "moon"
+        ? 0
+        : 1;
 
   for (const material of gatherVisualMaterials(visual)) {
     ensureMaterialSunlightBaseline(material);
     const baseColor = material.userData?.sunlightBaseColor;
     if (baseColor && material.color?.isColor) {
-      material.color.copy(baseColor).multiplyScalar(brightness);
+      material.color.copy(baseColor);
     }
     const baseEmissive = material.userData?.sunlightBaseEmissiveIntensity;
     if (typeof baseEmissive === "number" && typeof material.emissiveIntensity === "number") {
       material.emissiveIntensity = baseEmissive * emissiveScale;
     }
   }
-}
-
-function visibilityFloorForBody(body, baseFloor) {
-  if (!body || body.id === "sun") {
-    return baseFloor;
-  }
-  if (body.body_type !== "planet" && body.body_type !== "moon") {
-    return baseFloor;
-  }
-
-  const coords = lightCoordsById(body.id);
-  const sunCoords = lightCoordsById("sun");
-  if (!coords || !sunCoords) {
-    return baseFloor;
-  }
-
-  const distanceAu = Math.hypot(
-    coords.x - sunCoords.x,
-    coords.y - sunCoords.y,
-    coords.z - sunCoords.z,
-  ) / AU_KM;
-  if (!(distanceAu > FAR_SYSTEM_BLEND_START_AU)) {
-    return baseFloor;
-  }
-
-  const blend = clamp(
-    (distanceAu - FAR_SYSTEM_BLEND_START_AU) / Math.max(FAR_SYSTEM_BLEND_END_AU - FAR_SYSTEM_BLEND_START_AU, 1e-6),
-    0,
-    1,
-  );
-
-  if (body.body_type === "planet" && OUTER_PLANET_IDS.has(body.id)) {
-    return Math.max(baseFloor, lerp(baseFloor, OUTER_PLANET_VISIBILITY_FLOOR, blend));
-  }
-  if (body.body_type === "moon") {
-    const parentId = body.parent || "";
-    if (OUTER_PLANET_IDS.has(parentId)) {
-      return Math.max(baseFloor, lerp(baseFloor, OUTER_MOON_VISIBILITY_FLOOR, blend));
-    }
-  }
-  return baseFloor;
 }
 
 function updateSunlightModel() {
