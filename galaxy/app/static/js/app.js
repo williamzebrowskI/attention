@@ -70,6 +70,7 @@ const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
 const LIGHT_MODEL_EXCLUDED_IDS = new Set(["sun"]);
+const RINGED_PLANET_IDS = new Set(["jupiter", "saturn", "uranus", "neptune"]);
 const PRIME_MERIDIAN_CALIBRATE_FROM_CURRENT_FOR_IDS = new Set(["earth", "moon"]);
 const EARTH_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const MOON_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
@@ -162,7 +163,10 @@ const BODY_TEXTURE_CONFIG = {
     normal: [...planetTextureCandidates("mars_1k_normal.jpg")],
     bumpScale: 0.055,
   },
-  jupiter: { map: [...planetTextureCandidates("jupiter.jpg"), `${TEX_ROOT}jupitermap.jpg`] },
+  jupiter: {
+    map: [...planetTextureCandidates("jupiter.jpg"), `${TEX_ROOT}jupitermap.jpg`],
+    ringColor: ["https://upload.wikimedia.org/wikipedia/commons/b/bf/JupiterRings.png"],
+  },
   saturn: {
     map: [...planetTextureCandidates("saturn.jpg"), `${TEX_ROOT}saturnmap.jpg`],
     ringColor: [...planetTextureCandidates("saturnringcolor.jpg"), `${TEX_ROOT}saturnringcolor.jpg`],
@@ -172,7 +176,9 @@ const BODY_TEXTURE_CONFIG = {
     map: [...planetTextureCandidates("uranus.jpg"), `${TEX_ROOT}uranusmap.jpg`],
     ringColor: [...planetTextureCandidates("uranusringcolour.jpg"), `${TEX_ROOT}uranusringcolour.jpg`],
   },
-  neptune: { map: [...planetTextureCandidates("neptune.jpg"), `${TEX_ROOT}neptunemap.jpg`] },
+  neptune: {
+    map: [...planetTextureCandidates("neptune.jpg"), `${TEX_ROOT}neptunemap.jpg`],
+  },
   moon_default: {
     map: [...planetTextureCandidates("moon_1024.jpg"), `${TEX_ROOT}moonmap1k.jpg`],
     bump: [`${TEX_ROOT}moonbump1k.jpg`],
@@ -733,7 +739,7 @@ async function createBodyVisual(body) {
     const remote = await loadTexturePlan(plan);
     textures = { ...remote, textureMode: remote?.proceduralMoon ? "procedural_moon" : "remote" };
   }
-  if ((body.id === "saturn" || body.id === "uranus") && !textures.ringColor) {
+  if (RINGED_PLANET_IDS.has(body.id) && !textures.ringColor) {
     const ringProcedural = await createProceduralRingTextures(body);
     textures = { ...textures, ...ringProcedural, ringMode: "procedural" };
   } else if (textures.ringColor) {
@@ -1010,7 +1016,7 @@ async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius
       }
     }
 
-    if (remote.ringColor && (body.id === "saturn" || body.id === "uranus")) {
+    if (remote.ringColor && RINGED_PLANET_IDS.has(body.id)) {
       if (visual.ringMesh) {
         visual.ringMesh.material.map = remote.ringColor;
         visual.ringMesh.material.alphaMap = remote.ringAlpha || remote.ringColor;
@@ -1326,6 +1332,96 @@ function createProceduralPlanetTextures(body, plan) {
   return promise;
 }
 
+function ringTextureProfile(bodyId) {
+  switch (bodyId) {
+    case "saturn":
+      return {
+        low: "#8d7d5d",
+        mid: "#c8b28a",
+        high: "#e5d8ba",
+        stripeFrequency: 140,
+        alphaBase: 0.46,
+        alphaRange: 0.42,
+        alphaSpoke: 0.18,
+        brightnessBase: 0.88,
+        brightnessRange: 0.18,
+        cassiniGaps: true,
+        tintA: { r: 236, g: 228, b: 208 },
+        tintAmount: 0.12,
+        tintFineAmount: 0.1,
+        saturation: 0.95,
+      };
+    case "uranus":
+      return {
+        low: "#8fa9b8",
+        mid: "#b6d0dc",
+        high: "#dceef4",
+        stripeFrequency: 96,
+        alphaBase: 0.28,
+        alphaRange: 0.26,
+        alphaSpoke: 0.13,
+        brightnessBase: 0.9,
+        brightnessRange: 0.16,
+        cassiniGaps: false,
+        tintA: { r: 188, g: 216, b: 224 },
+        tintAmount: 0.09,
+        tintFineAmount: 0.08,
+        saturation: 1.06,
+      };
+    case "jupiter":
+      return {
+        low: "#8b7b66",
+        mid: "#b8a78d",
+        high: "#d5c7b2",
+        stripeFrequency: 112,
+        alphaBase: 0.12,
+        alphaRange: 0.2,
+        alphaSpoke: 0.1,
+        brightnessBase: 0.78,
+        brightnessRange: 0.12,
+        cassiniGaps: false,
+        tintA: { r: 171, g: 151, b: 124 },
+        tintAmount: 0.07,
+        tintFineAmount: 0.06,
+        saturation: 0.92,
+      };
+    case "neptune":
+      return {
+        low: "#6f7f94",
+        mid: "#97abc2",
+        high: "#c1d2e4",
+        stripeFrequency: 128,
+        alphaBase: 0.16,
+        alphaRange: 0.2,
+        alphaSpoke: 0.12,
+        brightnessBase: 0.8,
+        brightnessRange: 0.13,
+        cassiniGaps: false,
+        tintA: { r: 144, g: 168, b: 204 },
+        tintAmount: 0.08,
+        tintFineAmount: 0.07,
+        saturation: 1.0,
+      };
+    default:
+      return {
+        low: "#96b8c2",
+        mid: "#b7d0d8",
+        high: "#d6e5ea",
+        stripeFrequency: 98,
+        alphaBase: 0.3,
+        alphaRange: 0.28,
+        alphaSpoke: 0.12,
+        brightnessBase: 0.88,
+        brightnessRange: 0.16,
+        cassiniGaps: false,
+        tintA: { r: 188, g: 216, b: 224 },
+        tintAmount: 0.09,
+        tintFineAmount: 0.08,
+        saturation: 1.06,
+      };
+  }
+}
+
 function createProceduralRingTextures(body) {
   const key = `ring-proc:${body.id}`;
   if (textureCache.has(key)) {
@@ -1333,8 +1429,8 @@ function createProceduralRingTextures(body) {
   }
 
   const promise = Promise.resolve().then(() => {
-    const width = 2048;
-    const height = 32;
+    const width = 4096;
+    const height = 48;
     const colorCanvas = document.createElement("canvas");
     colorCanvas.width = width;
     colorCanvas.height = height;
@@ -1349,45 +1445,42 @@ function createProceduralRingTextures(body) {
     const alphaData = alphaImage.data;
 
     const seed = hashStringToSeed(`${body.id}:ring`);
-    const low = body.id === "saturn" ? hexToRgb("#8d7d5d") : hexToRgb("#96b8c2");
-    const mid = body.id === "saturn" ? hexToRgb("#c8b28a") : hexToRgb("#b7d0d8");
-    const high = body.id === "saturn" ? hexToRgb("#e5d8ba") : hexToRgb("#d6e5ea");
+    const profile = ringTextureProfile(body.id);
+    const low = hexToRgb(profile.low);
+    const mid = hexToRgb(profile.mid);
+    const high = hexToRgb(profile.high);
 
     for (let x = 0; x < width; x += 1) {
       const r = x / (width - 1);
       const coarse = fbm(r * 150, seed * 0.0007, seed, 4);
       const fine = ridgeFbm(r * 520, seed * 0.0019, seed + 211, 3);
       const spoke = ridgeFbm(r * 920, seed * 0.0031, seed + 811, 2);
-      const stripe = 0.5 + (0.5 * Math.sin((r * Math.PI * (body.id === "saturn" ? 140 : 98)) + (coarse * 2.1)));
+      const stripe = 0.5 + (0.5 * Math.sin((r * Math.PI * profile.stripeFrequency) + (coarse * 2.1)));
       const mix = clamp((stripe * 0.52) + (coarse * 0.27) + (fine * 0.14) + (spoke * 0.07), 0, 1);
       let c = mixTriColor(low, mid, high, mix);
-      if (body.id === "saturn") {
-        c = blendRgb(c, { r: 236, g: 228, b: 208 }, 0.12 + (fine * 0.1));
-        c = saturateRgb(c, 0.95);
-      } else {
-        c = blendRgb(c, { r: 188, g: 216, b: 224 }, 0.09 + (fine * 0.08));
-        c = saturateRgb(c, 1.06);
-      }
+      c = blendRgb(c, profile.tintA, profile.tintAmount + (fine * profile.tintFineAmount));
+      c = saturateRgb(c, profile.saturation);
 
       const innerFade = smoothstep(clamp((r - 0.02) / 0.16, 0, 1));
       const outerFade = smoothstep(clamp((1 - r - 0.01) / 0.2, 0, 1));
-      let alpha = innerFade * outerFade * (0.46 + (mix * 0.42));
-      if (body.id === "saturn") {
+      let alpha = innerFade * outerFade * (profile.alphaBase + (mix * profile.alphaRange));
+      if (profile.cassiniGaps) {
         const cassini = Math.exp(-Math.pow((r - 0.58) * 115, 2));
         const encke = Math.exp(-Math.pow((r - 0.72) * 200, 2));
         const cGap = 1 - (cassini * 0.82) - (encke * 0.3);
         const radialDust = 0.82 + (0.18 * spoke);
         alpha *= cGap * radialDust;
       } else {
-        alpha *= 0.6 + (spoke * 0.15);
+        alpha *= 0.62 + (spoke * profile.alphaSpoke);
       }
       alpha = clamp(alpha, 0, 1);
 
       for (let y = 0; y < height; y += 1) {
         const idx = (y * width + x) * 4;
-        colorData[idx] = toByte(c.r * (0.88 + (fine * 0.18)));
-        colorData[idx + 1] = toByte(c.g * (0.88 + (fine * 0.18)));
-        colorData[idx + 2] = toByte(c.b * (0.88 + (fine * 0.18)));
+        const brightnessScale = profile.brightnessBase + (fine * profile.brightnessRange);
+        colorData[idx] = toByte(c.r * brightnessScale);
+        colorData[idx + 1] = toByte(c.g * brightnessScale);
+        colorData[idx + 2] = toByte(c.b * brightnessScale);
         colorData[idx + 3] = 255;
 
         const alphaByte = toByte(alpha * 255);
@@ -1718,23 +1811,38 @@ function lodDistances(radius) {
   };
 }
 
+function ringGeometryProfile(bodyId) {
+  switch (bodyId) {
+    case "saturn":
+      return { innerScale: 1.42, outerScale: 2.65, opacity: 0.98, roughness: 0.82, alphaTest: 0.035 };
+    case "uranus":
+      return { innerScale: 1.5, outerScale: 2.14, opacity: 0.56, roughness: 0.88, alphaTest: 0.045 };
+    case "jupiter":
+      return { innerScale: 1.35, outerScale: 2.45, opacity: 0.22, roughness: 0.9, alphaTest: 0.05 };
+    case "neptune":
+      return { innerScale: 1.52, outerScale: 2.72, opacity: 0.28, roughness: 0.9, alphaTest: 0.05 };
+    default:
+      return { innerScale: 1.22, outerScale: 1.95, opacity: 0.84, roughness: 0.88, alphaTest: 0.04 };
+  }
+}
+
 function createRingMesh(body, radius, ringColorTex, ringAlphaTex) {
-  const isSaturn = body.id === "saturn";
-  const inner = radius * (isSaturn ? 1.42 : 1.22);
-  const outer = radius * (isSaturn ? 2.65 : 1.95);
-  const geometry = new THREE_NS.RingGeometry(inner, outer, 160, 1);
+  const profile = ringGeometryProfile(body.id);
+  const inner = radius * profile.innerScale;
+  const outer = radius * profile.outerScale;
+  const geometry = new THREE_NS.RingGeometry(inner, outer, 220, 1);
   const material = new THREE_NS.MeshStandardMaterial({
     map: ringColorTex,
     alphaMap: ringAlphaTex || ringColorTex,
     color: 0xffffff,
     transparent: true,
-    opacity: isSaturn ? 0.98 : 0.84,
+    opacity: profile.opacity,
     side: THREE_NS.DoubleSide,
-    roughness: isSaturn ? 0.82 : 0.88,
+    roughness: profile.roughness,
     metalness: 0.0,
     depthWrite: false,
   });
-  material.alphaTest = 0.035;
+  material.alphaTest = profile.alphaTest;
 
   const ring = new THREE_NS.Mesh(geometry, material);
   ring.rotation.x = Math.PI * 0.5;
