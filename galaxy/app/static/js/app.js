@@ -23,6 +23,10 @@ import {
 } from "./physics/celestialPhysics.js";
 import { createTidalOverlayController } from "./physics/overlays/tidalOverlay.js";
 import { createLagrangeOverlayController } from "./physics/overlays/lagrangeOverlay.js";
+import {
+  OBLATE_GRAVITY_ENABLED,
+  OBLATE_GRAVITY_MODEL,
+} from "./physics/config/oblatenessConfig.js";
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
@@ -80,66 +84,6 @@ const GRAVITY_VECTOR_COLOR = 0x63ffd8;
 const GRAVITY_VECTOR_MIN_LENGTH = 0.02;
 const GRAVITY_VECTOR_MAX_LENGTH = 1.6;
 const GRAVITY_VECTOR_BASELINE_MS2 = 0.08;
-const OBLATE_GRAVITY_ENABLED = true;
-const OBLATE_GRAVITY_MODEL = Object.freeze({
-  earth: Object.freeze({
-    j2: 1.08262668e-3,
-    j4: -1.61962159137e-6,
-    equatorialRadiusKm: 6378.137,
-  }),
-  jupiter: Object.freeze({
-    j2: 1.469643e-2,
-    j4: -5.87e-4,
-    equatorialRadiusKm: 71492,
-  }),
-  saturn: Object.freeze({
-    j2: 1.6298e-2,
-    j4: -9.358e-4,
-    equatorialRadiusKm: 60268,
-  }),
-  uranus: Object.freeze({
-    j2: 3.34343e-3,
-    j4: -2.9e-5,
-    equatorialRadiusKm: 25559,
-  }),
-  neptune: Object.freeze({
-    j2: 3.411e-3,
-    j4: -3.3e-5,
-    equatorialRadiusKm: 24764,
-  }),
-  // Major moons with measured quadrupole fields; J4 left at 0 when high-confidence
-  // values are not consistently available in current reference set.
-  moon: Object.freeze({
-    j2: 2.0326e-4,
-    j4: 0,
-    equatorialRadiusKm: 1738.1,
-  }),
-  io: Object.freeze({
-    j2: 1.8459e-3,
-    j4: 0,
-    equatorialRadiusKm: 1821.6,
-  }),
-  europa: Object.freeze({
-    j2: 4.35e-4,
-    j4: 0,
-    equatorialRadiusKm: 1560.8,
-  }),
-  ganymede: Object.freeze({
-    j2: 1.27e-4,
-    j4: 0,
-    equatorialRadiusKm: 2634.1,
-  }),
-  callisto: Object.freeze({
-    j2: 3.27e-5,
-    j4: 0,
-    equatorialRadiusKm: 2410.3,
-  }),
-  titan: Object.freeze({
-    j2: 3.15e-5,
-    j4: 0,
-    equatorialRadiusKm: 2574.7,
-  }),
-});
 const HORIZONS_STARTUP_FETCH_ONLY = true;
 const N_BODY_ALL_BODIES_MODE = true;
 const N_BODY_STATIC_SOURCE_IDS = new Set();
