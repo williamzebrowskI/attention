@@ -3082,7 +3082,7 @@ function renderRadiusForBody(body) {
   }
   let renderRadius = normalizedKm * renderScaleForBody(body);
 
-  if (body?.body_type === "moon" && !SCIENTIFIC_ACCURACY_MODE) {
+  if (body?.body_type === "moon") {
     const parent = metaById.get(body.parent || "");
     const parentRadiusKm = Number(parent?.radius_km);
     if (parentRadiusKm > 0) {
