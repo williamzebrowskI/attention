@@ -550,6 +550,10 @@ function setupRigidBodyAttitudeModel() {
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
     getInitialAxisVector: (bodyId) => spinAxisSceneVectorForBody(bodyId),
     getInitialSpinRadians: (bodyId, nowMs) => {
+      const calibrated = calibratedReferenceSpinRadians(bodyId, nowMs);
+      if (Number.isFinite(calibrated)) {
+        return calibrated;
+      }
       const body = metaById.get(bodyId);
       return body ? primeMeridianSpinRadians(body, nowMs) : null;
     },
