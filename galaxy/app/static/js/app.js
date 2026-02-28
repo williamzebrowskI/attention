@@ -101,6 +101,53 @@ const THREE_TEX_ROOTS = [
   "https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/",
   "https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/",
 ];
+const SOLARSYSTEM_SCOPE_TEXTURE_ROOT = "https://www.solarsystemscope.com/textures/download/";
+const MOON_TEXTURE_SLUG_BY_ID = Object.freeze({
+  moon: "moon",
+  phobos: "phobos",
+  deimos: "deimos",
+  io: "io",
+  europa: "europa",
+  ganymede: "ganymede",
+  callisto: "callisto",
+  amalthea: "amalthea",
+  mimas: "mimas",
+  enceladus: "enceladus",
+  tethys: "tethys",
+  dione: "dione",
+  rhea: "rhea",
+  titan: "titan",
+  hyperion: "hyperion",
+  iapetus: "iapetus",
+  phoebe: "phoebe",
+  puck: "puck",
+  miranda: "miranda",
+  ariel: "ariel",
+  umbriel: "umbriel",
+  titania: "titania",
+  oberon: "oberon",
+  naiad: "naiad",
+  thalassa: "thalassa",
+  despina: "despina",
+  galatea: "galatea",
+  larissa: "larissa",
+  proteus: "proteus",
+  triton: "triton",
+  nereid: "nereid",
+});
+const MOON_TEXTURE_OVERRIDES = Object.freeze({
+  moon: {
+    map: [
+      `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}8k_moon.jpg`,
+      `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}4k_moon.jpg`,
+      `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}2k_moon.jpg`,
+      ...planetTextureCandidates("moon_1024.jpg"),
+      `${TEX_ROOT}moonmap1k.jpg`,
+    ],
+    bump: [`${TEX_ROOT}moonbump1k.jpg`],
+    bumpScale: 0.065,
+  },
+});
 const EARTH_8K_DAY_MAPS = [
   "https://www.solarsystemscope.com/textures/download/8k_earth_daymap.jpg",
   "https://upload.wikimedia.org/wikipedia/commons/0/04/Solarsystemscope_texture_8k_earth_daymap.jpg",
@@ -152,11 +199,6 @@ const BODY_TEXTURE_CONFIG = {
     bumpScale: 0.035,
     atmosphereColor: 0x4e8ee9,
   },
-  moon: {
-    map: [...planetTextureCandidates("moon_1024.jpg"), `${TEX_ROOT}moonmap1k.jpg`],
-    bump: [`${TEX_ROOT}moonbump1k.jpg`],
-    bumpScale: 0.065,
-  },
   mars: {
     map: [...planetTextureCandidates("mars_1k_color.jpg"), `${TEX_ROOT}marsmap1k.jpg`],
     bump: [`${TEX_ROOT}marsbump1k.jpg`],
@@ -179,14 +221,10 @@ const BODY_TEXTURE_CONFIG = {
   neptune: {
     map: [...planetTextureCandidates("neptune.jpg"), `${TEX_ROOT}neptunemap.jpg`],
   },
-  moon_default: {
-    map: [...planetTextureCandidates("moon_1024.jpg"), `${TEX_ROOT}moonmap1k.jpg`],
-    bump: [`${TEX_ROOT}moonbump1k.jpg`],
-    bumpScale: 0.07,
-  },
 };
 
 const MOON_SURFACE_PROFILES = {
+  moon: { low: "#5c5f65", mid: "#989ca4", high: "#d6d8de", contrast: 0.23, terrainStrength: 0.64 },
   phobos: { low: "#5d4a39", mid: "#8e7254", high: "#b49977", contrast: 0.18, terrainStrength: 0.55 },
   deimos: { low: "#6b5a49", mid: "#a48967", high: "#c7ac8b", contrast: 0.16, terrainStrength: 0.52 },
   io: { low: "#7a6224", mid: "#d8b65a", high: "#f4e192", contrast: 0.26, terrainStrength: 0.68 },
@@ -841,9 +879,48 @@ function getTexturePlan(body) {
     return BODY_TEXTURE_CONFIG[body.id];
   }
   if (body.body_type === "moon") {
-    return BODY_TEXTURE_CONFIG.moon_default || { map: null };
+    return buildUniqueMoonTexturePlan(body.id);
   }
   return { map: null };
+}
+
+function buildUniqueMoonTexturePlan(moonId) {
+  const override = MOON_TEXTURE_OVERRIDES[moonId];
+  if (override) {
+    return {
+      ...override,
+      map: uniqueTextureUrlList(override.map),
+      bump: uniqueTextureUrlList(override.bump),
+      normal: uniqueTextureUrlList(override.normal),
+      specular: uniqueTextureUrlList(override.specular),
+      emissive: uniqueTextureUrlList(override.emissive),
+      clouds: uniqueTextureUrlList(override.clouds),
+      ringColor: uniqueTextureUrlList(override.ringColor),
+      ringAlpha: uniqueTextureUrlList(override.ringAlpha),
+    };
+  }
+
+  const slug = MOON_TEXTURE_SLUG_BY_ID[moonId] || moonId;
+  const map = uniqueTextureUrlList([
+    `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}8k_${slug}.jpg`,
+    `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}4k_${slug}.jpg`,
+    `${SOLARSYSTEM_SCOPE_TEXTURE_ROOT}2k_${slug}.jpg`,
+  ]);
+  return {
+    map,
+    bumpScale: 0.07,
+  };
+}
+
+function uniqueTextureUrlList(urlOrUrls) {
+  if (!urlOrUrls) {
+    return undefined;
+  }
+  const normalized = normalizeTextureUrls(urlOrUrls);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return [...new Set(normalized)];
 }
 
 async function loadTexturePlan(plan, options = {}) {
@@ -968,10 +1045,7 @@ function buildCloudMesh(bodyId, renderRadius, cloudMap) {
 }
 
 async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius) {
-  const photorealPlan =
-    BODY_TEXTURE_CONFIG[body.id] ||
-    (body.body_type === "moon" ? BODY_TEXTURE_CONFIG.moon_default : null) ||
-    plan;
+  const photorealPlan = BODY_TEXTURE_CONFIG[body.id] || (body.body_type === "moon" ? buildUniqueMoonTexturePlan(body.id) : null) || plan;
   if (!photorealPlan || photorealPlan.proceduralMoon) {
     return;
   }
