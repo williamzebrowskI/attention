@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.catalog import BODY_BY_ID, BODY_DEFINITIONS, BodyDefinition
-from app.services.horizons import HorizonsClient, HorizonsError
+from app.services.horizons import HorizonsClient, HorizonsError, HorizonsVector
 
 AU_IN_KM = 149_597_870.7
 J2000 = datetime(2000, 1, 1, 12, tzinfo=timezone.utc)
@@ -30,6 +30,7 @@ class SolarSystemService:
         self._cache_ttl_seconds = cache_ttl_seconds
         self._cache: dict[tuple[int, bool], CacheEntry] = {}
         self._last_horizons_positions: dict[str, tuple[float, float, float]] = {}
+        self._last_horizons_velocities: dict[str, tuple[float, float, float]] = {}
 
     def list_bodies(self, include_moons: bool = True) -> list[dict[str, Any]]:
         return [body.to_dict() for body in self._filter_bodies(include_moons)]
@@ -49,6 +50,7 @@ class SolarSystemService:
 
         bodies = self._filter_bodies(include_moons)
         body_positions: dict[str, tuple[float, float, float]] = {"sun": (0.0, 0.0, 0.0)}
+        body_velocities: dict[str, tuple[float, float, float]] = {"sun": (0.0, 0.0, 0.0)}
         source_by_id: dict[str, str] = {"sun": "DEFINED_ORIGIN"}
         errors_by_id: dict[str, str] = {}
 
@@ -64,13 +66,16 @@ class SolarSystemService:
                 cached = self._last_horizons_positions.get(body.id)
                 if cached is not None:
                     body_positions[body.id] = cached
+                    body_velocities[body.id] = self._last_horizons_velocities.get(body.id, (0.0, 0.0, 0.0))
                     source_by_id[body.id] = "HORIZONS_CACHED"
                 else:
                     errors_by_id[body.id] = self._format_source_error(vector)
                     failed_planet_targets.append(body)
                 continue
-            body_positions[body.id] = vector
-            self._last_horizons_positions[body.id] = vector
+            body_positions[body.id] = vector.position_km
+            body_velocities[body.id] = vector.velocity_km_s
+            self._last_horizons_positions[body.id] = vector.position_km
+            self._last_horizons_velocities[body.id] = vector.velocity_km_s
             source_by_id[body.id] = "HORIZONS"
 
         # Retry uncached planet failures once, sequentially, to reduce startup
@@ -81,8 +86,10 @@ class SolarSystemService:
             except Exception as exc:  # noqa: BLE001 - preserve best-known fallback behavior
                 errors_by_id[body.id] = self._format_source_error(exc)
                 continue
-            body_positions[body.id] = vector
-            self._last_horizons_positions[body.id] = vector
+            body_positions[body.id] = vector.position_km
+            body_velocities[body.id] = vector.velocity_km_s
+            self._last_horizons_positions[body.id] = vector.position_km
+            self._last_horizons_velocities[body.id] = vector.velocity_km_s
             source_by_id[body.id] = "HORIZONS"
             errors_by_id.pop(body.id, None)
 
@@ -91,6 +98,7 @@ class SolarSystemService:
                 bodies=bodies,
                 at_utc=at_utc,
                 body_positions=body_positions,
+                body_velocities=body_velocities,
                 source_by_id=source_by_id,
                 errors_by_id=errors_by_id,
             )
@@ -100,6 +108,7 @@ class SolarSystemService:
                 continue
             fallback = self._approximate_position(body, at_utc, body_positions)
             body_positions[body.id] = fallback
+            body_velocities.setdefault(body.id, (0.0, 0.0, 0.0))
             source_by_id[body.id] = "APPROXIMATE"
 
         payload = {
@@ -110,7 +119,9 @@ class SolarSystemService:
                 self._build_body_payload(
                     body=body,
                     position=body_positions[body.id],
+                    velocity=body_velocities.get(body.id),
                     parent_position=body_positions.get(body.parent) if body.parent else None,
+                    parent_velocity=body_velocities.get(body.parent) if body.parent else None,
                     source=source_by_id.get(body.id, "UNKNOWN"),
                     error=errors_by_id.get(body.id),
                 )
@@ -130,6 +141,7 @@ class SolarSystemService:
         bodies: list[BodyDefinition],
         at_utc: datetime,
         body_positions: dict[str, tuple[float, float, float]],
+        body_velocities: dict[str, tuple[float, float, float]],
         source_by_id: dict[str, str],
         errors_by_id: dict[str, str],
     ) -> None:
@@ -153,15 +165,19 @@ class SolarSystemService:
             parent_id = moon.parent or "sun"
             parent_body = BODY_BY_ID.get(parent_id)
             parent_position = body_positions.get(parent_id)
+            parent_velocity = body_velocities.get(parent_id)
             if parent_position is None and parent_body:
                 parent_position = self._approximate_position(parent_body, at_utc, body_positions)
                 body_positions[parent_id] = parent_position
+                body_velocities.setdefault(parent_id, (0.0, 0.0, 0.0))
                 source_by_id.setdefault(parent_id, "APPROXIMATE")
+                parent_velocity = body_velocities.get(parent_id)
 
             if isinstance(vector, Exception):
                 cached = self._last_horizons_positions.get(moon.id)
                 if cached is not None:
                     body_positions[moon.id] = cached
+                    body_velocities[moon.id] = self._last_horizons_velocities.get(moon.id, (0.0, 0.0, 0.0))
                     source_by_id[moon.id] = "HORIZONS_CACHED"
                     errors_by_id.pop(moon.id, None)
                 else:
@@ -172,14 +188,23 @@ class SolarSystemService:
                 errors_by_id[moon.id] = f"Parent position unavailable for {parent_id}"
                 continue
 
-            rel_x, rel_y, rel_z = vector
+            rel_x, rel_y, rel_z = vector.position_km
             absolute = (
                 parent_position[0] + rel_x,
                 parent_position[1] + rel_y,
                 parent_position[2] + rel_z,
             )
+            parent_velocity = parent_velocity or (0.0, 0.0, 0.0)
+            rel_vx, rel_vy, rel_vz = vector.velocity_km_s
+            absolute_velocity = (
+                parent_velocity[0] + rel_vx,
+                parent_velocity[1] + rel_vy,
+                parent_velocity[2] + rel_vz,
+            )
             body_positions[moon.id] = absolute
+            body_velocities[moon.id] = absolute_velocity
             self._last_horizons_positions[moon.id] = absolute
+            self._last_horizons_velocities[moon.id] = absolute_velocity
             source_by_id[moon.id] = "HORIZONS"
             errors_by_id.pop(moon.id, None)
 
@@ -232,7 +257,9 @@ class SolarSystemService:
     def _build_body_payload(
         body: BodyDefinition,
         position: tuple[float, float, float],
+        velocity: tuple[float, float, float] | None,
         parent_position: tuple[float, float, float] | None,
+        parent_velocity: tuple[float, float, float] | None,
         source: str,
         error: str | None,
     ) -> dict[str, Any]:
@@ -244,6 +271,9 @@ class SolarSystemService:
             "type": body.body_type,
             "parent": body.parent,
             "coordinates_km": {"x": x, "y": y, "z": z},
+            "coordinates_velocity_km_s": (
+                {"x": velocity[0], "y": velocity[1], "z": velocity[2]} if velocity is not None else None
+            ),
             "distance_from_sun_km": distance_km,
             "distance_from_sun_au": distance_km / AU_IN_KM,
             "source": source,
@@ -263,6 +293,12 @@ class SolarSystemService:
                 "y": rel_y,
                 "z": rel_z,
             }
+            if velocity is not None and parent_velocity is not None:
+                output["coordinates_velocity_relative_to_parent_km_s"] = {
+                    "x": velocity[0] - parent_velocity[0],
+                    "y": velocity[1] - parent_velocity[1],
+                    "z": velocity[2] - parent_velocity[2],
+                }
             output["distance_from_parent_km"] = math.sqrt((rel_x * rel_x) + (rel_y * rel_y) + (rel_z * rel_z))
         if error and source == "APPROXIMATE":
             output["source_error"] = error

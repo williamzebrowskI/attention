@@ -58,6 +58,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_RETRY_LIMIT = 3;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
+const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60;
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
@@ -1915,14 +1916,10 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
   const meta = metaById.get(bodyId);
   const live = positionsById.get(bodyId)?.coordinates_km;
   if (SCIENTIFIC_ACCURACY_MODE && live) {
-    const strictLive = {
-      x: live.x,
-      y: live.y,
-      z: live.z,
-    };
-    runtimeCoords.set(bodyId, strictLive);
+    const propagatedLive = propagateLiveCoordinates(bodyId, nowMs);
+    runtimeCoords.set(bodyId, propagatedLive);
     resolving.delete(bodyId);
-    return strictLive;
+    return propagatedLive;
   }
   if (!state || !meta) {
     const fallback = live
@@ -1973,6 +1970,37 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
   runtimeCoords.set(bodyId, computed);
   resolving.delete(bodyId);
   return computed;
+}
+
+function propagateLiveCoordinates(bodyId, nowMs) {
+  const liveEntry = positionsById.get(bodyId);
+  const liveCoords = liveEntry?.coordinates_km;
+  if (!liveCoords) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const liveVelocity = liveEntry?.coordinates_velocity_km_s;
+  const hasVelocity =
+    Number.isFinite(Number(liveVelocity?.x)) &&
+    Number.isFinite(Number(liveVelocity?.y)) &&
+    Number.isFinite(Number(liveVelocity?.z));
+  if (!hasVelocity) {
+    return {
+      x: liveCoords.x,
+      y: liveCoords.y,
+      z: liveCoords.z,
+    };
+  }
+
+  const dtSeconds = clamp(
+    (nowMs - latestSolarTimestampMs) / 1000,
+    -LIVE_VELOCITY_PROPAGATION_MAX_SECONDS,
+    LIVE_VELOCITY_PROPAGATION_MAX_SECONDS,
+  );
+  return {
+    x: liveCoords.x + (liveVelocity.x * dtSeconds),
+    y: liveCoords.y + (liveVelocity.y * dtSeconds),
+    z: liveCoords.z + (liveVelocity.z * dtSeconds),
+  };
 }
 
 function applyScenePositions(runtimeCoordsKm) {

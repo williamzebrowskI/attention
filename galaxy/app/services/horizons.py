@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -8,6 +9,12 @@ import httpx
 
 class HorizonsError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class HorizonsVector:
+    position_km: tuple[float, float, float]
+    velocity_km_s: tuple[float, float, float]
 
 
 class HorizonsClient:
@@ -25,7 +32,7 @@ class HorizonsClient:
         self._retry_backoff_seconds = max(0.05, float(retry_backoff_seconds))
         self._semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
 
-    async def fetch_heliocentric_vector(self, command: str, at: datetime) -> tuple[float, float, float]:
+    async def fetch_heliocentric_vector(self, command: str, at: datetime) -> HorizonsVector:
         return await self.fetch_vector(command=command, at=at, center="500@10")
 
     async def fetch_vector(
@@ -33,7 +40,7 @@ class HorizonsClient:
         command: str,
         at: datetime,
         center: str = "500@10",
-    ) -> tuple[float, float, float]:
+    ) -> HorizonsVector:
         at_utc = at.astimezone(timezone.utc)
         stop_utc = at_utc + timedelta(seconds=1)
         start_time = at_utc.strftime("%Y-%m-%d %H:%M:%S")
@@ -95,7 +102,7 @@ class HorizonsClient:
         raise HorizonsError("Horizons request failed") from last_error
 
     @staticmethod
-    def _extract_vector_from_result(result_text: str) -> tuple[float, float, float]:
+    def _extract_vector_from_result(result_text: str) -> HorizonsVector:
         soe_idx = result_text.find("$$SOE")
         eoe_idx = result_text.find("$$EOE")
         if soe_idx == -1 or eoe_idx == -1 or eoe_idx <= soe_idx:
@@ -110,15 +117,24 @@ class HorizonsClient:
         if len(parts) < 5:
             raise HorizonsError("Unexpected Horizons vector row format.")
 
-        coords: list[float] = []
+        numeric_values: list[float] = []
         for token in parts[2:]:
             try:
-                coords.append(float(token.replace("D", "E")))
+                numeric_values.append(float(token.replace("D", "E")))
             except ValueError:
                 continue
-            if len(coords) == 3:
+            if len(numeric_values) == 6:
                 break
 
-        if len(coords) != 3:
+        if len(numeric_values) < 3:
             raise HorizonsError("Failed to parse XYZ vector from Horizons row.")
-        return coords[0], coords[1], coords[2]
+
+        position_km = (numeric_values[0], numeric_values[1], numeric_values[2])
+        if len(numeric_values) >= 6:
+            velocity_km_s = (numeric_values[3], numeric_values[4], numeric_values[5])
+        else:
+            velocity_km_s = (0.0, 0.0, 0.0)
+        return HorizonsVector(
+            position_km=position_km,
+            velocity_km_s=velocity_km_s,
+        )
