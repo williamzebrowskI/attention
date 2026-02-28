@@ -21,7 +21,7 @@ Interactive solar-system visualization backed by a Python API. The backend fetch
 - Expanded moon catalog across moon-bearing planets (31 moons)
 - Real-time heliocentric orbit paths for planets, with live orbital phase markers
 - Orbit timing and spin are locked to real-time physical rates in strict mode
-- IAU prime-meridian orientation model (`W(t)`) for time-based body texture alignment
+- IAU prime-meridian orientation model (`W(t)`) with explicit constants for all planets and moons
 - Physics lock checks to prevent accidental changes to critical orbital/rotation constants
 
 ## Data Sources

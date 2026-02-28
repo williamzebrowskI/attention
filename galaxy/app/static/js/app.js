@@ -4,6 +4,7 @@ import {
   ORBIT_VISUAL_PERIOD_HOURS,
   ORBIT_ECCENTRICITY,
   ORBIT_PERIHELION_DEG,
+  ROTATION_PERIOD_HOURS,
   ROTATION_SOLAR_DAY_HOURS,
   SPIN_AXIS_EQUATORIAL_DEG,
   ROTATION_TIME_SCALE_OVERRIDE,
@@ -333,12 +334,24 @@ function assertPhysicsLockInvariants() {
       ok: Object.keys(ORBIT_VISUAL_PERIOD_HOURS || {}).length === 0,
       label: "ORBIT_VISUAL_PERIOD_HOURS must remain empty",
     },
+    {
+      ok: primeMeridianCoverageMissingIds().length === 0,
+      label: `PRIME_MERIDIAN_W_DEG missing ids: ${primeMeridianCoverageMissingIds().join(", ")}`,
+    },
   ];
 
   const failed = invariantChecks.find((check) => !check.ok);
   if (failed) {
     throw new Error(`Physics lock mismatch: ${failed.label}`);
   }
+}
+
+function primeMeridianCoverageMissingIds() {
+  const rotationIds = Object.keys(ROTATION_PERIOD_HOURS || {});
+  return rotationIds.filter((id) => {
+    const model = PRIME_MERIDIAN_W_DEG?.[id];
+    return !Number.isFinite(Number(model?.w0Deg)) || !Number.isFinite(Number(model?.wRateDegPerDay));
+  });
 }
 
 async function loadThreeModule() {

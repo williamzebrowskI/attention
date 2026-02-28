@@ -129,10 +129,40 @@ export const PRIME_MERIDIAN_W_DEG = {
   earth: { w0Deg: 190.147, wRateDegPerDay: 360.9856235 },
   moon: { w0Deg: 38.3213, wRateDegPerDay: 13.17635815 },
   mars: { w0Deg: 176.63, wRateDegPerDay: 350.89198226 },
+  phobos: { w0Deg: 0.0, wRateDegPerDay: 1128.9690317523 },
+  deimos: { w0Deg: 0.0, wRateDegPerDay: 284.6787479407 },
   jupiter: { w0Deg: 284.95, wRateDegPerDay: 870.536 },
+  io: { w0Deg: 0.0, wRateDegPerDay: 203.4856335374 },
+  europa: { w0Deg: 0.0, wRateDegPerDay: 101.3727560718 },
+  ganymede: { w0Deg: 0.0, wRateDegPerDay: 50.3173956089 },
+  callisto: { w0Deg: 0.0, wRateDegPerDay: 21.5708793129 },
+  amalthea: { w0Deg: 0.0, wRateDegPerDay: 723.0125523013 },
   saturn: { w0Deg: 38.9, wRateDegPerDay: 810.7939024 },
+  mimas: { w0Deg: 0.0, wRateDegPerDay: 382.1318000885 },
+  enceladus: { w0Deg: 0.0, wRateDegPerDay: 262.7737226277 },
+  tethys: { w0Deg: 0.0, wRateDegPerDay: 190.686382697 },
+  dione: { w0Deg: 0.0, wRateDegPerDay: 131.5268686254 },
+  rhea: { w0Deg: 0.0, wRateDegPerDay: 79.6827446279 },
+  titan: { w0Deg: 0.0, wRateDegPerDay: 22.5776105362 },
+  hyperion: { w0Deg: 0.0, wRateDegPerDay: 27.2211720227 },
+  iapetus: { w0Deg: 0.0, wRateDegPerDay: 4.5385302306 },
+  phoebe: { w0Deg: 0.0, wRateDegPerDay: 932.0388349515 },
   uranus: { w0Deg: 203.81, wRateDegPerDay: -501.1600928 },
+  puck: { w0Deg: 0.0, wRateDegPerDay: 472.3892837616 },
+  miranda: { w0Deg: 0.0, wRateDegPerDay: 254.7920967266 },
+  ariel: { w0Deg: 0.0, wRateDegPerDay: 142.8335262027 },
+  umbriel: { w0Deg: 0.0, wRateDegPerDay: 86.8690931028 },
+  titania: { w0Deg: 0.0, wRateDegPerDay: 41.3357573438 },
+  oberon: { w0Deg: 0.0, wRateDegPerDay: 26.740119464 },
   neptune: { w0Deg: 253.18, wRateDegPerDay: 536.3128492 },
+  naiad: { w0Deg: 0.0, wRateDegPerDay: 1223.7960339943 },
+  thalassa: { w0Deg: 0.0, wRateDegPerDay: 1158.1769436997 },
+  despina: { w0Deg: 0.0, wRateDegPerDay: 1074.6268656716 },
+  galatea: { w0Deg: 0.0, wRateDegPerDay: 839.6501457726 },
+  larissa: { w0Deg: 0.0, wRateDegPerDay: 649.135987979 },
+  proteus: { w0Deg: 0.0, wRateDegPerDay: 320.5936920223 },
+  triton: { w0Deg: 0.0, wRateDegPerDay: -61.2592172433 },
+  nereid: { w0Deg: 0.0, wRateDegPerDay: 750.0 },
 };
 
 export const MOON_ORBIT_DIRECTION = {
@@ -211,7 +241,7 @@ export const ROTATION_TIME_SCALE_OVERRIDE = {
 };
 
 export const ORBITAL_CONFIG_LOCK_ENFORCED = true;
-export const ORBITAL_CONFIG_LOCK_HASH = "a6845a36";
+export const ORBITAL_CONFIG_LOCK_HASH = "a51fb0c9";
 
 function stableStringify(value) {
   if (Array.isArray(value)) {
