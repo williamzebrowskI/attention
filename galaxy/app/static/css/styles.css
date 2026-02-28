@@ -127,11 +127,15 @@ body {
   margin-bottom: 8px;
 }
 
+.legend-entry {
+  margin: 0 0 4px;
+}
+
 .legend-button {
   width: 100%;
   display: block;
-  margin: 0 0 4px;
-  padding: 6px 24px 6px 8px;
+  margin: 0;
+  padding: 6px 30px 6px 8px;
   border-radius: 8px;
   border: 1px solid rgba(86, 186, 255, 0.2);
   background: rgba(7, 15, 26, 0.65);
@@ -168,6 +172,19 @@ body {
   color: #c8d9f0;
 }
 
+.legend-button.show-gravity-caret::before {
+  content: "";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-right: 1.6px solid rgba(201, 232, 255, 0.9);
+  border-bottom: 1.6px solid rgba(201, 232, 255, 0.9);
+  transform: translateY(-60%) rotate(45deg);
+  pointer-events: none;
+}
+
 .legend-button.fallback::after {
   content: "";
   position: absolute;
@@ -179,6 +196,70 @@ body {
   transform: translateY(-50%);
   background: #ff4b4b;
   box-shadow: 0 0 8px rgba(255, 75, 75, 0.86);
+}
+
+.legend-button.fallback.show-gravity-caret::after {
+  right: 24px;
+}
+
+.legend-gravity-panel {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  margin: 0;
+  padding: 0 8px;
+  border-left: 1px solid rgba(86, 186, 255, 0.18);
+  border-right: 1px solid rgba(86, 186, 255, 0.18);
+  border-bottom: 1px solid rgba(86, 186, 255, 0.18);
+  border-radius: 0 0 8px 8px;
+  background: rgba(6, 13, 24, 0.74);
+  transform: translateY(-2px);
+  transition: max-height 140ms ease, opacity 120ms linear, padding 120ms ease;
+}
+
+.legend-gravity-panel.open {
+  max-height: 72px;
+  opacity: 1;
+  pointer-events: auto;
+  padding: 7px 8px 8px;
+}
+
+.legend-gravity-panel.moon {
+  margin-left: 12px;
+  width: calc(100% - 12px);
+}
+
+.legend-gravity-label {
+  display: block;
+  margin: 0 0 6px;
+  color: #b7d7f5;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
+}
+
+.legend-gravity-toggle {
+  width: 100%;
+  display: block;
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(86, 186, 255, 0.3);
+  background: rgba(13, 22, 35, 0.8);
+  color: #d7ecff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.legend-gravity-toggle.on {
+  border-color: rgba(246, 190, 88, 0.9);
+  background: rgba(64, 45, 15, 0.82);
+  color: #ffe7b7;
 }
 
 @media (max-width: 880px) {

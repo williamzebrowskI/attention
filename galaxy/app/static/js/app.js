@@ -328,6 +328,8 @@ let positionsById = new Map();
 let bodyVisuals = new Map();
 let orbitVisuals = new Map();
 let legendButtonsById = new Map();
+let legendGravityPanelsById = new Map();
+let legendGravityToggleButtonsById = new Map();
 let selectedId = null;
 let detailBodyId = null;
 let textureCache = new Map();
@@ -613,13 +615,15 @@ function rebuildBodyLegend() {
 
   bodyLegendList.innerHTML = "";
   legendButtonsById = new Map();
+  legendGravityPanelsById = new Map();
+  legendGravityToggleButtonsById = new Map();
   const fragment = document.createDocumentFragment();
 
   const sun = bodies.find((body) => body.id === "sun");
   if (sun) {
     const group = document.createElement("div");
     group.className = "legend-group";
-    group.appendChild(createLegendButton(sun, false));
+    group.appendChild(createLegendEntry(sun, false));
     fragment.appendChild(group);
   }
 
@@ -630,13 +634,13 @@ function rebuildBodyLegend() {
   for (const planet of planets) {
     const group = document.createElement("div");
     group.className = "legend-group";
-    group.appendChild(createLegendButton(planet, false));
+    group.appendChild(createLegendEntry(planet, false));
 
     const moons = bodies
       .filter((body) => body.body_type === "moon" && body.parent === planet.id)
       .sort((a, b) => sortBySemimajorAxisThenName(a, b));
     for (const moon of moons) {
-      group.appendChild(createLegendButton(moon, true));
+      group.appendChild(createLegendEntry(moon, true));
     }
     fragment.appendChild(group);
   }
@@ -648,7 +652,7 @@ function rebuildBodyLegend() {
     const group = document.createElement("div");
     group.className = "legend-group";
     for (const moon of orphanMoons) {
-      group.appendChild(createLegendButton(moon, true));
+      group.appendChild(createLegendEntry(moon, true));
     }
     fragment.appendChild(group);
   }
@@ -659,6 +663,29 @@ function rebuildBodyLegend() {
   updateLegendGravityArrowIndicators();
 }
 
+function supportsLegendGravityControlByBody(body) {
+  return body?.body_type === "planet" || body?.body_type === "moon";
+}
+
+function supportsLegendGravityControl(bodyId) {
+  return supportsLegendGravityControlByBody(metaById.get(bodyId));
+}
+
+function createLegendEntry(body, isMoon) {
+  const entry = document.createElement("div");
+  entry.className = isMoon ? "legend-entry moon" : "legend-entry";
+  const button = createLegendButton(body, isMoon);
+  entry.appendChild(button);
+
+  if (supportsLegendGravityControlByBody(body)) {
+    const panel = createLegendGravityPanel(body, isMoon);
+    entry.appendChild(panel);
+    legendGravityPanelsById.set(body.id, panel);
+  }
+
+  return entry;
+}
+
 function createLegendButton(body, isMoon) {
   const button = document.createElement("button");
   button.type = "button";
@@ -667,20 +694,49 @@ function createLegendButton(body, isMoon) {
   button.textContent = body.name;
   button.title = `${body.name} (${body.body_type})`;
   button.addEventListener("click", () => {
-    const shouldHideArrows = gravityArrowsLegendActivated && gravityArrowFocusBodyId === body.id;
-    if (shouldHideArrows) {
+    setSelected(body.id, true);
+  });
+  legendButtonsById.set(body.id, button);
+  return button;
+}
+
+function createLegendGravityPanel(body, isMoon) {
+  const panel = document.createElement("div");
+  panel.className = isMoon ? "legend-gravity-panel moon" : "legend-gravity-panel";
+
+  const label = document.createElement("span");
+  label.className = "legend-gravity-label";
+  label.textContent = "Gravitational Pull";
+  panel.appendChild(label);
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "legend-gravity-toggle";
+  toggle.textContent = "Off";
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (selectedId !== body.id) {
+      setSelected(body.id, true);
+    }
+    const isActiveForBody =
+      gravityArrowsLegendActivated &&
+      gravityArrowFocusBodyId === body.id;
+    if (isActiveForBody) {
       gravityArrowsLegendActivated = false;
       gravityArrowFocusBodyId = null;
     } else {
       gravityArrowsLegendActivated = true;
       gravityArrowFocusBodyId = body.id;
     }
-    setSelected(body.id, true);
     updateLegendGravityArrowIndicators();
     updateGravityVectors();
   });
-  legendButtonsById.set(body.id, button);
-  return button;
+  panel.appendChild(toggle);
+  legendGravityToggleButtonsById.set(body.id, toggle);
+
+  return panel;
 }
 
 function sortBySemimajorAxisThenName(a, b) {
@@ -720,7 +776,36 @@ function updateLegendGravityArrowIndicators() {
       gravityArrowsLegendActivated &&
       gravityArrowFocusBodyId === bodyId,
     );
+    const showCaret = Boolean(
+      selectedId === bodyId &&
+      supportsLegendGravityControl(bodyId),
+    );
+    button.classList.toggle("show-gravity-caret", showCaret);
     button.classList.toggle("gravity-arrow-enabled", isArrowEnabled);
+    if (showCaret) {
+      button.setAttribute("aria-expanded", "true");
+    } else {
+      button.removeAttribute("aria-expanded");
+    }
+  }
+
+  for (const [bodyId, panel] of legendGravityPanelsById.entries()) {
+    const open = Boolean(
+      selectedId === bodyId &&
+      supportsLegendGravityControl(bodyId),
+    );
+    panel.classList.toggle("open", open);
+  }
+
+  for (const [bodyId, toggle] of legendGravityToggleButtonsById.entries()) {
+    const enabled = Boolean(
+      gravityArrowsLegendActivated &&
+      gravityArrowFocusBodyId === bodyId &&
+      selectedId === bodyId,
+    );
+    toggle.textContent = enabled ? "On" : "Off";
+    toggle.classList.toggle("on", enabled);
+    toggle.setAttribute("aria-pressed", enabled ? "true" : "false");
   }
 }
 
@@ -3510,7 +3595,11 @@ function onWheel(event) {
     const sunVisual = bodyVisuals.get("sun");
     if (sunVisual) {
       selectedId = null;
+      gravityArrowFocusBodyId = null;
+      gravityArrowsLegendActivated = false;
       updateLegendSelection();
+      updateLegendGravityArrowIndicators();
+      updateGravityVectors();
       updateObservationStatus();
       orbit.minDistance = ORBIT_MIN_DISTANCE_BASE;
       orbit.target.copy(sunVisual.root.position);
@@ -3560,8 +3649,15 @@ function preferredCameraDistanceForSelection(visual) {
 }
 
 function setSelected(bodyId, moveCamera) {
+  const selectionChanged = selectedId !== bodyId;
   selectedId = bodyId;
+  if (selectionChanged) {
+    gravityArrowFocusBodyId = bodyId;
+    gravityArrowsLegendActivated = false;
+  }
   updateLegendSelection();
+  updateLegendGravityArrowIndicators();
+  updateGravityVectors();
   const visual = bodyVisuals.get(bodyId);
   if (!visual) {
     return;
