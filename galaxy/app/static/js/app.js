@@ -150,6 +150,21 @@ const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "perdita",
   "cupid",
   "mab",
+  "neptune",
+  "naiad",
+  "thalassa",
+  "despina",
+  "galatea",
+  "larissa",
+  "proteus",
+  "triton",
+  "nereid",
+  "hippocamp",
+  "halimede",
+  "sao",
+  "laomedeia",
+  "psamathe",
+  "neso",
 ]);
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
