@@ -90,6 +90,9 @@ const AMBIENT_LIGHT_INTENSITY_TRUE_SCALE = 0.004;
 const AMBIENT_LIGHT_INTENSITY_DEFAULT_SCALE = 0.022;
 const HEMISPHERE_LIGHT_INTENSITY_TRUE_SCALE = 0.006;
 const HEMISPHERE_LIGHT_INTENSITY_DEFAULT_SCALE = 0.03;
+const ORBIT_MIN_DISTANCE_BASE = 0.000002;
+const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
+const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
 
 const TEX_ROOT = "https://cdn.jsdelivr.net/gh/jeromeetienne/threex.planets@master/images/";
 const THREE_TEX_ROOTS = [
@@ -282,7 +285,7 @@ let latestSolarTimestampMs = Date.now();
 const orbit = {
   target: null,
   radius: 2200,
-  minDistance: 0.002,
+  minDistance: ORBIT_MIN_DISTANCE_BASE,
   maxDistance: 14000,
   azimuth: 0.0,
   polar: 1.1,
@@ -2556,10 +2559,21 @@ function onWheel(event) {
     if (sunVisual) {
       selectedId = null;
       updateLegendSelection();
+      orbit.minDistance = ORBIT_MIN_DISTANCE_BASE;
       orbit.target.copy(sunVisual.root.position);
     }
   }
   updateCameraFromOrbit();
+}
+
+function minOrbitDistanceForVisual(visual) {
+  if (!visual || !(visual.renderRadius > 0)) {
+    return ORBIT_MIN_DISTANCE_BASE;
+  }
+  return Math.max(
+    ORBIT_MIN_DISTANCE_ABSOLUTE,
+    visual.renderRadius * ORBIT_MIN_DISTANCE_RADIUS_FACTOR,
+  );
 }
 
 function preferredCameraDistanceForSelection(visual) {
@@ -2568,7 +2582,7 @@ function preferredCameraDistanceForSelection(visual) {
   }
 
   const body = visual.body;
-  const nearSurface = Math.max(orbit.minDistance * 1.05, visual.renderRadius * 1.06);
+  const nearSurface = minOrbitDistanceForVisual(visual);
   if (body.id === "sun") {
     return clamp(
       Math.max(visual.renderRadius * 2.3, 1.3),
@@ -2600,6 +2614,7 @@ function setSelected(bodyId, moveCamera) {
     return;
   }
 
+  orbit.minDistance = minOrbitDistanceForVisual(visual);
   orbit.target.copy(visual.root.position);
   if (moveCamera) {
     orbit.radius = preferredCameraDistanceForSelection(visual);
@@ -2611,6 +2626,12 @@ function setSelected(bodyId, moveCamera) {
 function updateCameraFromOrbit() {
   if (!camera || !orbit.target) {
     return;
+  }
+
+  const desiredNear = clamp(orbit.radius * 0.02, 0.00000005, 0.05);
+  if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
+    camera.near = desiredNear;
+    camera.updateProjectionMatrix();
   }
 
   const sinPolar = Math.sin(orbit.polar);
