@@ -64,6 +64,7 @@ const PHOTOREAL_RETRY_LIMIT = 3;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60;
+const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
 const EARTHSHINE_LAMBERT_FACTOR = 2 / 3;
@@ -2020,7 +2021,7 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
   const meta = metaById.get(bodyId);
   const live = positionsById.get(bodyId)?.coordinates_km;
   if (SCIENTIFIC_ACCURACY_MODE && live) {
-    const propagatedLive = propagateLiveCoordinates(bodyId, nowMs);
+    const propagatedLive = propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs);
     runtimeCoords.set(bodyId, propagatedLive);
     resolving.delete(bodyId);
     return propagatedLive;
@@ -2076,7 +2077,53 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
   return computed;
 }
 
-function propagateLiveCoordinates(bodyId, nowMs) {
+function gravityCenterIdForBody(body) {
+  if (!body || body.id === "sun") {
+    return null;
+  }
+  if (body.body_type === "moon" && body.parent) {
+    return body.parent;
+  }
+  if (body.parent) {
+    return body.parent;
+  }
+  return "sun";
+}
+
+function bodyMassKgById(bodyId) {
+  const mass = Number(metaById.get(bodyId)?.mass_kg);
+  return Number.isFinite(mass) && mass > 0 ? mass : null;
+}
+
+function liveCoordinatesForBody(bodyId) {
+  const coords = positionsById.get(bodyId)?.coordinates_km;
+  if (!coords) {
+    return null;
+  }
+  return {
+    x: Number(coords.x) || 0,
+    y: Number(coords.y) || 0,
+    z: Number(coords.z) || 0,
+  };
+}
+
+function liveVelocityForBody(bodyId) {
+  const velocity = positionsById.get(bodyId)?.coordinates_velocity_km_s;
+  if (
+    Number.isFinite(Number(velocity?.x)) &&
+    Number.isFinite(Number(velocity?.y)) &&
+    Number.isFinite(Number(velocity?.z))
+  ) {
+    return {
+      x: Number(velocity.x),
+      y: Number(velocity.y),
+      z: Number(velocity.z),
+    };
+  }
+  return { x: 0, y: 0, z: 0 };
+}
+
+function propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
   const liveEntry = positionsById.get(bodyId);
   const liveCoords = liveEntry?.coordinates_km;
   if (!liveCoords) {
@@ -2100,10 +2147,69 @@ function propagateLiveCoordinates(bodyId, nowMs) {
     -LIVE_VELOCITY_PROPAGATION_MAX_SECONDS,
     LIVE_VELOCITY_PROPAGATION_MAX_SECONDS,
   );
+  if (Math.abs(dtSeconds) < 1e-6) {
+    return {
+      x: liveCoords.x,
+      y: liveCoords.y,
+      z: liveCoords.z,
+    };
+  }
+
+  const meta = metaById.get(bodyId);
+  const centerId = gravityCenterIdForBody(meta);
+  if (!centerId) {
+    return {
+      x: liveCoords.x + (liveVelocity.x * dtSeconds),
+      y: liveCoords.y + (liveVelocity.y * dtSeconds),
+      z: liveCoords.z + (liveVelocity.z * dtSeconds),
+    };
+  }
+
+  const centerMassKg = bodyMassKgById(centerId);
+  if (!centerMassKg) {
+    return {
+      x: liveCoords.x + (liveVelocity.x * dtSeconds),
+      y: liveCoords.y + (liveVelocity.y * dtSeconds),
+      z: liveCoords.z + (liveVelocity.z * dtSeconds),
+    };
+  }
+
+  const centerLiveCoords = liveCoordinatesForBody(centerId) || { x: 0, y: 0, z: 0 };
+  const centerLiveVelocity = liveVelocityForBody(centerId);
+  const centerNowCoords = runtimeCoords.get(centerId)
+    || resolveRuntimeCoordinates(centerId, runtimeCoords, resolving, nowMs)
+    || centerLiveCoords;
+
+  const relX = liveCoords.x - centerLiveCoords.x;
+  const relY = liveCoords.y - centerLiveCoords.y;
+  const relZ = liveCoords.z - centerLiveCoords.z;
+  const relVX = liveVelocity.x - centerLiveVelocity.x;
+  const relVY = liveVelocity.y - centerLiveVelocity.y;
+  const relVZ = liveVelocity.z - centerLiveVelocity.z;
+  const relDistanceSq = (relX * relX) + (relY * relY) + (relZ * relZ);
+  if (!(relDistanceSq > 1e-8)) {
+    return {
+      x: liveCoords.x + (liveVelocity.x * dtSeconds),
+      y: liveCoords.y + (liveVelocity.y * dtSeconds),
+      z: liveCoords.z + (liveVelocity.z * dtSeconds),
+    };
+  }
+
+  const mu = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * centerMassKg;
+  const relDistance = Math.sqrt(relDistanceSq);
+  const invR3 = 1 / Math.max(relDistance * relDistanceSq, 1e-12);
+  const ax = -mu * relX * invR3;
+  const ay = -mu * relY * invR3;
+  const az = -mu * relZ * invR3;
+  const dt2 = dtSeconds * dtSeconds;
+  const nextRelX = relX + (relVX * dtSeconds) + (0.5 * ax * dt2);
+  const nextRelY = relY + (relVY * dtSeconds) + (0.5 * ay * dt2);
+  const nextRelZ = relZ + (relVZ * dtSeconds) + (0.5 * az * dt2);
+
   return {
-    x: liveCoords.x + (liveVelocity.x * dtSeconds),
-    y: liveCoords.y + (liveVelocity.y * dtSeconds),
-    z: liveCoords.z + (liveVelocity.z * dtSeconds),
+    x: centerNowCoords.x + nextRelX,
+    y: centerNowCoords.y + nextRelY,
+    z: centerNowCoords.z + nextRelZ,
   };
 }
 
