@@ -134,9 +134,10 @@ const AMBIENT_LIGHT_INTENSITY_TRUE_SCALE = 0.004;
 const AMBIENT_LIGHT_INTENSITY_DEFAULT_SCALE = 0.022;
 const HEMISPHERE_LIGHT_INTENSITY_TRUE_SCALE = 0.006;
 const HEMISPHERE_LIGHT_INTENSITY_DEFAULT_SCALE = 0.03;
-const EARTH_ECLIPSE_MODEL_ENABLED = true;
-const EARTH_ECLIPSE_PENUMBRA_GAMMA = 1.0;
-const EARTH_ECLIPSE_MIN_TRANSMITTANCE = 0.0;
+const BODY_ECLIPSE_MODEL_ENABLED = true;
+const BODY_ECLIPSE_PENUMBRA_GAMMA = 1.0;
+const BODY_ECLIPSE_MIN_TRANSMITTANCE = 0.0;
+const BODY_ECLIPSE_MAX_OCCLUDERS = 32;
 const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
@@ -324,7 +325,7 @@ let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
 let illuminationById = new Map();
 let primeMeridianSpinOffsetRadById = new Map();
-const earthEclipseMaterialStates = new Set();
+const bodyEclipseMaterialStates = new Set();
 
 let socket = null;
 let reconnectTimer = null;
@@ -1866,70 +1867,108 @@ function maxTextureAnisotropy() {
   return Math.min(DETAIL_ANISOTROPY_CAP, renderer.capabilities.getMaxAnisotropy());
 }
 
-function attachEarthEclipseShader(material) {
-  if (!EARTH_ECLIPSE_MODEL_ENABLED || !material || !THREE_NS) {
+function eclipseOccluderIdsForBody(body) {
+  if (!body || body.id === "sun") {
+    return [];
+  }
+  if (body.body_type === "moon") {
+    const parentId = body.parent || "";
+    if (parentId && parentId !== "sun" && metaById.has(parentId)) {
+      return [parentId];
+    }
+    return [];
+  }
+  if (body.body_type === "planet") {
+    const occluders = [];
+    for (const candidate of bodies) {
+      if (candidate?.body_type === "moon" && candidate.parent === body.id) {
+        occluders.push(candidate.id);
+      }
+    }
+    return occluders;
+  }
+  return [];
+}
+
+function attachBodyEclipseShader(material, body) {
+  if (!BODY_ECLIPSE_MODEL_ENABLED || !material || !THREE_NS || !body || body.id === "sun") {
+    return;
+  }
+  const occluderIds = eclipseOccluderIdsForBody(body);
+  if (occluderIds.length === 0) {
     return;
   }
   if (!material.userData) {
     material.userData = {};
   }
-  if (material.userData.earthEclipseShaderAttached) {
+  if (material.userData.bodyEclipseShaderAttached) {
     return;
   }
 
   const state = {
     material,
+    bodyId: body.id,
+    occluderIds,
     uniforms: {
-      uEarthEclipseEnabled: { value: 0.0 },
-      uEarthEclipseSunWorld: { value: new THREE_NS.Vector3(0, 0, 0) },
-      uEarthEclipseMoonWorld: { value: new THREE_NS.Vector3(0, 0, 0) },
-      uEarthEclipseSunRadius: { value: 0.0 },
-      uEarthEclipseMoonRadius: { value: 0.0 },
-      uEarthEclipsePenumbraGamma: { value: EARTH_ECLIPSE_PENUMBRA_GAMMA },
-      uEarthEclipseMinTransmittance: { value: EARTH_ECLIPSE_MIN_TRANSMITTANCE },
+      uBodyEclipseEnabled: { value: 0.0 },
+      uBodyEclipseSunWorld: { value: new THREE_NS.Vector3(0, 0, 0) },
+      uBodyEclipseSunRadius: { value: 0.0 },
+      uBodyEclipseOccluderCount: { value: 0 },
+      uBodyEclipseOccluders: {
+        value: Array.from({ length: BODY_ECLIPSE_MAX_OCCLUDERS }, () => new THREE_NS.Vector4(0, 0, 0, 0)),
+      },
+      uBodyEclipsePenumbraGamma: { value: BODY_ECLIPSE_PENUMBRA_GAMMA },
+      uBodyEclipseMinTransmittance: { value: BODY_ECLIPSE_MIN_TRANSMITTANCE },
     },
   };
-  earthEclipseMaterialStates.add(state);
-  material.userData.earthEclipseShaderAttached = true;
-  material.userData.earthEclipseShaderState = state;
+  bodyEclipseMaterialStates.add(state);
+  material.userData.bodyEclipseShaderAttached = true;
+  material.userData.bodyEclipseShaderState = state;
 
   const priorOnBeforeCompile = material.onBeforeCompile;
-  material.customProgramCacheKey = () => "earth-eclipse-first-pass-v1";
+  const priorCacheKey = typeof material.customProgramCacheKey === "function"
+    ? material.customProgramCacheKey.bind(material)
+    : null;
+  material.customProgramCacheKey = () => {
+    const base = priorCacheKey ? priorCacheKey() : "default";
+    return `${base}|body-eclipse-v2:${BODY_ECLIPSE_MAX_OCCLUDERS}`;
+  };
   material.onBeforeCompile = (shader) => {
     if (typeof priorOnBeforeCompile === "function") {
       priorOnBeforeCompile(shader);
     }
     Object.assign(shader.uniforms, state.uniforms);
 
-    if (!shader.vertexShader.includes("vEarthEclipseWorldPos")) {
+    if (!shader.vertexShader.includes("vBodyEclipseWorldPos")) {
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
           `#include <common>
-varying vec3 vEarthEclipseWorldPos;`,
+varying vec3 vBodyEclipseWorldPos;`,
         )
         .replace(
           "#include <worldpos_vertex>",
           `#include <worldpos_vertex>
-vEarthEclipseWorldPos = worldPosition.xyz;`,
+vBodyEclipseWorldPos = worldPosition.xyz;`,
         );
     }
 
-    if (!shader.fragmentShader.includes("earthEclipseTransmittanceAtPoint")) {
+    if (!shader.fragmentShader.includes("bodyEclipseTransmittanceAtPoint")) {
       shader.fragmentShader = shader.fragmentShader
         .replace(
           "#include <common>",
           `#include <common>
-varying vec3 vEarthEclipseWorldPos;
-uniform float uEarthEclipseEnabled;
-uniform vec3 uEarthEclipseSunWorld;
-uniform vec3 uEarthEclipseMoonWorld;
-uniform float uEarthEclipseSunRadius;
-uniform float uEarthEclipseMoonRadius;
-uniform float uEarthEclipsePenumbraGamma;
-uniform float uEarthEclipseMinTransmittance;
+#define BODY_ECLIPSE_MAX_OCCLUDERS ${BODY_ECLIPSE_MAX_OCCLUDERS}
+varying vec3 vBodyEclipseWorldPos;
+uniform float uBodyEclipseEnabled;
+uniform vec3 uBodyEclipseSunWorld;
+uniform float uBodyEclipseSunRadius;
+uniform int uBodyEclipseOccluderCount;
+uniform vec4 uBodyEclipseOccluders[BODY_ECLIPSE_MAX_OCCLUDERS];
+uniform float uBodyEclipsePenumbraGamma;
+uniform float uBodyEclipseMinTransmittance;
 
-float earthEclipseDiskOverlapArea(float r1, float r2, float d) {
+float bodyEclipseDiskOverlapArea(float r1, float r2, float d) {
   if (r1 <= 0.0 || r2 <= 0.0) {
     return 0.0;
   }
@@ -1950,11 +1989,11 @@ float earthEclipseDiskOverlapArea(float r1, float r2, float d) {
   return (r1Sq * alpha) + (r2Sq * beta) - lens;
 }
 
-float earthEclipseVisibleSunFraction(float sunRadius, float moonRadius, float angularSeparation) {
-  if (sunRadius <= 0.0 || moonRadius <= 0.0) {
+float bodyEclipseVisibleSunFraction(float sunRadius, float occluderRadius, float angularSeparation) {
+  if (sunRadius <= 0.0 || occluderRadius <= 0.0) {
     return 1.0;
   }
-  float overlap = earthEclipseDiskOverlapArea(sunRadius, moonRadius, max(angularSeparation, 0.0));
+  float overlap = bodyEclipseDiskOverlapArea(sunRadius, occluderRadius, max(angularSeparation, 0.0));
   float sunArea = 3.141592653589793 * sunRadius * sunRadius;
   if (sunArea <= 0.0) {
     return 1.0;
@@ -1962,76 +2001,141 @@ float earthEclipseVisibleSunFraction(float sunRadius, float moonRadius, float an
   return clamp(1.0 - (overlap / sunArea), 0.0, 1.0);
 }
 
-float earthEclipseTransmittanceAtPoint(vec3 worldPos) {
-  if (uEarthEclipseEnabled < 0.5) {
+float bodyEclipseTransmittanceAtPoint(vec3 worldPos) {
+  if (uBodyEclipseEnabled < 0.5) {
     return 1.0;
   }
-  vec3 toSun = uEarthEclipseSunWorld - worldPos;
-  vec3 toMoon = uEarthEclipseMoonWorld - worldPos;
+  vec3 toSun = uBodyEclipseSunWorld - worldPos;
   float sunDistance = length(toSun);
-  float moonDistance = length(toMoon);
-  if (sunDistance <= 1e-8 || moonDistance <= 1e-8 || moonDistance >= sunDistance) {
+  if (sunDistance <= 1e-8 || uBodyEclipseOccluderCount <= 0) {
     return 1.0;
   }
-  float sunAngularRadius = asin(clamp(uEarthEclipseSunRadius / sunDistance, -1.0, 1.0));
-  float moonAngularRadius = asin(clamp(uEarthEclipseMoonRadius / moonDistance, -1.0, 1.0));
-  if (sunAngularRadius <= 0.0 || moonAngularRadius <= 0.0) {
+  float sunAngularRadius = asin(clamp(uBodyEclipseSunRadius / sunDistance, -1.0, 1.0));
+  if (sunAngularRadius <= 0.0) {
     return 1.0;
   }
   vec3 sunDir = toSun / sunDistance;
-  vec3 moonDir = toMoon / moonDistance;
-  float angularSeparation = acos(clamp(dot(sunDir, moonDir), -1.0, 1.0));
-  float visible = earthEclipseVisibleSunFraction(sunAngularRadius, moonAngularRadius, angularSeparation);
-  visible = pow(clamp(visible, 0.0, 1.0), max(uEarthEclipsePenumbraGamma, 1e-4));
-  return max(uEarthEclipseMinTransmittance, visible);
+  float transmittance = 1.0;
+  for (int i = 0; i < BODY_ECLIPSE_MAX_OCCLUDERS; i += 1) {
+    if (i >= uBodyEclipseOccluderCount) {
+      break;
+    }
+    vec4 occluder = uBodyEclipseOccluders[i];
+    float occluderRadius = occluder.w;
+    if (occluderRadius <= 0.0) {
+      continue;
+    }
+    vec3 toOccluder = occluder.xyz - worldPos;
+    float occluderDistance = length(toOccluder);
+    if (occluderDistance <= 1e-8 || occluderDistance >= sunDistance) {
+      continue;
+    }
+    float occluderAngularRadius = asin(clamp(occluderRadius / occluderDistance, -1.0, 1.0));
+    if (occluderAngularRadius <= 0.0) {
+      continue;
+    }
+    vec3 occluderDir = toOccluder / occluderDistance;
+    float angularSeparation = acos(clamp(dot(sunDir, occluderDir), -1.0, 1.0));
+    float localTransmittance = bodyEclipseVisibleSunFraction(
+      sunAngularRadius,
+      occluderAngularRadius,
+      angularSeparation
+    );
+    transmittance = min(transmittance, localTransmittance);
+    if (transmittance <= 1e-6) {
+      break;
+    }
+  }
+  transmittance = pow(clamp(transmittance, 0.0, 1.0), max(uBodyEclipsePenumbraGamma, 1e-4));
+  return max(uBodyEclipseMinTransmittance, transmittance);
 }`,
         )
         .replace(
           "#include <lights_fragment_begin>",
           `#include <lights_fragment_begin>
-float earthEclipseTransmittance = earthEclipseTransmittanceAtPoint(vEarthEclipseWorldPos);
-reflectedLight.directDiffuse *= earthEclipseTransmittance;
-reflectedLight.directSpecular *= earthEclipseTransmittance;`,
+float bodyEclipseTransmittance = bodyEclipseTransmittanceAtPoint(vBodyEclipseWorldPos);
+reflectedLight.directDiffuse *= bodyEclipseTransmittance;
+reflectedLight.directSpecular *= bodyEclipseTransmittance;`,
         );
     }
   };
   material.needsUpdate = true;
 }
 
-function updateEarthEclipseUniforms() {
-  if (!EARTH_ECLIPSE_MODEL_ENABLED || earthEclipseMaterialStates.size === 0) {
+function updateBodyEclipseUniforms() {
+  if (!BODY_ECLIPSE_MODEL_ENABLED || bodyEclipseMaterialStates.size === 0) {
     return;
   }
-  const earthVisual = bodyVisuals.get("earth");
-  const moonVisual = bodyVisuals.get("moon");
   const sunVisual = bodyVisuals.get("sun");
-  const enabled = Boolean(
-    earthVisual
-      && moonVisual
-      && sunVisual
-      && earthVisual.root.visible
-      && moonVisual.root.visible
-      && sunVisual.root.visible
-      && earthVisual.renderRadius > 0
-      && moonVisual.renderRadius > 0
-      && sunVisual.renderRadius > 0,
-  );
+  if (!sunVisual || !sunVisual.root.visible || !(sunVisual.renderRadius > 0)) {
+    for (const state of bodyEclipseMaterialStates) {
+      state.uniforms.uBodyEclipseEnabled.value = 0.0;
+      state.uniforms.uBodyEclipseOccluderCount.value = 0;
+    }
+    return;
+  }
 
-  for (const state of earthEclipseMaterialStates) {
-    if (!state || !state.uniforms) {
+  for (const state of bodyEclipseMaterialStates) {
+    if (!state?.uniforms) {
       continue;
     }
+    const targetVisual = bodyVisuals.get(state.bodyId);
     const uniforms = state.uniforms;
-    uniforms.uEarthEclipseEnabled.value = enabled ? 1.0 : 0.0;
-    uniforms.uEarthEclipsePenumbraGamma.value = EARTH_ECLIPSE_PENUMBRA_GAMMA;
-    uniforms.uEarthEclipseMinTransmittance.value = EARTH_ECLIPSE_MIN_TRANSMITTANCE;
-    if (!enabled) {
+    uniforms.uBodyEclipsePenumbraGamma.value = BODY_ECLIPSE_PENUMBRA_GAMMA;
+    uniforms.uBodyEclipseMinTransmittance.value = BODY_ECLIPSE_MIN_TRANSMITTANCE;
+
+    if (!targetVisual || !targetVisual.root.visible || !(targetVisual.renderRadius > 0)) {
+      uniforms.uBodyEclipseEnabled.value = 0.0;
+      uniforms.uBodyEclipseOccluderCount.value = 0;
       continue;
     }
-    uniforms.uEarthEclipseSunWorld.value.copy(sunVisual.root.position);
-    uniforms.uEarthEclipseMoonWorld.value.copy(moonVisual.root.position);
-    uniforms.uEarthEclipseSunRadius.value = sunVisual.renderRadius;
-    uniforms.uEarthEclipseMoonRadius.value = moonVisual.renderRadius;
+
+    uniforms.uBodyEclipseSunWorld.value.copy(sunVisual.root.position);
+    uniforms.uBodyEclipseSunRadius.value = sunVisual.renderRadius;
+    const targetPos = targetVisual.root.position;
+    const sunDistance = targetPos.distanceTo(sunVisual.root.position);
+    if (!(sunDistance > 1e-8)) {
+      uniforms.uBodyEclipseEnabled.value = 0.0;
+      uniforms.uBodyEclipseOccluderCount.value = 0;
+      continue;
+    }
+
+    const candidates = [];
+    for (const occluderId of state.occluderIds) {
+      const occluderVisual = bodyVisuals.get(occluderId);
+      if (!occluderVisual || !occluderVisual.root.visible || !(occluderVisual.renderRadius > 0)) {
+        continue;
+      }
+      const occluderDistance = targetPos.distanceTo(occluderVisual.root.position);
+      if (!(occluderDistance > 1e-8) || !(occluderDistance < sunDistance)) {
+        continue;
+      }
+      const angularRadius = Math.asin(clamp(occluderVisual.renderRadius / occluderDistance, -1, 1));
+      if (!(angularRadius > 0)) {
+        continue;
+      }
+      candidates.push({ visual: occluderVisual, angularRadius, occluderDistance });
+    }
+    candidates.sort((a, b) => (b.angularRadius - a.angularRadius) || (a.occluderDistance - b.occluderDistance));
+
+    const occluderCount = Math.min(candidates.length, BODY_ECLIPSE_MAX_OCCLUDERS);
+    uniforms.uBodyEclipseOccluderCount.value = occluderCount;
+    uniforms.uBodyEclipseEnabled.value = occluderCount > 0 ? 1.0 : 0.0;
+
+    const occluderUniforms = uniforms.uBodyEclipseOccluders.value;
+    for (let i = 0; i < BODY_ECLIPSE_MAX_OCCLUDERS; i += 1) {
+      if (i < occluderCount) {
+        const visual = candidates[i].visual;
+        occluderUniforms[i].set(
+          visual.root.position.x,
+          visual.root.position.y,
+          visual.root.position.z,
+          visual.renderRadius,
+        );
+      } else {
+        occluderUniforms[i].set(0, 0, 0, 0);
+      }
+    }
   }
 }
 
@@ -2068,7 +2172,7 @@ function createPlanetMaterial(body, plan, textures, renderRadius) {
       material.displacementMap = textures.bump;
       material.displacementScale = renderRadius * 0.02;
     }
-    attachEarthEclipseShader(material);
+    attachBodyEclipseShader(material, body);
     return material;
   }
 
@@ -2126,6 +2230,7 @@ function createPlanetMaterial(body, plan, textures, renderRadius) {
     material.metalness = 0.0;
   }
 
+  attachBodyEclipseShader(material, body);
   return material;
 }
 
@@ -2328,16 +2433,16 @@ function disposeBodyVisual(visual) {
     }
     if (Array.isArray(node.material)) {
       node.material.forEach((m) => {
-        const eclipseState = m?.userData?.earthEclipseShaderState;
+        const eclipseState = m?.userData?.bodyEclipseShaderState;
         if (eclipseState) {
-          earthEclipseMaterialStates.delete(eclipseState);
+          bodyEclipseMaterialStates.delete(eclipseState);
         }
         m.dispose();
       });
     } else if (node.material) {
-      const eclipseState = node.material?.userData?.earthEclipseShaderState;
+      const eclipseState = node.material?.userData?.bodyEclipseShaderState;
       if (eclipseState) {
-        earthEclipseMaterialStates.delete(eclipseState);
+        bodyEclipseMaterialStates.delete(eclipseState);
       }
       node.material.dispose();
     }
@@ -3917,7 +4022,7 @@ function animate(timestampMs = 0) {
     applyScenePositions(runtimeCoordsKmById);
   }
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
-  updateEarthEclipseUniforms();
+  updateBodyEclipseUniforms();
   updateSunlightModel();
 
   for (const orbitVisual of orbitVisuals.values()) {
@@ -4067,14 +4172,17 @@ function updateInfoOverlay() {
       <p class="line">Days Remaining in Orbit: ${formatNumber(Math.max(remainingDays, 0))}</p>
     `;
   }
-  const earthEclipseCenterTransmittancePct =
-    meta.id === "earth" && hasCoords && hasSunCoords
-      ? clamp(computeSolarTransmittance("earth", coords, sunCoords), 0, 1) * 100
+  const eclipseOccluderNames = eclipseOccluderIdsForBody(meta)
+    .map((bodyId) => metaById.get(bodyId)?.name || bodyId);
+  const eclipseCenterTransmittancePct =
+    meta.id !== "sun" && hasCoords && hasSunCoords
+      ? clamp(computeSolarTransmittance(meta.id, coords, sunCoords), 0, 1) * 100
       : null;
-  const earthEclipseLine =
-    meta.id === "earth"
-      ? `<p class="line">Eclipse Model: Moon umbra/penumbra (surface fragment pass)</p>
-         <p class="line">Earth Center Sun Visibility: ${earthEclipseCenterTransmittancePct !== null ? `${formatNumber(earthEclipseCenterTransmittancePct)}%` : "n/a"}</p>`
+  const eclipseLine =
+    meta.id !== "sun"
+      ? `<p class="line">Eclipse Model: Multi-body umbra/penumbra (surface fragment pass)</p>
+         <p class="line">Eclipse Occluders: ${eclipseOccluderNames.length > 0 ? eclipseOccluderNames.join(", ") : "none"}</p>
+         <p class="line">Center Sun Visibility: ${eclipseCenterTransmittancePct !== null ? `${formatNumber(eclipseCenterTransmittancePct)}%` : "n/a"}</p>`
       : "";
 
   infoCard.innerHTML = `
@@ -4097,7 +4205,7 @@ function updateInfoOverlay() {
     <p class="line">Sunlight Exposure: ${totalSolarPct !== null ? `${formatNumber(totalSolarPct)}% of 1AU baseline` : "n/a"}</p>
     <p class="line">Direct Solar Flux: ${directSolarPct !== null ? `${formatNumber(directSolarPct)}% of 1AU baseline` : "n/a"}</p>
     <p class="line">Sun Occlusion: ${occlusionPct !== null ? `${formatNumber(occlusionPct)}%` : "n/a"}</p>
-    ${earthEclipseLine}
+    ${eclipseLine}
     <p class="line">Earthshine (Moon): ${earthshinePct !== null ? `${formatNumber(earthshinePct)}% of 1AU baseline` : "n/a"}</p>
     <p class="line">Visual Spin Rate: ${formatNumber(visualSpinDegPerSec)} °/s</p>
     <p class="line">Current Rotation: ${formatNumber(currentRotationAngleDeg)}° (${formatNumber(currentSiderealCompletionPct)}% of sidereal cycle)</p>
