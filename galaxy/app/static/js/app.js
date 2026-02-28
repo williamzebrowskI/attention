@@ -175,7 +175,7 @@ const LOCAL_PLANET_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/planets/`;
 const LOCAL_MOON_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/moons/`;
 const LOCAL_RING_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/rings/`;
 const LOCAL_META_TEXTURE_ROOT = `${LOCAL_IMAGE_ROOT}/meta/`;
-const LOCAL_TEXTURE_ASSET_VERSION = "20260227-local-pack-v1";
+const LOCAL_TEXTURE_ASSET_VERSION = "20260228-local-pack-v2";
 
 function localTexture(relativePath) {
   return `${LOCAL_IMAGE_ROOT}/${relativePath}?v=${LOCAL_TEXTURE_ASSET_VERSION}`;
@@ -284,12 +284,29 @@ const MOON_SURFACE_PROFILES = {
   hyperion: { low: "#584b3a", mid: "#8b7559", high: "#bca07f", contrast: 0.24, terrainStrength: 0.66 },
   iapetus: { low: "#2f2e2d", mid: "#7e776d", high: "#d2c9b5", contrast: 0.32, terrainStrength: 0.72 },
   phoebe: { low: "#474748", mid: "#6f7176", high: "#9ca0a8", contrast: 0.2, terrainStrength: 0.6 },
+  janus: { low: "#5d5349", mid: "#8c7f70", high: "#baa891", contrast: 0.22, terrainStrength: 0.6 },
+  epimetheus: { low: "#675c51", mid: "#968771", high: "#c4b29b", contrast: 0.21, terrainStrength: 0.58 },
+  atlas: { low: "#6c5a49", mid: "#9d8368", high: "#d2b18d", contrast: 0.23, terrainStrength: 0.61 },
+  prometheus: { low: "#5b4b3b", mid: "#8a7156", high: "#bf9a73", contrast: 0.23, terrainStrength: 0.62 },
+  pandora: { low: "#685744", mid: "#977b60", high: "#c7a17a", contrast: 0.22, terrainStrength: 0.6 },
+  pan: { low: "#6f5c43", mid: "#a38660", high: "#d1b286", contrast: 0.24, terrainStrength: 0.63 },
   puck: { low: "#62615f", mid: "#91908d", high: "#bfbcb4", contrast: 0.2, terrainStrength: 0.56 },
   miranda: { low: "#646463", mid: "#959690", high: "#c9c7bf", contrast: 0.24, terrainStrength: 0.62 },
   ariel: { low: "#8a8f98", mid: "#b8bec6", high: "#e8edf2", contrast: 0.2, terrainStrength: 0.54 },
   umbriel: { low: "#3e4148", mid: "#646871", high: "#8a8f98", contrast: 0.22, terrainStrength: 0.6 },
   titania: { low: "#6c665f", mid: "#9b9488", high: "#d3cab9", contrast: 0.19, terrainStrength: 0.55 },
   oberon: { low: "#5f5a52", mid: "#8a8378", high: "#beb4a4", contrast: 0.2, terrainStrength: 0.58 },
+  cordelia: { low: "#646260", mid: "#96928d", high: "#cbc5bc", contrast: 0.2, terrainStrength: 0.57 },
+  ophelia: { low: "#6b6966", mid: "#9b9792", high: "#cdc8be", contrast: 0.2, terrainStrength: 0.56 },
+  bianca: { low: "#6f6b65", mid: "#9f9a90", high: "#d4ccc0", contrast: 0.21, terrainStrength: 0.58 },
+  cressida: { low: "#5e5a56", mid: "#8c877f", high: "#beb8ad", contrast: 0.22, terrainStrength: 0.6 },
+  juliet: { low: "#655f58", mid: "#93897e", high: "#c5b6a2", contrast: 0.22, terrainStrength: 0.61 },
+  portia: { low: "#5f5951", mid: "#8b8377", high: "#bbb2a3", contrast: 0.21, terrainStrength: 0.59 },
+  rosalind: { low: "#5a5652", mid: "#867f76", high: "#b7aea1", contrast: 0.22, terrainStrength: 0.6 },
+  belinda: { low: "#625d56", mid: "#91887d", high: "#c1b39f", contrast: 0.22, terrainStrength: 0.6 },
+  perdita: { low: "#706a61", mid: "#9f9689", high: "#cfc4b4", contrast: 0.21, terrainStrength: 0.58 },
+  cupid: { low: "#7a7267", mid: "#a99f91", high: "#d7cab7", contrast: 0.21, terrainStrength: 0.57 },
+  mab: { low: "#6f6a62", mid: "#9e978c", high: "#cdc4b5", contrast: 0.2, terrainStrength: 0.56 },
   naiad: { low: "#5b6370", mid: "#8993a4", high: "#c0c8d6", contrast: 0.18, terrainStrength: 0.52 },
   thalassa: { low: "#5f6675", mid: "#8e98aa", high: "#c6cfdd", contrast: 0.18, terrainStrength: 0.52 },
   despina: { low: "#626674", mid: "#9299ab", high: "#c6ccda", contrast: 0.18, terrainStrength: 0.53 },
@@ -298,6 +315,12 @@ const MOON_SURFACE_PROFILES = {
   proteus: { low: "#575e6d", mid: "#828c9f", high: "#afb9cb", contrast: 0.21, terrainStrength: 0.58 },
   triton: { low: "#8e8f9a", mid: "#bcbec8", high: "#e7e9f0", contrast: 0.21, terrainStrength: 0.59 },
   nereid: { low: "#5e6573", mid: "#8b92a1", high: "#bac1cf", contrast: 0.18, terrainStrength: 0.53 },
+  hippocamp: { low: "#626a79", mid: "#9099aa", high: "#c1cad8", contrast: 0.19, terrainStrength: 0.55 },
+  halimede: { low: "#4f5666", mid: "#778094", high: "#a4adc2", contrast: 0.22, terrainStrength: 0.6 },
+  sao: { low: "#596274", mid: "#848fa4", high: "#b2bed1", contrast: 0.2, terrainStrength: 0.57 },
+  laomedeia: { low: "#5c6578", mid: "#8893a8", high: "#b7c2d4", contrast: 0.2, terrainStrength: 0.57 },
+  psamathe: { low: "#515a6e", mid: "#79849b", high: "#a8b3c8", contrast: 0.22, terrainStrength: 0.61 },
+  neso: { low: "#4c5667", mid: "#737f94", high: "#a2aec1", contrast: 0.22, terrainStrength: 0.61 },
   default: { low: "#6d6e72", mid: "#9fa1a8", high: "#d2d5dd", contrast: 0.2, terrainStrength: 0.58 },
 };
 
