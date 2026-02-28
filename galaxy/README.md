@@ -72,6 +72,15 @@ The project now enforces a locked baseline for critical physical constants:
 
 Startup will fail fast if a lock check does not match the expected baseline.
 
+## Calculation Docs
+
+- [GRAVITATIONAL.md](GRAVITATIONAL.md)
+- [ORBIT_ROTATION.md](ORBIT_ROTATION.md)
+- [OBLATENESS_HARMONICS.md](OBLATENESS_HARMONICS.md)
+- [RIGID_BODY_ATTITUDE.md](RIGID_BODY_ATTITUDE.md)
+- [LIGHTING_ECLIPSE.md](LIGHTING_ECLIPSE.md)
+- [PHYSICS_OVERLAYS.md](PHYSICS_OVERLAYS.md)
+
 ## Lock Validation
 
 ```bash

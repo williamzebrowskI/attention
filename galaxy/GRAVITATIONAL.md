@@ -70,6 +70,15 @@ For each target body, acceleration from each source body:
   - `scalar = G * M / r^3`
   - `a_vec += scalar * (sourcePos - targetPos)`
 
+On top of point-mass gravity, the runtime can also add harmonic gravity terms
+for configured source bodies:
+
+- Zonal terms: `J2`, `J4`
+- Tesseral terms: `C22`, `S22`
+
+Those terms are applied in `computeGravityAccelerationFromSource(...)` using the
+source body's pole + body-fixed axes at current `W(t)` orientation.
+
 All units are in km, kg, s:
 
 - Position: km
@@ -136,5 +145,13 @@ Quick checks:
 
 1. Start app and verify no gravity arrows appear until legend click.
 2. Click a legend body and verify only one arrow is shown.
-3. Confirm info panel line: `Orbit Dynamics: N-body gravity (startup-seeded from Horizons)` for N-body bodies.
+3. Confirm info panel line: `Orbit Dynamics: N-body gravity (startup-seeded from Horizons...)` for N-body bodies.
 4. Confirm fallback bodies show red legend indicator.
+
+## Related Docs
+
+- `ORBIT_ROTATION.md`
+- `OBLATENESS_HARMONICS.md`
+- `RIGID_BODY_ATTITUDE.md`
+- `LIGHTING_ECLIPSE.md`
+- `PHYSICS_OVERLAYS.md`
