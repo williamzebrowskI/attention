@@ -24,14 +24,17 @@ import {
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
+const bodyLegendList = document.getElementById("body-legend-list");
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
 const SCIENTIFIC_ACCURACY_MODE = true;
-const DISTANCE_SCALE = 1 / 500_000_000;
-const PLANET_RADIUS_SCALE = 1 / 300_000;
-const MOON_RADIUS_SCALE = 1 / 1_700_000;
-const SUN_RADIUS_SCALE = 1 / 12_000_000;
+const TRUE_SCALE_MODE = true;
+const TRUE_SCALE_KM_TO_SCENE = 1 / 700_000;
+const DISTANCE_SCALE = TRUE_SCALE_KM_TO_SCENE;
+const PLANET_RADIUS_SCALE = TRUE_SCALE_KM_TO_SCENE;
+const MOON_RADIUS_SCALE = TRUE_SCALE_KM_TO_SCENE;
+const SUN_RADIUS_SCALE = TRUE_SCALE_KM_TO_SCENE;
 const ROTATION_SWEEP_DEGREES = 360;
 const DETAIL_DISTANCE_MULTIPLIER = 22;
 const DETAIL_MIN_DISTANCE = 0.02;
@@ -43,7 +46,7 @@ const ORBIT_TIME_SCALE = 1;
 const MIN_PICK_RADIUS = 0.03;
 const MIN_PICK_PIXEL_RADIUS = 12;
 const MAX_PICK_PIXEL_RADIUS = 96;
-const OVERVIEW_SWITCH_RADIUS = 1.7;
+const OVERVIEW_SWITCH_RADIUS = 600;
 const SHOW_ORBIT_MARKERS = false;
 const ENABLE_SURFACE_DISPLACEMENT = false;
 const DETAIL_ANISOTROPY_CAP = 16;
@@ -258,6 +261,7 @@ let metaById = new Map();
 let positionsById = new Map();
 let bodyVisuals = new Map();
 let orbitVisuals = new Map();
+let legendButtonsById = new Map();
 let selectedId = null;
 let detailBodyId = null;
 let textureCache = new Map();
@@ -275,9 +279,9 @@ let latestSolarTimestampMs = Date.now();
 
 const orbit = {
   target: null,
-  radius: 70,
-  minDistance: 0.0008,
-  maxDistance: 80,
+  radius: 2200,
+  minDistance: 0.002,
+  maxDistance: 14000,
   azimuth: 0.0,
   polar: 1.1,
   minPolar: rad(5),
@@ -291,7 +295,7 @@ const orbit = {
   lastX: 0,
   lastY: 0,
   rotateSpeed: 0.0052,
-  wheelSpeed: 0.0054,
+  wheelSpeed: 0.0042,
 };
 
 window.addEventListener("resize", onResize);
@@ -446,6 +450,7 @@ async function loadBodyCatalog() {
   metaById = new Map(bodies.map((body) => [body.id, body]));
   await rebuildMeshes();
   rebuildOrbitVisuals();
+  rebuildBodyLegend();
 
   if (!selectedId) {
     const earth = bodies.find((body) => body.id === "earth");
@@ -500,6 +505,88 @@ function rebuildOrbitVisuals() {
     }
     scene.add(orbitVisual.group);
     orbitVisuals.set(body.id, orbitVisual);
+  }
+}
+
+function rebuildBodyLegend() {
+  if (!bodyLegendList) {
+    return;
+  }
+
+  bodyLegendList.innerHTML = "";
+  legendButtonsById = new Map();
+  const fragment = document.createDocumentFragment();
+
+  const sun = bodies.find((body) => body.id === "sun");
+  if (sun) {
+    const group = document.createElement("div");
+    group.className = "legend-group";
+    group.appendChild(createLegendButton(sun, false));
+    fragment.appendChild(group);
+  }
+
+  const planets = bodies
+    .filter((body) => body.body_type === "planet" && body.id !== "sun")
+    .sort((a, b) => sortBySemimajorAxisThenName(a, b));
+
+  for (const planet of planets) {
+    const group = document.createElement("div");
+    group.className = "legend-group";
+    group.appendChild(createLegendButton(planet, false));
+
+    const moons = bodies
+      .filter((body) => body.body_type === "moon" && body.parent === planet.id)
+      .sort((a, b) => sortBySemimajorAxisThenName(a, b));
+    for (const moon of moons) {
+      group.appendChild(createLegendButton(moon, true));
+    }
+    fragment.appendChild(group);
+  }
+
+  const orphanMoons = bodies
+    .filter((body) => body.body_type === "moon" && !metaById.has(body.parent || ""))
+    .sort((a, b) => sortBySemimajorAxisThenName(a, b));
+  if (orphanMoons.length > 0) {
+    const group = document.createElement("div");
+    group.className = "legend-group";
+    for (const moon of orphanMoons) {
+      group.appendChild(createLegendButton(moon, true));
+    }
+    fragment.appendChild(group);
+  }
+
+  bodyLegendList.appendChild(fragment);
+  updateLegendSelection();
+}
+
+function createLegendButton(body, isMoon) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = isMoon ? "legend-button moon" : "legend-button";
+  button.dataset.bodyId = body.id;
+  button.textContent = body.name;
+  button.title = `${body.name} (${body.body_type})`;
+  button.addEventListener("click", () => {
+    setSelected(body.id, true);
+  });
+  legendButtonsById.set(body.id, button);
+  return button;
+}
+
+function sortBySemimajorAxisThenName(a, b) {
+  const aAxis = Number(a?.semimajor_axis_km);
+  const bAxis = Number(b?.semimajor_axis_km);
+  const safeA = Number.isFinite(aAxis) ? aAxis : Number.POSITIVE_INFINITY;
+  const safeB = Number.isFinite(bAxis) ? bAxis : Number.POSITIVE_INFINITY;
+  if (safeA !== safeB) {
+    return safeA - safeB;
+  }
+  return (a?.name || "").localeCompare(b?.name || "");
+}
+
+function updateLegendSelection() {
+  for (const [bodyId, button] of legendButtonsById.entries()) {
+    button.classList.toggle("selected", bodyId === selectedId);
   }
 }
 
@@ -2324,14 +2411,45 @@ function onWheel(event) {
     const sunVisual = bodyVisuals.get("sun");
     if (sunVisual) {
       selectedId = null;
+      updateLegendSelection();
       orbit.target.copy(sunVisual.root.position);
     }
   }
   updateCameraFromOrbit();
 }
 
+function preferredCameraDistanceForSelection(visual) {
+  if (!visual?.body) {
+    return orbit.radius;
+  }
+
+  const body = visual.body;
+  if (body.id === "sun") {
+    return clamp(
+      Math.max(visual.renderRadius * 5.6, 4.8),
+      Math.max(orbit.minDistance * 1.5, visual.renderRadius * 1.18),
+      orbit.maxDistance,
+    );
+  }
+
+  if (body.body_type === "planet") {
+    return clamp(
+      Math.max(visual.renderRadius * 10.0, 0.22),
+      Math.max(orbit.minDistance * 1.4, visual.renderRadius * 1.22),
+      orbit.maxDistance,
+    );
+  }
+
+  return clamp(
+    Math.max(visual.renderRadius * 13.0, 0.13),
+    Math.max(orbit.minDistance * 1.35, visual.renderRadius * 1.22),
+    orbit.maxDistance,
+  );
+}
+
 function setSelected(bodyId, moveCamera) {
   selectedId = bodyId;
+  updateLegendSelection();
   const visual = bodyVisuals.get(bodyId);
   if (!visual) {
     return;
@@ -2339,18 +2457,7 @@ function setSelected(bodyId, moveCamera) {
 
   orbit.target.copy(visual.root.position);
   if (moveCamera) {
-    const nearSurface = Math.max(orbit.minDistance * 1.2, visual.renderRadius * 1.35);
-    const preferred =
-      bodyId === "sun"
-        ? Math.max(visual.renderRadius * 8.2, 0.42)
-        : visual.body.body_type === "planet"
-          ? Math.max(visual.renderRadius * 5.2, 0.16)
-          : Math.max(visual.renderRadius * 5.8, 0.11);
-    orbit.radius = clamp(
-      preferred,
-      nearSurface,
-      orbit.maxDistance,
-    );
+    orbit.radius = preferredCameraDistanceForSelection(visual);
     orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
   }
   updateCameraFromOrbit();
@@ -3198,6 +3305,10 @@ function renderRadiusForBody(body) {
     return 0;
   }
   let renderRadius = normalizedKm * renderScaleForBody(body);
+
+  if (TRUE_SCALE_MODE) {
+    return renderRadius;
+  }
 
   if (body?.body_type === "moon") {
     const parent = metaById.get(body.parent || "");

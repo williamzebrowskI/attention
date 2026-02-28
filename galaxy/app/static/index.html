@@ -4,11 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260227bo" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260227bp" />
   </head>
   <body>
     <canvas id="scene"></canvas>
     <div id="planet-info" class="planet-info"></div>
-    <script type="module" src="/static/js/app.js?v=20260227bo"></script>
+    <aside id="body-legend" class="body-legend" aria-label="Solar system bodies">
+      <p class="body-legend-title">Bodies</p>
+      <div id="body-legend-list" class="body-legend-list"></div>
+    </aside>
+    <script type="module" src="/static/js/app.js?v=20260227bp"></script>
   </body>
 </html>
