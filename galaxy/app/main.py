@@ -8,12 +8,19 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.services.physics_lock import PhysicsLockError, validate_catalog_lock
 from app.services.solar_system import SolarSystemService, create_default_service
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="Solar System Live Map", version="0.1.0")
+
+try:
+    validate_catalog_lock()
+except PhysicsLockError as exc:
+    raise RuntimeError(f"Physics lock validation failed at startup: {exc}") from exc
+
 service: SolarSystemService = create_default_service()
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

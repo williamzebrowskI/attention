@@ -5,7 +5,7 @@ Interactive solar-system visualization backed by a Python API. The backend fetch
 ## Features
 
 - FastAPI backend with REST + WebSocket endpoints
-- Live heliocentric coordinates for Sun/planets, plus Earth-Moon relative ephemeris from JPL Horizons
+- Live heliocentric coordinates for Sun/planets, plus parent-relative moon ephemeris from JPL Horizons
 - Data source tags (`HORIZONS` or `APPROXIMATE`) per body
 - Fullscreen black-space renderer focused only on the solar system
 - 3D-only navigation with click-to-focus bodies
@@ -20,7 +20,8 @@ Interactive solar-system visualization backed by a Python API. The backend fetch
 - Moon-specific terrain/color generation for non-Earth moons
 - Expanded moon catalog across moon-bearing planets (31 moons)
 - Real-time heliocentric orbit paths for planets, with live orbital phase markers
-- Orbit spacing is intentionally compressed for a user-friendly view while preserving live orbital timing
+- Orbit timing and spin are locked to real-time physical rates in strict mode
+- Physics lock checks to prevent accidental changes to critical orbital/rotation constants
 
 ## Data Sources
 
@@ -60,3 +61,19 @@ curl "http://127.0.0.1:8000/api/positions?include_moons=false"
 - Horizons failures are surfaced per body via `source_error` and automatically replaced by approximate coordinates.
 - The frontend is 3D-only and requires loading Three.js from CDN.
 - Planet textures are loaded from public map assets hosted via jsDelivr (THREEx planets image set).
+
+## Physics Lock
+
+The project now enforces a locked baseline for critical physical constants:
+
+- Backend catalog lock: `app/services/physics_lock.py`
+- Frontend orbital lock: `app/static/js/config/orbitalConfig.js`
+
+Startup will fail fast if a lock check does not match the expected baseline.
+
+## Lock Validation
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py"
+node tests/test_orbital_config_lock.mjs
+```

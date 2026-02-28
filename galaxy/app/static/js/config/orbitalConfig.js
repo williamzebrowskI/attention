@@ -193,3 +193,55 @@ export const ROTATION_SOLAR_DAY_HOURS = {
 export const ROTATION_TIME_SCALE_OVERRIDE = {
   earth: 1,
 };
+
+export const ORBITAL_CONFIG_LOCK_ENFORCED = true;
+export const ORBITAL_CONFIG_LOCK_HASH = "5fd5ebd4";
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fnv1aHex(input) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+export function computeOrbitalConfigLockHash() {
+  const payload = {
+    AXIAL_TILT_DEG,
+    SPIN_AXIS_EQUATORIAL_DEG,
+    ECLIPTIC_OBLIQUITY_DEG,
+    ROTATION_PERIOD_HOURS,
+    MOON_ORBIT_DIRECTION,
+    MOON_ORBITAL_ELEMENTS,
+    ORBIT_ECCENTRICITY,
+    ORBIT_PERIHELION_DEG,
+    ORBIT_VISUAL_PERIOD_HOURS,
+    ROTATION_SOLAR_DAY_HOURS,
+    ROTATION_TIME_SCALE_OVERRIDE,
+  };
+  return fnv1aHex(stableStringify(payload));
+}
+
+export function assertOrbitalConfigLock() {
+  if (!ORBITAL_CONFIG_LOCK_ENFORCED) {
+    return;
+  }
+  const currentHash = computeOrbitalConfigLockHash();
+  if (currentHash !== ORBITAL_CONFIG_LOCK_HASH) {
+    throw new Error(
+      `Orbital config lock mismatch (expected ${ORBITAL_CONFIG_LOCK_HASH}, got ${currentHash}).`,
+    );
+  }
+}

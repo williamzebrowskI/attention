@@ -58,6 +58,7 @@ class SolarSystemService:
             *(self._horizons.fetch_heliocentric_vector(body.command or "", at_utc) for body in targets),
             return_exceptions=True,
         )
+        failed_planet_targets: list[BodyDefinition] = []
         for body, vector in zip(targets, vectors, strict=False):
             if isinstance(vector, Exception):
                 cached = self._last_horizons_positions.get(body.id)
@@ -66,10 +67,24 @@ class SolarSystemService:
                     source_by_id[body.id] = "HORIZONS_CACHED"
                 else:
                     errors_by_id[body.id] = self._format_source_error(vector)
+                    failed_planet_targets.append(body)
                 continue
             body_positions[body.id] = vector
             self._last_horizons_positions[body.id] = vector
             source_by_id[body.id] = "HORIZONS"
+
+        # Retry uncached planet failures once, sequentially, to reduce startup
+        # fallbacks from transient upstream 5xx/rate-limit responses.
+        for body in failed_planet_targets:
+            try:
+                vector = await self._horizons.fetch_heliocentric_vector(body.command or "", at_utc)
+            except Exception as exc:  # noqa: BLE001 - preserve best-known fallback behavior
+                errors_by_id[body.id] = self._format_source_error(exc)
+                continue
+            body_positions[body.id] = vector
+            self._last_horizons_positions[body.id] = vector
+            source_by_id[body.id] = "HORIZONS"
+            errors_by_id.pop(body.id, None)
 
         if include_moons:
             await self._populate_moon_positions(

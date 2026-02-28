@@ -7,6 +7,7 @@ import {
   ROTATION_SOLAR_DAY_HOURS,
   SPIN_AXIS_EQUATORIAL_DEG,
   ROTATION_TIME_SCALE_OVERRIDE,
+  assertOrbitalConfigLock,
 } from "./config/orbitalConfig.js";
 import {
   fromPerifocalFrame,
@@ -23,6 +24,7 @@ const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
 
 const INCLUDE_MOONS = true;
+const PHYSICS_LOCK_MODE = true;
 const SCIENTIFIC_ACCURACY_MODE = true;
 const DISTANCE_SCALE = 1 / 500_000_000;
 const PLANET_RADIUS_SCALE = 1 / 300_000;
@@ -66,10 +68,10 @@ const MOON_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const EARTH_NIGHTSIDE_VISIBILITY_FLOOR = 0.08;
 const MOON_NIGHTSIDE_VISIBILITY_FLOOR = 0.06;
 const DEFAULT_NIGHTSIDE_VISIBILITY_FLOOR = 0.04;
-const OUTER_PLANET_VISIBILITY_FLOOR = 0.24;
-const OUTER_MOON_VISIBILITY_FLOOR = 0.28;
-const FAR_SYSTEM_BLEND_START_AU = 2.5;
-const FAR_SYSTEM_BLEND_END_AU = 12.0;
+const OUTER_PLANET_VISIBILITY_FLOOR = 0.42;
+const OUTER_MOON_VISIBILITY_FLOOR = 0.48;
+const FAR_SYSTEM_BLEND_START_AU = 1.8;
+const FAR_SYSTEM_BLEND_END_AU = 8.5;
 const EARTH_LOCATION_MARKER = {
   latitudeDeg: 39.9526,
   longitudeDeg: -75.1652,
@@ -297,12 +299,42 @@ init().catch((error) => {
 });
 
 async function init() {
+  assertPhysicsLockInvariants();
   THREE_NS = await loadThreeModule();
   setupScene(THREE_NS);
   await loadBodyCatalog();
   await loadSnapshot();
   connectWebSocket();
   animate();
+}
+
+function assertPhysicsLockInvariants() {
+  if (!PHYSICS_LOCK_MODE) {
+    return;
+  }
+  assertOrbitalConfigLock();
+
+  const invariantChecks = [
+    { ok: SCIENTIFIC_ACCURACY_MODE === true, label: "SCIENTIFIC_ACCURACY_MODE must be true" },
+    { ok: WS_INTERVAL_SECONDS === 1, label: "WS_INTERVAL_SECONDS must be 1 in lock mode" },
+    { ok: ORBIT_TIME_SCALE === 1, label: "ORBIT_TIME_SCALE must be 1" },
+    { ok: SPIN_TIME_SCALE === 1, label: "SPIN_TIME_SCALE must be 1" },
+    { ok: MOON_SPIN_VISUAL_BOOST === 1, label: "MOON_SPIN_VISUAL_BOOST must be 1" },
+    { ok: MOON_ORBIT_VISUAL_SCALE === 1, label: "MOON_ORBIT_VISUAL_SCALE must be 1" },
+    {
+      ok: EARTH_MOON_VISUAL_DISTANCE_MULTIPLIER === 1,
+      label: "EARTH_MOON_VISUAL_DISTANCE_MULTIPLIER must be 1",
+    },
+    {
+      ok: Object.keys(ORBIT_VISUAL_PERIOD_HOURS || {}).length === 0,
+      label: "ORBIT_VISUAL_PERIOD_HOURS must remain empty",
+    },
+  ];
+
+  const failed = invariantChecks.find((check) => !check.ok);
+  if (failed) {
+    throw new Error(`Physics lock mismatch: ${failed.label}`);
+  }
 }
 
 async function loadThreeModule() {
@@ -1997,6 +2029,8 @@ function applyScenePositions(runtimeCoordsKm) {
     visual.root.position.set(sceneX, sceneY, sceneZ);
   }
 
+  const moonParentDistanceBoosts = computeMoonParentDistanceBoosts(deferredMoons, runtimeCoordsKm);
+
   for (const [bodyId, parentId, moonCoords] of deferredMoons) {
     const visual = bodyVisuals.get(bodyId);
     const parentVisual = bodyVisuals.get(parentId);
@@ -2008,16 +2042,13 @@ function applyScenePositions(runtimeCoordsKm) {
       const relX = moonCoords.x - parentCoords.x;
       const relY = moonCoords.y - parentCoords.y;
       const relZ = moonCoords.z - parentCoords.z;
-      const moonDistanceScale =
-        bodyId === "moon" && parentId === "earth"
-          ? MOON_ORBIT_VISUAL_SCALE * EARTH_MOON_VISUAL_DISTANCE_MULTIPLIER
-          : MOON_ORBIT_VISUAL_SCALE;
+      const moonDistanceScale = moonVisualDistanceScale(bodyId, parentId) * (moonParentDistanceBoosts.get(parentId) || 1);
       let relSceneX = relX * DISTANCE_SCALE * moonDistanceScale;
       let relSceneY = relZ * DISTANCE_SCALE * moonDistanceScale;
       let relSceneZ = relY * DISTANCE_SCALE * moonDistanceScale;
       const relDistance = Math.sqrt((relSceneX * relSceneX) + (relSceneY * relSceneY) + (relSceneZ * relSceneZ));
       const minClearance = (parentVisual.renderRadius + visual.renderRadius) * MIN_MOON_PARENT_CLEARANCE;
-      if (!SCIENTIFIC_ACCURACY_MODE && relDistance < minClearance) {
+      if (relDistance < minClearance) {
         if (relDistance < 1e-8) {
           relSceneX = minClearance;
           relSceneY = 0;
@@ -2054,6 +2085,44 @@ function applyScenePositions(runtimeCoordsKm) {
       orbit.target.copy(selected.root.position);
     }
   }
+}
+
+function moonVisualDistanceScale(bodyId, parentId) {
+  return bodyId === "moon" && parentId === "earth"
+    ? MOON_ORBIT_VISUAL_SCALE * EARTH_MOON_VISUAL_DISTANCE_MULTIPLIER
+    : MOON_ORBIT_VISUAL_SCALE;
+}
+
+function computeMoonParentDistanceBoosts(deferredMoons, runtimeCoordsKm) {
+  const boosts = new Map();
+  for (const [bodyId, parentId, moonCoords] of deferredMoons) {
+    const visual = bodyVisuals.get(bodyId);
+    const parentVisual = bodyVisuals.get(parentId);
+    const parentCoords = runtimeCoordsKm.get(parentId) || positionsById.get(parentId)?.coordinates_km;
+    if (!visual || !parentVisual || !parentCoords) {
+      continue;
+    }
+
+    const relX = moonCoords.x - parentCoords.x;
+    const relY = moonCoords.y - parentCoords.y;
+    const relZ = moonCoords.z - parentCoords.z;
+    const baseScale = moonVisualDistanceScale(bodyId, parentId);
+    const baseSceneX = relX * DISTANCE_SCALE * baseScale;
+    const baseSceneY = relZ * DISTANCE_SCALE * baseScale;
+    const baseSceneZ = relY * DISTANCE_SCALE * baseScale;
+    const baseDistance = Math.sqrt((baseSceneX * baseSceneX) + (baseSceneY * baseSceneY) + (baseSceneZ * baseSceneZ));
+    if (!(baseDistance > 1e-10)) {
+      continue;
+    }
+
+    const minClearance = (parentVisual.renderRadius + visual.renderRadius) * MIN_MOON_PARENT_CLEARANCE;
+    const neededBoost = minClearance / baseDistance;
+    const currentBoost = boosts.get(parentId) || 1;
+    if (neededBoost > currentBoost) {
+      boosts.set(parentId, clamp(neededBoost, 1, 2000));
+    }
+  }
+  return boosts;
 }
 
 function onPointerDown(event) {
