@@ -339,6 +339,7 @@ let gravityById = new Map();
 let nBodyState = null;
 let nBodyStartupSnapshotLoaded = false;
 let gravityArrowFocusBodyId = null;
+let gravityArrowsLegendActivated = false;
 let primeMeridianSpinOffsetRadById = new Map();
 const bodyEclipseMaterialStates = new Set();
 
@@ -543,6 +544,8 @@ async function loadBodyCatalog() {
   const payload = await response.json();
   bodies = payload.bodies || [];
   metaById = new Map(bodies.map((body) => [body.id, body]));
+  gravityArrowFocusBodyId = null;
+  gravityArrowsLegendActivated = false;
   await rebuildMeshes();
   rebuildOrbitVisuals();
   rebuildBodyLegend();
@@ -663,6 +666,7 @@ function createLegendButton(body, isMoon) {
   button.textContent = body.name;
   button.title = `${body.name} (${body.body_type})`;
   button.addEventListener("click", () => {
+    gravityArrowsLegendActivated = true;
     gravityArrowFocusBodyId = body.id;
     setSelected(body.id, true);
     updateGravityVectors();
@@ -2533,6 +2537,10 @@ function updatePositions(payload) {
   const entries = payload.bodies || [];
   positionsById = new Map(entries.map((body) => [body.id, body]));
   latestSolarTimestampMs = parseTimestampMs(payload.timestamp_utc);
+  if (!nBodyStartupSnapshotLoaded) {
+    gravityArrowFocusBodyId = null;
+    gravityArrowsLegendActivated = false;
+  }
   nBodyStartupSnapshotLoaded = true;
   initializeNBodyFromSnapshot(Date.now());
   updateLegendFallbackIndicators();
@@ -4139,6 +4147,7 @@ function updateGravityVectors() {
     }
 
     const shouldShowThisBodyArrow = Boolean(
+      gravityArrowsLegendActivated &&
       gravityArrowFocusBodyId &&
       selectedId &&
       gravityArrowFocusBodyId === bodyId &&
