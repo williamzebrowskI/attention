@@ -93,6 +93,7 @@ const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
+  "sun",
   "mercury",
   "venus",
   "earth",

@@ -2,6 +2,12 @@ const TWO_PI = Math.PI * 2;
 const EPSILON = 1e-12;
 
 const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
+  sun: Object.freeze({
+    // Solar inertia-factor approximation (k ~ 0.07), with slight oblateness.
+    inertiaFactors: Object.freeze({ x: 0.07000, y: 0.07000, z: 0.07010 }),
+    sourceIds: Object.freeze(["mercury", "venus", "earth", "mars", "jupiter", "saturn", "uranus", "neptune"]),
+    tidalDamping: 0,
+  }),
   mercury: Object.freeze({
     // Approximate normalized principal moments (M*R^2) for Mercury.
     inertiaFactors: Object.freeze({ x: 0.343000, y: 0.343100, z: 0.346000 }),
