@@ -126,6 +126,87 @@ const DEFAULT_RIGID_BODY_MODELS = Object.freeze({
     sourceIds: Object.freeze(["jupiter", "sun", "pasiphae", "carme"]),
     tidalDamping: 0,
   }),
+  saturn: Object.freeze({
+    // Strong oblateness for Saturn's rapid rotation.
+    inertiaFactors: Object.freeze({ x: 0.215000, y: 0.215000, z: 0.230000 }),
+    sourceIds: Object.freeze(["sun", "jupiter", "uranus", "titan", "rhea", "iapetus"]),
+    tidalDamping: 0,
+  }),
+  mimas: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.360000, y: 0.395000, z: 0.445000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "enceladus", "tethys"]),
+    tidalDamping: 0,
+  }),
+  enceladus: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.360000, z: 0.380000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "mimas", "tethys", "dione"]),
+    tidalDamping: 0,
+  }),
+  tethys: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.390000, y: 0.395000, z: 0.400000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "enceladus", "dione", "mimas"]),
+    tidalDamping: 0,
+  }),
+  dione: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.360000, y: 0.365000, z: 0.375000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "tethys", "rhea", "enceladus"]),
+    tidalDamping: 0,
+  }),
+  rhea: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.355000, y: 0.360000, z: 0.370000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "dione", "titan"]),
+    tidalDamping: 0,
+  }),
+  titan: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.340000, y: 0.342000, z: 0.346000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "rhea", "iapetus", "hyperion"]),
+    tidalDamping: 0,
+  }),
+  hyperion: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.290000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "titan"]),
+    tidalDamping: 0,
+  }),
+  iapetus: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.345000, y: 0.350000, z: 0.360000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "titan", "phoebe"]),
+    tidalDamping: 0,
+  }),
+  phoebe: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.310000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "iapetus"]),
+    tidalDamping: 0,
+  }),
+  janus: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.330000, y: 0.420000, z: 0.500000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "epimetheus", "mimas"]),
+    tidalDamping: 0,
+  }),
+  epimetheus: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.310000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "janus", "mimas"]),
+    tidalDamping: 0,
+  }),
+  atlas: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.280000, y: 0.430000, z: 0.510000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "prometheus", "pan"]),
+    tidalDamping: 0,
+  }),
+  prometheus: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "pandora", "atlas"]),
+    tidalDamping: 0,
+  }),
+  pandora: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.300000, y: 0.430000, z: 0.500000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "prometheus", "atlas"]),
+    tidalDamping: 0,
+  }),
+  pan: Object.freeze({
+    inertiaFactors: Object.freeze({ x: 0.280000, y: 0.430000, z: 0.510000 }),
+    sourceIds: Object.freeze(["saturn", "sun", "atlas", "prometheus"]),
+    tidalDamping: 0,
+  }),
 });
 
 function normalizeAngle(angle) {

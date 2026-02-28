@@ -116,6 +116,22 @@ const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sinope",
   "carme",
   "ananke",
+  "saturn",
+  "mimas",
+  "enceladus",
+  "tethys",
+  "dione",
+  "rhea",
+  "titan",
+  "hyperion",
+  "iapetus",
+  "phoebe",
+  "janus",
+  "epimetheus",
+  "atlas",
+  "prometheus",
+  "pandora",
+  "pan",
 ]);
 const AU_KM = 149_597_870.7;
 const EARTH_BOND_ALBEDO = 0.3;
