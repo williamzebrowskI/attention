@@ -549,6 +549,7 @@ function setupRigidBodyAttitudeModel() {
     getCoordinatesKm: (bodyId) => runtimeCoordsOrLiveById(bodyId),
     getVelocityKmS: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
+    applyBodyDeltaVelocityKmS: (bodyId, deltaVelocityKmS) => applyNBodyDeltaVelocityKmS(bodyId, deltaVelocityKmS),
     getInitialAxisVector: (bodyId) => spinAxisSceneVectorForBody(bodyId),
     getInitialSpinRadians: (bodyId, nowMs) => {
       const calibrated = calibratedReferenceSpinRadians(bodyId, nowMs);
@@ -3075,6 +3076,26 @@ function nBodyVelocityKmSById(bodyId) {
     };
   }
   return null;
+}
+
+function applyNBodyDeltaVelocityKmS(bodyId, deltaVelocityKmS) {
+  const state = nBodyState;
+  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized || !bodyId || !deltaVelocityKmS) {
+    return;
+  }
+  const target = state.dynamicBodies.get(bodyId);
+  if (!target?.velocity) {
+    return;
+  }
+  const dvx = Number(deltaVelocityKmS.x);
+  const dvy = Number(deltaVelocityKmS.y);
+  const dvz = Number(deltaVelocityKmS.z);
+  if (!Number.isFinite(dvx) || !Number.isFinite(dvy) || !Number.isFinite(dvz)) {
+    return;
+  }
+  target.velocity.x += dvx;
+  target.velocity.y += dvy;
+  target.velocity.z += dvz;
 }
 
 function oblateModelForBody(bodyId) {

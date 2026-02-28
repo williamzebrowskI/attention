@@ -473,6 +473,18 @@ function resolveTorqueSourceIds(state, targetPositionKm, allBodyIds, getCoordina
   return [...selected];
 }
 
+function accumulateDeltaVFromForce(deltaVelocityById, bodyId, forceWorldKmKgPerS2, massKg, dtSeconds) {
+  if (!bodyId || !(massKg > 0) || !forceWorldKmKgPerS2) {
+    return;
+  }
+  const scale = dtSeconds / massKg;
+  const entry = deltaVelocityById.get(bodyId) || { x: 0, y: 0, z: 0 };
+  entry.x += forceWorldKmKgPerS2.x * scale;
+  entry.y += forceWorldKmKgPerS2.y * scale;
+  entry.z += forceWorldKmKgPerS2.z * scale;
+  deltaVelocityById.set(bodyId, entry);
+}
+
 function computeGravityGradientTorqueBody(THREE, state, targetPositionKm, sourceMassKg, sourcePositionKm, G) {
   if (!(sourceMassKg > 0) || !targetPositionKm || !sourcePositionKm) {
     return new THREE.Vector3(0, 0, 0);
@@ -499,7 +511,7 @@ function computeGravityGradientTorqueBody(THREE, state, targetPositionKm, source
   return nBody.cross(iTimesN).multiplyScalar(3 * G * sourceMassKg * invR3);
 }
 
-function computeConstantTimeLagTidalTorqueBody(
+function computeConstantTimeLagTidalInteraction(
   THREE,
   state,
   targetPositionKm,
@@ -512,19 +524,31 @@ function computeConstantTimeLagTidalTorqueBody(
 ) {
   const tidal = state.tidalModel;
   if (!tidal || tidal.model !== "constant_time_lag") {
-    return new THREE.Vector3(0, 0, 0);
+    return {
+      torqueBody: new THREE.Vector3(0, 0, 0),
+      backReactionForceTargetWorld: new THREE.Vector3(0, 0, 0),
+    };
   }
   if (Array.isArray(tidal.sourceIds) && tidal.sourceIds.length > 0 && !tidal.sourceIds.includes(sourceId)) {
-    return new THREE.Vector3(0, 0, 0);
+    return {
+      torqueBody: new THREE.Vector3(0, 0, 0),
+      backReactionForceTargetWorld: new THREE.Vector3(0, 0, 0),
+    };
   }
 
   const k2 = Number(tidal.k2);
   const deltaTSeconds = Number(tidal.deltaTSeconds);
   if (!(k2 > 0) || !(deltaTSeconds > 0) || !(state.radiusKm > 0)) {
-    return new THREE.Vector3(0, 0, 0);
+    return {
+      torqueBody: new THREE.Vector3(0, 0, 0),
+      backReactionForceTargetWorld: new THREE.Vector3(0, 0, 0),
+    };
   }
   if (!(sourceMassKg > 0) || !targetPositionKm || !sourcePositionKm || !targetVelocityKmS || !sourceVelocityKmS) {
-    return new THREE.Vector3(0, 0, 0);
+    return {
+      torqueBody: new THREE.Vector3(0, 0, 0),
+      backReactionForceTargetWorld: new THREE.Vector3(0, 0, 0),
+    };
   }
 
   const rx = sourcePositionKm.x - targetPositionKm.x;
@@ -532,7 +556,10 @@ function computeConstantTimeLagTidalTorqueBody(
   const rz = sourcePositionKm.z - targetPositionKm.z;
   const radiusSq = (rx * rx) + (ry * ry) + (rz * rz);
   if (!(radiusSq > 1e-18)) {
-    return new THREE.Vector3(0, 0, 0);
+    return {
+      torqueBody: new THREE.Vector3(0, 0, 0),
+      backReactionForceTargetWorld: new THREE.Vector3(0, 0, 0),
+    };
   }
 
   const rVec = new THREE.Vector3(rx, ry, rz);
@@ -553,7 +580,22 @@ function computeConstantTimeLagTidalTorqueBody(
   if (maxTorque > 0 && tauWorld.length() > maxTorque) {
     tauWorld.setLength(maxTorque);
   }
-  return tauWorld.applyQuaternion(state.orientation.clone().invert());
+  const invOrientation = state.orientation.clone().invert();
+  const torqueBody = tauWorld.clone().applyQuaternion(invOrientation);
+
+  // Orbital back-reaction: enforce opposite change in orbital angular momentum
+  // for this tidal interaction via tangential equal/opposite pair force.
+  const radius = Math.sqrt(radiusSq);
+  const rHat = rVec.clone().multiplyScalar(1 / radius);
+  const tauRadial = rHat.clone().multiplyScalar(tauWorld.dot(rHat));
+  const tauPerpendicular = tauWorld.clone().sub(tauRadial);
+  const backReactionForceTargetWorld = tauPerpendicular
+    .clone()
+    .multiplyScalar(-1)
+    .cross(rVec)
+    .multiplyScalar(1 / radiusSq);
+
+  return { torqueBody, backReactionForceTargetWorld };
 }
 
 function applyBodyStateToVisual(THREE, state, visual) {
@@ -620,6 +662,7 @@ export function createRigidBodyAttitudeController(options) {
   const getCoordinatesKm = options.getCoordinatesKm;
   const getVelocityKmS = options.getVelocityKmS;
   const getBodyMassKg = options.getBodyMassKg;
+  const applyBodyDeltaVelocityKmS = options.applyBodyDeltaVelocityKmS;
   const getInitialAxisVector = options.getInitialAxisVector;
   const getInitialSpinRadians = options.getInitialSpinRadians;
   const getInitialRotationPeriodHours = options.getInitialRotationPeriodHours;
@@ -667,6 +710,7 @@ export function createRigidBodyAttitudeController(options) {
         bodyId,
         orientation,
         omegaBody,
+        massKg,
         inertia,
         invInertia: {
           x: 1 / inertia.x,
@@ -697,6 +741,7 @@ export function createRigidBodyAttitudeController(options) {
     while (remaining > EPSILON) {
       const dt = Math.min(stepSeconds, remaining);
       const torqueById = new Map();
+      const deltaVelocityById = new Map();
 
       for (const [bodyId, state] of stateById.entries()) {
         const targetPos = getCoordinatesKm?.(bodyId);
@@ -729,7 +774,7 @@ export function createRigidBodyAttitudeController(options) {
           );
           totalTorque.add(torque);
           const sourceVelocityKmS = getVelocityKmS?.(sourceId);
-          const tidalTorque = computeConstantTimeLagTidalTorqueBody(
+          const tidalInteraction = computeConstantTimeLagTidalInteraction(
             THREE,
             state,
             targetPos,
@@ -740,7 +785,33 @@ export function createRigidBodyAttitudeController(options) {
             sourceVelocityKmS,
             gravitationalConstantKm3PerKgS2,
           );
-          totalTorque.add(tidalTorque);
+          totalTorque.add(tidalInteraction.torqueBody);
+
+          if (applyBodyDeltaVelocityKmS) {
+            const targetMassKg = Number(state.massKg);
+            const sourceMassKg = Number(sourceMass);
+            const forceTarget = tidalInteraction.backReactionForceTargetWorld;
+            if (forceTarget && (forceTarget.x || forceTarget.y || forceTarget.z)) {
+              accumulateDeltaVFromForce(
+                deltaVelocityById,
+                bodyId,
+                forceTarget,
+                targetMassKg,
+                dt,
+              );
+              accumulateDeltaVFromForce(
+                deltaVelocityById,
+                sourceId,
+                {
+                  x: -forceTarget.x,
+                  y: -forceTarget.y,
+                  z: -forceTarget.z,
+                },
+                sourceMassKg,
+                dt,
+              );
+            }
+          }
         }
         torqueById.set(bodyId, totalTorque);
       }
@@ -748,6 +819,11 @@ export function createRigidBodyAttitudeController(options) {
       for (const [bodyId, state] of stateById.entries()) {
         const torque = torqueById.get(bodyId) || new THREE.Vector3(0, 0, 0);
         integrateRigidBodyStep(THREE, state, torque, dt);
+      }
+      if (applyBodyDeltaVelocityKmS) {
+        for (const [bodyId, deltaVelocity] of deltaVelocityById.entries()) {
+          applyBodyDeltaVelocityKmS(bodyId, deltaVelocity);
+        }
       }
       remaining -= dt;
     }

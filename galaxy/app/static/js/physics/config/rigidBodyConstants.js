@@ -91,12 +91,24 @@ export const RIGID_BODY_PHYSICAL_CONSTANTS = Object.freeze({
       B: 2.356496e+36,
       C: 2.467827e+36,
     }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.49,
+      deltaTSeconds: 0.2,
+      sourceIds: Object.freeze(["io", "europa", "ganymede"]),
+    }),
   }),
   io: Object.freeze({
     principalMomentsKgKm2: Object.freeze({
       A: 1.114391e+29,
       B: 1.117355e+29,
       C: 1.120319e+29,
+    }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.015,
+      deltaTSeconds: 120,
+      sourceIds: Object.freeze(["jupiter"]),
     }),
   }),
   europa: Object.freeze({
@@ -105,12 +117,24 @@ export const RIGID_BODY_PHYSICAL_CONSTANTS = Object.freeze({
       B: 4.034008e+28,
       C: 4.045701e+28,
     }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.26,
+      deltaTSeconds: 90,
+      sourceIds: Object.freeze(["jupiter"]),
+    }),
   }),
   ganymede: Object.freeze({
     principalMomentsKgKm2: Object.freeze({
       A: 3.197745e+29,
       B: 3.208027e+29,
       C: 3.218309e+29,
+    }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.20,
+      deltaTSeconds: 80,
+      sourceIds: Object.freeze(["jupiter"]),
     }),
   }),
   callisto: Object.freeze({
@@ -196,6 +220,12 @@ export const RIGID_BODY_PHYSICAL_CONSTANTS = Object.freeze({
       B: 4.143526e+35,
       C: 4.432609e+35,
     }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.39,
+      deltaTSeconds: 0.35,
+      sourceIds: Object.freeze(["titan", "enceladus"]),
+    }),
   }),
   mimas: Object.freeze({
     principalMomentsKgKm2: Object.freeze({
@@ -209,6 +239,12 @@ export const RIGID_BODY_PHYSICAL_CONSTANTS = Object.freeze({
       A: 2.333718e+24,
       B: 2.470995e+24,
       C: 2.608273e+24,
+    }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.09,
+      deltaTSeconds: 120,
+      sourceIds: Object.freeze(["saturn"]),
     }),
   }),
   tethys: Object.freeze({
@@ -237,6 +273,12 @@ export const RIGID_BODY_PHYSICAL_CONSTANTS = Object.freeze({
       A: 3.031929e+29,
       B: 3.049764e+29,
       C: 3.085434e+29,
+    }),
+    tidal: Object.freeze({
+      model: "constant_time_lag",
+      k2: 0.3,
+      deltaTSeconds: 80,
+      sourceIds: Object.freeze(["saturn"]),
     }),
   }),
   hyperion: Object.freeze({
