@@ -101,6 +101,7 @@ const THREE_TEX_ROOTS = [
   "https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/planets/",
   "https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/planets/",
 ];
+const LOCAL_PLANET_TEXTURE_ROOT = "/static/assets/textures/planets/";
 const SOLARSYSTEM_SCOPE_TEXTURE_ROOT = "https://www.solarsystemscope.com/textures/download/";
 const MOON_TEXTURE_SLUG_BY_ID = Object.freeze({
   moon: "moon",
@@ -152,6 +153,12 @@ const EARTH_8K_DAY_MAPS = [
   "https://www.solarsystemscope.com/textures/download/8k_earth_daymap.jpg",
   "https://upload.wikimedia.org/wikipedia/commons/0/04/Solarsystemscope_texture_8k_earth_daymap.jpg",
 ];
+const EARTH_LOCAL_DAY_MAPS = [
+  `${LOCAL_PLANET_TEXTURE_ROOT}earth_day_8k.jpg`,
+];
+const VENUS_LOCAL_SURFACE_MAPS = [
+  `${LOCAL_PLANET_TEXTURE_ROOT}venus_surface_8k.jpg`,
+];
 const EARTH_8K_NIGHT_MAPS = [
   "https://www.solarsystemscope.com/textures/download/8k_earth_nightmap.jpg",
   "https://upload.wikimedia.org/wikipedia/commons/9/92/Solarsystemscope_texture_8k_earth_nightmap.jpg",
@@ -183,14 +190,14 @@ const BODY_TEXTURE_CONFIG = {
     bumpScale: 0.06,
   },
   venus: {
-    map: [...planetTextureCandidates("venus.jpg"), `${TEX_ROOT}venusmap.jpg`],
+    map: [...VENUS_LOCAL_SURFACE_MAPS, ...planetTextureCandidates("venus.jpg"), `${TEX_ROOT}venusmap.jpg`],
     bump: [`${TEX_ROOT}venusbump.jpg`],
     bumpScale: 0.03,
     clouds: [`${TEX_ROOT}venusatmosphere.jpg`],
     atmosphereColor: 0xd9ae76,
   },
   earth: {
-    map: [...EARTH_8K_DAY_MAPS, ...planetTextureCandidates("earth_atmos_2048.jpg"), `${TEX_ROOT}earthmap1k.jpg`],
+    map: [...EARTH_LOCAL_DAY_MAPS, ...EARTH_8K_DAY_MAPS, ...planetTextureCandidates("earth_atmos_2048.jpg"), `${TEX_ROOT}earthmap1k.jpg`],
     bump: [`${TEX_ROOT}earthbump1k.jpg`],
     specular: [...EARTH_8K_SPECULAR_MAPS, ...planetTextureCandidates("earth_specular_2048.jpg"), `${TEX_ROOT}earthspec1k.jpg`],
     normal: [...EARTH_8K_NORMAL_MAPS, ...planetTextureCandidates("earth_normal_2048.jpg")],
