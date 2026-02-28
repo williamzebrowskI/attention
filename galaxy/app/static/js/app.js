@@ -60,7 +60,8 @@ const MIN_PLANET_SUN_CLEARANCE = 0.02;
 const TEXTURE_LOAD_TIMEOUT_MS = 3500;
 const EARTH_TEXTURE_LOAD_TIMEOUT_MS = 12000;
 const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
-const PHOTOREAL_RETRY_LIMIT = 3;
+const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
+const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60;
@@ -700,12 +701,31 @@ async function createBodyVisual(body) {
       textures = { ...procedural, textureMode: "procedural_planet_fallback" };
     }
   } else if (body.body_type === "planet") {
-    const procedural = await createProceduralPlanetTextures(body, plan);
-    textures = { ...procedural, textureMode: "procedural_planet_forced" };
+    const remote = await loadTexturePlan(plan, { timeoutMs: PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS });
+    if (remote?.map) {
+      const profile = PLANET_SURFACE_PROFILES[body.id] || PLANET_SURFACE_PROFILES.default;
+      textures = {
+        ...remote,
+        bumpScale: remote.bumpScale ?? plan.bumpScale ?? defaultPlanetBumpScale(body.id, profile.type),
+        textureMode: "photoreal_hd",
+      };
+    } else {
+      const procedural = await createProceduralPlanetTextures(body, plan);
+      textures = { ...procedural, textureMode: "procedural_planet_fallback" };
+    }
   } else if (body.body_type === "moon") {
-    const profile = MOON_SURFACE_PROFILES[body.id] || MOON_SURFACE_PROFILES.default;
-    const proceduralMoon = await createProceduralMoonTextures(profile, plan.bumpScale ?? 0.07);
-    textures = { ...proceduralMoon, textureMode: "procedural_moon" };
+    const remote = await loadTexturePlan(plan, { timeoutMs: PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS });
+    if (remote?.map) {
+      textures = {
+        ...remote,
+        bumpScale: remote.bumpScale ?? plan.bumpScale ?? 0.07,
+        textureMode: "photoreal_hd",
+      };
+    } else {
+      const profile = MOON_SURFACE_PROFILES[body.id] || MOON_SURFACE_PROFILES.default;
+      const proceduralMoon = await createProceduralMoonTextures(profile, plan.bumpScale ?? 0.07);
+      textures = { ...proceduralMoon, textureMode: "procedural_moon" };
+    }
   } else {
     const remote = await loadTexturePlan(plan);
     textures = { ...remote, textureMode: remote?.proceduralMoon ? "procedural_moon" : "remote" };
@@ -800,7 +820,7 @@ async function createBodyVisual(body) {
   root.add(pickMesh);
   visual.pickMesh = pickMesh;
 
-  if (body.id === "sun" || (body.body_type === "planet" && body.id !== "earth") || body.id === "moon") {
+  if (body.id === "sun" || body.body_type === "planet" || body.body_type === "moon") {
     void upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius);
   }
 
@@ -812,11 +832,7 @@ function getTexturePlan(body) {
     return BODY_TEXTURE_CONFIG[body.id];
   }
   if (body.body_type === "moon") {
-    return {
-      proceduralMoon: true,
-      moonProfile: MOON_SURFACE_PROFILES[body.id] || MOON_SURFACE_PROFILES.default,
-      bumpScale: 0.07,
-    };
+    return BODY_TEXTURE_CONFIG.moon_default || { map: null };
   }
   return { map: null };
 }
@@ -943,7 +959,11 @@ function buildCloudMesh(bodyId, renderRadius, cloudMap) {
 }
 
 async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius) {
-  if (!BODY_TEXTURE_CONFIG[body.id]) {
+  const photorealPlan =
+    BODY_TEXTURE_CONFIG[body.id] ||
+    (body.body_type === "moon" ? BODY_TEXTURE_CONFIG.moon_default : null) ||
+    plan;
+  if (!photorealPlan || photorealPlan.proceduralMoon) {
     return;
   }
   try {
@@ -952,9 +972,15 @@ async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius
       return;
     }
 
-    const remote = await loadTexturePlan(plan);
+    const timeoutMs =
+      body.id === "sun"
+        ? SUN_TEXTURE_LOAD_TIMEOUT_MS
+        : body.id === "earth"
+          ? EARTH_TEXTURE_LOAD_TIMEOUT_MS
+          : PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS;
+    const remote = await loadTexturePlan(photorealPlan, { timeoutMs });
     if (!remote || !remote.map) {
-      schedulePhotorealRetry(body, visual, plan, renderRadius);
+      schedulePhotorealRetry(body, visual, photorealPlan, renderRadius);
       return;
     }
     const latestVisual = bodyVisuals.get(body.id);
@@ -965,9 +991,9 @@ async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius
 
     const textureSet = {
       ...remote,
-      bumpScale: remote.bumpScale ?? plan.bumpScale ?? defaultPlanetBumpScale(body.id, profile.type),
+      bumpScale: remote.bumpScale ?? photorealPlan.bumpScale ?? defaultPlanetBumpScale(body.id, profile.type),
     };
-    const material = createPlanetMaterial(body, plan, textureSet, renderRadius);
+    const material = createPlanetMaterial(body, photorealPlan, textureSet, renderRadius);
     replaceLodMaterial(visual.lod, material);
 
     if (remote.clouds) {
@@ -998,7 +1024,7 @@ async function upgradeVisualToPhotorealTextures(body, visual, plan, renderRadius
     photorealRetryCount.delete(body.id);
   } catch (error) {
     console.warn(`[solar-system] Could not upgrade ${body.id} to photoreal textures:`, error);
-    schedulePhotorealRetry(body, visual, plan, renderRadius);
+    schedulePhotorealRetry(body, visual, photorealPlan, renderRadius);
   }
 }
 
