@@ -2542,25 +2542,26 @@ function preferredCameraDistanceForSelection(visual) {
   }
 
   const body = visual.body;
+  const nearSurface = Math.max(orbit.minDistance * 1.05, visual.renderRadius * 1.06);
   if (body.id === "sun") {
     return clamp(
-      Math.max(visual.renderRadius * 5.6, 4.8),
-      Math.max(orbit.minDistance * 1.5, visual.renderRadius * 1.18),
+      Math.max(visual.renderRadius * 2.3, 1.3),
+      nearSurface,
       orbit.maxDistance,
     );
   }
 
   if (body.body_type === "planet") {
     return clamp(
-      Math.max(visual.renderRadius * 10.0, 0.22),
-      Math.max(orbit.minDistance * 1.4, visual.renderRadius * 1.22),
+      Math.max(visual.renderRadius * 2.55, 0.035),
+      nearSurface,
       orbit.maxDistance,
     );
   }
 
   return clamp(
-    Math.max(visual.renderRadius * 13.0, 0.13),
-    Math.max(orbit.minDistance * 1.35, visual.renderRadius * 1.22),
+    Math.max(visual.renderRadius * 3.0, 0.004),
+    nearSurface,
     orbit.maxDistance,
   );
 }
