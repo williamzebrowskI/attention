@@ -47,7 +47,7 @@ class HorizonsClient:
             # Horizons expects calendar values with spaces to be quoted.
             "START_TIME": f"'{start_time}'",
             "STOP_TIME": f"'{stop_time}'",
-            "STEP_SIZE": "'1 s'",
+            "STEP_SIZE": "'1 m'",
             "VEC_TABLE": "2",
             "OUT_UNITS": "KM-S",
             "CSV_FORMAT": "YES",
