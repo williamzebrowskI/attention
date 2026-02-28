@@ -415,15 +415,6 @@ function initialSpinRadPerSecond(rotationPeriodHours) {
   return hours < 0 ? -magnitude : magnitude;
 }
 
-function inertiaTensorDiagonalKgKm2(massKg, radiusKm, inertiaFactors) {
-  const scale = massKg * radiusKm * radiusKm;
-  return {
-    x: scale * Number(inertiaFactors?.x || 0),
-    y: scale * Number(inertiaFactors?.y || 0),
-    z: scale * Number(inertiaFactors?.z || 0),
-  };
-}
-
 function inertiaTensorFromPrincipalMomentsKgKm2(principalMomentsKgKm2) {
   const a = Number(principalMomentsKgKm2?.A);
   const b = Number(principalMomentsKgKm2?.B);
@@ -648,15 +639,19 @@ export function createRigidBodyAttitudeController(options) {
       const massKg = Number(getBodyMassKg?.(bodyId));
       const radiusKm = Number(body?.radius_km);
       const model = bodyModelById?.[bodyId];
-      const inertiaFactors = model?.inertiaFactors;
       const physicalConstants = RIGID_BODY_PHYSICAL_CONSTANTS?.[bodyId];
       if (!body || !visual || !(massKg > 0) || !(radiusKm > 0)) {
         continue;
       }
 
-      const inertia =
-        inertiaTensorFromPrincipalMomentsKgKm2(physicalConstants?.principalMomentsKgKm2)
-        || inertiaTensorDiagonalKgKm2(massKg, radiusKm, inertiaFactors);
+      const inertia = inertiaTensorFromPrincipalMomentsKgKm2(
+        physicalConstants?.principalMomentsKgKm2,
+      );
+      if (!inertia) {
+        throw new Error(
+          `Missing principal moments for rigid-body attitude managed body '${bodyId}'.`,
+        );
+      }
       if (!(inertia.x > 0) || !(inertia.y > 0) || !(inertia.z > 0)) {
         continue;
       }
