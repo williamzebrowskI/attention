@@ -149,10 +149,6 @@ const MOON_TEXTURE_OVERRIDES = Object.freeze({
     bumpScale: 0.065,
   },
 });
-const EARTH_8K_DAY_MAPS = [
-  "https://www.solarsystemscope.com/textures/download/8k_earth_daymap.jpg",
-  "https://upload.wikimedia.org/wikipedia/commons/0/04/Solarsystemscope_texture_8k_earth_daymap.jpg",
-];
 const EARTH_LOCAL_DAY_MAPS = [
   `${LOCAL_PLANET_TEXTURE_ROOT}earth_day_8k.jpg`,
 ];
@@ -190,14 +186,14 @@ const BODY_TEXTURE_CONFIG = {
     bumpScale: 0.06,
   },
   venus: {
-    map: [...VENUS_LOCAL_SURFACE_MAPS, ...planetTextureCandidates("venus.jpg"), `${TEX_ROOT}venusmap.jpg`],
+    map: [...VENUS_LOCAL_SURFACE_MAPS],
     bump: [`${TEX_ROOT}venusbump.jpg`],
     bumpScale: 0.03,
     clouds: [`${TEX_ROOT}venusatmosphere.jpg`],
     atmosphereColor: 0xd9ae76,
   },
   earth: {
-    map: [...EARTH_LOCAL_DAY_MAPS, ...EARTH_8K_DAY_MAPS, ...planetTextureCandidates("earth_atmos_2048.jpg"), `${TEX_ROOT}earthmap1k.jpg`],
+    map: [...EARTH_LOCAL_DAY_MAPS],
     bump: [`${TEX_ROOT}earthbump1k.jpg`],
     specular: [...EARTH_8K_SPECULAR_MAPS, ...planetTextureCandidates("earth_specular_2048.jpg"), `${TEX_ROOT}earthspec1k.jpg`],
     normal: [...EARTH_8K_NORMAL_MAPS, ...planetTextureCandidates("earth_normal_2048.jpg")],
