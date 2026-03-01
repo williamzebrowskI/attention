@@ -15,12 +15,55 @@ export const STARSHIP_STACK_TOTAL_HEIGHT_KM =
 
 export const STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM = STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5;
 
-export const LAUNCH_SITE = Object.freeze({
+const DEFAULT_LAUNCH_SITE = Object.freeze({
   name: "Cape Canaveral, FL (SLC-40)",
   latitudeDeg: 28.5618571,
   longitudeDeg: -80.577366,
   altitudeKm: 0.0,
 });
+export let LAUNCH_SITE = { ...DEFAULT_LAUNCH_SITE };
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeLongitudeDeg(value) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_LAUNCH_SITE.longitudeDeg;
+  }
+  let lon = value % 360;
+  if (lon > 180) {
+    lon -= 360;
+  } else if (lon < -180) {
+    lon += 360;
+  }
+  return lon;
+}
+
+export function setLaunchSite(nextSite = {}) {
+  const latRaw = Number(nextSite.latitudeDeg ?? nextSite.latitude_deg);
+  const lonRaw = Number(nextSite.longitudeDeg ?? nextSite.longitude_deg);
+  const altRaw = Number(nextSite.altitudeKm ?? nextSite.altitude_km);
+  const nextName = String(nextSite.name || "").trim();
+
+  const latitudeDeg = Number.isFinite(latRaw)
+    ? clamp(latRaw, -90, 90)
+    : LAUNCH_SITE.latitudeDeg;
+  const longitudeDeg = Number.isFinite(lonRaw)
+    ? normalizeLongitudeDeg(lonRaw)
+    : LAUNCH_SITE.longitudeDeg;
+  const altitudeKm = Number.isFinite(altRaw)
+    ? clamp(altRaw, -1, 20)
+    : LAUNCH_SITE.altitudeKm;
+
+  LAUNCH_SITE = {
+    name: nextName || LAUNCH_SITE.name || DEFAULT_LAUNCH_SITE.name,
+    latitudeDeg,
+    longitudeDeg,
+    altitudeKm,
+  };
+  return LAUNCH_SITE;
+}
 
 export const STANDARD_GRAVITY_M_S2 = 9.80665;
 export const EARTH_SIDEREAL_ANGULAR_RATE_RAD_S = 7.2921150e-5;

@@ -34,6 +34,7 @@ import {
   OBLATE_GRAVITY_MODEL,
 } from "./physics/config/oblatenessConfig.js";
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
+import { setLaunchSite as setRuntimeLaunchSite } from "./physics/launch/launchConfig.js";
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
@@ -91,7 +92,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301ai";
+const FRONTEND_MODULE_VERSION = "20260301aj";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -854,6 +855,10 @@ async function loadRuntimeConfig() {
     const launchFlag = payload?.features?.starship_launch;
     if (typeof launchFlag === "boolean") {
       launchFeatureEnabled = launchFlag;
+    }
+    const launchSite = payload?.launch_site;
+    if (launchSite && typeof launchSite === "object") {
+      setRuntimeLaunchSite(launchSite);
     }
   } catch (error) {
     console.warn("[solar-system] Using default runtime config:", error);

@@ -9,6 +9,7 @@ from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.services.launch_site import LaunchSiteService
 from app.services.physics_lock import PhysicsLockError, validate_catalog_lock
 from app.services.solar_system import SolarSystemService, create_default_service
 
@@ -50,6 +51,7 @@ except PhysicsLockError as exc:
     raise RuntimeError(f"Physics lock validation failed at startup: {exc}") from exc
 
 service: SolarSystemService = create_default_service()
+launch_site_service = LaunchSiteService()
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -64,12 +66,18 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.on_event("startup")
+async def startup_refresh_launch_site() -> None:
+    await launch_site_service.refresh_on_startup()
+
+
 @app.get("/api/config")
 async def runtime_config() -> dict[str, object]:
     return {
         "features": {
             "starship_launch": _parse_bool(os.getenv("ENABLE_STARSHIP_LAUNCH"), default=True),
         },
+        "launch_site": launch_site_service.current_site().to_dict(),
     }
 
 
