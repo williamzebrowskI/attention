@@ -6,16 +6,22 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const altitudeKm = Math.max(0, Number(input.altitudeKm) || 0);
   const radialSpeedKmS = Number(input.radialSpeedKmS) || 0;
   const tangentialSpeedKmS = Math.max(0, Number(input.tangentialSpeedKmS) || 0);
+  const launchSiteRangeKm = Math.max(0, Number(input.launchSiteRangeKm) || 0);
+  const launchSiteLateralRangeKm = Math.max(0, Number(input.launchSiteLateralRangeKm) || 0);
+  const launchSiteLateralClosingSpeedKmS = Number(input.launchSiteLateralClosingSpeedKmS) || 0;
   const elapsedSec = Math.max(0, Number(input.timeSinceSeparationSec) || 0);
   const propellantKg = Math.max(0, Number(input.remainingPropellantKg) || 0);
   const dynamicPressurePa = Math.max(0, Number(input.dynamicPressurePa) || 0);
   const reserveLandingKg = Math.max(0, Number(input.reserveLandingPropellantKg) || 0);
 
-  const separationCoastSec = 8;
-  const entryBurnUpperKm = 68;
-  const entryBurnLowerKm = 24;
+  const separationCoastSec = 6;
+  const entryBurnUpperKm = 72;
+  const entryBurnLowerKm = 26;
   const landingBurnStartKm = 16.0;
   const touchdownBandKm = 0.03;
+  const rtlsLateralWindowKm = 130;
+  const significantSiteErrorKm = 18;
+  const landingSiteTightenKm = 3.0;
 
   if (altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.025 && tangentialSpeedKmS < 0.02) {
     return {
@@ -23,6 +29,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
       guidanceMode: "booster-landed",
       throttle: 0,
       directionMix: { up: 1, retrograde: 0, antiTangent: 0 },
+      siteVectorWeight: 0,
+      siteVelocityWeight: 0,
       touchdownReady: true,
     };
   }
@@ -33,22 +41,45 @@ export function computeBoosterRecoveryCommand(input = {}) {
       guidanceMode: "booster-separation-coast",
       throttle: 0,
       directionMix: { up: 0.2, retrograde: 0.2, antiTangent: 0.2 },
+      siteVectorWeight: 0.16,
+      siteVelocityWeight: 0.22,
       touchdownReady: false,
     };
   }
 
+  const lateralErrorNorm = clamp(launchSiteLateralRangeKm / rtlsLateralWindowKm, 0, 1);
+  const closingDeficitNorm = clamp(
+    (0.12 - launchSiteLateralClosingSpeedKmS) / 0.24,
+    0,
+    1,
+  );
+  const farFromLaunchSite =
+    launchSiteLateralRangeKm > significantSiteErrorKm
+    || launchSiteRangeKm > (rtlsLateralWindowKm * 1.1);
   const hasBoostbackBudget = propellantKg > (reserveLandingKg * 1.12);
   if (
     altitudeKm > entryBurnUpperKm
     && hasBoostbackBudget
-    && tangentialSpeedKmS > 1.1
+    && (
+      tangentialSpeedKmS > 1.05
+      || farFromLaunchSite
+    )
   ) {
-    const tangentialScale = clamp((tangentialSpeedKmS - 1.1) / 2.8, 0, 1);
+    const tangentialScale = clamp((tangentialSpeedKmS - 1.05) / 2.8, 0, 1);
+    const rtlsDemand = Math.max(lateralErrorNorm, closingDeficitNorm);
     return {
       phase: "boostback",
       guidanceMode: "booster-boostback",
-      throttle: clamp(0.36 + (0.28 * tangentialScale), 0.3, 0.66),
-      directionMix: { up: 0.12, retrograde: 0.92, antiTangent: 0.58 },
+      throttle: clamp(
+        0.34
+          + (0.24 * tangentialScale)
+          + (0.20 * rtlsDemand),
+        0.3,
+        0.78,
+      ),
+      directionMix: { up: 0.12, retrograde: 0.92, antiTangent: 0.62 },
+      siteVectorWeight: clamp(0.46 + (0.4 * rtlsDemand), 0.36, 0.88),
+      siteVelocityWeight: clamp(0.28 + (0.28 * rtlsDemand), 0.18, 0.62),
       touchdownReady: false,
     };
   }
@@ -61,6 +92,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
         guidanceMode: "booster-entry-burn",
         throttle: clamp(0.28 + (0.42 * descentFactor), 0.24, 0.8),
         directionMix: { up: 0.74, retrograde: 0.42, antiTangent: 0.74 },
+        siteVectorWeight: clamp(0.42 + (0.22 * lateralErrorNorm), 0.3, 0.68),
+        siteVelocityWeight: clamp(0.26 + (0.16 * closingDeficitNorm), 0.2, 0.52),
         touchdownReady: false,
       };
     }
@@ -69,6 +102,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
       guidanceMode: "booster-ballistic",
       throttle: 0,
       directionMix: { up: 0.2, retrograde: 0.24, antiTangent: 0.42 },
+      siteVectorWeight: clamp(0.34 + (0.24 * lateralErrorNorm), 0.24, 0.58),
+      siteVelocityWeight: clamp(0.2 + (0.14 * closingDeficitNorm), 0.16, 0.42),
       touchdownReady: false,
     };
   }
@@ -79,6 +114,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
       guidanceMode: "booster-descent-coast",
       throttle: 0,
       directionMix: { up: 0.18, retrograde: 0.22, antiTangent: 0.54 },
+      siteVectorWeight: clamp(0.34 + (0.34 * lateralErrorNorm), 0.22, 0.72),
+      siteVelocityWeight: clamp(0.24 + (0.18 * closingDeficitNorm), 0.16, 0.5),
       touchdownReady: false,
     };
   }
@@ -100,11 +137,18 @@ export function computeBoosterRecoveryCommand(input = {}) {
     const flareScale = clamp((-radialSpeedKmS - 0.04) / 0.12, 0, 1);
     throttle = Math.max(throttle, clamp(0.52 + (0.32 * flareScale), 0.52, 0.92));
   }
+  const terminalRangeNorm = clamp(
+    Math.min(launchSiteLateralRangeKm, launchSiteRangeKm) / landingSiteTightenKm,
+    0,
+    1,
+  );
   return {
     phase: "landing-burn",
     guidanceMode: "booster-landing-burn",
     throttle,
     directionMix: { up: 1.0, retrograde: 0.18, antiTangent: 0.95 },
+    siteVectorWeight: clamp(0.08 + (0.22 * terminalRangeNorm), 0.04, 0.32),
+    siteVelocityWeight: clamp(0.06 + (0.18 * terminalRangeNorm), 0.04, 0.28),
     touchdownReady: altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.03,
   };
 }

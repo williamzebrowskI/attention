@@ -7705,6 +7705,15 @@ function updateInfoOverlay() {
     const boosterDistanceLine = Number.isFinite(launchSnapshot?.boosterDistanceKm)
       ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km`
       : "n/a";
+    const boosterLaunchSiteRangeLine = Number.isFinite(launchSnapshot?.boosterLaunchSiteRangeKm)
+      ? `${formatNumber(launchSnapshot.boosterLaunchSiteRangeKm, 4)} km`
+      : "n/a";
+    const boosterLaunchSiteLateralRangeLine = Number.isFinite(launchSnapshot?.boosterLaunchSiteLateralRangeKm)
+      ? `${formatNumber(launchSnapshot.boosterLaunchSiteLateralRangeKm, 4)} km`
+      : "n/a";
+    const boosterLaunchSiteClosingLine = Number.isFinite(launchSnapshot?.boosterLaunchSiteLateralClosingSpeedKmS)
+      ? `${formatNumber(launchSnapshot.boosterLaunchSiteLateralClosingSpeedKmS, 4)} km/s`
+      : "n/a";
     const coordsLine = hasCoords ? `${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}` : "n/a";
     let selectedVehicleLines = "";
     if (isBoosterSelected) {
@@ -7715,6 +7724,9 @@ function updateInfoOverlay() {
         <p class="line launch-line">Speed: ${boosterSpeedLine}</p>
         <p class="line launch-line">Propellant: ${boosterPropellantLine}</p>
         <p class="line launch-line">Distance Traveled: ${boosterDistanceLine}</p>
+        <p class="line launch-line">Range to Launch Site: ${boosterLaunchSiteRangeLine}</p>
+        <p class="line launch-line">Lateral Range to Site: ${boosterLaunchSiteLateralRangeLine}</p>
+        <p class="line launch-line">Lateral Closing Speed: ${boosterLaunchSiteClosingLine}</p>
         <p class="line launch-line">Landed: ${launchSnapshot?.boosterLanded ? "yes" : "no"}</p>
       `;
     } else {

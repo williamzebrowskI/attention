@@ -141,7 +141,12 @@ function bodyDirectionFromLatLon(axes, latitudeDeg, longitudeDeg) {
   return normalize(direction);
 }
 
-function computePadState({ earthState, earthRadiusKm, earthAxes }) {
+function computePadState({
+  earthState,
+  earthRadiusKm,
+  earthAxes,
+  referenceOffsetKm = STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+}) {
   if (!earthState?.position) {
     return null;
   }
@@ -158,7 +163,7 @@ function computePadState({ earthState, earthRadiusKm, earthAxes }) {
     earthRadiusKm
     + terrainElevationKm
     + LAUNCH_SITE.altitudeKm
-    + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM;
+    + Math.max(0, Number(referenceOffsetKm) || 0);
   const relPositionKm = scale(up, launchRadiusKm);
   const angularVelocity = scale(earthAxes.pole, EARTH_SIDEREAL_ANGULAR_RATE_RAD_S);
   const localRotationalVelocityKmS = cross(angularVelocity, relPositionKm);
@@ -1013,6 +1018,12 @@ function composeBoosterDirection(up, relVel, tangentialVector, directionMix = nu
     ),
   );
   return normalize(command, safeUp);
+}
+
+function lateralDirectionTowardTarget(fromPosition, toPosition, up, fallbackDirection) {
+  const targetVector = subtract(toPosition || { x: 0, y: 0, z: 0 }, fromPosition || { x: 0, y: 0, z: 0 });
+  const lateral = subtract(targetVector, scale(up, dot(targetVector, up)));
+  return normalize(lateral, fallbackDirection);
 }
 
 function zeroBoosterStep(guidanceMode = "booster-idle") {
@@ -2147,6 +2158,28 @@ export function createLaunchController(options) {
       relVel,
       currentEarthAxes.pole,
     );
+    const padState = computePadState({
+      earthState,
+      earthRadiusKm,
+      earthAxes: currentEarthAxes,
+      referenceOffsetKm: BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
+    });
+    const launchSiteVector = padState
+      ? subtract(padState.position, boosterState.position)
+      : { x: 0, y: 0, z: 0 };
+    const launchSiteRangeKm = padState ? length(launchSiteVector) : Number.POSITIVE_INFINITY;
+    const launchSiteLateralVector = subtract(launchSiteVector, scale(orbital.up, dot(launchSiteVector, orbital.up)));
+    const launchSiteLateralRangeKm = padState ? length(launchSiteLateralVector) : Number.POSITIVE_INFINITY;
+    const padVelocity = padState?.velocity || earthState.velocity || { x: 0, y: 0, z: 0 };
+    const relVelocityToPad = subtract(
+      boosterState.velocity || { x: 0, y: 0, z: 0 },
+      padVelocity,
+    );
+    const launchSiteLateralDirection = normalize(
+      launchSiteLateralVector,
+      normalize(scale(orbital.tangentialVector, -1), orbital.up),
+    );
+    const launchSiteLateralClosingSpeedKmS = dot(scale(relVelocityToPad, -1), launchSiteLateralDirection);
     const command = computeBoosterRecoveryCommand({
       altitudeKm,
       radialSpeedKmS: orbital.radialSpeedKmS,
@@ -2155,10 +2188,38 @@ export function createLaunchController(options) {
       remainingPropellantKg: runtime.booster.propellantKg,
       reserveLandingPropellantKg: stageReservePropellantKg(0),
       timeSinceSeparationSec: Math.max(0, runtime.elapsedSeconds - runtime.booster.separationTimeSec),
+      launchSiteRangeKm,
+      launchSiteLateralRangeKm,
+      launchSiteLateralClosingSpeedKmS,
     });
 
     const up = orbital.up;
-    const direction = composeBoosterDirection(up, relVel, orbital.tangentialVector, command.directionMix);
+    let direction = composeBoosterDirection(up, relVel, orbital.tangentialVector, command.directionMix);
+    if (padState) {
+      const lateralToSiteDirection = lateralDirectionTowardTarget(
+        boosterState.position,
+        padState.position,
+        up,
+        direction,
+      );
+      const siteVectorWeight = clamp(
+        Number(command.siteVectorWeight) || 0,
+        0,
+        altitudeKm > 40 ? 0.85 : altitudeKm > 10 ? 0.42 : 0.16,
+      );
+      if (siteVectorWeight > 1e-6) {
+        direction = normalize(mixVectors(direction, lateralToSiteDirection, siteVectorWeight), direction);
+      }
+      const siteVelocityWeight = clamp(
+        Number(command.siteVelocityWeight) || 0,
+        0,
+        altitudeKm > 25 ? 0.62 : altitudeKm > 8 ? 0.34 : 0.18,
+      );
+      if (siteVelocityWeight > 1e-6) {
+        const padRetrogradeDirection = normalize(scale(relVelocityToPad, -1), direction);
+        direction = normalize(mixVectors(direction, padRetrogradeDirection, siteVelocityWeight), direction);
+      }
+    }
     const pressurePa = Number(atmosphereSample?.pressurePa) || 0;
     const landingPhase = command.phase === "landing-burn" || command.phase === "landed";
     const protectedReserveKg = landingPhase
@@ -2218,6 +2279,15 @@ export function createLaunchController(options) {
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
+    if (runtime.booster.telemetry) {
+      runtime.booster.telemetry.launchSiteRangeKm = Number.isFinite(launchSiteRangeKm) ? launchSiteRangeKm : null;
+      runtime.booster.telemetry.launchSiteLateralRangeKm = Number.isFinite(launchSiteLateralRangeKm)
+        ? launchSiteLateralRangeKm
+        : null;
+      runtime.booster.telemetry.launchSiteLateralClosingSpeedKmS = Number.isFinite(launchSiteLateralClosingSpeedKmS)
+        ? launchSiteLateralClosingSpeedKmS
+        : null;
+    }
   }
 
   function finalizeBoosterStep(state, dtSeconds, nowMs = Date.now()) {
@@ -2305,6 +2375,28 @@ export function createLaunchController(options) {
       relVelNow,
       currentEarthAxes.pole,
     );
+    const padState = computePadState({
+      earthState,
+      earthRadiusKm,
+      earthAxes: currentEarthAxes,
+      referenceOffsetKm: BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
+    });
+    const launchSiteVector = padState
+      ? subtract(padState.position, boosterState.position)
+      : { x: 0, y: 0, z: 0 };
+    const launchSiteRangeKm = padState ? length(launchSiteVector) : Number.POSITIVE_INFINITY;
+    const launchSiteLateralVector = subtract(launchSiteVector, scale(normalize(relPosNow, currentEarthAxes.pole), dot(launchSiteVector, normalize(relPosNow, currentEarthAxes.pole))));
+    const launchSiteLateralRangeKm = padState ? length(launchSiteLateralVector) : Number.POSITIVE_INFINITY;
+    const padVelocity = padState?.velocity || earthState.velocity || { x: 0, y: 0, z: 0 };
+    const relVelocityToPad = subtract(
+      boosterState.velocity || { x: 0, y: 0, z: 0 },
+      padVelocity,
+    );
+    const launchSiteLateralDirection = normalize(
+      launchSiteLateralVector,
+      normalize(scale(relVelNow, -1), currentEarthAxes.pole),
+    );
+    const launchSiteLateralClosingSpeedKmS = dot(scale(relVelocityToPad, -1), launchSiteLateralDirection);
     runtime.booster.telemetry = boosterTelemetryFromState({
       gravitationalConstantKm3PerKgS2,
       earthMassKg: Number(getEarthMassKg?.()) || 0,
@@ -2316,6 +2408,15 @@ export function createLaunchController(options) {
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
+    if (runtime.booster.telemetry) {
+      runtime.booster.telemetry.launchSiteRangeKm = Number.isFinite(launchSiteRangeKm) ? launchSiteRangeKm : null;
+      runtime.booster.telemetry.launchSiteLateralRangeKm = Number.isFinite(launchSiteLateralRangeKm)
+        ? launchSiteLateralRangeKm
+        : null;
+      runtime.booster.telemetry.launchSiteLateralClosingSpeedKmS = Number.isFinite(launchSiteLateralClosingSpeedKmS)
+        ? launchSiteLateralClosingSpeedKmS
+        : null;
+    }
   }
 
   function prepareStep(state, dtSeconds, nowMs = Date.now()) {
@@ -3050,6 +3151,9 @@ export function createLaunchController(options) {
         boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
         boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
         boosterPropellantKg: Number(runtime.booster.propellantKg) || 0,
+        boosterLaunchSiteRangeKm: Number(runtime.booster.telemetry?.launchSiteRangeKm) || null,
+        boosterLaunchSiteLateralRangeKm: Number(runtime.booster.telemetry?.launchSiteLateralRangeKm) || null,
+        boosterLaunchSiteLateralClosingSpeedKmS: Number(runtime.booster.telemetry?.launchSiteLateralClosingSpeedKmS) || null,
         terrainElevationKm: null,
         altitudeAboveTerrainKm: null,
         latitudeDeg: null,
@@ -3099,6 +3203,9 @@ export function createLaunchController(options) {
       boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
       boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
       boosterPropellantKg: Number(runtime.booster.telemetry?.propellantKg) || Number(runtime.booster.propellantKg) || 0,
+      boosterLaunchSiteRangeKm: Number(runtime.booster.telemetry?.launchSiteRangeKm) || null,
+      boosterLaunchSiteLateralRangeKm: Number(runtime.booster.telemetry?.launchSiteLateralRangeKm) || null,
+      boosterLaunchSiteLateralClosingSpeedKmS: Number(runtime.booster.telemetry?.launchSiteLateralClosingSpeedKmS) || null,
       terrainElevationKm: telemetry.terrainElevationKm,
       altitudeAboveTerrainKm: telemetry.altitudeAboveTerrainKm,
       latitudeDeg: telemetry.latitudeDeg,
