@@ -91,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301j";
+const FRONTEND_MODULE_VERSION = "20260301k";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -115,6 +115,15 @@ let applyStarshipVisualStageFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
+const INLINE_STARSHIP_STACK_DIMENSIONS_KM = Object.freeze({
+  diameterKm: 0.009,
+  boosterHeightKm: 0.071,
+  shipHeightKm: 0.050,
+  shipNoseHeightKm: 0.015,
+});
+const INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM =
+  INLINE_STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm
+  + INLINE_STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
   "mercury",
@@ -631,8 +640,161 @@ async function loadLaunchFeatureModules() {
   applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
   createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
   starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
+  if (!createStarshipStackVisualFn) {
+    createStarshipStackVisualFn = async (THREE, distanceScale) => (
+      createInlineStarshipStackVisual(THREE, distanceScale)
+    );
+  }
+  if (!applyStarshipVisualStageFn) {
+    applyStarshipVisualStageFn = applyInlineStarshipVisualStage;
+  }
+  if (!starshipPhysicalRenderRadiusSceneFn) {
+    starshipPhysicalRenderRadiusSceneFn = (distanceScale) => (
+      INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5 * distanceScale
+    );
+  }
   if (!createLaunchControllerFn) {
     throw new Error("launchController export missing.");
+  }
+}
+
+function createInlineStarshipStackVisual(THREE, distanceScale) {
+  const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
+  const radius = dims.diameterKm * 0.5 * distanceScale;
+  const boosterHeight = dims.boosterHeightKm * distanceScale;
+  const shipHeight = dims.shipHeightKm * distanceScale;
+  const noseHeight = Math.min(dims.shipNoseHeightKm * distanceScale, shipHeight * 0.65);
+  const shipBodyHeight = Math.max(shipHeight - noseHeight, shipHeight * 0.2);
+  const totalHeight = INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM * distanceScale;
+  const baseY = -0.5 * totalHeight;
+
+  const stainless = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0xcfd8e5),
+    roughness: 0.38,
+    metalness: 0.82,
+  });
+  const darkSteel = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x1b212b),
+    roughness: 0.56,
+    metalness: 0.62,
+  });
+
+  const root = new THREE.Group();
+  const boosterGroup = new THREE.Group();
+  const shipGroup = new THREE.Group();
+  const fullShipCenterY = baseY + boosterHeight + (0.5 * shipHeight);
+  const detachedShipCenterY = 0;
+  boosterGroup.position.y = baseY + (0.5 * boosterHeight);
+  shipGroup.position.y = fullShipCenterY;
+  root.add(boosterGroup);
+  root.add(shipGroup);
+
+  const boosterBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, boosterHeight, 32, 1, false),
+    stainless,
+  );
+  boosterGroup.add(boosterBody);
+
+  const boosterTop = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.5),
+    stainless,
+  );
+  boosterTop.position.y = 0.5 * boosterHeight;
+  boosterGroup.add(boosterTop);
+
+  const boosterBellRadius = clamp(radius * 0.18, radius * 0.08, radius * 0.22);
+  const boosterBellHeight = clamp(radius * 0.26, radius * 0.1, radius * 0.33);
+  const boosterEngineRing = clamp(radius * 0.58, radius * 0.2, radius * 0.66);
+  for (let i = 0; i < 9; i += 1) {
+    const angle = (i / 9) * Math.PI * 2;
+    const bell = new THREE.Mesh(
+      new THREE.ConeGeometry(boosterBellRadius, boosterBellHeight, 14, 1, true),
+      darkSteel,
+    );
+    bell.rotation.x = Math.PI;
+    bell.position.set(
+      Math.cos(angle) * boosterEngineRing,
+      -0.5 * boosterHeight - (boosterBellHeight * 0.42),
+      Math.sin(angle) * boosterEngineRing,
+    );
+    boosterGroup.add(bell);
+  }
+
+  const shipBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, shipBodyHeight, 32, 1, false),
+    stainless,
+  );
+  shipBody.position.y = (-0.5 * shipHeight) + (0.5 * shipBodyHeight);
+  shipGroup.add(shipBody);
+
+  const shipNose = new THREE.Mesh(
+    new THREE.ConeGeometry(radius, noseHeight, 28, 1, false),
+    stainless,
+  );
+  shipNose.position.y = (-0.5 * shipHeight) + shipBodyHeight + (0.5 * noseHeight);
+  shipGroup.add(shipNose);
+
+  const tileBand = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.003, radius * 1.003, shipBodyHeight * 0.95, 28, 1, false),
+    darkSteel,
+  );
+  tileBand.position.y = shipBody.position.y;
+  tileBand.scale.set(1.001, 1, 0.56);
+  tileBand.rotation.y = Math.PI * 0.5;
+  shipGroup.add(tileBand);
+
+  const shipBellRadius = clamp(radius * 0.15, radius * 0.07, radius * 0.2);
+  const shipBellHeight = clamp(radius * 0.2, radius * 0.09, radius * 0.25);
+  const shipEngineRing = clamp(radius * 0.45, radius * 0.18, radius * 0.52);
+  for (let i = 0; i < 6; i += 1) {
+    const angle = (i / 6) * Math.PI * 2;
+    const bell = new THREE.Mesh(
+      new THREE.ConeGeometry(shipBellRadius, shipBellHeight, 12, 1, true),
+      darkSteel,
+    );
+    bell.rotation.x = Math.PI;
+    bell.position.set(
+      Math.cos(angle) * shipEngineRing,
+      -0.5 * shipHeight - (shipBellHeight * 0.36),
+      Math.sin(angle) * shipEngineRing,
+    );
+    shipGroup.add(bell);
+  }
+
+  root.userData.starshipAssetSource = "inline_procedural_starship_stack";
+  root.userData.starshipTextureResolution = "procedural";
+
+  return {
+    root,
+    materials: [stainless, darkSteel],
+    state: {
+      boosterGroup,
+      shipGroup,
+      fullShipCenterY,
+      detachedShipCenterY,
+      rcsJets: null,
+    },
+    physical: {
+      radiusScene: INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5 * distanceScale,
+    },
+  };
+}
+
+function applyInlineStarshipVisualStage(stageState, stageIndex) {
+  if (!stageState?.shipGroup) {
+    return;
+  }
+  const separated = Number.isFinite(stageIndex) && stageIndex >= 1;
+  if (stageState.boosterGroup) {
+    stageState.boosterGroup.visible = !separated;
+  }
+  if (
+    Number.isFinite(stageState.detachedShipCenterY)
+    && Number.isFinite(stageState.fullShipCenterY)
+  ) {
+    stageState.shipGroup.position.y = separated
+      ? stageState.detachedShipCenterY
+      : stageState.fullShipCenterY;
   }
 }
 
@@ -1712,7 +1874,18 @@ async function createSpacecraftVisual(body) {
   root.add(tiltGroup);
   tiltGroup.add(spinGroup);
 
-  const stack = createStarshipStackVisualFn ? await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE) : null;
+  let stack = null;
+  if (createStarshipStackVisualFn) {
+    try {
+      stack = await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE);
+    } catch (error) {
+      console.warn("[launch] Starship visual stack creation failed, using inline fallback.", error);
+      stack = null;
+    }
+  }
+  if (!stack?.root) {
+    stack = createInlineStarshipStackVisual(THREE_NS, DISTANCE_SCALE);
+  }
   if (stack?.root) {
     spinGroup.add(stack.root);
   } else {
@@ -1736,7 +1909,9 @@ async function createSpacecraftVisual(body) {
   };
   const externalStackSource = stack?.root?.userData?.starshipAssetSource || null;
   const externalStackResolution = stack?.root?.userData?.starshipTextureResolution || null;
-  const isExternalStack = Boolean(externalStackSource);
+  const isInlineStack = typeof externalStackSource === "string"
+    && externalStackSource.startsWith("inline_procedural_starship");
+  const isExternalStack = Boolean(externalStackSource) && !isInlineStack;
 
   const visual = {
     id: body.id,
@@ -1757,7 +1932,7 @@ async function createSpacecraftVisual(body) {
     ringMode: "none",
     mapSource: isExternalStack
       ? `${externalStackSource}${externalStackResolution ? ` (${externalStackResolution})` : ""}`
-      : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"),
+      : (isInlineStack ? "inline_starship_booster_geometry" : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry")),
     launchStackState: stack?.state || null,
     extraMaterials: stack?.materials || [],
   };
