@@ -15,6 +15,8 @@ const STARSHIP_EXTERNAL_BLACK_TILE_COLOR = 0x151b24;
 const STARSHIP_EXTERNAL_BLACK_TILE_EMISSIVE = 0x05070d;
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
+const MAIN_ENGINE_PLUME_SIZE_SCALE = 0.25;
+const MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE = 0.25;
 
 let cachedExternalManifest = null;
 let cachedExternalManifestPromise = null;
@@ -1104,16 +1106,24 @@ function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
       continue;
     }
     if (entry.plume?.scale) {
-      entry.plume.scale.set(radiusScale, stretch, radiusScale);
+      entry.plume.scale.set(
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+      );
     }
     if (entry.plume?.material && !Array.isArray(entry.plume.material)) {
-      entry.plume.material.opacity = plumeOpacity;
+      entry.plume.material.opacity = plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE;
     }
     if (entry.glow?.scale) {
-      entry.glow.scale.set(glowScale, glowScale, glowScale);
+      entry.glow.scale.set(
+        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+      );
     }
     if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
-      entry.glow.material.opacity = glowOpacity;
+      entry.glow.material.opacity = glowOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE;
     }
   }
 }
