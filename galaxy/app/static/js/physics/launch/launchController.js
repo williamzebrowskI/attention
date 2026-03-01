@@ -1788,6 +1788,10 @@ export function createLaunchController(options) {
     launchPlaneNormal: null,
     boosterDistanceKm: 0,
     starshipDistanceKm: 0,
+    earthDistanceKm: null,
+    earthClosingSpeedKmS: null,
+    moonDistanceKm: null,
+    moonClosingSpeedKmS: null,
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
     mission: {
@@ -2014,6 +2018,10 @@ export function createLaunchController(options) {
     runtime.launchPlaneNormal = null;
     runtime.boosterDistanceKm = 0;
     runtime.starshipDistanceKm = 0;
+    runtime.earthDistanceKm = null;
+    runtime.earthClosingSpeedKmS = null;
+    runtime.moonDistanceKm = null;
+    runtime.moonClosingSpeedKmS = null;
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
     runtime.mission.selectedId = missionId;
@@ -2049,6 +2057,73 @@ export function createLaunchController(options) {
     runtime.booster.lastTrackedPositionKm = null;
     runtime.booster.telemetry = null;
     runtime.booster.contactHoldSec = 0;
+  }
+
+  function updateRuntimeTargetMetrics(state, relPos, relVel) {
+    const earthDistanceKm = length(relPos || { x: 0, y: 0, z: 0 });
+    runtime.earthDistanceKm = Number.isFinite(earthDistanceKm) ? earthDistanceKm : null;
+    runtime.earthClosingSpeedKmS = (runtime.earthDistanceKm && runtime.earthDistanceKm > 1e-9)
+      ? -dot(relVel, scale(relPos, 1 / runtime.earthDistanceKm))
+      : null;
+
+    const moonState = bodyStateFromNBody(state, "moon");
+    const rocketState = rocketStateFromNBody(state);
+    if (
+      !moonState
+      || !rocketState
+      || !finiteVector(moonState.position)
+      || !finiteVector(moonState.velocity || { x: 0, y: 0, z: 0 })
+      || !finiteVector(rocketState.position)
+      || !finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      runtime.moonDistanceKm = null;
+      runtime.moonClosingSpeedKmS = null;
+      return;
+    }
+    const moonRelPos = subtract(rocketState.position, moonState.position);
+    const moonRelVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      moonState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const moonDistanceKm = length(moonRelPos);
+    runtime.moonDistanceKm = Number.isFinite(moonDistanceKm) ? moonDistanceKm : null;
+    runtime.moonClosingSpeedKmS = (runtime.moonDistanceKm && runtime.moonDistanceKm > 1e-9)
+      ? -dot(moonRelVel, scale(moonRelPos, 1 / runtime.moonDistanceKm))
+      : null;
+  }
+
+  function missionTargetDescriptor() {
+    const missionId = runtime.mission.selectedId;
+    const missionPhase = runtime.mission.phase || "";
+    if (missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+      const moonwardPhases = new Set([
+        "launch_to_parking",
+        "tli_burn",
+        "coast_to_moon",
+        "lunar_insertion",
+        "lunar_orbit_hold",
+      ]);
+      if (moonwardPhases.has(missionPhase)) {
+        return {
+          bodyId: "moon",
+          bodyName: "Moon",
+          distanceKm: runtime.moonDistanceKm,
+          closingSpeedKmS: runtime.moonClosingSpeedKmS,
+        };
+      }
+      return {
+        bodyId: "earth",
+        bodyName: "Earth",
+        distanceKm: runtime.earthDistanceKm,
+        closingSpeedKmS: runtime.earthClosingSpeedKmS,
+      };
+    }
+    return {
+      bodyId: "earth",
+      bodyName: "Earth",
+      distanceKm: runtime.earthDistanceKm,
+      closingSpeedKmS: runtime.earthClosingSpeedKmS,
+    };
   }
 
   function earthFixedRelativePositionKm(rocketState, earthState, earthFrameAxes) {
@@ -2293,6 +2368,7 @@ export function createLaunchController(options) {
       rocketState.velocity || { x: 0, y: 0, z: 0 },
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
+    updateRuntimeTargetMetrics(state, relPos, relVel);
     const atmosphereSample = sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
@@ -2784,6 +2860,7 @@ export function createLaunchController(options) {
       rocketState.velocity || { x: 0, y: 0, z: 0 },
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
+    updateRuntimeTargetMetrics(state, relPos, relVel);
     const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
     const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
     const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
@@ -3431,6 +3508,7 @@ export function createLaunchController(options) {
       rocketState.velocity || { x: 0, y: 0, z: 0 },
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
+    updateRuntimeTargetMetrics(state, relPosNow, relVelNow);
     const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
     const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
@@ -3458,6 +3536,7 @@ export function createLaunchController(options) {
 
   function statusSnapshot() {
     const telemetry = runtime.lastTelemetry;
+    const targetDescriptor = missionTargetDescriptor();
     if (!telemetry) {
       return {
         bodyId: LAUNCH_BODY_ID,
@@ -3470,6 +3549,12 @@ export function createLaunchController(options) {
         missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
         missionPhase: runtime.mission.phase,
         missionCompleted: Boolean(runtime.mission.completed),
+        moonDistanceKm: runtime.moonDistanceKm,
+        moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
+        targetBodyId: targetDescriptor.bodyId,
+        targetBodyName: targetDescriptor.bodyName,
+        targetDistanceKm: targetDescriptor.distanceKm,
+        targetClosingSpeedKmS: targetDescriptor.closingSpeedKmS,
         rcsActive: false,
         rcsErrorDeg: 0,
         rcsAuthority: 0,
@@ -3540,6 +3625,12 @@ export function createLaunchController(options) {
       missionName: telemetry.missionName,
       missionPhase: telemetry.missionPhase,
       missionCompleted: telemetry.missionCompleted,
+      moonDistanceKm: runtime.moonDistanceKm,
+      moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
+      targetBodyId: targetDescriptor.bodyId,
+      targetBodyName: targetDescriptor.bodyName,
+      targetDistanceKm: targetDescriptor.distanceKm,
+      targetClosingSpeedKmS: targetDescriptor.closingSpeedKmS,
       autopilotMode: telemetry.autopilotMode,
       rcsActive: telemetry.rcsActive,
       rcsErrorDeg: telemetry.rcsErrorDeg,

@@ -709,6 +709,49 @@ body {
   cursor: not-allowed;
 }
 
+.legend-vehicle-trajectory-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.legend-vehicle-trajectory-label {
+  color: #a8cae8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.legend-vehicle-trajectory-toggle {
+  margin: 0;
+  min-width: 52px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(86, 186, 255, 0.3);
+  background: rgba(13, 22, 35, 0.8);
+  color: #d7ecff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+}
+
+.legend-vehicle-trajectory-toggle.on {
+  border-color: rgba(96, 199, 255, 0.92);
+  background: rgba(12, 38, 60, 0.84);
+  color: #d7f2ff;
+}
+
+.legend-vehicle-trajectory-toggle:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
 .legend-launch-status {
   margin: 8px 0 0;
   color: #c7e6ff;
