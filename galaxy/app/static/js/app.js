@@ -49,6 +49,7 @@ const physicsAtmosphereToggleButton = document.getElementById("physics-toggle-at
 const physicsOverlayStatusNode = document.getElementById("physics-overlay-status");
 const launchControlButton = document.getElementById("launch-control-button");
 const launchReturnButton = document.getElementById("launch-return-button");
+const launchResetButton = document.getElementById("launch-reset-button");
 const launchStatusNode = document.getElementById("launch-status");
 
 const INCLUDE_MOONS = true;
@@ -586,6 +587,7 @@ async function loadRuntimeConfig() {
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
     launchReturnButton?.remove();
+    launchResetButton?.remove();
   }
 }
 
@@ -1212,6 +1214,7 @@ function setupLaunchControls() {
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
     launchReturnButton?.remove();
+    launchResetButton?.remove();
     return;
   }
   if (launchControlButton) {
@@ -1221,14 +1224,14 @@ function setupLaunchControls() {
         return;
       }
       if (launchController.isActive()) {
-        launchController.resetToPad(nBodyState, Date.now());
+        updateLaunchStatusPanel(true, "Launch already active.");
+        updateLaunchControls();
+        return;
+      }
+      const started = launchController.startLaunch(nBodyState, Date.now());
+      if (started) {
         launchTrailController?.clear();
-      } else {
-        const started = launchController.startLaunch(nBodyState, Date.now());
-        if (started) {
-          launchTrailController?.clear();
-          setSelected(LAUNCH_BODY_ID, true);
-        }
+        setSelected(LAUNCH_BODY_ID, true);
       }
       updateLaunchControls();
       updateLaunchStatusPanel(true);
@@ -1248,6 +1251,20 @@ function setupLaunchControls() {
       updateLaunchControls();
     });
   }
+  if (launchResetButton) {
+    launchResetButton.addEventListener("click", () => {
+      if (!launchController || !nBodyState?.initialized) {
+        updateLaunchStatusPanel(true, "Reset unavailable until startup seed is ready.");
+        return;
+      }
+      const reset = launchController.resetToPad(nBodyState, Date.now());
+      if (reset) {
+        launchTrailController?.clear();
+      }
+      updateLaunchControls();
+      updateLaunchStatusPanel(true);
+    });
+  }
   updateLaunchControls();
   updateLaunchStatusPanel(true);
 }
@@ -1259,21 +1276,26 @@ function updateLaunchControls() {
   if (!launchControlButton) {
     return;
   }
+  const initialized = Boolean(launchController && nBodyState?.initialized);
   const active = Boolean(launchController?.isActive());
-  launchControlButton.textContent = active ? "Reset" : "Launch";
+  launchControlButton.textContent = "Launch";
+  launchControlButton.disabled = !initialized || active;
   launchControlButton.classList.toggle("on", active);
   launchControlButton.setAttribute("aria-pressed", active ? "true" : "false");
   if (launchReturnButton) {
     const launchVisible = Boolean(bodyVisuals.get(LAUNCH_BODY_ID)?.root?.visible);
     const launchSelectable = launchVisible && metaById.has(LAUNCH_BODY_ID);
-    const showReturn = active || selectedId === LAUNCH_BODY_ID;
     const isTracking =
       selectedId === LAUNCH_BODY_ID
       && observation.mode === OBSERVATION_MODES.BODY_LOCK;
-    launchReturnButton.classList.toggle("hidden", !showReturn);
     launchReturnButton.disabled = !launchSelectable;
     launchReturnButton.classList.toggle("on", isTracking);
     launchReturnButton.setAttribute("aria-pressed", isTracking ? "true" : "false");
+  }
+  if (launchResetButton) {
+    launchResetButton.disabled = !initialized;
+    launchResetButton.classList.toggle("on", !active && initialized);
+    launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
   }
 }
 

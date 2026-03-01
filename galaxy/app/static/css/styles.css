@@ -52,8 +52,18 @@ body {
   font-size: 10px;
 }
 
-.launch-return-button.hidden {
-  display: none;
+.launch-reset-button {
+  top: 84px;
+  min-width: 74px;
+  padding: 5px 10px;
+  font-size: 10px;
+}
+
+.launch-floating-button:disabled {
+  opacity: 0.46;
+  cursor: not-allowed;
+  border-color: rgba(122, 146, 170, 0.28);
+  color: rgba(198, 214, 228, 0.72);
 }
 
 .planet-info {
