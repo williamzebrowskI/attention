@@ -439,6 +439,26 @@ function computeBoosterRcsAssist({
   };
 }
 
+function boosterRcsPropellantBurnRateKgS(rcsAssist) {
+  if (!rcsAssist?.active) {
+    return 0;
+  }
+  const authority = clamp(Number(rcsAssist.authority) || 0, 0, 1);
+  if (!(authority > 1e-6)) {
+    return 0;
+  }
+  const jetCount = Array.isArray(rcsAssist.jets) ? rcsAssist.jets.length : 0;
+  if (!(jetCount > 0)) {
+    return 0;
+  }
+  const normalizedJetUtilization = clamp(jetCount / 6, 0.12, 1);
+  const configuredFlow = Number(LAUNCH_BOOSTER_CONFIG.rcsPropellantFlowKgS) || 0;
+  if (!(configuredFlow > 0)) {
+    return 0;
+  }
+  return configuredFlow * authority * normalizedJetUtilization;
+}
+
 function circularOrbitSpeedKmS(muKm3S2, radiusKm) {
   if (!(muKm3S2 > 0) || !(radiusKm > 0)) {
     return 0;
@@ -1052,6 +1072,10 @@ function boosterTelemetryFromState({
     guidanceMode: runtime.booster.guidanceMode,
     massKg: boosterState.massKg,
     propellantKg: runtime.booster.propellantKg,
+    initialPropellantKg: runtime.booster.initialPropellantKg,
+    fuelFraction: runtime.booster.initialPropellantKg > 1e-6
+      ? clamp(runtime.booster.propellantKg / runtime.booster.initialPropellantKg, 0, 1)
+      : null,
     altitudeKm: orbital.altitudeKm,
     speedKmS: orbital.speedKmS,
     radialSpeedKmS: orbital.radialSpeedKmS,
@@ -1062,6 +1086,7 @@ function boosterTelemetryFromState({
     throttle: runtime.booster.lastStep?.throttle || 0,
     thrustN: runtime.booster.lastStep?.thrustN || 0,
     burnRateKgS: runtime.booster.lastStep?.burnRateKgS || 0,
+    rcsBurnRateKgS: runtime.booster.lastStep?.rcsBurnRateKgS || 0,
     rcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
     rcsAuthority: Number(runtime.booster.lastStep?.rcsAuthority) || 0,
@@ -1112,6 +1137,8 @@ function zeroBoosterStep(guidanceMode = "booster-idle") {
     thrustN: 0,
     burnKg: 0,
     burnRateKgS: 0,
+    rcsBurnKg: 0,
+    rcsBurnRateKgS: 0,
     dynamicPressurePa: 0,
     guidanceMode,
     rcsActive: false,
@@ -1774,6 +1801,7 @@ export function createLaunchController(options) {
       phase: "idle",
       guidanceMode: "booster-idle",
       propellantKg: 0,
+      initialPropellantKg: 0,
       separationTimeSec: 0,
       landed: false,
       lastStep: null,
@@ -1996,6 +2024,7 @@ export function createLaunchController(options) {
     runtime.booster.phase = "idle";
     runtime.booster.guidanceMode = "booster-idle";
     runtime.booster.propellantKg = 0;
+    runtime.booster.initialPropellantKg = 0;
     runtime.booster.separationTimeSec = 0;
     runtime.booster.landed = false;
     runtime.booster.lastStep = null;
@@ -2012,6 +2041,7 @@ export function createLaunchController(options) {
     runtime.booster.phase = "idle";
     runtime.booster.guidanceMode = "booster-idle";
     runtime.booster.propellantKg = 0;
+    runtime.booster.initialPropellantKg = 0;
     runtime.booster.separationTimeSec = 0;
     runtime.booster.landed = false;
     runtime.booster.lastStep = null;
@@ -2354,6 +2384,7 @@ export function createLaunchController(options) {
     runtime.booster.phase = "separation-coast";
     runtime.booster.guidanceMode = "booster-separation-coast";
     runtime.booster.propellantKg = reservePropellantKg;
+    runtime.booster.initialPropellantKg = reservePropellantKg;
     runtime.booster.separationTimeSec = runtime.elapsedSeconds;
     runtime.booster.landed = false;
     runtime.booster.lastStep = zeroBoosterStep("booster-separation-coast");
@@ -2530,12 +2561,25 @@ export function createLaunchController(options) {
       phase: command.phase || runtime.booster.phase,
       guidanceMode: command.guidanceMode || runtime.booster.guidanceMode,
     });
+    let rcsBurnRateKgS = runtime.booster.propellantKg > 1e-9
+      ? boosterRcsPropellantBurnRateKgS(boosterRcs)
+      : 0;
+    const burnKgAfterMain = Math.max(0, runtime.booster.propellantKg - burnKg);
+    const rcsBurnKg = Math.min(burnKgAfterMain, rcsBurnRateKgS * dtSeconds);
+    if (!(rcsBurnKg > 1e-12)) {
+      boosterRcs.active = false;
+      boosterRcs.authority = 0;
+      boosterRcs.jets = [];
+      rcsBurnRateKgS = 0;
+    }
     runtime.booster.lastStep = {
       accelerationKmS2: scale(direction, accelerationMagKmS2),
       throttle: requestedThrottle,
       thrustN,
       burnKg,
       burnRateKgS,
+      rcsBurnKg,
+      rcsBurnRateKgS,
       dynamicPressurePa,
       guidanceMode: requestedThrottle <= 0 && !landingPhase && stageReservePropellantKg(0) > 0
         ? `${runtime.booster.guidanceMode}+reserve-hold`
@@ -2595,12 +2639,14 @@ export function createLaunchController(options) {
     }
 
     const burnKg = Number(runtime.booster.lastStep?.burnKg) || 0;
-    if (burnKg > 0) {
+    const rcsBurnKg = Number(runtime.booster.lastStep?.rcsBurnKg) || 0;
+    const totalBurnKg = Math.max(0, burnKg + rcsBurnKg);
+    if (totalBurnKg > 0) {
       boosterState.massKg = Math.max(
         Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || MIN_ROCKET_MASS_KG,
-        boosterState.massKg - burnKg,
+        boosterState.massKg - totalBurnKg,
       );
-      runtime.booster.propellantKg = Math.max(0, runtime.booster.propellantKg - burnKg);
+      runtime.booster.propellantKg = Math.max(0, runtime.booster.propellantKg - totalBurnKg);
     }
 
     const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
@@ -3457,6 +3503,10 @@ export function createLaunchController(options) {
           ? Number(runtime.booster.telemetry?.altitudeAboveTerrainKm)
           : null,
         boosterPropellantKg: Number(runtime.booster.propellantKg) || 0,
+        boosterInitialPropellantKg: Number(runtime.booster.initialPropellantKg) || 0,
+        boosterFuelFraction: Number(runtime.booster.initialPropellantKg) > 1e-6
+          ? clamp((Number(runtime.booster.propellantKg) || 0) / Number(runtime.booster.initialPropellantKg), 0, 1)
+          : null,
         boosterLaunchSiteRangeKm: Number(runtime.booster.telemetry?.launchSiteRangeKm) || null,
         boosterLaunchSiteLateralRangeKm: Number(runtime.booster.telemetry?.launchSiteLateralRangeKm) || null,
         boosterLaunchSiteLateralClosingSpeedKmS: Number(runtime.booster.telemetry?.launchSiteLateralClosingSpeedKmS) || null,
@@ -3529,6 +3579,14 @@ export function createLaunchController(options) {
         ? Number(runtime.booster.telemetry?.altitudeAboveTerrainKm)
         : null,
       boosterPropellantKg: Number(runtime.booster.telemetry?.propellantKg) || Number(runtime.booster.propellantKg) || 0,
+      boosterInitialPropellantKg: Number(runtime.booster.telemetry?.initialPropellantKg) || Number(runtime.booster.initialPropellantKg) || 0,
+      boosterFuelFraction: Number.isFinite(Number(runtime.booster.telemetry?.fuelFraction))
+        ? clamp(Number(runtime.booster.telemetry?.fuelFraction), 0, 1)
+        : (
+          Number(runtime.booster.initialPropellantKg) > 1e-6
+            ? clamp((Number(runtime.booster.propellantKg) || 0) / Number(runtime.booster.initialPropellantKg), 0, 1)
+            : null
+        ),
       boosterLaunchSiteRangeKm: Number(runtime.booster.telemetry?.launchSiteRangeKm) || null,
       boosterLaunchSiteLateralRangeKm: Number(runtime.booster.telemetry?.launchSiteLateralRangeKm) || null,
       boosterLaunchSiteLateralClosingSpeedKmS: Number(runtime.booster.telemetry?.launchSiteLateralClosingSpeedKmS) || null,

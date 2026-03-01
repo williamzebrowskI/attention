@@ -135,6 +135,8 @@ export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
   thrustVacuumN: 20_500_000,
   ispSeaLevelS: 327,
   ispVacuumS: 350,
+  // Approximate aggregate propellant flow for attitude-control jets at full authority.
+  rcsPropellantFlowKgS: 6.5,
 });
 
 export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({

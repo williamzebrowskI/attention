@@ -16,6 +16,8 @@ const BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE = 0.26;
 const BOOSTER_SEA_LEVEL_PRESSURE_PA = 101_325;
 const BOOSTER_RCS_Q_HALF_EFFECT_PA = 45_000;
 const BOOSTER_RCS_Q_MAX_EFFECT_PA = 130_000;
+const BOOSTER_FUEL_COLOR_HEX = 0x6ec8ff;
+const BOOSTER_FUEL_EMISSIVE_HEX = 0x1a74bb;
 
 const BOOSTER_PHASE_VISUAL_PROFILE = Object.freeze({
   default: Object.freeze({
@@ -365,6 +367,58 @@ function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHe
   return jets;
 }
 
+function createInlineBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight) {
+  if (!THREE || !boosterGroup || !(radius > 0) || !(boosterHeight > 0)) {
+    return null;
+  }
+  const tankRadius = clamp(radius * 0.9, radius * 0.62, radius * 0.95);
+  const tankHeight = clamp(boosterHeight * 0.86, boosterHeight * 0.68, boosterHeight * 0.9);
+  const tankBottomY = (-0.5 * boosterHeight) + (boosterHeight * 0.03);
+  const group = new THREE.Group();
+  group.visible = false;
+
+  const fluid = new THREE.Mesh(
+    new THREE.CylinderGeometry(tankRadius, tankRadius, tankHeight, 32, 1, false),
+    new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(BOOSTER_FUEL_COLOR_HEX),
+      emissive: new THREE.Color(BOOSTER_FUEL_EMISSIVE_HEX),
+      emissiveIntensity: 0.28,
+      transparent: true,
+      opacity: 0.34,
+      roughness: 0.22,
+      metalness: 0.03,
+      transmission: 0.2,
+      thickness: Math.max(1e-6, tankRadius * 0.3),
+      depthWrite: false,
+    }),
+  );
+  fluid.renderOrder = 9;
+  group.add(fluid);
+  boosterGroup.add(group);
+
+  return {
+    group,
+    fluid,
+    tankHeight,
+    tankBottomY,
+    minFillScaleY: 0.01,
+  };
+}
+
+function applyInlineBoosterFuelFill(fuelVisual, fuelFraction) {
+  if (!fuelVisual?.fluid) {
+    return;
+  }
+  const level = clamp(Number(fuelFraction), 0, 1);
+  const fillScaleY = Math.max(fuelVisual.minFillScaleY || 0.01, level);
+  fuelVisual.fluid.scale.set(1, fillScaleY, 1);
+  fuelVisual.fluid.position.y = (fuelVisual.tankBottomY || 0) + ((fuelVisual.tankHeight || 0) * fillScaleY * 0.5);
+  if (fuelVisual.fluid.material && !Array.isArray(fuelVisual.fluid.material)) {
+    fuelVisual.fluid.material.opacity = 0.16 + (level * 0.3);
+    fuelVisual.fluid.material.emissiveIntensity = 0.12 + (level * 0.28);
+  }
+}
+
 function boosterPhaseVisualProfile(phaseRaw) {
   const phase = String(phaseRaw || "").toLowerCase();
   if (!phase) {
@@ -522,6 +576,22 @@ export function applyInlineBoosterManeuverVisuals(boosterState, snapshot = null)
   updateInlineBoosterRcsJetVisuals(boosterState, snapshot, phaseProfile);
 }
 
+export function applyInlineBoosterFuelVisuals(boosterState, options = null) {
+  const fuelVisual = boosterState?.boosterFuelVisual;
+  if (!fuelVisual?.group) {
+    return;
+  }
+  const enabled = Boolean(options?.enabled);
+  fuelVisual.group.visible = enabled;
+  if (!enabled) {
+    return;
+  }
+  const level = Number.isFinite(Number(options?.fuelFraction))
+    ? Number(options.fuelFraction)
+    : 1;
+  applyInlineBoosterFuelFill(fuelVisual, level);
+}
+
 export function createInlineStarshipStackVisual(THREE, distanceScale) {
   const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
   const radius = dims.diameterKm * 0.5 * distanceScale;
@@ -554,6 +624,7 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
   root.add(shipGroup);
 
   addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
+  const boosterFuelVisual = createInlineBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight);
 
   const shipBody = new THREE.Mesh(
     new THREE.CylinderGeometry(radius, radius, shipBodyHeight, 32, 1, false),
@@ -607,6 +678,7 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
       shipGroup,
       fullShipCenterY,
       detachedShipCenterY,
+      boosterFuelVisual,
       rcsJets: null,
     },
     physical: {
@@ -647,6 +719,7 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
     colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
   });
   const rcsJets = createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHeight);
+  const boosterFuelVisual = createInlineBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight);
 
   return {
     root,
@@ -655,6 +728,7 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
       boosterGroup,
       mainEnginePlume,
       rcsJets,
+      boosterFuelVisual,
     },
     physical: {
       radiusScene: Math.max(radius, boosterHeight * 0.5),
