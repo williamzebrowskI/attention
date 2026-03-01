@@ -698,6 +698,42 @@ function throttleForState(stageIndex, elapsedSeconds, dynamicPressurePa = 0) {
   return clamp(throttle, 0, 1);
 }
 
+function limitThrottleByThrustAccelerationG({
+  stage,
+  stageIndex,
+  pressurePa,
+  throttle,
+  massKg,
+}) {
+  if (!stage || !(massKg > 0)) {
+    return clamp(throttle, 0, 1);
+  }
+  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
+  const stageSpecificLimitGs = stageIndex === 0
+    ? Number(guidance.maxThrustAccelerationGsStage1)
+    : Number(guidance.maxThrustAccelerationGsStage2);
+  const fallbackLimitGs = Number(guidance.maxThrustAccelerationGs);
+  const limitGs = Number.isFinite(stageSpecificLimitGs) && stageSpecificLimitGs > 0
+    ? stageSpecificLimitGs
+    : (Number.isFinite(fallbackLimitGs) && fallbackLimitGs > 0 ? fallbackLimitGs : 0);
+  if (!(limitGs > 0)) {
+    return clamp(throttle, 0, 1);
+  }
+
+  const stageFullThrustN = interpolateSeaToVac(
+    Number(stage.thrustVacuumN) || 0,
+    Number(stage.thrustSeaLevelN) || 0,
+    pressurePa,
+  );
+  if (!(stageFullThrustN > 0)) {
+    return 0;
+  }
+
+  const maxAllowedThrustN = limitGs * STANDARD_GRAVITY_M_S2 * massKg;
+  const throttleCap = clamp(maxAllowedThrustN / stageFullThrustN, 0, 1);
+  return clamp(Math.min(throttle, throttleCap), 0, 1);
+}
+
 function telemetryFromState({
   gravitationalConstantKm3PerKgS2,
   earthMassKg,
@@ -1400,6 +1436,14 @@ export function createLaunchController(options) {
         mode: autopilotCommand.mode || guidance.mode,
       };
     }
+
+    throttle = limitThrottleByThrustAccelerationG({
+      stage,
+      stageIndex: runtime.stageIndex,
+      pressurePa,
+      throttle,
+      massKg: Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || 0),
+    });
 
     const thrustN =
       interpolateSeaToVac(stage.thrustVacuumN, stage.thrustSeaLevelN, pressurePa)

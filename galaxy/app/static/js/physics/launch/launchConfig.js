@@ -46,8 +46,10 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
     maxQControlStartRatio: 0.6,
     maxQThrottleFloor: 0.50,
     maxQThrottleGain: 1.08,
-    liftoffThrottleSec: 11,
-    liftoffThrottleValue: 0.62,
+    liftoffThrottleSec: 14,
+    liftoffThrottleValue: 0.72,
+    maxThrustAccelerationGsStage1: 2.8,
+    maxThrustAccelerationGsStage2: 3.2,
   }),
   stages: Object.freeze([
     Object.freeze({
@@ -64,8 +66,8 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
       name: "Stage 2",
       dryMassKg: 120_000,
       propellantMassKg: 1_200_000,
-      thrustSeaLevelN: 10_500_000,
-      thrustVacuumN: 13_800_000,
+      thrustSeaLevelN: 6_900_000,
+      thrustVacuumN: 7_600_000,
       ispSeaLevelS: 353,
       ispVacuumS: 380,
       coastAfterBurnSec: 0,
