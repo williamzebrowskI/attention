@@ -94,6 +94,12 @@ body {
   border-bottom: 1px solid rgba(86, 186, 255, 0.25);
 }
 
+.launch-panel .observation-status {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .physics-toggle-row {
   display: flex;
   align-items: center;

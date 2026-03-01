@@ -1197,7 +1197,9 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   }
   updateLaunchControls();
   const nowMs = Date.now();
-  if (!force && nowMs - lastLaunchStatusRenderMs < 120) {
+  const launchActive = Boolean(launchController?.isActive());
+  const minIntervalMs = launchActive ? 120 : 1000;
+  if (!force && nowMs - lastLaunchStatusRenderMs < minIntervalMs) {
     return;
   }
   lastLaunchStatusRenderMs = nowMs;
