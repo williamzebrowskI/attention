@@ -2874,7 +2874,10 @@ function updateBoosterVehicleVisuals() {
   }
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
-    visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.2);
+    const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
+    const separationLike = boosterPhase.includes("separation");
+    const slerpAlpha = separationLike ? 0.09 : 0.2;
+    visual.tiltGroup.quaternion.slerp(targetQuaternion, slerpAlpha);
   }
   const heatEligible = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
   if (!heatEligible) {

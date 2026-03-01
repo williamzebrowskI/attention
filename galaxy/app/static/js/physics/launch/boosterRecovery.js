@@ -14,8 +14,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const dynamicPressurePa = Math.max(0, Number(input.dynamicPressurePa) || 0);
   const reserveLandingKg = Math.max(0, Number(input.reserveLandingPropellantKg) || 0);
 
-  const separationFlipSec = 1.2;
-  const separationCoastSec = 2.8;
+  const separationFlipSec = 1.6;
+  const separationCoastSec = 4.2;
   const entryBurnUpperKm = 72;
   const entryBurnLowerKm = 26;
   const landingBurnStartKm = 16.0;
@@ -41,9 +41,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
       throttle: 0,
-      directionMix: { up: 0.06, retrograde: 0.96, antiTangent: 0.9 },
-      siteVectorWeight: 0.12,
-      siteVelocityWeight: 0.14,
+      directionMix: { up: 0.14, retrograde: 0.72, antiTangent: 0.46 },
+      siteVectorWeight: 0.14,
+      siteVelocityWeight: 0.18,
       touchdownReady: false,
     };
   }
@@ -53,9 +53,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
       throttle: 0,
-      directionMix: { up: 0.14, retrograde: 0.44, antiTangent: 0.36 },
-      siteVectorWeight: 0.2,
-      siteVelocityWeight: 0.24,
+      directionMix: { up: 0.18, retrograde: 0.36, antiTangent: 0.28 },
+      siteVectorWeight: 0.22,
+      siteVelocityWeight: 0.26,
       touchdownReady: false,
     };
   }

@@ -2445,13 +2445,13 @@ export function createLaunchController(options) {
     const retrograde = normalize(scale(relVel, -1), scale(up, -1));
     const tangentialVector = subtract(relVel, scale(up, dot(relVel, up)));
     const antiTangent = normalize(scale(tangentialVector, -1), retrograde);
-    const separationOffsetKm = STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM + 0.034;
+    const separationOffsetKm = STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM + 0.026;
     const separationImpulseKmS = add(
       add(
-        scale(retrograde, 0.036),
-        scale(antiTangent, 0.012),
+        scale(retrograde, 0.022),
+        scale(antiTangent, 0.006),
       ),
-      scale(up, -0.024),
+      scale(up, -0.013),
     );
     const boosterState = {
       id: LAUNCH_BOOSTER_BODY_ID,
