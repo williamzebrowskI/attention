@@ -1040,6 +1040,8 @@ function boosterTelemetryFromState({
     Number.isFinite(Number(dynamicPressurePaOverride))
       ? Number(dynamicPressurePaOverride)
       : dynamicPressurePaFromAtmosphere(atmosphereSample, relPos, relVel, earthPole);
+  const pressurePa = Math.max(0, Number(atmosphereSample?.pressurePa) || 0);
+  const densityKgM3 = Math.max(0, Number(atmosphereSample?.densityKgM3) || 0);
   const surfaceSample = runtime.booster.lastSurfaceSample || null;
   const centerAltitudeAboveTerrainKm = Number(surfaceSample?.altitudeAboveTerrainKm);
   const boosterAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
@@ -1054,6 +1056,8 @@ function boosterTelemetryFromState({
     speedKmS: orbital.speedKmS,
     radialSpeedKmS: orbital.radialSpeedKmS,
     tangentialSpeedKmS: orbital.tangentialSpeedKmS,
+    pressurePa,
+    densityKgM3,
     dynamicPressurePa,
     throttle: runtime.booster.lastStep?.throttle || 0,
     thrustN: runtime.booster.lastStep?.thrustN || 0,
@@ -3438,6 +3442,15 @@ export function createLaunchController(options) {
         boosterRcsJets: Array.isArray(runtime.booster.lastStep?.rcsJets)
           ? [...runtime.booster.lastStep.rcsJets]
           : [],
+        boosterPressurePa: Number.isFinite(Number(runtime.booster.telemetry?.pressurePa))
+          ? Number(runtime.booster.telemetry?.pressurePa)
+          : null,
+        boosterDensityKgM3: Number.isFinite(Number(runtime.booster.telemetry?.densityKgM3))
+          ? Number(runtime.booster.telemetry?.densityKgM3)
+          : null,
+        boosterDynamicPressurePa: Number.isFinite(Number(runtime.booster.telemetry?.dynamicPressurePa))
+          ? Number(runtime.booster.telemetry?.dynamicPressurePa)
+          : null,
         boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
         boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
         boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
@@ -3501,6 +3514,15 @@ export function createLaunchController(options) {
       boosterRcsJets: Array.isArray(runtime.booster.telemetry?.rcsJets)
         ? [...runtime.booster.telemetry.rcsJets]
         : (Array.isArray(runtime.booster.lastStep?.rcsJets) ? [...runtime.booster.lastStep.rcsJets] : []),
+      boosterPressurePa: Number.isFinite(Number(runtime.booster.telemetry?.pressurePa))
+        ? Number(runtime.booster.telemetry?.pressurePa)
+        : null,
+      boosterDensityKgM3: Number.isFinite(Number(runtime.booster.telemetry?.densityKgM3))
+        ? Number(runtime.booster.telemetry?.densityKgM3)
+        : null,
+      boosterDynamicPressurePa: Number.isFinite(Number(runtime.booster.telemetry?.dynamicPressurePa))
+        ? Number(runtime.booster.telemetry?.dynamicPressurePa)
+        : null,
       boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
       boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
       boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))

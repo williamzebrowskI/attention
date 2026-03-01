@@ -134,6 +134,59 @@ const BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX = 0xffd9a8;
 const BOOSTER_RCS_JET_COLOR_HEX = 0xb5d8ff;
 const BOOSTER_MAIN_PLUME_SIZE_SCALE = 0.24;
 const BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE = 0.26;
+const BOOSTER_SEA_LEVEL_PRESSURE_PA = 101_325;
+const BOOSTER_RCS_Q_HALF_EFFECT_PA = 45_000;
+const BOOSTER_RCS_Q_MAX_EFFECT_PA = 130_000;
+const BOOSTER_PHASE_VISUAL_PROFILE = Object.freeze({
+  default: Object.freeze({
+    mainScale: 1.0,
+    rcsScale: 1.0,
+    mainPulseHz: 34,
+    rcsPulseHz: 20,
+  }),
+  separation: Object.freeze({
+    mainScale: 0.0,
+    rcsScale: 1.28,
+    mainPulseHz: 24,
+    rcsPulseHz: 26,
+  }),
+  boostback: Object.freeze({
+    mainScale: 1.04,
+    rcsScale: 0.75,
+    mainPulseHz: 40,
+    rcsPulseHz: 16,
+  }),
+  entry: Object.freeze({
+    mainScale: 0.84,
+    rcsScale: 0.52,
+    mainPulseHz: 30,
+    rcsPulseHz: 14,
+  }),
+  ballistic: Object.freeze({
+    mainScale: 0.0,
+    rcsScale: 0.94,
+    mainPulseHz: 22,
+    rcsPulseHz: 22,
+  }),
+  descent: Object.freeze({
+    mainScale: 0.0,
+    rcsScale: 0.88,
+    mainPulseHz: 22,
+    rcsPulseHz: 20,
+  }),
+  landing: Object.freeze({
+    mainScale: 1.12,
+    rcsScale: 0.62,
+    mainPulseHz: 42,
+    rcsPulseHz: 12,
+  }),
+  landed: Object.freeze({
+    mainScale: 0.0,
+    rcsScale: 0.0,
+    mainPulseHz: 10,
+    rcsPulseHz: 10,
+  }),
+});
 const reentryHeatMaterialBaseState = new WeakMap();
 let reentryHeatColor = null;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
@@ -1395,7 +1448,36 @@ function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHe
   return jets;
 }
 
-function setInlineEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
+function boosterPhaseVisualProfile(phaseRaw) {
+  const phase = String(phaseRaw || "").toLowerCase();
+  if (!phase) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.default;
+  }
+  if (phase.includes("landed")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.landed;
+  }
+  if (phase.includes("boostback")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.boostback;
+  }
+  if (phase.includes("entry")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.entry;
+  }
+  if (phase.includes("landing")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.landing;
+  }
+  if (phase.includes("separation")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.separation;
+  }
+  if (phase.includes("ballistic")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.ballistic;
+  }
+  if (phase.includes("descent")) {
+    return BOOSTER_PHASE_VISUAL_PROFILE.descent;
+  }
+  return BOOSTER_PHASE_VISUAL_PROFILE.default;
+}
+
+function setInlineEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, options = {}) {
   if (!plumeState?.cluster || !Array.isArray(plumeState.entries)) {
     return;
   }
@@ -1404,11 +1486,17 @@ function setInlineEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1)
     return;
   }
   const t = clamp(Number(throttle) || 0, 0, 1);
-  const plumeOpacity = (0.34 + (t * 0.56)) * pulse;
-  const glowOpacity = (0.42 + (t * 0.52)) * pulse;
-  const stretch = 0.82 + (t * 2.1);
-  const radiusScale = 0.9 + (t * 0.5);
-  const glowScale = 0.94 + (t * 0.76);
+  const phaseScale = clamp(Number(options.phaseScale) || 1, 0, 1.5);
+  const pressurePa = Math.max(0, Number(options.pressurePa) || 0);
+  const pressureRatio = clamp(pressurePa / BOOSTER_SEA_LEVEL_PRESSURE_PA, 0, 1);
+  const vacuumExpansion = clamp(1 - pressureRatio, 0, 1);
+  const expansionScale = 0.82 + (vacuumExpansion * 0.68);
+  const brightnessScale = (0.86 + (vacuumExpansion * 0.14)) * phaseScale;
+  const plumeOpacity = (0.34 + (t * 0.56)) * pulse * brightnessScale;
+  const glowOpacity = (0.42 + (t * 0.52)) * pulse * brightnessScale;
+  const stretch = (0.82 + (t * 2.1)) * expansionScale;
+  const radiusScale = (0.9 + (t * 0.5)) * (0.92 + (vacuumExpansion * 0.34));
+  const glowScale = (0.94 + (t * 0.76)) * (0.92 + (vacuumExpansion * 0.25));
 
   for (const entry of plumeState.entries) {
     if (!entry) {
@@ -1437,7 +1525,7 @@ function setInlineEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1)
   }
 }
 
-function updateInlineBoosterRcsJetVisuals(boosterState, snapshot) {
+function updateInlineBoosterRcsJetVisuals(boosterState, snapshot, phaseProfile = BOOSTER_PHASE_VISUAL_PROFILE.default) {
   const jets = boosterState?.rcsJets;
   if (!jets) {
     return;
@@ -1445,18 +1533,29 @@ function updateInlineBoosterRcsJetVisuals(boosterState, snapshot) {
   const requestedJets = Array.isArray(snapshot?.boosterRcsJets) ? snapshot.boosterRcsJets : [];
   const requestedJetSet = new Set(requestedJets.map((jet) => String(jet || "").toLowerCase()));
   const active = Boolean(snapshot?.boosterRcsActive) && requestedJetSet.size > 0;
-  const authority = clamp(Number(snapshot?.boosterRcsAuthority) || 0, 0, 1);
-  const pulse = 0.85 + (0.15 * Math.sin((Date.now() / 1000) * 22));
-  const opacity = (0.16 + (authority * 0.45)) * pulse;
-  const stretch = 0.72 + (authority * 0.95);
-  const radiusScale = 0.82 + (authority * 0.64);
-  const glowScale = 0.8 + (authority * 1.1);
+  const authorityRaw = clamp(Number(snapshot?.boosterRcsAuthority) || 0, 0, 1);
+  const dynamicPressurePa = Math.max(0, Number(snapshot?.boosterDynamicPressurePa) || 0);
+  const qBlend = clamp(
+    (dynamicPressurePa - BOOSTER_RCS_Q_HALF_EFFECT_PA)
+      / Math.max(BOOSTER_RCS_Q_MAX_EFFECT_PA - BOOSTER_RCS_Q_HALF_EFFECT_PA, 1),
+    0,
+    1,
+  );
+  // In denser aerodynamic regime, RCS jets become less visually prominent.
+  const dynamicSuppression = 1 - (0.62 * qBlend);
+  const authority = clamp(authorityRaw * dynamicSuppression * (Number(phaseProfile?.rcsScale) || 1), 0, 1);
+  const pulseHz = Math.max(6, Number(phaseProfile?.rcsPulseHz) || 20);
+  const pulse = 0.86 + (0.14 * Math.sin((Date.now() / 1000) * pulseHz));
+  const opacity = (0.14 + (authority * 0.44)) * pulse;
+  const stretch = 0.7 + (authority * 0.92);
+  const radiusScale = 0.8 + (authority * 0.6);
+  const glowScale = 0.78 + (authority * 1.04);
 
   for (const [jetName, entry] of Object.entries(jets)) {
     if (!entry) {
       continue;
     }
-    const firing = active && requestedJetSet.has(jetName);
+    const firing = active && requestedJetSet.has(jetName) && authority > 0.01;
     entry.group.visible = firing;
     if (!firing) {
       continue;
@@ -1486,18 +1585,25 @@ function applyInlineBoosterManeuverVisuals(boosterState, snapshot = null) {
     return;
   }
   const phase = String(snapshot.boosterPhase || "").toLowerCase();
+  const phaseProfile = boosterPhaseVisualProfile(phase);
   const throttle = clamp(Number(snapshot.boosterThrottle) || 0, 0, 1);
   const thrustN = Math.max(0, Number(snapshot.boosterThrustN) || 0);
-  const firing = thrustN > 0.01
-    && throttle > 0.01
-    && (
-      phase.includes("boostback")
-      || phase.includes("burn")
-      || phase.includes("landing")
-    );
-  const pulse = 0.9 + (0.1 * Math.sin((Date.now() / 1000) * 36));
-  setInlineEnginePlumeVisual(boosterState.mainEnginePlume, firing, throttle, pulse);
-  updateInlineBoosterRcsJetVisuals(boosterState, snapshot);
+  const mainScale = clamp(Number(phaseProfile?.mainScale) || 0, 0, 1.5);
+  const effectiveThrottle = clamp(throttle * mainScale, 0, 1);
+  const firing = thrustN > 0.01 && effectiveThrottle > 0.01 && mainScale > 0.01;
+  const pulseHz = Math.max(8, Number(phaseProfile?.mainPulseHz) || 34);
+  const pulse = 0.9 + (0.1 * Math.sin((Date.now() / 1000) * pulseHz));
+  setInlineEnginePlumeVisual(
+    boosterState.mainEnginePlume,
+    firing,
+    effectiveThrottle,
+    pulse,
+    {
+      pressurePa: Number(snapshot.boosterPressurePa) || 0,
+      phaseScale: mainScale,
+    },
+  );
+  updateInlineBoosterRcsJetVisuals(boosterState, snapshot, phaseProfile);
 }
 
 function createInlineStarshipStackVisual(THREE, distanceScale) {
