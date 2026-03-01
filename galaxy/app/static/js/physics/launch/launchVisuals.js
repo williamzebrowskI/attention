@@ -798,20 +798,29 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   const shipHullGroup = new THREE.Group();
   shipGroup.add(shipHullGroup);
 
-  const shipBody = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius * 0.985, shipCylinderHeight, 56, 1, false),
-    stainless,
-  );
-  shipBody.position.y = shipBodyBottomY + (0.5 * shipCylinderHeight);
-  shipHullGroup.add(shipBody);
+  const shipHullProfile = [];
+  const cylindricalSteps = 24;
+  for (let i = 0; i <= cylindricalSteps; i += 1) {
+    const t = i / cylindricalSteps;
+    const y = shipBodyBottomY + (shipCylinderHeight * t);
+    const localRadius = radius * (1 - (0.012 * t));
+    shipHullProfile.push(new THREE.Vector2(localRadius, y));
+  }
+  const noseSteps = 20;
+  for (let i = 1; i <= noseSteps; i += 1) {
+    const t = i / noseSteps;
+    const theta = t * (Math.PI * 0.5);
+    const y = shipBodyTopY + (Math.sin(theta) * shipNoseHeight);
+    const radialFactor = Math.pow(Math.cos(theta), 1.5);
+    const localRadius = radius * (0.95 * radialFactor);
+    shipHullProfile.push(new THREE.Vector2(Math.max(localRadius, radius * 0.03), y));
+  }
 
-  const aftTaperHeight = clamp(shipCylinderHeight * 0.08, radius * 0.16, shipCylinderHeight * 0.12);
-  const aftTaper = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.985, radius * 0.93, aftTaperHeight, 52, 1, false),
+  const shipHull = new THREE.Mesh(
+    new THREE.LatheGeometry(shipHullProfile, 96),
     stainless,
   );
-  aftTaper.position.y = shipBodyBottomY + (0.5 * aftTaperHeight);
-  shipHullGroup.add(aftTaper);
+  shipHullGroup.add(shipHull);
 
   const hotStageRing = new THREE.Mesh(
     new THREE.CylinderGeometry(radius * 1.01, radius * 1.01, hotstageRingHeight, 48, 1, false),
@@ -839,71 +848,62 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     shipGroup.add(vent);
   }
 
-  const shipNose = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.98, radius * 0.12, shipNoseHeight, 56, 1, false),
+  const noseTip = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.034, 26, 18),
     stainless,
   );
-  shipNose.position.y = shipNoseCenterY;
-  shipHullGroup.add(shipNose);
+  noseTip.position.y = shipBodyTopY + shipNoseHeight + (radius * 0.012);
+  shipHullGroup.add(noseTip);
 
-  const noseCap = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 0.126, 36, 20),
-    stainless,
-  );
-  noseCap.position.y = shipBodyTopY + shipNoseHeight - (radius * 0.005);
-  shipHullGroup.add(noseCap);
-
-  const tileBand = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.002, radius * 0.994, shipCylinderHeight * 0.985, 52, 1, false),
+  const heatShieldShell = new THREE.Mesh(
+    new THREE.LatheGeometry(shipHullProfile, 96),
     tileBlack,
   );
-  tileBand.position.y = shipBody.position.y;
-  tileBand.scale.set(1.003, 1, 0.545);
-  tileBand.rotation.y = Math.PI * 0.5;
-  shipHullGroup.add(tileBand);
+  heatShieldShell.scale.set(1.002, 1.002, 0.56);
+  heatShieldShell.rotation.y = Math.PI * 0.5;
+  shipHullGroup.add(heatShieldShell);
 
-  const noseTile = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.985, radius * 0.115, shipNoseHeight * 0.98, 44, 1, false),
+  const heatShieldTip = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.038, 24, 16),
     tileBlack,
   );
-  noseTile.position.y = shipNose.position.y;
-  noseTile.scale.set(1.004, 1, 0.53);
-  noseTile.rotation.y = Math.PI * 0.5;
-  shipHullGroup.add(noseTile);
+  heatShieldTip.position.copy(noseTip.position);
+  heatShieldTip.scale.set(1, 1, 0.56);
+  heatShieldTip.rotation.y = Math.PI * 0.5;
+  shipHullGroup.add(heatShieldTip);
 
-  const noseTileCap = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 0.12, 28, 18),
-    tileBlack,
-  );
-  noseTileCap.position.y = noseCap.position.y;
-  noseTileCap.scale.set(1, 1, 0.52);
-  noseTileCap.rotation.y = Math.PI * 0.5;
-  shipHullGroup.add(noseTileCap);
-
-  const chineWidth = clamp(radius * 0.2, radius * 0.1, radius * 0.27);
-  const chineDepth = clamp(radius * 0.12, radius * 0.05, radius * 0.16);
-  const chineLength = clamp(shipNoseHeight * 1.24, shipNoseHeight * 0.78, shipNoseHeight * 1.45);
-  const chineY = shipBodyTopY - (shipNoseHeight * 0.18);
+  const chines = new THREE.Group();
+  const chineHeight = clamp(shipNoseHeight * 1.08, shipNoseHeight * 0.78, shipNoseHeight * 1.25);
+  const chineThickness = clamp(radius * 0.038, radius * 0.02, radius * 0.06);
+  const chineLength = clamp(radius * 0.58, radius * 0.42, radius * 0.74);
   for (let i = 0; i < 2; i += 1) {
     const side = i === 0 ? -1 : 1;
     const chine = new THREE.Mesh(
-      new THREE.BoxGeometry(chineWidth, chineLength, chineDepth),
+      new THREE.BoxGeometry(chineThickness, chineHeight, chineLength),
       stainless,
     );
-    chine.position.set(side * (radius * 0.72), chineY, 0);
-    chine.rotation.z = side * rad(13);
-    shipHullGroup.add(chine);
+    chine.position.set(
+      side * (radius * 0.84),
+      shipBodyTopY + (shipNoseHeight * 0.16),
+      0,
+    );
+    chine.rotation.z = side * rad(17);
+    chine.rotation.y = side * rad(6);
+    chines.add(chine);
   }
+  shipHullGroup.add(chines);
 
-  const payloadDoorHeight = clamp(shipCylinderHeight * 0.34, radius * 1.5, shipCylinderHeight * 0.42);
-  const payloadDoorY = shipBodyTopY - (payloadDoorHeight * 0.62);
-  const payloadDoor = new THREE.Mesh(
-    new THREE.BoxGeometry(radius * 0.022, payloadDoorHeight, radius * 0.66),
+  const payloadDoorSeam = new THREE.Mesh(
+    new THREE.BoxGeometry(radius * 0.012, shipCylinderHeight * 0.42, radius * 0.72),
     darkSteel,
   );
-  payloadDoor.position.set(radius * 0.985, payloadDoorY, 0);
-  payloadDoor.rotation.y = rad(5);
-  shipHullGroup.add(payloadDoor);
+  payloadDoorSeam.position.set(
+    radius * 0.996,
+    shipBodyBottomY + (shipCylinderHeight * 0.68),
+    0,
+  );
+  payloadDoorSeam.rotation.y = rad(4);
+  shipHullGroup.add(payloadDoorSeam);
 
   const weldSeamFractions = [0.08, 0.16, 0.24, 0.33, 0.42, 0.5, 0.58, 0.66, 0.74, 0.82, 0.9];
   const seamTubeRadius = clamp(radius * 0.0044, radius * 0.002, radius * 0.007);
@@ -917,47 +917,48 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     shipHullGroup.add(seam);
   }
 
-  const flapLength = clamp(shipCylinderHeight * 0.27, radius * 0.9, shipCylinderHeight * 0.4);
-  const flapThickness = clamp(radius * 0.075, radius * 0.038, radius * 0.115);
-  const aftFlapWidth = clamp(radius * 1.04, radius * 0.63, radius * 1.2);
-  const foreFlapWidth = clamp(radius * 0.76, radius * 0.48, radius * 0.96);
-  const aftFlapY = shipBodyBottomY + (shipCylinderHeight * 0.19);
-  const foreFlapY = shipBodyBottomY + (shipCylinderHeight * 0.77);
+  const flapThickness = clamp(radius * 0.058, radius * 0.028, radius * 0.09);
+  const aftFlapSpan = clamp(shipCylinderHeight * 0.2, radius * 0.86, shipCylinderHeight * 0.26);
+  const foreFlapSpan = clamp(shipCylinderHeight * 0.16, radius * 0.62, shipCylinderHeight * 0.2);
+  const aftFlapChord = clamp(radius * 1.12, radius * 0.8, radius * 1.34);
+  const foreFlapChord = clamp(radius * 0.82, radius * 0.58, radius * 0.96);
+  const aftFlapY = shipBodyBottomY + (shipCylinderHeight * 0.17);
+  const foreFlapY = shipBodyBottomY + (shipCylinderHeight * 0.8);
   for (let i = 0; i < 2; i += 1) {
     const side = i === 0 ? -1 : 1;
 
     const aft = new THREE.Mesh(
-      new THREE.BoxGeometry(flapThickness, flapLength, aftFlapWidth),
+      new THREE.BoxGeometry(flapThickness, aftFlapSpan, aftFlapChord),
       darkSteel,
     );
-    aft.position.set(side * (radius + (flapThickness * 0.54)), aftFlapY, 0);
-    aft.rotation.z = side * rad(8);
-    aft.rotation.y = side * rad(2.8);
+    aft.position.set(side * (radius + (flapThickness * 0.45)), aftFlapY, 0);
+    aft.rotation.z = side * rad(12);
+    aft.rotation.y = side * rad(4);
     shipGroup.add(aft);
 
     const aftHinge = new THREE.Mesh(
-      new THREE.CylinderGeometry(flapThickness * 0.38, flapThickness * 0.38, aftFlapWidth * 0.88, 12, 1, false),
+      new THREE.CylinderGeometry(flapThickness * 0.32, flapThickness * 0.32, aftFlapChord * 0.9, 12, 1, false),
       darkSteel,
     );
     aftHinge.rotation.x = Math.PI * 0.5;
-    aftHinge.position.set(side * radius * 0.995, aftFlapY, 0);
+    aftHinge.position.set(side * radius * 0.992, aftFlapY, 0);
     shipGroup.add(aftHinge);
 
     const fore = new THREE.Mesh(
-      new THREE.BoxGeometry(flapThickness * 0.92, flapLength * 0.82, foreFlapWidth),
+      new THREE.BoxGeometry(flapThickness * 0.88, foreFlapSpan, foreFlapChord),
       darkSteel,
     );
-    fore.position.set(side * (radius + (flapThickness * 0.5)), foreFlapY, 0);
-    fore.rotation.z = side * rad(15);
-    fore.rotation.y = side * rad(3.2);
+    fore.position.set(side * (radius + (flapThickness * 0.4)), foreFlapY, 0);
+    fore.rotation.z = side * rad(18);
+    fore.rotation.y = side * rad(6);
     shipGroup.add(fore);
 
     const foreHinge = new THREE.Mesh(
-      new THREE.CylinderGeometry(flapThickness * 0.36, flapThickness * 0.36, foreFlapWidth * 0.9, 12, 1, false),
+      new THREE.CylinderGeometry(flapThickness * 0.3, flapThickness * 0.3, foreFlapChord * 0.9, 12, 1, false),
       darkSteel,
     );
     foreHinge.rotation.x = Math.PI * 0.5;
-    foreHinge.position.set(side * radius * 0.995, foreFlapY, 0);
+    foreHinge.position.set(side * radius * 0.992, foreFlapY, 0);
     shipGroup.add(foreHinge);
   }
 
