@@ -1330,10 +1330,11 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
   const throttlePct = Number.isFinite(snapshot.throttle) ? snapshot.throttle * 100 : 0;
   const guidanceLine = snapshot.autopilotMode || snapshot.guidanceMode || "guidance";
+  const missionElapsed = formatDurationSeconds(snapshot.elapsedSeconds);
   const orbitTarget = Number.isFinite(Number(snapshot.targetOrbitAltitudeKm))
     ? ` | Target ${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km`
     : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget} | ${snapshot.launchSiteName || "Launch Site"}`;
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget} | ${snapshot.launchSiteName || "Launch Site"}`;
 }
 
 function phaseLabelForLaunch(phase) {
@@ -5940,6 +5941,9 @@ function updateInfoOverlay() {
   const launchSnapshot = launchFeatureEnabled && meta.id === LAUNCH_BODY_ID
     ? (launchController?.statusSnapshot() || null)
     : null;
+  const launchDurationLabel = launchSnapshot?.phase === "complete"
+    ? "Full Mission Duration"
+    : "Mission Elapsed";
   const runtimeMassKg = nBodyState?.dynamicBodies?.get(meta.id)?.massKg;
   const displayedMassKg = Number.isFinite(runtimeMassKg) ? runtimeMassKg : Number(meta.mass_kg);
   const orbitDynamicsLine = isNBodyDrivenBodyId(meta.id)
@@ -5980,6 +5984,7 @@ function updateInfoOverlay() {
   const launchPhysicsLine = launchSnapshot
     ? `<p class="line launch-line">Launch Phase: ${launchSnapshot.phaseLabel || launchSnapshot.phase || "n/a"}</p>
        <p class="line launch-line">Launch Stage: ${launchSnapshot.stageName || "n/a"}</p>
+       <p class="line launch-line">${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}</p>
        <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
        <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
@@ -6364,4 +6369,19 @@ function formatMass(value) {
     return "unknown";
   }
   return `${Number(value).toExponential(4)} kg`;
+}
+
+function formatDurationSeconds(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return "n/a";
+  }
+  const totalSeconds = Math.floor(numeric);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
