@@ -495,7 +495,6 @@ let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
 let startupSeedLocked = false;
 let suppressCanvasSelectionUntilMs = 0;
-let legendGlobalClickHandlerBound = false;
 let pointerInsideLegend = false;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
@@ -4544,48 +4543,14 @@ function setupLegendInputGuards() {
   }
   bodyLegend.addEventListener("pointerenter", () => {
     pointerInsideLegend = true;
-  }, { capture: true });
+  });
   bodyLegend.addEventListener("pointerleave", () => {
     pointerInsideLegend = false;
-  }, { capture: true });
-  bodyLegend.addEventListener("pointerdown", (event) => {
+  });
+  bodyLegend.addEventListener("pointerdown", () => {
     pointerInsideLegend = true;
-    event.stopPropagation();
     markLegendInteractionGuard();
-  }, { capture: true });
-  bodyLegend.addEventListener("pointerup", (event) => {
-    event.stopPropagation();
-  }, { capture: true });
-  bodyLegend.addEventListener("click", (event) => {
-    event.stopPropagation();
-  }, { capture: true });
-  if (!legendGlobalClickHandlerBound) {
-    document.addEventListener("click", onGlobalLegendClickCapture, true);
-    legendGlobalClickHandlerBound = true;
-  }
-}
-
-function onGlobalLegendClickCapture(event) {
-  const target = event.target instanceof Element ? event.target : null;
-  if (!target || !bodyLegend?.contains(target)) {
-    return;
-  }
-  const gravityToggle = target.closest(".legend-gravity-toggle");
-  if (gravityToggle) {
-    return;
-  }
-  const legendButton = target.closest(".legend-button");
-  if (!legendButton) {
-    return;
-  }
-  const bodyId = legendButton.dataset.bodyId;
-  if (!bodyId || !metaById.has(bodyId)) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  markLegendInteractionGuard();
-  setSelected(bodyId, true);
+  });
 }
 
 function performRaycastSelection(clientX, clientY) {
