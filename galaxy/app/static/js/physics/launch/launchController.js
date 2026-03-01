@@ -1039,6 +1039,16 @@ function missionElapsedInPhaseSeconds(runtime) {
   return Math.max(0, runtime.elapsedSeconds - (Number(runtime.mission.phaseStartedElapsedSec) || 0));
 }
 
+function isMoonTransferMissionActive(runtime) {
+  if (!runtime?.mission) {
+    return false;
+  }
+  if (runtime.mission.selectedId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return false;
+  }
+  return runtime.mission.phase !== "earth_orbit_hold";
+}
+
 function bodyStateFromNBody(state, bodyId) {
   return state?.dynamicBodies?.get(bodyId)
     || state?.staticSources?.get(bodyId)
@@ -2215,8 +2225,12 @@ export function createLaunchController(options) {
       relVel,
       currentEarthAxes.pole,
     );
+    const moonTransferMissionActive = isMoonTransferMissionActive(runtime);
     updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
 
+    if (runtime.phase === "orbit" && moonTransferMissionActive) {
+      runtime.phase = "coast";
+    }
     if (runtime.phase === "orbit") {
       runtime.lastStep = {
         accelerationKmS2: { x: 0, y: 0, z: 0 },
@@ -2318,7 +2332,7 @@ export function createLaunchController(options) {
         }
         if (autopilotCommand.phase === "powered") {
           runtime.phase = "powered";
-        } else if (autopilotCommand.phase === "orbit") {
+        } else if (autopilotCommand.phase === "orbit" && !moonTransferMissionActive) {
           runtime.phase = "orbit";
           runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
           const rcs = computeRcsAssist({
@@ -2504,7 +2518,7 @@ export function createLaunchController(options) {
         });
         return;
       }
-      if (autopilotCommand.phase === "orbit") {
+      if (autopilotCommand.phase === "orbit" && !moonTransferMissionActive) {
         runtime.phase = "orbit";
         runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
         const rcs = computeRcsAssist({
@@ -2521,6 +2535,40 @@ export function createLaunchController(options) {
           burnRateKgS: 0,
           dynamicPressurePa,
           guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
+          rcsActive: rcs.active,
+          rcsErrorDeg: rcs.errorDeg,
+          rcsAuthority: rcs.authority,
+          rcsJets: rcs.jets,
+        };
+        runtime.lastTelemetry = telemetryFromState({
+          gravitationalConstantKm3PerKgS2,
+          earthMassKg: Number(getEarthMassKg?.()) || 0,
+          earthRadiusKm,
+          earthState,
+          rocketState,
+          atmosphereSample: atmo,
+          earthPole: currentEarthAxes.pole,
+          dynamicPressurePaOverride: dynamicPressurePa,
+          runtime,
+        });
+        return;
+      }
+      if (autopilotCommand.phase === "orbit" && moonTransferMissionActive) {
+        runtime.phase = "coast";
+        const rcs = computeRcsAssist({
+          stageIndex: runtime.stageIndex,
+          desiredDirection: autopilotCommand.direction || guidance.direction,
+          relVel,
+          up: orbital.up,
+        });
+        runtime.lastStep = {
+          accelerationKmS2: rcs.accelerationKmS2,
+          throttle: 0,
+          thrustN: 0,
+          burnKg: 0,
+          burnRateKgS: 0,
+          dynamicPressurePa,
+          guidanceMode: autopilotCommand.mode || "mission-moon-orbit-return:coast",
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
           rcsAuthority: rcs.authority,
@@ -2680,6 +2728,9 @@ export function createLaunchController(options) {
         updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
       }
 
+    if (runtime.phase === "orbit" && isMoonTransferMissionActive(runtime)) {
+      runtime.phase = "coast";
+    }
     if (runtime.phase === "orbit") {
       const relPosNow = subtract(rocketState.position, earthState.position);
       const relVelNow = subtract(
