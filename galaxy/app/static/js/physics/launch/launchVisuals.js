@@ -2,6 +2,10 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
   STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
+import {
+  BOOSTER_THRUSTER_LAYOUT,
+  STARSHIP_THRUSTER_LAYOUT,
+} from "./thrusterLayout.js";
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
@@ -16,6 +20,49 @@ function kmToScene(kmValue, distanceScale) {
   return kmValue * distanceScale;
 }
 
+function resolveThrusterDefinitions(THREE, layout, radius, bodyHeight) {
+  if (!THREE || !layout || !(radius > 0) || !(bodyHeight > 0)) {
+    return [];
+  }
+  return Object.entries(layout).map(([id, spec]) => ({
+    id,
+    anchor: new THREE.Vector3(
+      (Number(spec?.anchor?.xR) || 0) * radius,
+      (Number(spec?.anchor?.yH) || 0) * bodyHeight,
+      (Number(spec?.anchor?.zR) || 0) * radius,
+    ),
+    direction: new THREE.Vector3(
+      Number(spec?.direction?.x) || 0,
+      Number(spec?.direction?.y) || 0,
+      Number(spec?.direction?.z) || 0,
+    ).normalize(),
+  }));
+}
+
+function addStaticThrusterNozzles(THREE, hostGroup, definitions, radius, material) {
+  if (!THREE || !hostGroup || !Array.isArray(definitions) || definitions.length <= 0) {
+    return [];
+  }
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const nozzleLength = clamp(radius * 0.2, radius * 0.08, radius * 0.28);
+  const nozzleRadius = clamp(radius * 0.05, radius * 0.02, radius * 0.075);
+  const nozzles = [];
+  for (const definition of definitions) {
+    if (!definition?.anchor || !definition?.direction) {
+      continue;
+    }
+    const nozzle = new THREE.Mesh(
+      new THREE.CylinderGeometry(nozzleRadius * 0.82, nozzleRadius, nozzleLength, 10, 1, true),
+      material.clone(),
+    );
+    nozzle.position.copy(definition.anchor).addScaledVector(definition.direction, nozzleLength * 0.2);
+    nozzle.quaternion.setFromUnitVectors(yAxis, definition.direction.clone());
+    hostGroup.add(nozzle);
+    nozzles.push(nozzle);
+  }
+  return nozzles;
+}
+
 function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   if (!THREE || !shipGroup || !(radius > 0) || !(shipHeight > 0)) {
     return null;
@@ -23,8 +70,6 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   const plumeLength = clamp(shipHeight * 0.018, radius * 0.14, shipHeight * 0.038);
   const plumeRadius = clamp(radius * 0.024, radius * 0.01, radius * 0.04);
   const nozzleGlowRadius = clamp(radius * 0.016, radius * 0.007, radius * 0.03);
-  const shellOffset = clamp(radius * 0.042, radius * 0.018, radius * 0.08);
-  const longitudinalOffset = clamp(shipHeight * 0.24, radius * 1.4, shipHeight * 0.42);
   const yAxis = new THREE.Vector3(0, 1, 0);
 
   const plumeMaterial = new THREE.MeshBasicMaterial({
@@ -45,38 +90,23 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   });
 
   const jets = {};
-  const definitions = [
-    {
-      id: "port",
-      direction: new THREE.Vector3(-1, 0, 0),
-      anchor: new THREE.Vector3(-(radius + shellOffset), 0, 0),
-    },
-    {
-      id: "starboard",
-      direction: new THREE.Vector3(1, 0, 0),
-      anchor: new THREE.Vector3(radius + shellOffset, 0, 0),
-    },
-    {
-      id: "dorsal",
-      direction: new THREE.Vector3(0, 0, 1),
-      anchor: new THREE.Vector3(0, 0, radius + shellOffset),
-    },
-    {
-      id: "ventral",
-      direction: new THREE.Vector3(0, 0, -1),
-      anchor: new THREE.Vector3(0, 0, -(radius + shellOffset)),
-    },
-    {
-      id: "forward",
-      direction: new THREE.Vector3(0, 1, 0),
-      anchor: new THREE.Vector3(0, longitudinalOffset, 0),
-    },
-    {
-      id: "aft",
-      direction: new THREE.Vector3(0, -1, 0),
-      anchor: new THREE.Vector3(0, -longitudinalOffset, 0),
-    },
-  ];
+  const definitions = resolveThrusterDefinitions(
+    THREE,
+    STARSHIP_THRUSTER_LAYOUT,
+    radius,
+    shipHeight,
+  );
+  addStaticThrusterNozzles(
+    THREE,
+    shipGroup,
+    definitions,
+    radius,
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x6e7786),
+      roughness: 0.58,
+      metalness: 0.56,
+    }),
+  );
 
   for (const definition of definitions) {
     const group = new THREE.Group();
@@ -449,6 +479,24 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
     nozzleInterior.position.set(offset.x, engineY - (engineBellHeight * 0.22), offset.z);
     boosterGroup.add(nozzleInterior);
   }
+
+  const boosterThrusterDefinitions = resolveThrusterDefinitions(
+    THREE,
+    BOOSTER_THRUSTER_LAYOUT,
+    radius,
+    boosterHeight,
+  );
+  addStaticThrusterNozzles(
+    THREE,
+    boosterGroup,
+    boosterThrusterDefinitions,
+    radius,
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x6a727f),
+      roughness: 0.6,
+      metalness: 0.52,
+    }),
+  );
 
   return {
     engineOffsets: engineLayout.offsets,

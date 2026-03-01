@@ -1,3 +1,8 @@
+import {
+  BOOSTER_THRUSTER_LAYOUT,
+  STARSHIP_THRUSTER_LAYOUT,
+} from "./thrusterLayout.js";
+
 export const INLINE_STARSHIP_STACK_DIMENSIONS_KM = Object.freeze({
   diameterKm: 0.009,
   boosterHeightKm: 0.071,
@@ -76,6 +81,49 @@ function clamp(value, min, max) {
 
 function rad(degrees) {
   return (degrees * Math.PI) / 180;
+}
+
+function resolveThrusterDefinitions(THREE, layout, radius, bodyHeight) {
+  if (!THREE || !layout || !(radius > 0) || !(bodyHeight > 0)) {
+    return [];
+  }
+  return Object.entries(layout).map(([id, spec]) => ({
+    id,
+    anchor: new THREE.Vector3(
+      (Number(spec?.anchor?.xR) || 0) * radius,
+      (Number(spec?.anchor?.yH) || 0) * bodyHeight,
+      (Number(spec?.anchor?.zR) || 0) * radius,
+    ),
+    direction: new THREE.Vector3(
+      Number(spec?.direction?.x) || 0,
+      Number(spec?.direction?.y) || 0,
+      Number(spec?.direction?.z) || 0,
+    ).normalize(),
+  }));
+}
+
+function addInlineStaticThrusterNozzles(THREE, hostGroup, definitions, radius, material) {
+  if (!THREE || !hostGroup || !Array.isArray(definitions) || definitions.length <= 0) {
+    return [];
+  }
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const nozzleLength = clamp(radius * 0.22, radius * 0.09, radius * 0.3);
+  const nozzleRadius = clamp(radius * 0.053, radius * 0.02, radius * 0.08);
+  const nozzles = [];
+  for (const definition of definitions) {
+    if (!definition?.anchor || !definition?.direction) {
+      continue;
+    }
+    const nozzle = new THREE.Mesh(
+      new THREE.CylinderGeometry(nozzleRadius * 0.84, nozzleRadius, nozzleLength, 10, 1, true),
+      material.clone(),
+    );
+    nozzle.position.copy(definition.anchor).addScaledVector(definition.direction, nozzleLength * 0.2);
+    nozzle.quaternion.setFromUnitVectors(yAxis, definition.direction.clone());
+    hostGroup.add(nozzle);
+    nozzles.push(nozzle);
+  }
+  return nozzles;
 }
 
 function createInlineCircularOffsets(count, radius, phaseRadians = 0) {
@@ -308,9 +356,6 @@ function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHe
   const plumeLength = clamp(boosterHeight * 0.028, radius * 0.18, boosterHeight * 0.062);
   const plumeRadius = clamp(radius * 0.03, radius * 0.012, radius * 0.048);
   const glowRadius = clamp(radius * 0.02, radius * 0.009, radius * 0.036);
-  const shellOffset = clamp(radius * 0.1, radius * 0.045, radius * 0.14);
-  const upperY = clamp(boosterHeight * 0.28, radius * 1.2, boosterHeight * 0.34);
-  const lowerY = clamp(boosterHeight * 0.08, radius * 0.5, boosterHeight * 0.16);
   const yAxis = new THREE.Vector3(0, 1, 0);
 
   const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
@@ -330,14 +375,23 @@ function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHe
     toneMapped: false,
   });
 
-  const definitions = [
-    { id: "port", direction: new THREE.Vector3(-1, 0, 0), anchor: new THREE.Vector3(-(radius + shellOffset), upperY, 0) },
-    { id: "starboard", direction: new THREE.Vector3(1, 0, 0), anchor: new THREE.Vector3(radius + shellOffset, upperY, 0) },
-    { id: "dorsal", direction: new THREE.Vector3(0, 0, 1), anchor: new THREE.Vector3(0, upperY, radius + shellOffset) },
-    { id: "ventral", direction: new THREE.Vector3(0, 0, -1), anchor: new THREE.Vector3(0, upperY, -(radius + shellOffset)) },
-    { id: "forward", direction: new THREE.Vector3(0, 1, 0), anchor: new THREE.Vector3(0, upperY + (radius * 0.16), 0) },
-    { id: "aft", direction: new THREE.Vector3(0, -1, 0), anchor: new THREE.Vector3(0, lowerY, 0) },
-  ];
+  const definitions = resolveThrusterDefinitions(
+    THREE,
+    BOOSTER_THRUSTER_LAYOUT,
+    radius,
+    boosterHeight,
+  );
+  addInlineStaticThrusterNozzles(
+    THREE,
+    boosterGroup,
+    definitions,
+    radius,
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x6a727f),
+      roughness: 0.6,
+      metalness: 0.52,
+    }),
+  );
 
   const jets = {};
   for (const definition of definitions) {
@@ -648,6 +702,24 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
   tileBand.scale.set(1.001, 1, 0.56);
   tileBand.rotation.y = Math.PI * 0.5;
   shipGroup.add(tileBand);
+
+  const starshipThrusterDefinitions = resolveThrusterDefinitions(
+    THREE,
+    STARSHIP_THRUSTER_LAYOUT,
+    radius,
+    shipHeight,
+  );
+  addInlineStaticThrusterNozzles(
+    THREE,
+    shipGroup,
+    starshipThrusterDefinitions,
+    radius,
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(0x6f7888),
+      roughness: 0.58,
+      metalness: 0.54,
+    }),
+  );
 
   const shipBellRadius = clamp(radius * 0.15, radius * 0.07, radius * 0.2);
   const shipBellHeight = clamp(radius * 0.2, radius * 0.09, radius * 0.25);
