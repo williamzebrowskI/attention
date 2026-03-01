@@ -1311,16 +1311,24 @@ function updateLaunchVehicleVisuals() {
   applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex);
 
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BODY_ID);
+  const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
   const rocketCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BODY_ID);
   const earthCoordsKm = runtimeCoordsOrLiveById("earth");
   if (!velocityKmS) {
     return;
   }
 
+  const relVelocityKmS = earthVelocityKmS
+    ? {
+        x: (Number(velocityKmS.x) || 0) - (Number(earthVelocityKmS.x) || 0),
+        y: (Number(velocityKmS.y) || 0) - (Number(earthVelocityKmS.y) || 0),
+        z: (Number(velocityKmS.z) || 0) - (Number(earthVelocityKmS.z) || 0),
+      }
+    : velocityKmS;
   const velocityScene = new THREE_NS.Vector3(
-    Number(velocityKmS.x) || 0,
-    Number(velocityKmS.z) || 0,
-    Number(velocityKmS.y) || 0,
+    Number(relVelocityKmS.x) || 0,
+    Number(relVelocityKmS.z) || 0,
+    Number(relVelocityKmS.y) || 0,
   );
   const speed = velocityScene.length();
   const prograde = speed > 1e-12 ? velocityScene.clone().multiplyScalar(1 / speed) : null;
@@ -1339,14 +1347,22 @@ function updateLaunchVehicleVisuals() {
   }
 
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
+  const launchActive = Boolean(launchController?.isActive());
+  const guidanceMode = String(snapshot?.guidanceMode || "").toLowerCase();
+  const forceVerticalVisual = !launchActive || guidanceMode === "vertical-ascent";
   let targetDirection = upScene || prograde || defaultAxis;
-  if (upScene && prograde) {
-    const blend = clamp((speed - 0.02) / 0.2, 0, 1);
+  if (!forceVerticalVisual && upScene && prograde) {
+    const altitudeKm = Number(snapshot?.altitudeKm) || 0;
+    const speedBlend = clamp((speed - 0.35) / 1.8, 0, 1);
+    const altitudeBlend = clamp((altitudeKm - 1.2) / 12, 0, 1);
+    const blend = speedBlend * altitudeBlend;
     targetDirection = upScene
       .clone()
       .multiplyScalar(1 - blend)
       .add(prograde.clone().multiplyScalar(blend))
       .normalize();
+  } else if (forceVerticalVisual && upScene) {
+    targetDirection = upScene;
   }
 
   const targetQuaternion = new THREE_NS.Quaternion()
