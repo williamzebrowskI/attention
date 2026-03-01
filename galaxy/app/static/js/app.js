@@ -498,6 +498,7 @@ let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
 let startupSeedLocked = false;
 let suppressCanvasSelectionUntilMs = 0;
+let legendGlobalClickHandlerBound = false;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
@@ -963,20 +964,6 @@ function supportsLegendGravityControl(bodyId) {
 function createLegendEntry(body, isMoon) {
   const entry = document.createElement("div");
   entry.className = isMoon ? "legend-entry moon" : "legend-entry";
-  entry.dataset.bodyId = body.id;
-  entry.addEventListener("pointerdown", (event) => {
-    const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest(".legend-gravity-toggle")) {
-      return;
-    }
-    if (event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    markLegendInteractionGuard();
-    setSelected(body.id, true);
-  });
   const button = createLegendButton(body, isMoon);
   entry.appendChild(button);
 
@@ -4471,6 +4458,33 @@ function setupLegendInputGuards() {
   bodyLegend.addEventListener("pointerdown", () => {
     markLegendInteractionGuard();
   }, { capture: true });
+  if (!legendGlobalClickHandlerBound) {
+    document.addEventListener("click", onGlobalLegendClickCapture, true);
+    legendGlobalClickHandlerBound = true;
+  }
+}
+
+function onGlobalLegendClickCapture(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target || !bodyLegend?.contains(target)) {
+    return;
+  }
+  const gravityToggle = target.closest(".legend-gravity-toggle");
+  if (gravityToggle) {
+    return;
+  }
+  const legendButton = target.closest(".legend-button");
+  if (!legendButton) {
+    return;
+  }
+  const bodyId = legendButton.dataset.bodyId;
+  if (!bodyId || !metaById.has(bodyId)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  markLegendInteractionGuard();
+  setSelected(bodyId, true);
 }
 
 function performRaycastSelection(clientX, clientY) {
