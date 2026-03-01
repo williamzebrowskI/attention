@@ -1065,6 +1065,7 @@ function computeMoonOrbitReturnAutopilotCommand({
   up,
   earthPole,
   muKm3S2,
+  gravitationalConstantKm3PerKgS2,
   earthRadiusKm,
   getBodyRadiusKm,
   getBodyMassKg,
@@ -1077,7 +1078,7 @@ function computeMoonOrbitReturnAutopilotCommand({
   const moonState = bodyStateFromNBody(state, "moon");
   const moonMassKg = Number(getBodyMassKg?.("moon")) || Number(moonState?.massKg) || 7.342e22;
   const moonRadiusKm = Number(getBodyRadiusKm?.("moon")) || 1737.4;
-  const moonMuKm3S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * moonMassKg;
+  const moonMuKm3S2 = gravitationalConstantKm3PerKgS2 * moonMassKg;
 
   const moonRelPos = moonState?.position ? subtract(rocketState.position, moonState.position) : null;
   const moonRelVel = moonState?.velocity
@@ -2306,6 +2307,7 @@ export function createLaunchController(options) {
             up: orbital.up,
             earthPole: currentEarthAxes.pole,
             muKm3S2,
+            gravitationalConstantKm3PerKgS2,
             earthRadiusKm,
             getBodyRadiusKm,
             getBodyMassKg,
@@ -2459,6 +2461,7 @@ export function createLaunchController(options) {
           up: orbital.up,
           earthPole: currentEarthAxes.pole,
           muKm3S2,
+          gravitationalConstantKm3PerKgS2,
           earthRadiusKm,
           getBodyRadiusKm,
           getBodyMassKg,
