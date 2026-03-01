@@ -982,6 +982,12 @@ function createLegendButton(body, isMoon) {
   button.dataset.bodyId = body.id;
   button.textContent = body.name;
   button.title = `${body.name} (${body.body_type})`;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    setSelected(body.id, true);
+  });
   legendButtonsById.set(body.id, button);
   return button;
 }
@@ -4451,26 +4457,6 @@ function setupLegendInputGuards() {
   bodyLegend.addEventListener("pointerdown", () => {
     markLegendInteractionGuard();
   }, { capture: true });
-  if (bodyLegendList) {
-    bodyLegendList.addEventListener("click", onLegendListClick, { capture: true });
-  }
-}
-
-function onLegendListClick(event) {
-  const button = event.target instanceof Element
-    ? event.target.closest(".legend-button")
-    : null;
-  if (!button || !bodyLegendList?.contains(button)) {
-    return;
-  }
-  const bodyId = button.dataset.bodyId;
-  if (!bodyId || !metaById.has(bodyId)) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  markLegendInteractionGuard();
-  setSelected(bodyId, true);
 }
 
 function performRaycastSelection(clientX, clientY) {
