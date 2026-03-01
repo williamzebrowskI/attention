@@ -1607,7 +1607,7 @@ function createOrbitVisual(body) {
   };
 }
 
-function createSpacecraftVisual(body) {
+async function createSpacecraftVisual(body) {
   const renderRadius = starshipPhysicalRenderRadiusSceneFn
     ? starshipPhysicalRenderRadiusSceneFn(DISTANCE_SCALE)
     : Math.max((Number(body?.radius_km) || 0.0045) * DISTANCE_SCALE, 1e-8);
@@ -1617,7 +1617,7 @@ function createSpacecraftVisual(body) {
   root.add(tiltGroup);
   tiltGroup.add(spinGroup);
 
-  const stack = createStarshipStackVisualFn ? createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE) : null;
+  const stack = createStarshipStackVisualFn ? await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE) : null;
   if (stack?.root) {
     spinGroup.add(stack.root);
   } else {
@@ -1639,6 +1639,9 @@ function createSpacecraftVisual(body) {
     levels: [],
     update() {},
   };
+  const externalStackSource = stack?.root?.userData?.starshipAssetSource || null;
+  const externalStackResolution = stack?.root?.userData?.starshipTextureResolution || null;
+  const isExternalStack = Boolean(externalStackSource);
 
   const visual = {
     id: body.id,
@@ -1655,9 +1658,11 @@ function createSpacecraftVisual(body) {
     pickMesh: null,
     gravityArrow: null,
     locationMarker: null,
-    textureMode: "procedural_spacecraft",
+    textureMode: isExternalStack ? "external_spacecraft" : "procedural_spacecraft",
     ringMode: "none",
-    mapSource: stack ? "local_starship_geometry" : "fallback_spacecraft_geometry",
+    mapSource: isExternalStack
+      ? `${externalStackSource}${externalStackResolution ? ` (${externalStackResolution})` : ""}`
+      : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"),
     launchStackState: stack?.state || null,
     extraMaterials: stack?.materials || [],
   };
@@ -1688,7 +1693,7 @@ function createSpacecraftVisual(body) {
 
 async function createBodyVisual(body) {
   if (body.body_type === "spacecraft") {
-    return createSpacecraftVisual(body);
+    return await createSpacecraftVisual(body);
   }
   const plan = getTexturePlan(body);
   photorealRetryCount.set(body.id, 0);
@@ -2138,6 +2143,9 @@ function surfaceRenderingLabel(textureMode) {
   }
   if (textureMode === "procedural_spacecraft") {
     return "Parametric Starship/Super Heavy geometry";
+  }
+  if (textureMode === "external_spacecraft") {
+    return "External Starship/Super Heavy model";
   }
   return "Procedural high-detail fallback";
 }
@@ -5970,12 +5978,14 @@ function updateInfoOverlay() {
          <p class="line">Center Sun Visibility: ${eclipseCenterTransmittancePct !== null ? `${formatNumber(eclipseCenterTransmittancePct)}%` : "n/a"}</p>`
       : "";
   const launchPhysicsLine = launchSnapshot
-    ? `<p class="line">Launch Phase: ${launchSnapshot.phaseLabel || launchSnapshot.phase || "n/a"}</p>
-       <p class="line">Launch Stage: ${launchSnapshot.stageName || "n/a"}</p>
-       <p class="line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
-       <p class="line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
-       <p class="line">Thrust: ${Number.isFinite(launchSnapshot.thrustN) ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}</p>
-       <p class="line">Apoapsis/Periapsis: ${Number.isFinite(launchSnapshot.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}</p>`
+    ? `<p class="line launch-line">Launch Phase: ${launchSnapshot.phaseLabel || launchSnapshot.phase || "n/a"}</p>
+       <p class="line launch-line">Launch Stage: ${launchSnapshot.stageName || "n/a"}</p>
+       <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
+       <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Booster Distance Traveled: ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
+       <p class="line launch-line">Starship Distance Traveled: ${Number.isFinite(launchSnapshot.starshipDistanceKm) ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km` : "n/a"}</p>
+       <p class="line launch-line">Thrust: ${Number.isFinite(launchSnapshot.thrustN) ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}</p>
+       <p class="line launch-line">Apoapsis/Periapsis: ${Number.isFinite(launchSnapshot.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}</p>`
     : "";
 
   infoCard.innerHTML = `

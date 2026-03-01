@@ -3,6 +3,13 @@ import {
   STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
 
+const STARSHIP_MODEL_MANIFEST_URL = "/static/assets/models/starship/model_manifest.json";
+const STARSHIP_LOADER_CDN_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
+
+let cachedExternalManifest = null;
+let cachedExternalManifestPromise = null;
+let cachedExternalLoaderPromise = null;
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -276,7 +283,7 @@ export function starshipPhysicalRenderRadiusScene(distanceScale) {
   return kmToScene(STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5, distanceScale);
 }
 
-export function createStarshipStackVisual(THREE, distanceScale) {
+function createProceduralStarshipStackVisual(THREE, distanceScale) {
   const dims = STARSHIP_STACK_DIMENSIONS_KM;
   const radius = kmToScene(dims.diameterKm * 0.5, distanceScale);
   const boosterHeight = kmToScene(dims.boosterHeightKm, distanceScale);
@@ -463,17 +470,247 @@ export function createStarshipStackVisual(THREE, distanceScale) {
   };
 }
 
+async function loadStarshipModelManifest() {
+  if (cachedExternalManifest) {
+    return cachedExternalManifest;
+  }
+  if (!cachedExternalManifestPromise) {
+    cachedExternalManifestPromise = (async () => {
+      try {
+        const response = await fetch(STARSHIP_MODEL_MANIFEST_URL, { cache: "no-store" });
+        if (!response.ok) {
+          return null;
+        }
+        const payload = await response.json();
+        const enabled = Boolean(payload?.enabled);
+        const modelUrl = String(payload?.url || "").trim();
+        if (!enabled || !modelUrl) {
+          return null;
+        }
+        const format = String(payload?.format || "").trim().toLowerCase();
+        return {
+          enabled,
+          format,
+          url: modelUrl,
+          source: String(payload?.source || "").trim(),
+          modelUid: String(payload?.model_uid || payload?.modelUid || "").trim(),
+          textureMaxResolution: Number(payload?.texture_max_resolution || payload?.textureMaxResolution || 0) || 0,
+        };
+      } catch (error) {
+        console.warn("[launch] Could not load external Starship model manifest:", error);
+        return null;
+      }
+    })();
+  }
+  cachedExternalManifest = await cachedExternalManifestPromise;
+  return cachedExternalManifest;
+}
+
+async function loadGltfLoaderClass() {
+  if (!cachedExternalLoaderPromise) {
+    cachedExternalLoaderPromise = import(STARSHIP_LOADER_CDN_URL)
+      .then((mod) => mod?.GLTFLoader || null)
+      .catch((error) => {
+        console.warn("[launch] Could not import GLTFLoader for external Starship model:", error);
+        return null;
+      });
+  }
+  return cachedExternalLoaderPromise;
+}
+
+function findNodeByName(root, keywords) {
+  if (!root) {
+    return null;
+  }
+  const normalizedKeywords = (keywords || [])
+    .map((keyword) => String(keyword || "").toLowerCase())
+    .filter((keyword) => keyword.length > 0);
+  let best = null;
+  root.traverse((node) => {
+    if (!node?.name) {
+      return;
+    }
+    const normalizedName = String(node.name).toLowerCase();
+    const score = normalizedKeywords.reduce((total, keyword) => (
+      normalizedName.includes(keyword) ? total + 1 : total
+    ), 0);
+    if (!(score > 0)) {
+      return;
+    }
+    if (!best || score > best.score) {
+      best = { node, score };
+    }
+  });
+  return best?.node || null;
+}
+
+function orientRocketUpright(root, THREE) {
+  const box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) {
+    return;
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const axisLengths = [
+    { axis: "x", value: size.x },
+    { axis: "y", value: size.y },
+    { axis: "z", value: size.z },
+  ].sort((a, b) => b.value - a.value);
+  const tallestAxis = axisLengths[0]?.axis || "y";
+  if (tallestAxis === "z") {
+    root.rotation.x = -Math.PI * 0.5;
+  } else if (tallestAxis === "x") {
+    root.rotation.z = Math.PI * 0.5;
+  }
+}
+
+function normalizeRocketTransform(root, THREE, targetHeightScene) {
+  root.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) {
+    return false;
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const height = Math.max(size.y, 1e-12);
+  if (!(height > 0)) {
+    return false;
+  }
+  const scale = targetHeightScene / height;
+  root.scale.multiplyScalar(scale);
+
+  root.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(root);
+  if (box.isEmpty()) {
+    return false;
+  }
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.sub(center);
+  return true;
+}
+
+function buildExternalStageState(root, distanceScale) {
+  const boosterGroup = findNodeByName(root, ["booster", "superheavy", "super_heavy", "super heavy"]);
+  const shipGroup = findNodeByName(root, ["starship", "upperstage", "upper_stage", "ship"]);
+  if (!shipGroup) {
+    return null;
+  }
+  const detachedShift = kmToScene(STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.68, distanceScale);
+  return {
+    boosterGroup,
+    shipGroup,
+    fullShipCenterY: shipGroup.position.y,
+    detachedShipCenterY: shipGroup.position.y + detachedShift,
+  };
+}
+
+function gatherUniqueMaterials(root) {
+  const materialSet = new Set();
+  root.traverse((node) => {
+    const material = node?.material;
+    if (Array.isArray(material)) {
+      for (const entry of material) {
+        if (entry) {
+          materialSet.add(entry);
+        }
+      }
+      return;
+    }
+    if (material) {
+      materialSet.add(material);
+    }
+  });
+  return [...materialSet];
+}
+
+async function createExternalStarshipStackVisual(THREE, distanceScale) {
+  const manifest = await loadStarshipModelManifest();
+  if (!manifest?.url) {
+    return null;
+  }
+  const GLTFLoader = await loadGltfLoaderClass();
+  if (!GLTFLoader) {
+    return null;
+  }
+
+  const loader = new GLTFLoader();
+  const gltf = await new Promise((resolve, reject) => {
+    loader.load(
+      manifest.url,
+      (result) => resolve(result),
+      undefined,
+      (error) => reject(error),
+    );
+  });
+  const externalRoot = gltf?.scene || gltf?.scenes?.[0];
+  if (!externalRoot) {
+    return null;
+  }
+
+  const stackRoot = new THREE.Group();
+  stackRoot.add(externalRoot);
+  orientRocketUpright(stackRoot, THREE);
+
+  const targetHeight = kmToScene(STARSHIP_STACK_TOTAL_HEIGHT_KM, distanceScale);
+  const normalized = normalizeRocketTransform(stackRoot, THREE, targetHeight);
+  if (!normalized) {
+    return null;
+  }
+
+  stackRoot.traverse((node) => {
+    if (!node || node.isLight) {
+      return;
+    }
+    node.castShadow = true;
+    node.receiveShadow = true;
+  });
+
+  const stageState = buildExternalStageState(stackRoot, distanceScale);
+  const materials = gatherUniqueMaterials(stackRoot);
+  const textureLabel = manifest.textureMaxResolution > 0
+    ? `${manifest.textureMaxResolution}px`
+    : "external";
+  stackRoot.userData.starshipAssetSource = manifest.source || "external_starship_model";
+  stackRoot.userData.starshipTextureResolution = textureLabel;
+
+  return {
+    root: stackRoot,
+    materials,
+    state: stageState,
+    physical: {
+      radiusScene: starshipPhysicalRenderRadiusScene(distanceScale),
+    },
+  };
+}
+
+export async function createStarshipStackVisual(THREE, distanceScale) {
+  try {
+    const external = await createExternalStarshipStackVisual(THREE, distanceScale);
+    if (external?.root) {
+      return external;
+    }
+  } catch (error) {
+    console.warn("[launch] Could not load external Starship stack model. Using procedural fallback.", error);
+  }
+  return createProceduralStarshipStackVisual(THREE, distanceScale);
+}
+
 function rad(degrees) {
   return (degrees * Math.PI) / 180;
 }
 
 export function applyStarshipVisualStage(stageState, stageIndex) {
-  if (!stageState) {
+  if (!stageState || !stageState.shipGroup) {
     return;
   }
   const separated = Number.isFinite(stageIndex) && stageIndex >= 1;
-  stageState.boosterGroup.visible = !separated;
-  stageState.shipGroup.position.y = separated
-    ? stageState.detachedShipCenterY
-    : stageState.fullShipCenterY;
+  if (stageState.boosterGroup) {
+    stageState.boosterGroup.visible = !separated;
+  }
+  if (
+    Number.isFinite(stageState.detachedShipCenterY)
+    && Number.isFinite(stageState.fullShipCenterY)
+  ) {
+    stageState.shipGroup.position.y = separated
+      ? stageState.detachedShipCenterY
+      : stageState.fullShipCenterY;
+  }
 }

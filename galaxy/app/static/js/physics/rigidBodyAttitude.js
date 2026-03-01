@@ -2,6 +2,38 @@ import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./config/rigidBodyConstants.js";
 
 const TWO_PI = Math.PI * 2;
 const EPSILON = 1e-12;
+const MAJOR_RIGID_BODY_IDS = new Set([
+  "sun",
+  "mercury",
+  "venus",
+  "earth",
+  "moon",
+  "mars",
+  "jupiter",
+  "io",
+  "europa",
+  "ganymede",
+  "callisto",
+  "saturn",
+  "titan",
+  "uranus",
+  "neptune",
+  "triton",
+]);
+const DEFAULT_DYNAMIC_TORQUE_CONFIG = Object.freeze({
+  enabled: true,
+  includeParent: true,
+  includeSun: true,
+  topN: 8,
+  minTorqueProxy: 1e-30,
+});
+const DEFAULT_DYNAMIC_TORQUE_CONFIG_SUN = Object.freeze({
+  enabled: true,
+  includeParent: false,
+  includeSun: false,
+  topN: 8,
+  minTorqueProxy: 1e-30,
+});
 const MAJOR_TWO_BODY_TIDAL_SYSTEMS = Object.freeze([
   Object.freeze({ primaryId: "earth", secondaryId: "moon" }),
   Object.freeze({ primaryId: "jupiter", secondaryId: "io" }),
@@ -433,6 +465,16 @@ function inertiaTensorFromPrincipalMomentsKgKm2(principalMomentsKgKm2) {
   return { x: a, y: b, z: c };
 }
 
+function defaultDynamicTorqueSourcesForBody(bodyId) {
+  if (!MAJOR_RIGID_BODY_IDS.has(bodyId)) {
+    return null;
+  }
+  if (bodyId === "sun") {
+    return DEFAULT_DYNAMIC_TORQUE_CONFIG_SUN;
+  }
+  return DEFAULT_DYNAMIC_TORQUE_CONFIG;
+}
+
 function resolveTorqueSourceIds(state, targetPositionKm, allBodyIds, getCoordinatesKm, getBodyMassKg) {
   const config = state.dynamicTorqueSources;
   if (!config?.enabled) {
@@ -845,7 +887,10 @@ export function createRigidBodyAttitudeController(options) {
         radiusKm,
         parentId: body.parent || null,
         sourceIds: Array.isArray(model?.sourceIds) ? [...model.sourceIds] : [],
-        dynamicTorqueSources: physicalConstants?.dynamicTorqueSources || model?.dynamicTorqueSources || null,
+        dynamicTorqueSources:
+          physicalConstants?.dynamicTorqueSources
+          || model?.dynamicTorqueSources
+          || defaultDynamicTorqueSourcesForBody(bodyId),
         tidalModel: physicalConstants?.tidal || model?.tidal || null,
         tidalDamping: Number(model?.tidalDamping) || 0,
       };

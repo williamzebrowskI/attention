@@ -72,6 +72,24 @@ curl "http://127.0.0.1:8000/api/positions?include_moons=false"
 - The frontend is 3D-only and requires loading Three.js from CDN.
 - Planet textures are loaded from public map assets hosted via jsDelivr (THREEx planets image set).
 
+## Starship 4K Model Import
+
+The launch system supports replacing the procedural Starship/Super Heavy geometry with an external downloaded model.
+
+1. Create a Sketchfab API token.
+2. Run:
+
+```bash
+SKETCHFAB_TOKEN=your_token ./scripts/import_starship_sketchfab.sh
+```
+
+This writes:
+
+- Imported model files under `app/static/assets/models/starship/imported/`
+- Active manifest `app/static/assets/models/starship/model_manifest.json`
+
+At runtime, the launcher tries the manifest model first and falls back to the procedural vehicle if loading fails.
+
 ## Physics Lock
 
 The project now enforces a locked baseline for critical physical constants:

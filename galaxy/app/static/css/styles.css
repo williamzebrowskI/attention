@@ -99,6 +99,11 @@ body {
   margin: 0;
 }
 
+.planet-info .line.launch-line {
+  font-size: 11px;
+  line-height: 1.22;
+}
+
 .body-legend {
   position: fixed;
   top: 14px;

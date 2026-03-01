@@ -583,6 +583,8 @@ function telemetryFromState({
     burnRateKgS: runtime.lastStep?.burnRateKgS || 0,
     dynamicPressurePa,
     guidanceMode: runtime.lastStep?.guidanceMode || "idle",
+    boosterDistanceKm: runtime.boosterDistanceKm,
+    starshipDistanceKm: runtime.starshipDistanceKm,
   };
 }
 
@@ -626,6 +628,9 @@ export function createLaunchController(options) {
     autopilotMode: "idle",
     targetOrbitAltitudeKm: Number(LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm) || 250,
     launchPlaneNormal: null,
+    boosterDistanceKm: 0,
+    starshipDistanceKm: 0,
+    lastTrackedPositionKm: null,
   };
 
   function earthAxes(timestampMs = Date.now()) {
@@ -650,6 +655,37 @@ export function createLaunchController(options) {
     runtime.lastError = "";
     runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-standby" : "manual-standby";
     runtime.launchPlaneNormal = null;
+    runtime.boosterDistanceKm = 0;
+    runtime.starshipDistanceKm = 0;
+    runtime.lastTrackedPositionKm = null;
+  }
+
+  function accumulateDistanceTravelled(positionKm, stageIndexForDistance = runtime.stageIndex) {
+    if (!positionKm) {
+      return;
+    }
+    const current = {
+      x: Number(positionKm.x) || 0,
+      y: Number(positionKm.y) || 0,
+      z: Number(positionKm.z) || 0,
+    };
+    if (!runtime.lastTrackedPositionKm) {
+      runtime.lastTrackedPositionKm = current;
+      return;
+    }
+    const dx = current.x - runtime.lastTrackedPositionKm.x;
+    const dy = current.y - runtime.lastTrackedPositionKm.y;
+    const dz = current.z - runtime.lastTrackedPositionKm.z;
+    const stepDistanceKm = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
+    runtime.lastTrackedPositionKm = current;
+    if (!Number.isFinite(stepDistanceKm) || stepDistanceKm <= 0) {
+      return;
+    }
+    if (stageIndexForDistance <= 0) {
+      runtime.boosterDistanceKm += stepDistanceKm;
+    } else {
+      runtime.starshipDistanceKm += stepDistanceKm;
+    }
   }
 
   function ensureCatalogBodies(catalogBodies) {
@@ -761,6 +797,7 @@ export function createLaunchController(options) {
     rocketState.velocity = { ...pad.velocity };
     rocketState.massKg = LAUNCH_INITIAL_MASS_KG;
     resetRuntime();
+    runtime.lastTrackedPositionKm = { ...rocketState.position };
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(earthAxes(nowMs));
     runtime.phase = "idle";
     runtime.lastTelemetry = telemetryFromState({
@@ -1056,6 +1093,8 @@ export function createLaunchController(options) {
       runtime.phase = "idle";
       return;
     }
+    const distanceStageIndex = runtime.stageIndex;
+    accumulateDistanceTravelled(rocketState.position, distanceStageIndex);
 
     if (runtime.phase === "orbit") {
       const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
@@ -1137,6 +1176,8 @@ export function createLaunchController(options) {
         stageIndex: runtime.stageIndex,
         autopilotMode: runtime.autopilotMode || "manual",
         targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+        boosterDistanceKm: runtime.boosterDistanceKm,
+        starshipDistanceKm: runtime.starshipDistanceKm,
         launchSiteName: LAUNCH_SITE.name || "Launch Site",
         statusLine: `Launch vehicle initialized at ${LAUNCH_SITE.name || "launch site"}.`,
       };
@@ -1165,6 +1206,8 @@ export function createLaunchController(options) {
       tangentialSpeedKmS: telemetry.tangentialSpeedKmS,
       circularSpeedKmS: telemetry.circularSpeedKmS,
       timeToApoapsisSec: telemetry.timeToApoapsisSec,
+      boosterDistanceKm: telemetry.boosterDistanceKm,
+      starshipDistanceKm: telemetry.starshipDistanceKm,
       statusLine: runtime.lastError || `${phaseLabel(runtime.phase)} | ${telemetry.stageName}`,
     };
   }

@@ -95,6 +95,13 @@ Torque sources can be dynamic:
 2. Rank other bodies by torque proxy `M/r^3`.
 3. Include top-N above threshold.
 
+Major-body default:
+
+1. Major bodies (`Sun, planets, Moon, Io/Europa/Ganymede/Callisto, Titan, Triton`)
+   use dynamic source selection by default, even without per-body overrides.
+2. This ensures rigid-body torque coupling remains physically driven for the
+   main systems instead of relying on fixed source lists.
+
 ## Notes
 
 1. This is full attitude dynamics for managed bodies, not just a visual spin.
