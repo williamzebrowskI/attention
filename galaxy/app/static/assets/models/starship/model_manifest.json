@@ -1,8 +1,0 @@
-{
-  "enabled": true,
-  "url": "/static/assets/models/starship/imported/spacex_starship_fetchcfd_4329_4k.glb",
-  "format": "glb",
-  "source": "FetchCFD (no-token public asset)",
-  "model_uid": "4329",
-  "texture_max_resolution": 4096
-}

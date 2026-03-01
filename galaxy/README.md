@@ -72,14 +72,10 @@ curl "http://127.0.0.1:8000/api/positions?include_moons=false"
 - The frontend is 3D-only and requires loading Three.js from CDN.
 - Planet textures are loaded from public map assets hosted via jsDelivr (THREEx planets image set).
 
-## Starship External Model
+## Starship Launch Visuals
 
-The launch system supports replacing procedural Starship geometry with a local GLB referenced by:
-
-- Manifest: `app/static/assets/models/starship/model_manifest.json`
-- Current asset: `app/static/assets/models/starship/imported/spacex_starship_fetchcfd_4329_4k.glb`
-
-At runtime, the launcher tries the manifest model first and falls back to procedural geometry if loading fails.
+The launch system now uses local procedural geometry for both Starship and Super Heavy (no external GLB dependency).  
+Starship proportions are driven by `app/static/js/physics/launch/launchConfig.js` and rendered in `app/static/js/physics/launch/launchVisuals.js`.
 
 ## Physics Lock
 

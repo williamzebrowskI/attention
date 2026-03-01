@@ -3123,11 +3123,14 @@ async function createSpacecraftVisual(body) {
     levels: [],
     update() {},
   };
-  const externalStackSource = stack?.root?.userData?.starshipAssetSource || null;
-  const externalStackResolution = stack?.root?.userData?.starshipTextureResolution || null;
-  const isInlineStack = typeof externalStackSource === "string"
-    && externalStackSource.startsWith("inline_procedural_starship");
-  const isExternalStack = Boolean(externalStackSource) && !isInlineStack;
+  const stackSource = stack?.root?.userData?.starshipAssetSource || null;
+  const stackResolution = stack?.root?.userData?.starshipTextureResolution || null;
+  const isInlineStack = typeof stackSource === "string"
+    && stackSource.startsWith("inline_procedural_starship");
+  const isProceduralStack = isInlineStack || (
+    typeof stackSource === "string" && stackSource.includes("procedural")
+  );
+  const isExternalStack = Boolean(stackSource) && !isProceduralStack;
 
   const visual = {
     id: body.id,
@@ -3148,9 +3151,9 @@ async function createSpacecraftVisual(body) {
     ringMode: "none",
     mapSource: isLaunchBooster
       ? "inline_super_heavy_booster_geometry"
-      : isExternalStack
-      ? `${externalStackSource}${externalStackResolution ? ` (${externalStackResolution})` : ""}`
-      : (isInlineStack ? "inline_starship_booster_geometry" : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry")),
+      : (stackSource
+        ? `${stackSource}${stackResolution ? ` (${stackResolution})` : ""}`
+        : (isInlineStack ? "inline_starship_booster_geometry" : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"))),
     launchStackState: isLaunchVehicle ? (stack?.state || null) : null,
     extraMaterials: stack?.materials || [],
   };
