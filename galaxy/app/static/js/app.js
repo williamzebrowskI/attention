@@ -93,7 +93,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301aw";
+const FRONTEND_MODULE_VERSION = "20260301ax";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -113,6 +113,19 @@ const N_BODY_STEP_SECONDS_LAUNCH_COAST = 0.75;
 const N_BODY_STEP_SECONDS_LAUNCH_ORBIT = 1.25;
 const N_BODY_MAX_SUBSTEPS_PER_FRAME = 10;
 const N_BODY_MAX_INTEGRATION_BUDGET_MS = 8;
+const REENTRY_HEAT_COLOR_HEX = 0xff7a1a;
+const REENTRY_HEAT_ATMOSPHERE_MAX_KM = 160;
+const REENTRY_HEAT_Q_START_PA = 1400;
+const REENTRY_HEAT_Q_FULL_PA = 82000;
+const REENTRY_HEAT_MIN_SPEED_KM_S = 0.55;
+const REENTRY_HEAT_SPEED_FULL_KM_S = 7.5;
+const REENTRY_HEAT_MIN_DESCENT_KM_S = 0.008;
+const REENTRY_HEAT_DESCENT_FULL_KM_S = 1.0;
+const REENTRY_HEAT_RISE_RESPONSE = 0.18;
+const REENTRY_HEAT_FALL_RESPONSE = 0.09;
+const REENTRY_HEAT_MAX_EMISSIVE_DELTA = 0.28;
+const reentryHeatMaterialBaseState = new WeakMap();
+let reentryHeatColor = null;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
 let LAUNCH_BODY_ID = "earth_launch_vehicle";
 let LAUNCH_BOOSTER_BODY_ID = "earth_launch_booster";
@@ -2330,6 +2343,203 @@ function phaseLabelForLaunch(phase) {
   return "Idle";
 }
 
+function getReentryHeatColor() {
+  if (!THREE_NS) {
+    return null;
+  }
+  if (!reentryHeatColor) {
+    reentryHeatColor = new THREE_NS.Color(REENTRY_HEAT_COLOR_HEX);
+  }
+  return reentryHeatColor;
+}
+
+function collectReentryHeatMaterials(visual) {
+  if (!visual) {
+    return [];
+  }
+  if (Array.isArray(visual.reentryHeatMaterials)) {
+    return visual.reentryHeatMaterials;
+  }
+  const materials = [];
+  const seen = new Set();
+  const tryAdd = (material) => {
+    if (!material || seen.has(material)) {
+      return;
+    }
+    if (!material.emissive?.isColor || typeof material.emissiveIntensity !== "number") {
+      return;
+    }
+    seen.add(material);
+    materials.push(material);
+  };
+
+  for (const material of visual.extraMaterials || []) {
+    if (Array.isArray(material)) {
+      for (const nested of material) {
+        tryAdd(nested);
+      }
+    } else {
+      tryAdd(material);
+    }
+  }
+  visual.root?.traverse?.((node) => {
+    const material = node?.material;
+    if (Array.isArray(material)) {
+      for (const nested of material) {
+        tryAdd(nested);
+      }
+      return;
+    }
+    tryAdd(material);
+  });
+
+  visual.reentryHeatMaterials = materials;
+  return materials;
+}
+
+function ensureReentryHeatMaterialBase(material) {
+  if (!material || reentryHeatMaterialBaseState.has(material)) {
+    return;
+  }
+  reentryHeatMaterialBaseState.set(material, {
+    emissive: material.emissive.clone(),
+    emissiveIntensity: Number(material.emissiveIntensity) || 0,
+  });
+}
+
+function earthRelativeKinematicsForBody(bodyId) {
+  const bodyCoords = runtimeCoordsOrLiveById(bodyId);
+  const earthCoords = runtimeCoordsOrLiveById("earth");
+  const bodyVelocity = runtimeVelocityKmSOrLiveById(bodyId);
+  const earthVelocity = runtimeVelocityKmSOrLiveById("earth");
+  if (
+    !finiteVectorKm(bodyCoords)
+    || !finiteVectorKm(earthCoords)
+    || !finiteVectorKm(bodyVelocity)
+  ) {
+    return null;
+  }
+  const relPos = {
+    x: (Number(bodyCoords.x) || 0) - (Number(earthCoords.x) || 0),
+    y: (Number(bodyCoords.y) || 0) - (Number(earthCoords.y) || 0),
+    z: (Number(bodyCoords.z) || 0) - (Number(earthCoords.z) || 0),
+  };
+  const relVel = finiteVectorKm(earthVelocity)
+    ? {
+        x: (Number(bodyVelocity.x) || 0) - (Number(earthVelocity.x) || 0),
+        y: (Number(bodyVelocity.y) || 0) - (Number(earthVelocity.y) || 0),
+        z: (Number(bodyVelocity.z) || 0) - (Number(earthVelocity.z) || 0),
+      }
+    : {
+        x: Number(bodyVelocity.x) || 0,
+        y: Number(bodyVelocity.y) || 0,
+        z: Number(bodyVelocity.z) || 0,
+      };
+  const radiusKm = Math.hypot(relPos.x, relPos.y, relPos.z);
+  if (!(radiusKm > 1e-9)) {
+    return null;
+  }
+  const earthRadiusKm = Number(metaById.get("earth")?.radius_km) || 6371;
+  const altitudeKm = Math.max(0, radiusKm - earthRadiusKm);
+  const speedKmS = Math.hypot(relVel.x, relVel.y, relVel.z);
+  const radialSpeedKmS =
+    ((relPos.x * relVel.x) + (relPos.y * relVel.y) + (relPos.z * relVel.z)) / radiusKm;
+  const atmosphere = earthAtmosphereSampleUS1976(Math.max(0, altitudeKm));
+  const densityKgM3 = Number(atmosphere?.densityKgM3) || 0;
+  const dynamicPressurePa = densityKgM3 > 0
+    ? 0.5 * densityKgM3 * Math.pow(speedKmS * 1000, 2)
+    : 0;
+  return {
+    altitudeKm,
+    speedKmS,
+    radialSpeedKmS,
+    dynamicPressurePa,
+  };
+}
+
+function computeReentryHeatTargetForBody(bodyId) {
+  const kinematics = earthRelativeKinematicsForBody(bodyId);
+  if (!kinematics) {
+    return 0;
+  }
+  if (kinematics.altitudeKm >= REENTRY_HEAT_ATMOSPHERE_MAX_KM) {
+    return 0;
+  }
+  if (kinematics.radialSpeedKmS >= -REENTRY_HEAT_MIN_DESCENT_KM_S) {
+    return 0;
+  }
+  if (kinematics.speedKmS <= REENTRY_HEAT_MIN_SPEED_KM_S) {
+    return 0;
+  }
+  const qBlend = clamp(
+    (kinematics.dynamicPressurePa - REENTRY_HEAT_Q_START_PA)
+      / Math.max(REENTRY_HEAT_Q_FULL_PA - REENTRY_HEAT_Q_START_PA, 1),
+    0,
+    1,
+  );
+  const speedBlend = clamp(
+    (kinematics.speedKmS - REENTRY_HEAT_MIN_SPEED_KM_S)
+      / Math.max(REENTRY_HEAT_SPEED_FULL_KM_S - REENTRY_HEAT_MIN_SPEED_KM_S, 1e-6),
+    0,
+    1,
+  );
+  const descentBlend = clamp(
+    ((-kinematics.radialSpeedKmS) - REENTRY_HEAT_MIN_DESCENT_KM_S)
+      / Math.max(REENTRY_HEAT_DESCENT_FULL_KM_S - REENTRY_HEAT_MIN_DESCENT_KM_S, 1e-6),
+    0,
+    1,
+  );
+  const altitudeBlend = clamp(
+    (REENTRY_HEAT_ATMOSPHERE_MAX_KM - kinematics.altitudeKm) / REENTRY_HEAT_ATMOSPHERE_MAX_KM,
+    0,
+    1,
+  );
+  return clamp(
+    ((0.72 * qBlend) + (0.28 * speedBlend))
+      * descentBlend
+      * (0.55 + (0.45 * altitudeBlend)),
+    0,
+    1,
+  );
+}
+
+function applyReentryHeatToVisual(visual, targetHeat = 0, instant = false) {
+  if (!visual?.root || !THREE_NS) {
+    return;
+  }
+  const heatColor = getReentryHeatColor();
+  if (!heatColor) {
+    return;
+  }
+  const materials = collectReentryHeatMaterials(visual);
+  if (materials.length === 0) {
+    return;
+  }
+  const target = clamp(Number(targetHeat) || 0, 0, 1);
+  const current = clamp(Number(visual.reentryHeatLevel) || 0, 0, 1);
+  const response = instant
+    ? 1
+    : (target > current ? REENTRY_HEAT_RISE_RESPONSE : REENTRY_HEAT_FALL_RESPONSE);
+  const next = clamp(current + ((target - current) * response), 0, 1);
+  visual.reentryHeatLevel = next;
+
+  for (const material of materials) {
+    ensureReentryHeatMaterialBase(material);
+    const base = reentryHeatMaterialBaseState.get(material);
+    if (!base) {
+      continue;
+    }
+    if (next <= 1e-4) {
+      material.emissive.copy(base.emissive);
+      material.emissiveIntensity = base.emissiveIntensity;
+      continue;
+    }
+    const emissive = base.emissive.clone().lerp(heatColor, next * 0.92);
+    material.emissive.copy(emissive);
+    material.emissiveIntensity = base.emissiveIntensity + (REENTRY_HEAT_MAX_EMISSIVE_DELTA * next);
+  }
+}
+
 function updateLaunchVehicleVisuals() {
   if (!launchFeatureEnabled) {
     return;
@@ -2338,7 +2548,11 @@ function updateLaunchVehicleVisuals() {
     return;
   }
   const visual = bodyVisuals.get(LAUNCH_BODY_ID);
-  if (!visual?.root?.visible || !visual.launchStackState || !visual.tiltGroup?.quaternion) {
+  if (!visual) {
+    return;
+  }
+  if (!visual.root?.visible || !visual.launchStackState || !visual.tiltGroup?.quaternion) {
+    applyReentryHeatToVisual(visual, 0, true);
     return;
   }
   const snapshot = launchController?.statusSnapshot() || null;
@@ -2349,6 +2563,7 @@ function updateLaunchVehicleVisuals() {
   const rocketCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BODY_ID);
   const earthCoordsKm = runtimeCoordsOrLiveById("earth");
   if (!finiteVectorKm(velocityKmS)) {
+    applyReentryHeatToVisual(visual, 0);
     return;
   }
   const earthVelocityFinite = finiteVectorKm(earthVelocityKmS);
@@ -2366,6 +2581,7 @@ function updateLaunchVehicleVisuals() {
     Number(relVelocityKmS.y) || 0,
   );
   if (!vector3Finite(velocityScene)) {
+    applyReentryHeatToVisual(visual, 0);
     return;
   }
   const speed = velocityScene.length();
@@ -2411,6 +2627,8 @@ function updateLaunchVehicleVisuals() {
   if (targetQuaternion) {
     visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
   }
+  const reentryHeatTarget = computeReentryHeatTargetForBody(LAUNCH_BODY_ID);
+  applyReentryHeatToVisual(visual, reentryHeatTarget);
 }
 
 function updateBoosterVehicleVisuals() {
@@ -2418,7 +2636,11 @@ function updateBoosterVehicleVisuals() {
     return;
   }
   const visual = bodyVisuals.get(LAUNCH_BOOSTER_BODY_ID);
-  if (!visual?.root?.visible || !visual.tiltGroup?.quaternion) {
+  if (!visual) {
+    return;
+  }
+  if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
+    applyReentryHeatToVisual(visual, 0, true);
     return;
   }
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BOOSTER_BODY_ID);
@@ -2426,6 +2648,7 @@ function updateBoosterVehicleVisuals() {
   const boosterCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BOOSTER_BODY_ID);
   const earthCoordsKm = runtimeCoordsOrLiveById("earth");
   if (!finiteVectorKm(velocityKmS)) {
+    applyReentryHeatToVisual(visual, 0);
     return;
   }
   const earthVelocityFinite = finiteVectorKm(earthVelocityKmS);
@@ -2443,6 +2666,7 @@ function updateBoosterVehicleVisuals() {
     Number(relVelocityKmS.y) || 0,
   );
   if (!vector3Finite(velocityScene)) {
+    applyReentryHeatToVisual(visual, 0);
     return;
   }
   const speed = velocityScene.length();
@@ -2478,6 +2702,8 @@ function updateBoosterVehicleVisuals() {
   if (targetQuaternion) {
     visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.2);
   }
+  const reentryHeatTarget = computeReentryHeatTargetForBody(LAUNCH_BOOSTER_BODY_ID);
+  applyReentryHeatToVisual(visual, reentryHeatTarget);
 }
 
 function setupObservationControls() {
