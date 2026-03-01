@@ -660,19 +660,29 @@ export function createLaunchController(options) {
     runtime.lastTrackedPositionKm = null;
   }
 
-  function earthRelativePositionKm(rocketState, earthState) {
-    if (!rocketState?.position || !earthState?.position) {
+  function earthFixedRelativePositionKm(rocketState, earthState, earthFrameAxes) {
+    if (!rocketState?.position || !earthState?.position || !earthFrameAxes) {
       return null;
     }
-    return subtract(rocketState.position, earthState.position);
+    const rel = subtract(rocketState.position, earthState.position);
+    return {
+      x: dot(rel, earthFrameAxes.xAxis),
+      y: dot(rel, earthFrameAxes.yAxis),
+      z: dot(rel, earthFrameAxes.pole),
+    };
   }
 
   function accumulateDistanceTravelled(
     rocketState,
     earthState,
+    earthFrameAxes,
     stageIndexForDistance = runtime.stageIndex,
   ) {
-    const relativePositionKm = earthRelativePositionKm(rocketState, earthState);
+    const relativePositionKm = earthFixedRelativePositionKm(
+      rocketState,
+      earthState,
+      earthFrameAxes,
+    );
     if (!relativePositionKm) {
       return;
     }
@@ -809,7 +819,11 @@ export function createLaunchController(options) {
     rocketState.velocity = { ...pad.velocity };
     rocketState.massKg = LAUNCH_INITIAL_MASS_KG;
     resetRuntime();
-    runtime.lastTrackedPositionKm = earthRelativePositionKm(rocketState, earthState);
+    runtime.lastTrackedPositionKm = earthFixedRelativePositionKm(
+      rocketState,
+      earthState,
+      earthAxes(nowMs),
+    );
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(earthAxes(nowMs));
     runtime.phase = "idle";
     runtime.lastTelemetry = telemetryFromState({
@@ -1106,7 +1120,12 @@ export function createLaunchController(options) {
       return;
     }
     const distanceStageIndex = runtime.stageIndex;
-    accumulateDistanceTravelled(rocketState, earthState, distanceStageIndex);
+    accumulateDistanceTravelled(
+      rocketState,
+      earthState,
+      earthAxes(nowMs),
+      distanceStageIndex,
+    );
 
     if (runtime.phase === "orbit") {
       const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
