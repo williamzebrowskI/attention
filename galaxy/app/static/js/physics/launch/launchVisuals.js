@@ -18,6 +18,39 @@ function kmToScene(kmValue, distanceScale) {
   return kmValue * distanceScale;
 }
 
+function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
+  if (!THREE || !shipGroup || !material || !(radius > 0) || !(shipHeight > 0)) {
+    return;
+  }
+  const engineBellRadius = clamp(radius * 0.17, radius * 0.075, radius * 0.21);
+  const engineBellHeight = clamp(radius * 0.25, radius * 0.11, radius * 0.3);
+  const engineRingRadius = clamp(radius * 0.45, radius * 0.14, radius * 0.52);
+  const engineY = (-0.5 * shipHeight) - (engineBellHeight * 0.42);
+
+  for (let i = 0; i < 6; i += 1) {
+    const angle = (i / 6) * Math.PI * 2;
+    const bell = new THREE.Mesh(
+      new THREE.ConeGeometry(engineBellRadius, engineBellHeight, 16, 1, true),
+      material,
+    );
+    bell.position.set(
+      Math.cos(angle) * engineRingRadius,
+      engineY,
+      Math.sin(angle) * engineRingRadius,
+    );
+    bell.rotation.x = Math.PI;
+    shipGroup.add(bell);
+  }
+
+  const centerBell = new THREE.Mesh(
+    new THREE.ConeGeometry(engineBellRadius * 1.05, engineBellHeight * 1.05, 18, 1, true),
+    material,
+  );
+  centerBell.position.y = (-0.5 * shipHeight) - (engineBellHeight * 0.47);
+  centerBell.rotation.x = Math.PI;
+  shipGroup.add(centerBell);
+}
+
 function seededNoise(x, y, seed) {
   const value = Math.sin((x * 12.9898) + (y * 78.233) + (seed * 37.719)) * 43758.5453123;
   return value - Math.floor(value);
@@ -454,6 +487,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     fore.rotation.z = side * rad(14);
     shipGroup.add(fore);
   }
+  addShipEngineCluster(THREE, shipGroup, darkSteel, radius, shipHeight);
 
   return {
     root: stackRoot,
@@ -707,6 +741,16 @@ async function createExternalStarshipStackVisual(THREE, distanceScale) {
   }
   clearGroupChildren(shipGroup);
   shipGroup.add(orientedRoot);
+  const proceduralDarkSteel = hybridStack.materials?.[1] || new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0xe6eef8),
+    roughness: 0.52,
+    metalness: 0.84,
+    emissive: new THREE.Color(0x080a0f),
+    emissiveIntensity: 0.03,
+  });
+  const shipRadius = kmToScene(STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5, distanceScale);
+  const shipHeight = kmToScene(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm, distanceScale);
+  addShipEngineCluster(THREE, shipGroup, proceduralDarkSteel, shipRadius, shipHeight);
 
   const sourceLabel = manifest.source || "external_starship_model";
   hybridStack.root.userData.starshipAssetSource = `${sourceLabel} + procedural_booster`;
