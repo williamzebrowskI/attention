@@ -1005,6 +1005,11 @@ const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   parkingOrbitApoapsisMinKm: 180,
   tliTargetApoapsisKm: 382_000,
   moonApproachDistanceKm: 120_000,
+  midcourseMinClosingSpeedKmS: 0.02,
+  midcourseClosingSpeedWindowKmS: 0.18,
+  midcourseCorrectionThrottleBase: 0.22,
+  midcourseCorrectionThrottleMax: 0.78,
+  earthFallBackRadialSpeedKmS: -0.01,
   lunarInsertionAltitudeGateKm: 16_000,
   lunarOrbitApoapsisMaxKm: 14_000,
   lunarOrbitPeriapsisMinKm: 45,
@@ -1101,6 +1106,15 @@ function computeMoonOrbitReturnAutopilotCommand({
     : null;
   const earthDistanceKm = length(relPos);
   const earthDirection = normalize(scale(relPos, -1), scale(up, -1));
+  const moonDirection = moonRelPos
+    ? normalize(scale(moonRelPos, -1), tangent)
+    : tangent;
+  const moonClosingSpeedKmS = moonRelPos && moonRelVel
+    ? -dot(moonRelVel, normalize(moonRelPos, tangent))
+    : 0;
+  const earthRadialSpeedKmS = earthDistanceKm > 1e-6
+    ? dot(relPos, relVel) / earthDistanceKm
+    : 0;
 
   const phase = runtime.mission.phase || "launch_to_parking";
   const config = MOON_RETURN_MISSION_CONFIG;
@@ -1123,7 +1137,11 @@ function computeMoonOrbitReturnAutopilotCommand({
 
   if (phase === "tli_burn") {
     const apo = Number(orbital.apoapsisKm);
-    if (Number.isFinite(apo) && apo >= (config.tliTargetApoapsisKm - 3000)) {
+    const apoReached = Number.isFinite(apo) && apo >= (config.tliTargetApoapsisKm - 3000);
+    const lunarInterceptTrending =
+      moonDistanceKm <= config.tliTargetApoapsisKm
+      || moonClosingSpeedKmS >= config.midcourseMinClosingSpeedKmS;
+    if (apoReached && lunarInterceptTrending) {
       setMissionPhase(runtime, "coast_to_moon");
       return {
         phase: "coast",
@@ -1133,8 +1151,26 @@ function computeMoonOrbitReturnAutopilotCommand({
       };
     }
     const apoDeficitKm = Number.isFinite(apo) ? (config.tliTargetApoapsisKm - apo) : config.tliTargetApoapsisKm;
-    const throttle = clamp(0.34 + clamp(apoDeficitKm / config.tliTargetApoapsisKm, 0, 1) * 0.5, 0.2, 0.9);
-    const direction = normalize(add(scale(tangent, 1), scale(up, 0.06)), tangent);
+    const closingDeficit = clamp(
+      (config.midcourseMinClosingSpeedKmS - moonClosingSpeedKmS) / Math.max(config.midcourseClosingSpeedWindowKmS, 1e-6),
+      0,
+      1,
+    );
+    const throttle = clamp(
+      0.24 + (clamp(apoDeficitKm / config.tliTargetApoapsisKm, 0, 1) * 0.5) + (closingDeficit * 0.22),
+      0.18,
+      0.9,
+    );
+    const direction = normalize(
+      add(
+        scale(tangent, 0.72),
+        add(
+          scale(moonDirection, 0.22),
+          scale(up, 0.06),
+        ),
+      ),
+      tangent,
+    );
     return {
       phase: "powered",
       throttle,
@@ -1153,10 +1189,43 @@ function computeMoonOrbitReturnAutopilotCommand({
         mode: "mission-moon-orbit-return:lunar-insertion-setup",
       };
     }
+    const fallingBackToEarth =
+      earthRadialSpeedKmS < config.earthFallBackRadialSpeedKmS
+      && earthDistanceKm < config.tliTargetApoapsisKm;
+    const needsMidcourseCorrection =
+      moonDistanceKm > config.moonApproachDistanceKm
+      && (
+        moonClosingSpeedKmS < config.midcourseMinClosingSpeedKmS
+        || fallingBackToEarth
+      );
+    if (needsMidcourseCorrection) {
+      const closingDeficit = clamp(
+        (config.midcourseMinClosingSpeedKmS - moonClosingSpeedKmS) / Math.max(config.midcourseClosingSpeedWindowKmS, 1e-6),
+        0,
+        1,
+      );
+      const correctionDirection = normalize(
+        add(scale(moonDirection, 0.86), scale(tangent, 0.14)),
+        moonDirection,
+      );
+      const throttle = clamp(
+        config.midcourseCorrectionThrottleBase
+          + (closingDeficit * 0.34)
+          + (fallingBackToEarth ? 0.16 : 0),
+        config.midcourseCorrectionThrottleBase,
+        config.midcourseCorrectionThrottleMax,
+      );
+      return {
+        phase: "powered",
+        throttle,
+        direction: correctionDirection,
+        mode: "mission-moon-orbit-return:midcourse-correction",
+      };
+    }
     return {
       phase: "coast",
       throttle: 0,
-      direction: tangent,
+      direction: moonDirection,
       mode: "mission-moon-orbit-return:coast-to-moon",
     };
   }
