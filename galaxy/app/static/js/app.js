@@ -502,7 +502,7 @@ const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
   lagrange: false,
-  atmosphere: true,
+  atmosphere: false,
 };
 
 let socket = null;
