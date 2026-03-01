@@ -963,6 +963,20 @@ function supportsLegendGravityControl(bodyId) {
 function createLegendEntry(body, isMoon) {
   const entry = document.createElement("div");
   entry.className = isMoon ? "legend-entry moon" : "legend-entry";
+  entry.dataset.bodyId = body.id;
+  entry.addEventListener("pointerdown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".legend-gravity-toggle")) {
+      return;
+    }
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    setSelected(body.id, true);
+  });
   const button = createLegendButton(body, isMoon);
   entry.appendChild(button);
 
