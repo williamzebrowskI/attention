@@ -92,7 +92,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301aq";
+const FRONTEND_MODULE_VERSION = "20260301as";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -110,7 +110,8 @@ const N_BODY_STEP_SECONDS = 2;
 const N_BODY_STEP_SECONDS_LAUNCH_ACTIVE = 0.25;
 const N_BODY_STEP_SECONDS_LAUNCH_COAST = 0.75;
 const N_BODY_STEP_SECONDS_LAUNCH_ORBIT = 1.25;
-const N_BODY_MAX_SUBSTEPS_PER_FRAME = 24;
+const N_BODY_MAX_SUBSTEPS_PER_FRAME = 10;
+const N_BODY_MAX_INTEGRATION_BUDGET_MS = 8;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
 let LAUNCH_BODY_ID = "earth_launch_vehicle";
 let LAUNCH_BOOSTER_BODY_ID = "earth_launch_booster";
@@ -326,6 +327,50 @@ function normalizeLongitudeDeg(value) {
     lon += 360;
   }
   return lon;
+}
+
+function vector3Finite(v) {
+  return Boolean(
+    v
+    && Number.isFinite(Number(v.x))
+    && Number.isFinite(Number(v.y))
+    && Number.isFinite(Number(v.z)),
+  );
+}
+
+function safeNormalizeSceneDirection(vector, fallback) {
+  if (!THREE_NS) {
+    return fallback;
+  }
+  const fallbackVec = (fallback && fallback.isVector3)
+    ? fallback.clone()
+    : new THREE_NS.Vector3(0, 1, 0);
+  if (!vector || !vector.isVector3 || !vector3Finite(vector)) {
+    return fallbackVec.normalize();
+  }
+  const lenSq = vector.lengthSq();
+  if (!(lenSq > 1e-18) || !Number.isFinite(lenSq)) {
+    return fallbackVec.normalize();
+  }
+  return vector.clone().multiplyScalar(1 / Math.sqrt(lenSq));
+}
+
+function safeQuaternionFromUpAxis(defaultAxis, targetDirection) {
+  if (!THREE_NS) {
+    return null;
+  }
+  const safeUp = safeNormalizeSceneDirection(defaultAxis, new THREE_NS.Vector3(0, 1, 0));
+  const safeTarget = safeNormalizeSceneDirection(targetDirection, safeUp);
+  const quaternion = new THREE_NS.Quaternion().setFromUnitVectors(safeUp, safeTarget);
+  if (
+    !Number.isFinite(quaternion.x)
+    || !Number.isFinite(quaternion.y)
+    || !Number.isFinite(quaternion.z)
+    || !Number.isFinite(quaternion.w)
+  ) {
+    quaternion.identity();
+  }
+  return quaternion;
 }
 
 function earthLocationMarkerConfig() {
@@ -776,6 +821,7 @@ let lastFrameTimestampMs = 0;
 let lastInfoRenderMs = 0;
 let lastLaunchStatusRenderMs = 0;
 let lastNBodyBacklogWarnMs = 0;
+let lastAnimationLoopErrorMs = 0;
 let latestSolarTimestampMs = Date.now();
 
 const orbit = {
@@ -2173,18 +2219,21 @@ function updateLaunchVehicleVisuals() {
     const speedBlend = clamp((speed - 0.35) / 1.8, 0, 1);
     const altitudeBlend = clamp((altitudeKm - 1.2) / 12, 0, 1);
     const blend = speedBlend * altitudeBlend;
-    targetDirection = upScene
-      .clone()
-      .multiplyScalar(1 - blend)
-      .add(prograde.clone().multiplyScalar(blend))
-      .normalize();
+    targetDirection = safeNormalizeSceneDirection(
+      upScene
+        .clone()
+        .multiplyScalar(1 - blend)
+        .add(prograde.clone().multiplyScalar(blend)),
+      upScene,
+    );
   } else if (forceVerticalVisual && upScene) {
     targetDirection = upScene;
   }
 
-  const targetQuaternion = new THREE_NS.Quaternion()
-    .setFromUnitVectors(defaultAxis, targetDirection);
-  visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
+  const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
+  if (targetQuaternion) {
+    visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
+  }
 }
 
 function updateBoosterVehicleVisuals() {
@@ -2236,15 +2285,18 @@ function updateBoosterVehicleVisuals() {
   if (upScene && prograde) {
     const altitudeKm = Number(launchController?.statusSnapshot()?.boosterAltitudeKm) || 0;
     const blend = clamp((altitudeKm - 3) / 80, 0, 1) * clamp((speed - 0.02) / 0.35, 0, 1);
-    targetDirection = upScene
-      .clone()
-      .multiplyScalar(1 - blend)
-      .add(prograde.clone().multiplyScalar(blend))
-      .normalize();
+    targetDirection = safeNormalizeSceneDirection(
+      upScene
+        .clone()
+        .multiplyScalar(1 - blend)
+        .add(prograde.clone().multiplyScalar(blend)),
+      upScene,
+    );
   }
-  const targetQuaternion = new THREE_NS.Quaternion()
-    .setFromUnitVectors(defaultAxis, targetDirection);
-  visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.2);
+  const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
+  if (targetQuaternion) {
+    visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.2);
+  }
 }
 
 function setupObservationControls() {
@@ -4862,7 +4914,12 @@ function updateNBodySimulation(nowMs) {
   const oblateSourceContextById = buildOblateSourceContextMapForNBody(nBodyState, nowMs);
   let substeps = 0;
   let stepNowMs = nBodyState.lastUpdateMs;
-  while (elapsedSeconds > 1e-9 && substeps < N_BODY_MAX_SUBSTEPS_PER_FRAME) {
+  const frameIntegrationStartMs = performance.now();
+  while (
+    elapsedSeconds > 1e-9
+    && substeps < N_BODY_MAX_SUBSTEPS_PER_FRAME
+    && (performance.now() - frameIntegrationStartMs) < N_BODY_MAX_INTEGRATION_BUDGET_MS
+  ) {
     const dtSeconds = Math.min(stepSeconds, elapsedSeconds);
     integrateNBodyStep(nBodyState, dtSeconds, stepNowMs, oblateSourceContextById);
     elapsedSeconds -= dtSeconds;
@@ -6700,47 +6757,55 @@ function updateSunlightModel() {
 }
 
 function animate(timestampMs = 0) {
-  const deltaSeconds = lastFrameTimestampMs ? (timestampMs - lastFrameTimestampMs) / 1000 : 0;
-  lastFrameTimestampMs = timestampMs;
-  const nowMs = Date.now();
-  updateNBodySimulation(nowMs);
+  try {
+    const deltaSeconds = lastFrameTimestampMs ? (timestampMs - lastFrameTimestampMs) / 1000 : 0;
+    lastFrameTimestampMs = timestampMs;
+    const nowMs = Date.now();
+    updateNBodySimulation(nowMs);
 
-  if (orbitalStateById.size > 0) {
-    runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
-    applyScenePositions(runtimeCoordsKmById);
-  }
-  if (launchFeatureEnabled) {
-    syncLaunchVehicleViewSelection();
-  }
-  updateGravityVectors();
-  updatePhysicsOverlays();
-  if (launchFeatureEnabled) {
-    updateLaunchStatusPanel();
-  }
-  updatePrimeMeridianSpins(nowMs, deltaSeconds);
-  if (launchFeatureEnabled) {
-    updateLaunchVehicleVisuals();
-    updateBoosterVehicleVisuals();
-  }
-  updateBodyEclipseUniforms();
-  updateSunlightModel();
-  updateEarthLocationMarkerPulse(nowMs);
+    if (orbitalStateById.size > 0) {
+      runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
+      applyScenePositions(runtimeCoordsKmById);
+    }
+    if (launchFeatureEnabled) {
+      syncLaunchVehicleViewSelection();
+    }
+    updateGravityVectors();
+    updatePhysicsOverlays();
+    if (launchFeatureEnabled) {
+      updateLaunchStatusPanel();
+    }
+    updatePrimeMeridianSpins(nowMs, deltaSeconds);
+    if (launchFeatureEnabled) {
+      updateLaunchVehicleVisuals();
+      updateBoosterVehicleVisuals();
+    }
+    updateBodyEclipseUniforms();
+    updateSunlightModel();
+    updateEarthLocationMarkerPulse(nowMs);
 
-  for (const orbitVisual of orbitVisuals.values()) {
-    updateOrbitMarkerFromTime(orbitVisual, nowMs);
+    for (const orbitVisual of orbitVisuals.values()) {
+      updateOrbitMarkerFromTime(orbitVisual, nowMs);
+    }
+
+    updateCameraFromOrbit();
+    renderer.render(scene, camera);
+
+    const focusBody = findFocusBodyForDetails();
+    if (focusBody !== detailBodyId || timestampMs - lastInfoRenderMs > 160) {
+      detailBodyId = focusBody;
+      updateInfoOverlay();
+      lastInfoRenderMs = timestampMs;
+    }
+  } catch (error) {
+    const now = Date.now();
+    if (now - lastAnimationLoopErrorMs > 1000) {
+      lastAnimationLoopErrorMs = now;
+      console.error("[solar-system] Animation loop error:", error);
+    }
+  } finally {
+    requestAnimationFrame(animate);
   }
-
-  updateCameraFromOrbit();
-  renderer.render(scene, camera);
-
-  const focusBody = findFocusBodyForDetails();
-  if (focusBody !== detailBodyId || timestampMs - lastInfoRenderMs > 160) {
-    detailBodyId = focusBody;
-    updateInfoOverlay();
-    lastInfoRenderMs = timestampMs;
-  }
-
-  requestAnimationFrame(animate);
 }
 
 function findFocusBodyForDetails() {
