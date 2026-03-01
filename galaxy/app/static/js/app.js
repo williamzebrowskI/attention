@@ -39,6 +39,7 @@ const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
 const bodyLegend = document.getElementById("body-legend");
 const bodyLegendList = document.getElementById("body-legend-list");
+const legendBodyCountNode = document.getElementById("legend-body-count");
 const observationModeSelect = document.getElementById("observation-mode");
 const surfaceObserverRow = document.getElementById("surface-observer-row");
 const surfaceObserverTargetSelect = document.getElementById("surface-observer-target");
@@ -90,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301a";
+const FRONTEND_MODULE_VERSION = "20260301g";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -947,27 +948,35 @@ function rebuildBodyLegend() {
   legendGravityPanelsById = new Map();
   legendGravityToggleButtonsById = new Map();
   const fragment = document.createDocumentFragment();
+  if (legendBodyCountNode) {
+    legendBodyCountNode.textContent = `${bodies.length} tracked`;
+  }
 
   const sun = bodies.find((body) => body.id === "sun");
   if (sun) {
-    const group = document.createElement("div");
-    group.className = "legend-group";
+    const group = createLegendGroup("Sun");
     group.appendChild(createLegendEntry(sun, false));
     fragment.appendChild(group);
   }
+
+  const planetarySystemsSection = document.createElement("p");
+  planetarySystemsSection.className = "legend-section-title";
+  planetarySystemsSection.textContent = "Planetary Systems";
+  fragment.appendChild(planetarySystemsSection);
 
   const planets = bodies
     .filter((body) => body.body_type === "planet" && body.id !== "sun")
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
 
   for (const planet of planets) {
-    const group = document.createElement("div");
-    group.className = "legend-group";
-    group.appendChild(createLegendEntry(planet, false));
-
     const moons = bodies
       .filter((body) => body.body_type === "moon" && body.parent === planet.id)
       .sort((a, b) => sortBySemimajorAxisThenName(a, b));
+
+    const group = createLegendGroup(
+      moons.length > 0 ? `${planet.name} System` : `${planet.name}`,
+    );
+    group.appendChild(createLegendEntry(planet, false));
     for (const moon of moons) {
       group.appendChild(createLegendEntry(moon, true));
     }
@@ -978,8 +987,7 @@ function rebuildBodyLegend() {
     .filter((body) => body.body_type === "moon" && !metaById.has(body.parent || ""))
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
   if (orphanMoons.length > 0) {
-    const group = document.createElement("div");
-    group.className = "legend-group";
+    const group = createLegendGroup("Unassigned Moons");
     for (const moon of orphanMoons) {
       group.appendChild(createLegendEntry(moon, true));
     }
@@ -990,8 +998,11 @@ function rebuildBodyLegend() {
     .filter((body) => body.body_type === "spacecraft")
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
   if (spacecraftBodies.length > 0) {
-    const group = document.createElement("div");
-    group.className = "legend-group";
+    const section = document.createElement("p");
+    section.className = "legend-section-title";
+    section.textContent = "Spacecraft";
+    fragment.appendChild(section);
+    const group = createLegendGroup("Active Vehicles");
     for (const spacecraft of spacecraftBodies) {
       group.appendChild(createLegendEntry(spacecraft, false));
     }
@@ -1003,6 +1014,18 @@ function rebuildBodyLegend() {
   updateLegendFallbackIndicators();
   updateLegendGravityArrowIndicators();
   updateLaunchControls();
+}
+
+function createLegendGroup(title) {
+  const group = document.createElement("div");
+  group.className = "legend-group";
+  if (title) {
+    const heading = document.createElement("p");
+    heading.className = "legend-group-title";
+    heading.textContent = title;
+    group.appendChild(heading);
+  }
+  return group;
 }
 
 function supportsLegendGravityControlByBody(body) {
@@ -1033,7 +1056,28 @@ function createLegendButton(body, isMoon) {
   button.type = "button";
   button.className = isMoon ? "legend-button moon" : "legend-button";
   button.dataset.bodyId = body.id;
-  button.textContent = body.name;
+
+  const name = document.createElement("span");
+  name.className = "legend-button-name";
+  name.textContent = body.name;
+  button.appendChild(name);
+
+  const meta = document.createElement("span");
+  meta.className = "legend-button-meta";
+  const bodyType = String(body.body_type || "").trim();
+  const parentLabel = bodyType === "moon" && body.parent
+    ? (metaById.get(body.parent)?.name || body.parent)
+    : "";
+  const metaParts = [];
+  if (bodyType) {
+    metaParts.push(bodyType.charAt(0).toUpperCase() + bodyType.slice(1));
+  }
+  if (parentLabel) {
+    metaParts.push(`Parent: ${parentLabel}`);
+  }
+  meta.textContent = metaParts.join(" • ");
+  button.appendChild(meta);
+
   button.title = `${body.name} (${body.body_type})`;
   button.addEventListener("click", (event) => {
     event.preventDefault();

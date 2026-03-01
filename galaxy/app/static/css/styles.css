@@ -108,38 +108,59 @@ body {
   position: fixed;
   top: 14px;
   right: 14px;
-  width: min(280px, 36vw);
-  max-height: calc(100vh - 28px);
-  padding: 10px 10px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(86, 186, 255, 0.42);
-  background: rgba(3, 9, 17, 0.72);
-  backdrop-filter: blur(8px);
-  overflow: hidden;
+  width: min(320px, 36vw);
+  height: min(94vh, 920px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(95, 188, 255, 0.35);
+  background:
+    linear-gradient(180deg, rgba(14, 25, 39, 0.86) 0%, rgba(6, 12, 21, 0.9) 58%, rgba(4, 9, 17, 0.92) 100%);
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 12px 42px rgba(0, 0, 0, 0.55),
+    inset 0 0 0 1px rgba(125, 204, 255, 0.06);
   z-index: 10;
   pointer-events: auto;
   isolation: isolate;
 }
 
 .body-legend-title {
-  margin: 0 0 8px;
+  margin: 0;
   color: #d8ebff;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
 }
 
-.observation-panel {
-  margin-bottom: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(86, 186, 255, 0.25);
+.body-legend-subtitle {
+  margin: 5px 0 0;
+  color: #9fc5e6;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.28;
 }
 
+.legend-header {
+  padding: 2px 2px 0;
+}
+
+.legend-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.observation-panel,
 .physics-panel {
-  margin-bottom: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(86, 186, 255, 0.25);
+  margin: 0;
+  padding: 8px 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(118, 182, 224, 0.18);
+  background: rgba(10, 18, 29, 0.72);
 }
 
 .launch-panel {
@@ -159,7 +180,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin: 0 0 8px;
+  margin: 0 0 7px;
 }
 
 .physics-toggle-label {
@@ -225,16 +246,73 @@ body {
   line-height: 1.2;
 }
 
+.legend-body-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 2px 0;
+}
+
+.legend-body-count {
+  margin: 0;
+  color: #8fb6d8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .body-legend-list {
   position: relative;
   z-index: 1;
-  max-height: calc(100vh - 280px);
+  flex: 1;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
-  padding-right: 2px;
+  padding: 2px 2px 0;
+  scrollbar-gutter: stable;
+}
+
+.body-legend-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.body-legend-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.body-legend-list::-webkit-scrollbar-thumb {
+  background: rgba(122, 165, 199, 0.44);
+  border-radius: 999px;
+}
+
+.legend-section-title {
+  margin: 6px 2px 6px;
+  color: #8eb4d6;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .legend-group {
-  margin-bottom: 8px;
+  margin: 0 0 10px;
+  padding: 7px 7px 5px;
+  border-radius: 10px;
+  border: 1px solid rgba(118, 182, 224, 0.16);
+  background: rgba(6, 12, 21, 0.66);
+}
+
+.legend-group-title {
+  margin: 0 0 6px;
+  color: #a9c9e8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
 }
 
 .legend-entry {
@@ -245,12 +323,15 @@ body {
 
 .legend-button {
   width: 100%;
-  display: block;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   margin: 0;
-  padding: 6px 30px 6px 8px;
+  padding: 7px 34px 7px 9px;
   border-radius: 8px;
-  border: 1px solid rgba(86, 186, 255, 0.2);
-  background: rgba(7, 15, 26, 0.65);
+  border: 1px solid rgba(86, 186, 255, 0.16);
+  background: rgba(11, 20, 32, 0.66);
   color: #d9e9ff;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   font-size: 12px;
@@ -261,15 +342,34 @@ body {
   position: relative;
 }
 
+.legend-button-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.16;
+}
+
+.legend-button-meta {
+  display: block;
+  color: #8fb0d0;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.16;
+}
+
 .legend-button:hover {
-  border-color: rgba(122, 209, 255, 0.62);
-  background: rgba(10, 20, 34, 0.86);
+  border-color: rgba(122, 209, 255, 0.48);
+  background: rgba(14, 25, 40, 0.88);
 }
 
 .legend-button.selected {
-  border-color: rgba(131, 255, 166, 0.74);
-  background: rgba(9, 35, 20, 0.88);
+  border-color: rgba(131, 255, 166, 0.56);
+  background: linear-gradient(180deg, rgba(13, 39, 27, 0.88) 0%, rgba(8, 31, 22, 0.9) 100%);
   color: #dfffea;
+}
+
+.legend-button.selected .legend-button-meta {
+  color: rgba(210, 243, 226, 0.88);
 }
 
 .legend-button.gravity-arrow-enabled {
@@ -278,10 +378,11 @@ body {
 }
 
 .legend-button.moon {
-  margin-left: 12px;
-  width: calc(100% - 12px);
-  border-color: rgba(119, 154, 198, 0.28);
+  margin-left: 14px;
+  width: calc(100% - 14px);
+  border-color: rgba(119, 154, 198, 0.22);
   color: #c8d9f0;
+  background: rgba(10, 17, 29, 0.72);
 }
 
 .legend-button.show-gravity-caret::before {
@@ -321,11 +422,11 @@ body {
   pointer-events: none;
   margin: 0;
   padding: 0 8px;
-  border-left: 1px solid rgba(86, 186, 255, 0.18);
-  border-right: 1px solid rgba(86, 186, 255, 0.18);
-  border-bottom: 1px solid rgba(86, 186, 255, 0.18);
+  border-left: 1px solid rgba(86, 186, 255, 0.14);
+  border-right: 1px solid rgba(86, 186, 255, 0.14);
+  border-bottom: 1px solid rgba(86, 186, 255, 0.14);
   border-radius: 0 0 8px 8px;
-  background: rgba(6, 13, 24, 0.74);
+  background: rgba(8, 15, 26, 0.76);
   transform: translateY(-2px);
   transition: max-height 140ms ease, opacity 120ms linear, padding 120ms ease;
 }
@@ -376,13 +477,22 @@ body {
 
 @media (max-width: 880px) {
   .body-legend {
-    width: min(230px, 48vw);
+    width: min(248px, 52vw);
     top: 10px;
     right: 10px;
-    max-height: 46vh;
+    height: 56vh;
+    padding: 10px;
   }
 
-  .body-legend-list {
-    max-height: calc(46vh - 150px);
+  .body-legend-subtitle {
+    font-size: 10px;
+  }
+
+  .legend-button-name {
+    font-size: 11px;
+  }
+
+  .legend-button-meta {
+    font-size: 9px;
   }
 }
