@@ -253,6 +253,10 @@ body {
   color: #ffe7b7;
 }
 
+.legend-earth-physics-panel {
+  margin-top: 8px;
+}
+
 .observation-label {
   display: block;
   margin: 0 0 4px;

@@ -45,6 +45,8 @@ const observationModeSelect = document.getElementById("observation-mode");
 const surfaceObserverRow = document.getElementById("surface-observer-row");
 const surfaceObserverTargetSelect = document.getElementById("surface-observer-target");
 const observationStatusNode = document.getElementById("observation-status");
+const physicsPanel = document.getElementById("physics-panel");
+const physicsPanelTitleNode = document.getElementById("physics-panel-title");
 const physicsTidalToggleButton = document.getElementById("physics-toggle-tidal");
 const physicsLagrangeToggleButton = document.getElementById("physics-toggle-lagrange");
 const physicsAtmosphereToggleButton = document.getElementById("physics-toggle-atmosphere");
@@ -1851,6 +1853,14 @@ function createLegendEntry(body, isMoon, options = {}) {
   if (body.id === LAUNCH_BODY_ID) {
     const panel = createLegendVehicleViewPanel();
     entry.appendChild(panel);
+  }
+
+  if (body.id === "earth" && physicsPanel) {
+    if (physicsPanelTitleNode) {
+      physicsPanelTitleNode.textContent = "Earth Physics Overlays";
+    }
+    physicsPanel.classList.add("legend-earth-physics-panel");
+    entry.appendChild(physicsPanel);
   }
 
   return entry;
