@@ -6,6 +6,7 @@ import {
 } from "./launchConfig.js";
 
 const MAX_TRAIL_POINTS = 520;
+const ENABLE_LAUNCH_PLUME_VISUAL = false;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -200,6 +201,10 @@ export function createLaunchTrailController(options) {
   }
 
   function updatePlume(snapshot, scenePos, velocityKmS) {
+    if (!ENABLE_LAUNCH_PLUME_VISUAL) {
+      plumeMesh.visible = false;
+      return;
+    }
     const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
     const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
     const altitudeKm = Number(snapshot?.altitudeKm) || 0;
