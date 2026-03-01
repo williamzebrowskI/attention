@@ -51,6 +51,7 @@ const physicsOverlayStatusNode = document.getElementById("physics-overlay-status
 const launchControlButton = document.getElementById("launch-control-button");
 const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
+const launchTrackToggleButton = document.getElementById("launch-track-toggle-button");
 const launchStatusNode = document.getElementById("launch-status");
 
 const INCLUDE_MOONS = true;
@@ -91,7 +92,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301u";
+const FRONTEND_MODULE_VERSION = "20260301v";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -116,6 +117,7 @@ let applyStarshipVisualStageFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
+let launchTrackLineEnabled = true;
 const INLINE_STARSHIP_STACK_DIMENSIONS_KM = Object.freeze({
   diameterKm: 0.009,
   boosterHeightKm: 0.071,
@@ -864,6 +866,7 @@ async function loadRuntimeConfig() {
     launchControlButton?.remove();
     launchReturnButton?.remove();
     launchResetButton?.remove();
+    launchTrackToggleButton?.remove();
   }
 }
 
@@ -1274,6 +1277,7 @@ function setupScene(THREE) {
         getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
         launchBodyId: LAUNCH_BODY_ID,
       });
+      launchTrailController?.setEnabled(launchTrackLineEnabled);
     } else {
       launchTrailController = null;
     }
@@ -1715,6 +1719,7 @@ function setupLaunchControls() {
     launchControlButton?.remove();
     launchReturnButton?.remove();
     launchResetButton?.remove();
+    launchTrackToggleButton?.remove();
     return;
   }
   if (launchControlButton) {
@@ -1773,6 +1778,13 @@ function setupLaunchControls() {
       updateLaunchStatusPanel(true);
     });
   }
+  if (launchTrackToggleButton) {
+    launchTrackToggleButton.addEventListener("click", () => {
+      launchTrackLineEnabled = !launchTrackLineEnabled;
+      launchTrailController?.setEnabled(launchTrackLineEnabled);
+      updateLaunchControls();
+    });
+  }
   updateLaunchControls();
   updateLaunchStatusPanel(true);
 }
@@ -1804,6 +1816,14 @@ function updateLaunchControls() {
     launchResetButton.disabled = !launchController;
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
+  }
+  if (launchTrackToggleButton) {
+    const trailAvailable = Boolean(launchTrailController);
+    const isOn = trailAvailable && launchTrackLineEnabled;
+    launchTrackToggleButton.disabled = !trailAvailable;
+    launchTrackToggleButton.textContent = isOn ? "Track: On" : "Track: Off";
+    launchTrackToggleButton.classList.toggle("on", isOn);
+    launchTrackToggleButton.setAttribute("aria-pressed", isOn ? "true" : "false");
   }
 }
 

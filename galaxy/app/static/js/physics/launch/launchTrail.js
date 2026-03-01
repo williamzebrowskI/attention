@@ -4,6 +4,9 @@ import {
 } from "./launchConfig.js";
 
 const MAX_TRAIL_POINTS = 520;
+const TRAIL_CORE_COLOR = 0x59cbff;
+const TRAIL_GLOW_COLOR = 0x2e8cff;
+const TRAIL_SMOKE_COLOR = 0xb4d4ff;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -62,26 +65,40 @@ export function createLaunchTrailController(options) {
 
   const pathGeometry = new THREE.BufferGeometry();
   const pathMaterial = new THREE.LineBasicMaterial({
-    color: new THREE.Color(0x8d96a3),
+    color: new THREE.Color(TRAIL_CORE_COLOR),
     transparent: true,
-    opacity: 0.45,
+    opacity: 0.28,
     depthWrite: false,
+    blending: THREE.AdditiveBlending,
     toneMapped: false,
   });
   const pathLine = new THREE.Line(pathGeometry, pathMaterial);
   pathLine.frustumCulled = false;
   group.add(pathLine);
 
+  const glowGeometry = new THREE.BufferGeometry();
+  const glowMaterial = new THREE.LineBasicMaterial({
+    color: new THREE.Color(TRAIL_GLOW_COLOR),
+    transparent: true,
+    opacity: 0.15,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const glowLine = new THREE.Line(glowGeometry, glowMaterial);
+  glowLine.frustumCulled = false;
+  group.add(glowLine);
+
   const pointGeometry = new THREE.BufferGeometry();
   const pointMaterial = new THREE.PointsMaterial({
     map: createSmokeTexture(THREE),
-    color: new THREE.Color(0xb9c2cc),
+    color: new THREE.Color(TRAIL_SMOKE_COLOR),
     size: 1e-10,
     sizeAttenuation: true,
     transparent: true,
-    opacity: 0.05,
+    opacity: 0.08,
     depthWrite: false,
-    blending: THREE.NormalBlending,
+    blending: THREE.AdditiveBlending,
     alphaTest: 0.02,
     toneMapped: false,
   });
@@ -112,12 +129,15 @@ export function createLaunchTrailController(options) {
   function rebuildGeometry() {
     if (trailPoints.length === 0) {
       pathGeometry.setFromPoints([]);
+      glowGeometry.setFromPoints([]);
       pointGeometry.setFromPoints([]);
       return;
     }
     pathGeometry.setFromPoints(trailPoints);
+    glowGeometry.setFromPoints(trailPoints);
     pointGeometry.setFromPoints(trailPoints);
     pathGeometry.computeBoundingSphere();
+    glowGeometry.computeBoundingSphere();
     pointGeometry.computeBoundingSphere();
   }
 
@@ -167,11 +187,7 @@ export function createLaunchTrailController(options) {
   }
 
   function update(deltaSeconds = 0) {
-    if (!enabled) {
-      group.visible = false;
-      return;
-    }
-    group.visible = true;
+    group.visible = enabled;
     ageAndCullTrail(Math.max(0, Number(deltaSeconds) || 0));
 
     const snapshot = getLaunchSnapshot?.() || null;
@@ -206,16 +222,24 @@ export function createLaunchTrailController(options) {
       appendPoint(scenePos, trailPointSpacingScene);
     }
 
+    if (!enabled) {
+      void velocityKmS;
+      wasActive = active;
+      return;
+    }
+
     const smokeActive = active && thrustN > 0.01 && altitudeKm <= LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm;
     if (smokeActive) {
       const densityFade = clamp(1 - (altitudeKm / LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm), 0.04, 1);
-      pointMaterial.size = smokePointSizeScene * (0.9 + (0.35 * throttle));
-      pointMaterial.opacity = 0.015 + (0.045 * throttle * densityFade);
-      pathMaterial.opacity = 0.02 + (0.065 * densityFade);
+      pointMaterial.size = smokePointSizeScene * (0.95 + (0.38 * throttle));
+      pointMaterial.opacity = 0.022 + (0.054 * throttle * densityFade);
+      pathMaterial.opacity = 0.22 + (0.28 * densityFade);
+      glowMaterial.opacity = 0.16 + (0.22 * densityFade);
     } else {
       pointMaterial.size = smokePointSizeScene;
-      pointMaterial.opacity = trailPoints.length > 0 ? 0.012 : 0;
-      pathMaterial.opacity = trailPoints.length > 0 ? 0.015 : 0;
+      pointMaterial.opacity = trailPoints.length > 0 ? 0.016 : 0;
+      pathMaterial.opacity = trailPoints.length > 0 ? 0.18 : 0;
+      glowMaterial.opacity = trailPoints.length > 0 ? 0.14 : 0;
     }
 
     void velocityKmS;
@@ -235,8 +259,10 @@ export function createLaunchTrailController(options) {
       group.parent.remove(group);
     }
     pathGeometry.dispose();
+    glowGeometry.dispose();
     pointGeometry.dispose();
     pathMaterial.dispose();
+    glowMaterial.dispose();
     pointMaterial.map?.dispose?.();
     pointMaterial.dispose();
   }
