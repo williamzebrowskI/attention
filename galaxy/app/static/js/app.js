@@ -47,6 +47,7 @@ import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstan
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
+const bodyLegend = document.getElementById("body-legend");
 const bodyLegendList = document.getElementById("body-legend-list");
 const observationModeSelect = document.getElementById("observation-mode");
 const surfaceObserverRow = document.getElementById("surface-observer-row");
@@ -79,6 +80,7 @@ const ORBIT_TIME_SCALE = 1;
 const MIN_PICK_RADIUS = 0.03;
 const MIN_PICK_PIXEL_RADIUS = 12;
 const MAX_PICK_PIXEL_RADIUS = 96;
+const LEGEND_SELECTION_GUARD_MS = 280;
 const OVERVIEW_SWITCH_RADIUS = 600;
 const SHOW_ORBIT_MARKERS = false;
 const ENABLE_SURFACE_DISPLACEMENT = false;
@@ -495,6 +497,7 @@ let launchTrailController = null;
 let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
 let startupSeedLocked = false;
+let suppressCanvasSelectionUntilMs = 0;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
@@ -554,6 +557,7 @@ async function init() {
   setupObservationControls();
   setupPhysicsOverlayControls();
   setupLaunchControls();
+  setupLegendInputGuards();
   await loadSnapshot();
   setupRigidBodyAttitudeModel();
   if (!HORIZONS_STARTUP_FETCH_ONLY) {
@@ -778,7 +782,8 @@ function setupScene(THREE) {
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
   canvas.addEventListener("pointerup", onPointerUp);
-  canvas.addEventListener("pointerleave", onPointerUp);
+  canvas.addEventListener("pointerleave", onPointerLeave);
+  canvas.addEventListener("pointercancel", onPointerLeave);
   canvas.addEventListener("wheel", onWheel, { passive: false });
 
   onResize();
@@ -977,9 +982,6 @@ function createLegendButton(body, isMoon) {
   button.dataset.bodyId = body.id;
   button.textContent = body.name;
   button.title = `${body.name} (${body.body_type})`;
-  button.addEventListener("click", () => {
-    setSelected(body.id, true);
-  });
   legendButtonsById.set(body.id, button);
   return button;
 }
@@ -1000,6 +1002,7 @@ function createLegendGravityPanel(body, isMoon) {
   toggle.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    markLegendInteractionGuard();
 
     if (selectedId !== body.id) {
       setSelected(body.id, true);
@@ -4428,7 +4431,50 @@ function onPointerUp(event) {
   }
 }
 
+function onPointerLeave() {
+  orbit.pointerDown = false;
+  orbit.dragging = false;
+}
+
+function markLegendInteractionGuard() {
+  suppressCanvasSelectionUntilMs = Date.now() + LEGEND_SELECTION_GUARD_MS;
+  orbit.pointerDown = false;
+  orbit.dragging = false;
+}
+
+function setupLegendInputGuards() {
+  if (!bodyLegend) {
+    return;
+  }
+  bodyLegend.addEventListener("pointerdown", () => {
+    markLegendInteractionGuard();
+  }, { capture: true });
+  if (bodyLegendList) {
+    bodyLegendList.addEventListener("click", onLegendListClick, { capture: true });
+  }
+}
+
+function onLegendListClick(event) {
+  const button = event.target instanceof Element
+    ? event.target.closest(".legend-button")
+    : null;
+  if (!button || !bodyLegendList?.contains(button)) {
+    return;
+  }
+  const bodyId = button.dataset.bodyId;
+  if (!bodyId || !metaById.has(bodyId)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  markLegendInteractionGuard();
+  setSelected(bodyId, true);
+}
+
 function performRaycastSelection(clientX, clientY) {
+  if (Date.now() < suppressCanvasSelectionUntilMs) {
+    return;
+  }
   const bounds = canvas.getBoundingClientRect();
   if (bounds.width <= 0 || bounds.height <= 0) {
     return;
