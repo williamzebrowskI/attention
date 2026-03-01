@@ -1,4 +1,5 @@
 export const LAUNCH_BODY_ID = "earth_launch_vehicle";
+export const LAUNCH_BOOSTER_BODY_ID = "earth_launch_booster";
 
 export const STARSHIP_STACK_DIMENSIONS_KM = Object.freeze({
   diameterKm: 0.009,
@@ -14,6 +15,7 @@ export const STARSHIP_STACK_TOTAL_HEIGHT_KM =
   + STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm;
 
 export const STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM = STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5;
+export const BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM = STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
 
 const DEFAULT_LAUNCH_SITE = Object.freeze({
   name: "Cape Canaveral, FL (SLC-40)",
@@ -98,6 +100,7 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
     verticalHoldMaxLateralSpeedKmS: 0.015,
     verticalHoldCorrectionGain: 0.85,
     verticalHoldMaxTiltDeg: 7.0,
+    boosterLandingReservePropellantKg: 320_000,
   }),
   stages: Object.freeze([
     Object.freeze({
@@ -121,6 +124,17 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
       coastAfterBurnSec: 0,
     }),
   ]),
+});
+
+export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
+  name: "Super Heavy Booster",
+  dryMassKg: 200_000,
+  referenceAreaM2: 78,
+  dragCoefficient: 0.42,
+  thrustSeaLevelN: 19_000_000,
+  thrustVacuumN: 20_500_000,
+  ispSeaLevelS: 327,
+  ispVacuumS: 350,
 });
 
 export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({
@@ -182,4 +196,17 @@ export const LAUNCH_BODY_META = Object.freeze({
   orbital_period_days: null,
   phase: 0,
   description: "Two-stage launch vehicle driven by onboard thrust, staging, and guidance.",
+});
+
+export const LAUNCH_BOOSTER_META = Object.freeze({
+  id: LAUNCH_BOOSTER_BODY_ID,
+  name: "Super Heavy Booster",
+  body_type: "spacecraft",
+  parent: "earth",
+  radius_km: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5,
+  mass_kg: LAUNCH_BOOSTER_CONFIG.dryMassKg + (Number(LAUNCH_VEHICLE_CONFIG.guidance.boosterLandingReservePropellantKg) || 0),
+  semimajor_axis_km: null,
+  orbital_period_days: null,
+  phase: 0,
+  description: "Separated first stage booster with controlled atmospheric reentry and landing burn.",
 });

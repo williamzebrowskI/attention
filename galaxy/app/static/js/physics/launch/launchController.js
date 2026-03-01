@@ -1,6 +1,10 @@
 import {
+  BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_AUTOPILOT_CONFIG,
+  LAUNCH_BOOSTER_BODY_ID,
+  LAUNCH_BOOSTER_CONFIG,
+  LAUNCH_BOOSTER_META,
   LAUNCH_BODY_ID,
   LAUNCH_BODY_META,
   LAUNCH_INITIAL_MASS_KG,
@@ -11,6 +15,14 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
 } from "./launchConfig.js";
+import { computeBoosterRecoveryCommand } from "./boosterRecovery.js";
+import {
+  DEFAULT_LAUNCH_MISSION_ID,
+  LAUNCH_MISSION_IDS,
+  LAUNCH_MISSION_PROFILES,
+  missionProfileById,
+  normalizeMissionId,
+} from "./launchMissions.js";
 import {
   applyEarthSurfaceContactForVehicle,
   sampleEarthSurfaceAtRelativePosition,
@@ -99,6 +111,15 @@ function sanitizeAxes(rawAxes) {
 
 function stageAtIndex(stageIndex) {
   return LAUNCH_VEHICLE_CONFIG.stages[stageIndex] || null;
+}
+
+function stageReservePropellantKg(stageIndex) {
+  if (stageIndex !== 0) {
+    return 0;
+  }
+  const stage = stageAtIndex(0);
+  const configuredReserve = Number(LAUNCH_VEHICLE_CONFIG.guidance?.boosterLandingReservePropellantKg) || 0;
+  return clamp(configuredReserve, 0, Number(stage?.propellantMassKg) || configuredReserve);
 }
 
 function bodyDirectionFromLatLon(axes, latitudeDeg, longitudeDeg) {
@@ -878,12 +899,386 @@ function telemetryFromState({
       ? Number(surfaceSample.longitudeDeg)
       : null,
     guidanceMode: runtime.lastStep?.guidanceMode || "idle",
+    missionId: runtime.mission.selectedId,
+    missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
+    missionPhase: runtime.mission.phase,
+    missionCompleted: Boolean(runtime.mission.completed),
     rcsActive: Boolean(runtime.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.lastStep?.rcsErrorDeg) || 0,
     rcsAuthority: Number(runtime.lastStep?.rcsAuthority) || 0,
     rcsJets: Array.isArray(runtime.lastStep?.rcsJets) ? [...runtime.lastStep.rcsJets] : [],
     boosterDistanceKm: runtime.boosterDistanceKm,
     starshipDistanceKm: runtime.starshipDistanceKm,
+  };
+}
+
+function boosterTelemetryFromState({
+  gravitationalConstantKm3PerKgS2,
+  earthMassKg,
+  earthRadiusKm,
+  earthState,
+  boosterState,
+  atmosphereSample,
+  earthPole,
+  dynamicPressurePaOverride,
+  runtime,
+}) {
+  if (!boosterState || !earthState) {
+    return null;
+  }
+  const relPos = subtract(boosterState.position, earthState.position);
+  const relVel = subtract(
+    boosterState.velocity,
+    earthState.velocity || { x: 0, y: 0, z: 0 },
+  );
+  const mu = gravitationalConstantKm3PerKgS2 * earthMassKg;
+  const orbital = orbitalStateFromRelative(mu, earthRadiusKm, relPos, relVel);
+  const dynamicPressurePa =
+    Number.isFinite(Number(dynamicPressurePaOverride))
+      ? Number(dynamicPressurePaOverride)
+      : dynamicPressurePaFromAtmosphere(atmosphereSample, relPos, relVel, earthPole);
+  const surfaceSample = runtime.booster.lastSurfaceSample || null;
+  const centerAltitudeAboveTerrainKm = Number(surfaceSample?.altitudeAboveTerrainKm);
+  const boosterAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
+    ? centerAltitudeAboveTerrainKm - BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM
+    : null;
+  return {
+    phase: runtime.booster.phase,
+    guidanceMode: runtime.booster.guidanceMode,
+    massKg: boosterState.massKg,
+    propellantKg: runtime.booster.propellantKg,
+    altitudeKm: orbital.altitudeKm,
+    speedKmS: orbital.speedKmS,
+    radialSpeedKmS: orbital.radialSpeedKmS,
+    tangentialSpeedKmS: orbital.tangentialSpeedKmS,
+    dynamicPressurePa,
+    throttle: runtime.booster.lastStep?.throttle || 0,
+    thrustN: runtime.booster.lastStep?.thrustN || 0,
+    burnRateKgS: runtime.booster.lastStep?.burnRateKgS || 0,
+    terrainElevationKm: Number.isFinite(Number(surfaceSample?.terrainHeightKm))
+      ? Number(surfaceSample.terrainHeightKm)
+      : null,
+    altitudeAboveTerrainKm: Number.isFinite(boosterAltitudeAboveTerrainKm)
+      ? boosterAltitudeAboveTerrainKm
+      : null,
+    latitudeDeg: Number.isFinite(Number(surfaceSample?.latitudeDeg))
+      ? Number(surfaceSample.latitudeDeg)
+      : null,
+    longitudeDeg: Number.isFinite(Number(surfaceSample?.longitudeDeg))
+      ? Number(surfaceSample.longitudeDeg)
+      : null,
+    landed: Boolean(runtime.booster.landed),
+  };
+}
+
+function composeBoosterDirection(up, relVel, tangentialVector, directionMix = null) {
+  const safeUp = normalize(up || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  const retrograde = normalize(scale(relVel || { x: 0, y: 0, z: 0 }, -1), safeUp);
+  const antiTangent = normalize(scale(tangentialVector || { x: 0, y: 0, z: 0 }, -1), { x: 0, y: 0, z: 0 });
+  const upWeight = Number(directionMix?.up) || 0;
+  const retrogradeWeight = Number(directionMix?.retrograde) || 0;
+  const antiTangentWeight = Number(directionMix?.antiTangent) || 0;
+  const command = add(
+    scale(safeUp, upWeight),
+    add(
+      scale(retrograde, retrogradeWeight),
+      scale(antiTangent, antiTangentWeight),
+    ),
+  );
+  return normalize(command, safeUp);
+}
+
+function zeroBoosterStep(guidanceMode = "booster-idle") {
+  return {
+    accelerationKmS2: { x: 0, y: 0, z: 0 },
+    throttle: 0,
+    thrustN: 0,
+    burnKg: 0,
+    burnRateKgS: 0,
+    dynamicPressurePa: 0,
+    guidanceMode,
+  };
+}
+
+const MOON_RETURN_MISSION_CONFIG = Object.freeze({
+  parkingOrbitPeriapsisMinKm: 150,
+  parkingOrbitApoapsisMinKm: 180,
+  tliTargetApoapsisKm: 382_000,
+  moonApproachDistanceKm: 120_000,
+  lunarInsertionAltitudeGateKm: 16_000,
+  lunarOrbitApoapsisMaxKm: 14_000,
+  lunarOrbitPeriapsisMinKm: 45,
+  lunarHoldDurationSec: 2 * 3600,
+  teiDepartureDistanceKm: 140_000,
+  earthCaptureDistanceKm: 180_000,
+  earthCaptureApoapsisMaxKm: 75_000,
+  earthCapturePeriapsisMinKm: 120,
+});
+
+function safeMissionProfile(missionId) {
+  return missionProfileById(normalizeMissionId(missionId));
+}
+
+function defaultMissionPhaseForProfileId(missionId) {
+  if (missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return "launch_to_parking";
+  }
+  return "earth_orbit_hold";
+}
+
+function setMissionPhase(runtime, nextPhase) {
+  const phaseName = String(nextPhase || "").trim();
+  if (!phaseName || runtime.mission.phase === phaseName) {
+    return;
+  }
+  runtime.mission.phase = phaseName;
+  runtime.mission.phaseStartedElapsedSec = runtime.elapsedSeconds;
+}
+
+function missionElapsedInPhaseSeconds(runtime) {
+  return Math.max(0, runtime.elapsedSeconds - (Number(runtime.mission.phaseStartedElapsedSec) || 0));
+}
+
+function bodyStateFromNBody(state, bodyId) {
+  return state?.dynamicBodies?.get(bodyId)
+    || state?.staticSources?.get(bodyId)
+    || null;
+}
+
+function missionOrbitTangent(relVel, up, planeNormal, pole) {
+  return autopilotDirectionInTargetPlane(
+    relVel,
+    up,
+    planeNormal || normalize(cross(up, relVel), pole),
+    pole,
+  );
+}
+
+function computeMoonOrbitReturnAutopilotCommand({
+  runtime,
+  state,
+  earthState,
+  rocketState,
+  orbital,
+  relPos,
+  relVel,
+  up,
+  earthPole,
+  muKm3S2,
+  earthRadiusKm,
+  getBodyRadiusKm,
+  getBodyMassKg,
+}) {
+  if (runtime.stageIndex < 1) {
+    setMissionPhase(runtime, "launch_to_parking");
+    return null;
+  }
+  const tangent = missionOrbitTangent(relVel, up, runtime.launchPlaneNormal, earthPole);
+  const moonState = bodyStateFromNBody(state, "moon");
+  const moonMassKg = Number(getBodyMassKg?.("moon")) || Number(moonState?.massKg) || 7.342e22;
+  const moonRadiusKm = Number(getBodyRadiusKm?.("moon")) || 1737.4;
+  const moonMuKm3S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * moonMassKg;
+
+  const moonRelPos = moonState?.position ? subtract(rocketState.position, moonState.position) : null;
+  const moonRelVel = moonState?.velocity
+    ? subtract(rocketState.velocity, moonState.velocity)
+    : null;
+  const moonDistanceKm = moonRelPos ? length(moonRelPos) : Number.POSITIVE_INFINITY;
+  const moonAltitudeKm = moonDistanceKm - moonRadiusKm;
+  const moonOrbit = moonRelPos && moonRelVel
+    ? orbitalStateFromRelative(moonMuKm3S2, moonRadiusKm, moonRelPos, moonRelVel)
+    : null;
+  const earthDistanceKm = length(relPos);
+  const earthDirection = normalize(scale(relPos, -1), scale(up, -1));
+
+  const phase = runtime.mission.phase || "launch_to_parking";
+  const config = MOON_RETURN_MISSION_CONFIG;
+
+  if (phase === "launch_to_parking") {
+    const parkingReady = Number(orbital.periapsisKm) >= config.parkingOrbitPeriapsisMinKm
+      && Number(orbital.apoapsisKm) >= config.parkingOrbitApoapsisMinKm
+      && orbital.specificEnergy < 0;
+    if (parkingReady) {
+      setMissionPhase(runtime, "tli_burn");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-moon-orbit-return:tli-setup",
+      };
+    }
+    return null;
+  }
+
+  if (phase === "tli_burn") {
+    const apo = Number(orbital.apoapsisKm);
+    if (Number.isFinite(apo) && apo >= (config.tliTargetApoapsisKm - 3000)) {
+      setMissionPhase(runtime, "coast_to_moon");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-moon-orbit-return:coast-to-moon",
+      };
+    }
+    const apoDeficitKm = Number.isFinite(apo) ? (config.tliTargetApoapsisKm - apo) : config.tliTargetApoapsisKm;
+    const throttle = clamp(0.34 + clamp(apoDeficitKm / config.tliTargetApoapsisKm, 0, 1) * 0.5, 0.2, 0.9);
+    const direction = normalize(add(scale(tangent, 1), scale(up, 0.06)), tangent);
+    return {
+      phase: "powered",
+      throttle,
+      direction,
+      mode: "mission-moon-orbit-return:tli-burn",
+    };
+  }
+
+  if (phase === "coast_to_moon") {
+    if (moonDistanceKm <= config.moonApproachDistanceKm) {
+      setMissionPhase(runtime, "lunar_insertion");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-moon-orbit-return:lunar-insertion-setup",
+      };
+    }
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: "mission-moon-orbit-return:coast-to-moon",
+    };
+  }
+
+  if (phase === "lunar_insertion") {
+    if (moonOrbit && moonOrbit.specificEnergy < 0
+      && Number(moonOrbit.apoapsisKm) > 0
+      && Number(moonOrbit.apoapsisKm) <= config.lunarOrbitApoapsisMaxKm
+      && Number(moonOrbit.periapsisKm) >= config.lunarOrbitPeriapsisMinKm) {
+      setMissionPhase(runtime, "lunar_orbit_hold");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: normalize(scale(moonRelVel || tangent, 1), tangent),
+        mode: "mission-moon-orbit-return:lunar-orbit-hold",
+      };
+    }
+    if (moonRelVel && moonRelPos && moonAltitudeKm <= config.lunarInsertionAltitudeGateKm) {
+      const moonRetrograde = normalize(scale(moonRelVel, -1), earthDirection);
+      const moonUp = normalize(moonRelPos, up);
+      const direction = normalize(add(scale(moonRetrograde, 1), scale(moonUp, 0.22)), moonRetrograde);
+      const moonSpeedTargetKmS = clamp(
+        (moonMuKm3S2 > 0 && moonDistanceKm > 1)
+          ? (Math.sqrt(moonMuKm3S2 / moonDistanceKm) * 1.08)
+          : 1.4,
+        0.55,
+        2.2,
+      );
+      const moonSpeedErrorKmS = (Number(moonOrbit?.speedKmS) || 0) - moonSpeedTargetKmS;
+      const throttle = clamp(
+        0.14 + (moonSpeedErrorKmS * 0.38) + clamp((6000 - moonAltitudeKm) / 6000, 0, 1) * 0.26,
+        0.08,
+        0.96,
+      );
+      return {
+        phase: "powered",
+        throttle,
+        direction,
+        mode: "mission-moon-orbit-return:lunar-insertion",
+      };
+    }
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: "mission-moon-orbit-return:coast-near-moon",
+    };
+  }
+
+  if (phase === "lunar_orbit_hold") {
+    if (missionElapsedInPhaseSeconds(runtime) >= config.lunarHoldDurationSec) {
+      setMissionPhase(runtime, "tei_burn");
+    }
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: moonRelVel ? normalize(moonRelVel, tangent) : tangent,
+      mode: "mission-moon-orbit-return:lunar-orbit-hold",
+    };
+  }
+
+  if (phase === "tei_burn") {
+    const moonRetrograde = moonRelVel ? normalize(scale(moonRelVel, -1), earthDirection) : earthDirection;
+    const teiDirection = normalize(
+      add(scale(earthDirection, 1), scale(moonRetrograde, 0.36)),
+      earthDirection,
+    );
+    const throttle = clamp(
+      moonAltitudeKm < 25_000 ? 0.55 : 0.34,
+      0.22,
+      0.86,
+    );
+    if (moonDistanceKm >= config.teiDepartureDistanceKm && dot(relPos, relVel) < 0) {
+      setMissionPhase(runtime, "coast_to_earth");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: teiDirection,
+        mode: "mission-moon-orbit-return:coast-to-earth",
+      };
+    }
+    return {
+      phase: "powered",
+      throttle,
+      direction: teiDirection,
+      mode: "mission-moon-orbit-return:tei-burn",
+    };
+  }
+
+  if (phase === "coast_to_earth") {
+    if (earthDistanceKm <= config.earthCaptureDistanceKm) {
+      setMissionPhase(runtime, "earth_capture");
+    }
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: "mission-moon-orbit-return:coast-to-earth",
+    };
+  }
+
+  if (phase === "earth_capture") {
+    const captureReady = orbital.specificEnergy < 0
+      && Number(orbital.apoapsisKm) > 0
+      && Number(orbital.apoapsisKm) <= config.earthCaptureApoapsisMaxKm
+      && Number(orbital.periapsisKm) >= config.earthCapturePeriapsisMinKm;
+    if (captureReady) {
+      setMissionPhase(runtime, "earth_orbit_hold");
+      runtime.mission.completed = true;
+      return {
+        phase: "orbit",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-moon-orbit-return:earth-orbit-hold",
+      };
+    }
+    const retrograde = normalize(scale(relVel, -1), earthDirection);
+    const direction = normalize(add(scale(retrograde, 1), scale(up, 0.08)), retrograde);
+    const altitudeDeficit = clamp((config.earthCaptureDistanceKm - orbital.altitudeKm) / config.earthCaptureDistanceKm, 0, 1);
+    const throttle = clamp(0.18 + (altitudeDeficit * 0.48), 0.12, 0.9);
+    return {
+      phase: "powered",
+      throttle,
+      direction,
+      mode: "mission-moon-orbit-return:earth-capture",
+    };
+  }
+
+  return {
+    phase: "orbit",
+    throttle: 0,
+    direction: tangent,
+    mode: "mission-moon-orbit-return:earth-orbit-hold",
   };
 }
 
@@ -903,12 +1298,14 @@ function phaseLabel(phase) {
   return "Idle";
 }
 
-export { LAUNCH_BODY_ID, LAUNCH_BODY_META };
+export { LAUNCH_BODY_ID, LAUNCH_BODY_META, LAUNCH_BOOSTER_BODY_ID, LAUNCH_BOOSTER_META };
 
 export function createLaunchController(options) {
   const {
     getEarthRadiusKm,
     getEarthMassKg,
+    getBodyRadiusKm,
+    getBodyMassKg,
     getEarthFixedAxesEcliptic,
     sampleEarthAtmosphere,
     gravitationalConstantKm3PerKgS2,
@@ -931,6 +1328,25 @@ export function createLaunchController(options) {
     starshipDistanceKm: 0,
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
+    mission: {
+      selectedId: DEFAULT_LAUNCH_MISSION_ID,
+      phase: defaultMissionPhaseForProfileId(DEFAULT_LAUNCH_MISSION_ID),
+      phaseStartedElapsedSec: 0,
+      completed: false,
+    },
+    booster: {
+      active: false,
+      phase: "idle",
+      guidanceMode: "booster-idle",
+      propellantKg: 0,
+      separationTimeSec: 0,
+      landed: false,
+      lastStep: null,
+      lastSurfaceSample: null,
+      lastTrackedPositionKm: null,
+      telemetry: null,
+      contactHoldSec: 0,
+    },
   };
 
   function earthAxes(timestampMs = Date.now()) {
@@ -945,7 +1361,12 @@ export function createLaunchController(options) {
     return state?.dynamicBodies?.get(LAUNCH_BODY_ID) || null;
   }
 
+  function boosterStateFromNBody(state) {
+    return state?.dynamicBodies?.get(LAUNCH_BOOSTER_BODY_ID) || null;
+  }
+
   function resetRuntime() {
+    const missionId = normalizeMissionId(runtime.mission.selectedId);
     runtime.phase = "idle";
     runtime.elapsedSeconds = 0;
     runtime.stageIndex = 0;
@@ -959,6 +1380,36 @@ export function createLaunchController(options) {
     runtime.starshipDistanceKm = 0;
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
+    runtime.mission.selectedId = missionId;
+    runtime.mission.phase = defaultMissionPhaseForProfileId(missionId);
+    runtime.mission.phaseStartedElapsedSec = 0;
+    runtime.mission.completed = false;
+    runtime.booster.active = false;
+    runtime.booster.phase = "idle";
+    runtime.booster.guidanceMode = "booster-idle";
+    runtime.booster.propellantKg = 0;
+    runtime.booster.separationTimeSec = 0;
+    runtime.booster.landed = false;
+    runtime.booster.lastStep = null;
+    runtime.booster.lastSurfaceSample = null;
+    runtime.booster.lastTrackedPositionKm = null;
+    runtime.booster.telemetry = null;
+    runtime.booster.contactHoldSec = 0;
+  }
+
+  function clearBoosterFromState(state) {
+    state?.dynamicBodies?.delete?.(LAUNCH_BOOSTER_BODY_ID);
+    runtime.booster.active = false;
+    runtime.booster.phase = "idle";
+    runtime.booster.guidanceMode = "booster-idle";
+    runtime.booster.propellantKg = 0;
+    runtime.booster.separationTimeSec = 0;
+    runtime.booster.landed = false;
+    runtime.booster.lastStep = null;
+    runtime.booster.lastSurfaceSample = null;
+    runtime.booster.lastTrackedPositionKm = null;
+    runtime.booster.telemetry = null;
+    runtime.booster.contactHoldSec = 0;
   }
 
   function earthFixedRelativePositionKm(rocketState, earthState, earthFrameAxes) {
@@ -988,56 +1439,90 @@ export function createLaunchController(options) {
     return runtime.lastSurfaceSample;
   }
 
-  function accumulateDistanceTravelled(
-    rocketState,
+  function accumulateBodyDistanceKm(
+    bodyState,
     earthState,
     earthFrameAxes,
-    stageIndexForDistance = runtime.stageIndex,
+    tracker,
   ) {
     const relativePositionKm = earthFixedRelativePositionKm(
-      rocketState,
+      bodyState,
       earthState,
       earthFrameAxes,
     );
     if (!relativePositionKm) {
-      return;
+      return { distanceKm: 0, tracker };
     }
     const current = {
       x: Number(relativePositionKm.x) || 0,
       y: Number(relativePositionKm.y) || 0,
       z: Number(relativePositionKm.z) || 0,
     };
-    if (!runtime.lastTrackedPositionKm) {
-      runtime.lastTrackedPositionKm = current;
-      return;
+    if (!tracker) {
+      return { distanceKm: 0, tracker: current };
     }
-    const dx = current.x - runtime.lastTrackedPositionKm.x;
-    const dy = current.y - runtime.lastTrackedPositionKm.y;
-    const dz = current.z - runtime.lastTrackedPositionKm.z;
+    const dx = current.x - tracker.x;
+    const dy = current.y - tracker.y;
+    const dz = current.z - tracker.z;
     const stepDistanceKm = Math.sqrt((dx * dx) + (dy * dy) + (dz * dz));
-    runtime.lastTrackedPositionKm = current;
-    if (!Number.isFinite(stepDistanceKm) || stepDistanceKm <= 0) {
+    return {
+      distanceKm: Number.isFinite(stepDistanceKm) && stepDistanceKm > 0 ? stepDistanceKm : 0,
+      tracker: current,
+    };
+  }
+
+  function accumulateDistanceTravelled(
+    rocketState,
+    earthState,
+    earthFrameAxes,
+    stageIndexForDistance = runtime.stageIndex,
+  ) {
+    const result = accumulateBodyDistanceKm(
+      rocketState,
+      earthState,
+      earthFrameAxes,
+      runtime.lastTrackedPositionKm,
+    );
+    runtime.lastTrackedPositionKm = result.tracker;
+    if (!(result.distanceKm > 0)) {
       return;
     }
     if (stageIndexForDistance <= 0) {
-      runtime.boosterDistanceKm += stepDistanceKm;
+      runtime.boosterDistanceKm += result.distanceKm;
     } else {
-      runtime.starshipDistanceKm += stepDistanceKm;
+      runtime.starshipDistanceKm += result.distanceKm;
+    }
+  }
+
+  function accumulateBoosterDistanceTravelled(boosterState, earthState, earthFrameAxes) {
+    const result = accumulateBodyDistanceKm(
+      boosterState,
+      earthState,
+      earthFrameAxes,
+      runtime.booster.lastTrackedPositionKm,
+    );
+    runtime.booster.lastTrackedPositionKm = result.tracker;
+    if (result.distanceKm > 0) {
+      runtime.boosterDistanceKm += result.distanceKm;
     }
   }
 
   function ensureCatalogBodies(catalogBodies) {
     const next = Array.isArray(catalogBodies) ? [...catalogBodies] : [];
-    const index = next.findIndex((body) => body.id === LAUNCH_BODY_ID);
-    if (index >= 0) {
-      next[index] = {
-        ...next[index],
-        ...LAUNCH_BODY_META,
-        mass_kg: Number(next[index].mass_kg) > 0 ? Number(next[index].mass_kg) : LAUNCH_BODY_META.mass_kg,
-      };
-      return next;
-    }
-    next.push({ ...LAUNCH_BODY_META });
+    const mergeOrInsert = (meta) => {
+      const index = next.findIndex((body) => body.id === meta.id);
+      if (index >= 0) {
+        next[index] = {
+          ...next[index],
+          ...meta,
+          mass_kg: Number(next[index].mass_kg) > 0 ? Number(next[index].mass_kg) : meta.mass_kg,
+        };
+        return;
+      }
+      next.push({ ...meta });
+    };
+    mergeOrInsert(LAUNCH_BODY_META);
+    mergeOrInsert(LAUNCH_BOOSTER_META);
     return next;
   }
 
@@ -1116,6 +1601,7 @@ export function createLaunchController(options) {
   }
 
   function resetToPad(state, nowMs = Date.now()) {
+    clearBoosterFromState(state);
     const earthState = earthStateFromNBody(state);
     const rocketState = ensureRocketInNBody(state, nowMs);
     if (!earthState || !rocketState) {
@@ -1191,11 +1677,261 @@ export function createLaunchController(options) {
     }
     runtime.phase = "powered";
     runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-vertical-ascent" : "manual-ascent";
+    setMissionPhase(runtime, defaultMissionPhaseForProfileId(runtime.mission.selectedId));
+    runtime.mission.phaseStartedElapsedSec = runtime.elapsedSeconds;
+    runtime.mission.completed = false;
     return true;
+  }
+
+  function createSeparatedBoosterState({
+    state,
+    rocketState,
+    earthState,
+    currentEarthAxes,
+    stage,
+  }) {
+    if (!state?.dynamicBodies || !rocketState || !earthState || !stage) {
+      return null;
+    }
+    const reservePropellantKg = Math.min(
+      Math.max(0, runtime.stagePropellantKg),
+      stageReservePropellantKg(0),
+    );
+    const boosterDryMassKg = Number(stage.dryMassKg) || Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0;
+    const boosterMassKg = boosterDryMassKg + reservePropellantKg;
+    if (!(boosterMassKg > 0)) {
+      return null;
+    }
+
+    const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const up = normalize(relPos, currentEarthAxes.pole);
+    const retrograde = normalize(scale(relVel, -1), scale(up, -1));
+    const separationOffsetKm = STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM + 0.02;
+    const separationImpulseKmS = add(
+      scale(retrograde, 0.018),
+      scale(up, -0.010),
+    );
+    const boosterState = {
+      id: LAUNCH_BOOSTER_BODY_ID,
+      massKg: boosterMassKg,
+      position: add(rocketState.position, scale(up, -separationOffsetKm)),
+      velocity: add(rocketState.velocity, separationImpulseKmS),
+    };
+    state.dynamicBodies.set(LAUNCH_BOOSTER_BODY_ID, boosterState);
+
+    runtime.booster.active = true;
+    runtime.booster.phase = "separation-coast";
+    runtime.booster.guidanceMode = "booster-separation-coast";
+    runtime.booster.propellantKg = reservePropellantKg;
+    runtime.booster.separationTimeSec = runtime.elapsedSeconds;
+    runtime.booster.landed = false;
+    runtime.booster.lastStep = zeroBoosterStep("booster-separation-coast");
+    runtime.booster.lastSurfaceSample = null;
+    runtime.booster.contactHoldSec = 0;
+    runtime.booster.lastTrackedPositionKm = earthFixedRelativePositionKm(
+      boosterState,
+      earthState,
+      currentEarthAxes,
+    );
+    runtime.booster.telemetry = null;
+    return boosterState;
+  }
+
+  function prepareBoosterStep(state, dtSeconds, nowMs = Date.now()) {
+    if (!runtime.booster.active) {
+      runtime.booster.lastStep = null;
+      return;
+    }
+    const earthState = earthStateFromNBody(state);
+    const boosterState = boosterStateFromNBody(state);
+    if (!earthState || !boosterState) {
+      runtime.booster.lastStep = zeroBoosterStep("booster-inactive");
+      runtime.booster.active = false;
+      runtime.booster.phase = "idle";
+      runtime.booster.guidanceMode = "booster-inactive";
+      return;
+    }
+
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const currentEarthAxes = earthAxes(nowMs);
+    const relPos = subtract(boosterState.position, earthState.position);
+    const relVel = subtract(
+      boosterState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+    const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
+    const altitudeKm = Math.max(0, orbital.altitudeKm);
+    const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
+    const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+      atmosphereSample,
+      relPos,
+      relVel,
+      currentEarthAxes.pole,
+    );
+    const command = computeBoosterRecoveryCommand({
+      altitudeKm,
+      radialSpeedKmS: orbital.radialSpeedKmS,
+      tangentialSpeedKmS: orbital.tangentialSpeedKmS,
+      dynamicPressurePa,
+      remainingPropellantKg: runtime.booster.propellantKg,
+      reserveLandingPropellantKg: stageReservePropellantKg(0),
+      timeSinceSeparationSec: Math.max(0, runtime.elapsedSeconds - runtime.booster.separationTimeSec),
+    });
+
+    const up = orbital.up;
+    const direction = composeBoosterDirection(up, relVel, orbital.tangentialVector, command.directionMix);
+    const pressurePa = Number(atmosphereSample?.pressurePa) || 0;
+    const landingPhase = command.phase === "landing-burn" || command.phase === "landed";
+    const protectedReserveKg = landingPhase
+      ? 0
+      : (
+        command.phase === "entry-burn"
+          ? stageReservePropellantKg(0) * 0.7
+          : stageReservePropellantKg(0)
+      );
+    const burnablePropellantKg = Math.max(0, runtime.booster.propellantKg - protectedReserveKg);
+    const canBurn = burnablePropellantKg > 1e-6 && !runtime.booster.landed;
+    const requestedThrottle = canBurn ? clamp(Number(command.throttle) || 0, 0, 1) : 0;
+    const fullThrustN = interpolateSeaToVac(
+      Number(LAUNCH_BOOSTER_CONFIG.thrustVacuumN) || 0,
+      Number(LAUNCH_BOOSTER_CONFIG.thrustSeaLevelN) || 0,
+      pressurePa,
+    );
+    const thrustN = fullThrustN * requestedThrottle;
+    const ispS = interpolateSeaToVac(
+      Number(LAUNCH_BOOSTER_CONFIG.ispVacuumS) || 0,
+      Number(LAUNCH_BOOSTER_CONFIG.ispSeaLevelS) || 0,
+      pressurePa,
+    );
+    const burnRateKgS = thrustN > 0 && ispS > 0
+      ? thrustN / (ispS * STANDARD_GRAVITY_M_S2)
+      : 0;
+    const burnKg = Math.min(burnablePropellantKg, burnRateKgS * dtSeconds);
+    const effectiveMassKg = Math.max(
+      MIN_ROCKET_MASS_KG,
+      (Number(boosterState.massKg) || MIN_ROCKET_MASS_KG) - (0.5 * burnKg),
+    );
+    const accelerationMagKmS2 = thrustN > 0
+      ? (thrustN / effectiveMassKg) / 1000
+      : 0;
+    runtime.booster.phase = command.phase || "descent";
+    runtime.booster.guidanceMode = command.guidanceMode || "booster-guidance";
+    runtime.booster.lastStep = {
+      accelerationKmS2: scale(direction, accelerationMagKmS2),
+      throttle: requestedThrottle,
+      thrustN,
+      burnKg,
+      burnRateKgS,
+      dynamicPressurePa,
+      guidanceMode: requestedThrottle <= 0 && !landingPhase && stageReservePropellantKg(0) > 0
+        ? `${runtime.booster.guidanceMode}+reserve-hold`
+        : runtime.booster.guidanceMode,
+      touchdownReady: Boolean(command.touchdownReady),
+    };
+    runtime.booster.telemetry = boosterTelemetryFromState({
+      gravitationalConstantKm3PerKgS2,
+      earthMassKg: Number(getEarthMassKg?.()) || 0,
+      earthRadiusKm,
+      earthState,
+      boosterState,
+      atmosphereSample,
+      earthPole: currentEarthAxes.pole,
+      dynamicPressurePaOverride: dynamicPressurePa,
+      runtime,
+    });
+  }
+
+  function finalizeBoosterStep(state, dtSeconds, nowMs = Date.now()) {
+    if (!runtime.booster.active && !runtime.booster.landed) {
+      return;
+    }
+    const boosterState = boosterStateFromNBody(state);
+    const earthState = earthStateFromNBody(state);
+    if (!boosterState || !earthState) {
+      clearBoosterFromState(state);
+      return;
+    }
+
+    const burnKg = Number(runtime.booster.lastStep?.burnKg) || 0;
+    if (burnKg > 0) {
+      boosterState.massKg = Math.max(
+        Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || MIN_ROCKET_MASS_KG,
+        boosterState.massKg - burnKg,
+      );
+      runtime.booster.propellantKg = Math.max(0, runtime.booster.propellantKg - burnKg);
+    }
+
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const currentEarthAxes = earthAxes(nowMs);
+    const contact = applyEarthSurfaceContactForVehicle({
+      rocketState: boosterState,
+      earthState,
+      earthAxes: currentEarthAxes,
+      earthRadiusKm,
+      earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+      referenceOffsetKm: BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
+      dtSeconds,
+      thrustN: Number(runtime.booster.lastStep?.thrustN) || 0,
+    });
+    if (contact?.surfaceSample) {
+      runtime.booster.lastSurfaceSample = contact.surfaceSample;
+    }
+
+    const relPosNow = subtract(boosterState.position, earthState.position);
+    const relVelNow = subtract(
+      boosterState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const speedKmS = length(relVelNow);
+    const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
+    const terrainAltKm = Number(runtime.booster.lastSurfaceSample?.altitudeAboveTerrainKm);
+    const centerAboveTerrainKm = Number.isFinite(terrainAltKm) ? terrainAltKm : altitudeKm;
+    const bodyAboveTerrainKm = centerAboveTerrainKm - BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM;
+
+    if (
+      (contact?.contact || bodyAboveTerrainKm <= 0.02)
+      && speedKmS < 0.04
+    ) {
+      runtime.booster.contactHoldSec += Math.max(0, dtSeconds);
+    } else {
+      runtime.booster.contactHoldSec = 0;
+    }
+    if (runtime.booster.contactHoldSec >= 1.5) {
+      runtime.booster.landed = true;
+      runtime.booster.phase = "landed";
+      runtime.booster.guidanceMode = "booster-landed";
+      runtime.booster.lastStep = zeroBoosterStep("booster-landed");
+      runtime.booster.active = false;
+    }
+
+    const atmosphereSample = sampleEarthAtmosphere?.(Math.max(0, altitudeKm)) || null;
+    const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+      atmosphereSample,
+      relPosNow,
+      relVelNow,
+      currentEarthAxes.pole,
+    );
+    runtime.booster.telemetry = boosterTelemetryFromState({
+      gravitationalConstantKm3PerKgS2,
+      earthMassKg: Number(getEarthMassKg?.()) || 0,
+      earthRadiusKm,
+      earthState,
+      boosterState,
+      atmosphereSample,
+      earthPole: currentEarthAxes.pole,
+      dynamicPressurePaOverride: dynamicPressurePa,
+      runtime,
+    });
   }
 
   function prepareStep(state, dtSeconds, nowMs = Date.now()) {
     runtime.lastStep = null;
+    prepareBoosterStep(state, dtSeconds, nowMs);
     if (runtime.phase === "idle") {
       return;
     }
@@ -1297,7 +2033,7 @@ export function createLaunchController(options) {
 
     if (runtime.phase === "coast") {
       if (runtime.autopilotEnabled) {
-        const autopilotCommand = computeAutopilotCommand({
+        let autopilotCommand = computeAutopilotCommand({
           runtime,
           orbital,
           relPos,
@@ -1308,6 +2044,26 @@ export function createLaunchController(options) {
           earthRadiusKm,
           dynamicPressurePa,
         });
+        if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+          const missionCommand = computeMoonOrbitReturnAutopilotCommand({
+            runtime,
+            state,
+            earthState,
+            rocketState,
+            orbital,
+            relPos,
+            relVel,
+            up: orbital.up,
+            earthPole: currentEarthAxes.pole,
+            muKm3S2,
+            earthRadiusKm,
+            getBodyRadiusKm,
+            getBodyMassKg,
+          });
+          if (missionCommand) {
+            autopilotCommand = missionCommand;
+          }
+        }
         if (autopilotCommand.phase === "powered") {
           runtime.phase = "powered";
         } else if (autopilotCommand.phase === "orbit") {
@@ -1430,7 +2186,7 @@ export function createLaunchController(options) {
     });
 
     if (runtime.autopilotEnabled) {
-      const autopilotCommand = computeAutopilotCommand({
+      let autopilotCommand = computeAutopilotCommand({
         runtime,
         orbital,
         relPos,
@@ -1441,6 +2197,26 @@ export function createLaunchController(options) {
         earthRadiusKm,
         dynamicPressurePa,
       });
+      if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+        const missionCommand = computeMoonOrbitReturnAutopilotCommand({
+          runtime,
+          state,
+          earthState,
+          rocketState,
+          orbital,
+          relPos,
+          relVel,
+          up: orbital.up,
+          earthPole: currentEarthAxes.pole,
+          muKm3S2,
+          earthRadiusKm,
+          getBodyRadiusKm,
+          getBodyMassKg,
+        });
+        if (missionCommand) {
+          autopilotCommand = missionCommand;
+        }
+      }
       if (autopilotCommand.phase === "coast") {
         runtime.phase = "coast";
         const rcs = computeRcsAssist({
@@ -1532,7 +2308,9 @@ export function createLaunchController(options) {
     const burnRateKgS = thrustN > 0 && ispS > 0
       ? thrustN / (ispS * STANDARD_GRAVITY_M_S2)
       : 0;
-    const burnKg = Math.min(runtime.stagePropellantKg, burnRateKgS * dtSeconds);
+    const reservePropellantKg = stageReservePropellantKg(runtime.stageIndex);
+    const availablePropellantKg = Math.max(0, runtime.stagePropellantKg - reservePropellantKg);
+    const burnKg = Math.min(availablePropellantKg, burnRateKgS * dtSeconds);
     const effectiveMassKg = Math.max(
       MIN_ROCKET_MASS_KG,
       rocketState.massKg - (0.5 * burnKg),
@@ -1574,14 +2352,17 @@ export function createLaunchController(options) {
   }
 
   function externalAccelerationKmS2(bodyId) {
-    if (bodyId !== LAUNCH_BODY_ID) {
-      return { x: 0, y: 0, z: 0 };
+    if (bodyId === LAUNCH_BODY_ID) {
+      return runtime.lastStep?.accelerationKmS2 || { x: 0, y: 0, z: 0 };
     }
-    return runtime.lastStep?.accelerationKmS2 || { x: 0, y: 0, z: 0 };
+    if (bodyId === LAUNCH_BOOSTER_BODY_ID) {
+      return runtime.booster.lastStep?.accelerationKmS2 || { x: 0, y: 0, z: 0 };
+    }
+    return { x: 0, y: 0, z: 0 };
   }
 
   function finalizeStep(state, dtSeconds, nowMs = Date.now()) {
-    if (runtime.phase === "idle") {
+    if (runtime.phase === "idle" && !runtime.booster.active) {
       return;
     }
     if (runtime.phase === "complete") {
@@ -1602,6 +2383,14 @@ export function createLaunchController(options) {
       currentEarthAxes,
       distanceStageIndex,
     );
+    const boosterState = boosterStateFromNBody(state);
+    if (boosterState) {
+      accumulateBoosterDistanceTravelled(
+        boosterState,
+        earthState,
+        currentEarthAxes,
+      );
+    }
     const contact = applyEarthSurfaceContactForVehicle({
       rocketState,
       earthState,
@@ -1643,6 +2432,7 @@ export function createLaunchController(options) {
         dynamicPressurePaOverride: dynamicPressurePa,
         runtime,
       });
+      finalizeBoosterStep(state, dtSeconds, nowMs);
       runtime.elapsedSeconds += dtSeconds;
       return;
     }
@@ -1659,15 +2449,42 @@ export function createLaunchController(options) {
     }
 
     const stage = stageAtIndex(runtime.stageIndex);
-    if (stage && runtime.stagePropellantKg <= 1e-6) {
-      rocketState.massKg = Math.max(
-        MIN_ROCKET_MASS_KG,
-        rocketState.massKg - stage.dryMassKg,
-      );
+    const reservePropellantKg = stageReservePropellantKg(runtime.stageIndex);
+    const stagePropellantThresholdKg = reservePropellantKg + 1e-6;
+    if (stage && runtime.stagePropellantKg <= stagePropellantThresholdKg) {
+      if (runtime.stageIndex === 0) {
+        const separatedBooster = createSeparatedBoosterState({
+          state,
+          rocketState,
+          earthState,
+          currentEarthAxes,
+          stage,
+        });
+        if (separatedBooster) {
+          const detachedMassKg =
+            (Number(stage.dryMassKg) || Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0)
+            + runtime.booster.propellantKg;
+          rocketState.massKg = Math.max(
+            MIN_ROCKET_MASS_KG,
+            rocketState.massKg - detachedMassKg,
+          );
+        } else {
+          rocketState.massKg = Math.max(
+            MIN_ROCKET_MASS_KG,
+            rocketState.massKg - (Number(stage.dryMassKg) || 0),
+          );
+        }
+      } else {
+        rocketState.massKg = Math.max(
+          MIN_ROCKET_MASS_KG,
+          rocketState.massKg - (Number(stage.dryMassKg) || 0),
+        );
+      }
+
       runtime.stageIndex += 1;
       const nextStage = stageAtIndex(runtime.stageIndex);
       if (nextStage) {
-        runtime.stagePropellantKg = nextStage.propellantMassKg;
+        runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
         runtime.coastRemainingSec = Math.max(0, Number(stage.coastAfterBurnSec) || 0);
         runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
       } else {
@@ -1709,6 +2526,7 @@ export function createLaunchController(options) {
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
+    finalizeBoosterStep(state, dtSeconds, nowMs);
   }
 
   function statusSnapshot() {
@@ -1721,12 +2539,23 @@ export function createLaunchController(options) {
         stageIndex: runtime.stageIndex,
         autopilotMode: runtime.autopilotMode || "manual",
         targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+        missionId: runtime.mission.selectedId,
+        missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
+        missionPhase: runtime.mission.phase,
+        missionCompleted: Boolean(runtime.mission.completed),
         rcsActive: false,
         rcsErrorDeg: 0,
         rcsAuthority: 0,
         rcsJets: [],
         boosterDistanceKm: runtime.boosterDistanceKm,
         starshipDistanceKm: runtime.starshipDistanceKm,
+        boosterPhase: runtime.booster.phase,
+        boosterGuidanceMode: runtime.booster.guidanceMode,
+        boosterActive: runtime.booster.active,
+        boosterLanded: runtime.booster.landed,
+        boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
+        boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
+        boosterPropellantKg: Number(runtime.booster.propellantKg) || 0,
         terrainElevationKm: null,
         altitudeAboveTerrainKm: null,
         latitudeDeg: null,
@@ -1753,6 +2582,10 @@ export function createLaunchController(options) {
       burnRateKgS: telemetry.burnRateKgS,
       dynamicPressurePa: telemetry.dynamicPressurePa,
       guidanceMode: telemetry.guidanceMode,
+      missionId: telemetry.missionId,
+      missionName: telemetry.missionName,
+      missionPhase: telemetry.missionPhase,
+      missionCompleted: telemetry.missionCompleted,
       autopilotMode: telemetry.autopilotMode,
       rcsActive: telemetry.rcsActive,
       rcsErrorDeg: telemetry.rcsErrorDeg,
@@ -1765,12 +2598,44 @@ export function createLaunchController(options) {
       timeToApoapsisSec: telemetry.timeToApoapsisSec,
       boosterDistanceKm: telemetry.boosterDistanceKm,
       starshipDistanceKm: telemetry.starshipDistanceKm,
+      boosterPhase: runtime.booster.telemetry?.phase || runtime.booster.phase,
+      boosterGuidanceMode: runtime.booster.telemetry?.guidanceMode || runtime.booster.guidanceMode,
+      boosterActive: runtime.booster.active,
+      boosterLanded: runtime.booster.landed,
+      boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
+      boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
+      boosterPropellantKg: Number(runtime.booster.telemetry?.propellantKg) || Number(runtime.booster.propellantKg) || 0,
       terrainElevationKm: telemetry.terrainElevationKm,
       altitudeAboveTerrainKm: telemetry.altitudeAboveTerrainKm,
       latitudeDeg: telemetry.latitudeDeg,
       longitudeDeg: telemetry.longitudeDeg,
       statusLine: runtime.lastError || `${phaseLabel(runtime.phase)} | ${telemetry.stageName}`,
     };
+  }
+
+  function setMissionProfile(missionId) {
+    const normalized = normalizeMissionId(missionId);
+    runtime.mission.selectedId = normalized;
+    runtime.mission.completed = false;
+    setMissionPhase(runtime, defaultMissionPhaseForProfileId(normalized));
+    return {
+      ...safeMissionProfile(normalized),
+      phase: runtime.mission.phase,
+      completed: runtime.mission.completed,
+    };
+  }
+
+  function getMissionProfile() {
+    const profile = safeMissionProfile(runtime.mission.selectedId);
+    return {
+      ...profile,
+      phase: runtime.mission.phase,
+      completed: runtime.mission.completed,
+    };
+  }
+
+  function getMissionProfiles() {
+    return LAUNCH_MISSION_PROFILES.map((profile) => ({ ...profile }));
   }
 
   return {
@@ -1783,8 +2648,11 @@ export function createLaunchController(options) {
     externalAccelerationKmS2,
     finalizeStep,
     statusSnapshot,
+    setMissionProfile,
+    getMissionProfile,
+    getMissionProfiles,
     isActive() {
-      return runtime.phase !== "idle";
+      return runtime.phase !== "idle" || runtime.booster.active;
     },
   };
 }

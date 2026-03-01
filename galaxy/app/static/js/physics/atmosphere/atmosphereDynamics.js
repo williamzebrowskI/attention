@@ -29,6 +29,10 @@ const DRAG_CONFIG_BY_BODY_ID = Object.freeze({
     dragCoefficient: 0.32,
     areaM2: 63.62,
   }),
+  earth_launch_booster: Object.freeze({
+    dragCoefficient: 0.42,
+    areaM2: 78,
+  }),
 });
 
 function clamp(value, min, max) {
@@ -199,7 +203,7 @@ function launchVehicleDragCoefficientForMach(mach) {
 }
 
 function effectiveDragCoefficient(bodyId, baseDragCoefficient, speedMS, atmosphere) {
-  if (bodyId !== "earth_launch_vehicle") {
+  if (bodyId !== "earth_launch_vehicle" && bodyId !== "earth_launch_booster") {
     return baseDragCoefficient;
   }
   const soundSpeedMs = speedOfSoundMs(Number(atmosphere?.temperatureK) || 0);

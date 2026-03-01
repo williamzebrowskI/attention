@@ -92,7 +92,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301aj";
+const FRONTEND_MODULE_VERSION = "20260301aq";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -108,8 +108,12 @@ const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
 const N_BODY_STEP_SECONDS_LAUNCH_ACTIVE = 0.25;
+const N_BODY_STEP_SECONDS_LAUNCH_COAST = 0.75;
+const N_BODY_STEP_SECONDS_LAUNCH_ORBIT = 1.25;
+const N_BODY_MAX_SUBSTEPS_PER_FRAME = 24;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
 let LAUNCH_BODY_ID = "earth_launch_vehicle";
+let LAUNCH_BOOSTER_BODY_ID = "earth_launch_booster";
 let launchFeatureEnabled = true;
 let createLaunchControllerFn = null;
 let applyStarshipVisualStageFn = null;
@@ -731,6 +735,12 @@ let orbitVisuals = new Map();
 let legendButtonsById = new Map();
 let legendGravityPanelsById = new Map();
 let legendGravityToggleButtonsById = new Map();
+let legendVehicleViewButtonsByKey = {
+  starship: null,
+  booster: null,
+};
+let legendLaunchMissionSelect = null;
+let launchVehicleViewPreference = "starship";
 let selectedId = null;
 let detailBodyId = null;
 let textureCache = new Map();
@@ -765,6 +775,7 @@ let reconnectTimer = null;
 let lastFrameTimestampMs = 0;
 let lastInfoRenderMs = 0;
 let lastLaunchStatusRenderMs = 0;
+let lastNBodyBacklogWarnMs = 0;
 let latestSolarTimestampMs = Date.now();
 
 const orbit = {
@@ -888,6 +899,9 @@ async function loadLaunchFeatureModules() {
 
   if (typeof controllerModule?.LAUNCH_BODY_ID === "string" && controllerModule.LAUNCH_BODY_ID) {
     LAUNCH_BODY_ID = controllerModule.LAUNCH_BODY_ID;
+  }
+  if (typeof controllerModule?.LAUNCH_BOOSTER_BODY_ID === "string" && controllerModule.LAUNCH_BOOSTER_BODY_ID) {
+    LAUNCH_BOOSTER_BODY_ID = controllerModule.LAUNCH_BOOSTER_BODY_ID;
   }
   createLaunchControllerFn = controllerModule?.createLaunchController || null;
   applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
@@ -1033,6 +1047,67 @@ function createInlineStarshipStackVisual(THREE, distanceScale) {
   };
 }
 
+function createInlineBoosterVisual(THREE, distanceScale) {
+  const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
+  const radius = dims.diameterKm * 0.5 * distanceScale;
+  const boosterHeight = dims.boosterHeightKm * distanceScale;
+
+  const stainless = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0xc7d0dd),
+    roughness: 0.4,
+    metalness: 0.82,
+  });
+  const darkSteel = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x1d222d),
+    roughness: 0.58,
+    metalness: 0.6,
+  });
+
+  const root = new THREE.Group();
+  const boosterGroup = new THREE.Group();
+  root.add(boosterGroup);
+
+  const boosterBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius * 1.02, boosterHeight, 36, 1, false),
+    stainless,
+  );
+  boosterGroup.add(boosterBody);
+
+  const topCap = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.5),
+    stainless,
+  );
+  topCap.position.y = 0.5 * boosterHeight;
+  boosterGroup.add(topCap);
+
+  const bellRadius = clamp(radius * 0.18, radius * 0.08, radius * 0.24);
+  const bellHeight = clamp(radius * 0.28, radius * 0.1, radius * 0.36);
+  const engineRing = clamp(radius * 0.58, radius * 0.18, radius * 0.7);
+  for (let i = 0; i < 9; i += 1) {
+    const angle = (i / 9) * Math.PI * 2;
+    const bell = new THREE.Mesh(
+      new THREE.ConeGeometry(bellRadius, bellHeight, 14, 1, true),
+      darkSteel,
+    );
+    bell.rotation.x = Math.PI;
+    bell.position.set(
+      Math.cos(angle) * engineRing,
+      -0.5 * boosterHeight - (bellHeight * 0.42),
+      Math.sin(angle) * engineRing,
+    );
+    boosterGroup.add(bell);
+  }
+
+  return {
+    root,
+    materials: [stainless, darkSteel],
+    state: null,
+    physical: {
+      radiusScene: Math.max(radius, boosterHeight * 0.5),
+    },
+  };
+}
+
 function applyInlineStarshipVisualStage(stageState, stageIndex) {
   if (!stageState?.shipGroup) {
     return;
@@ -1150,7 +1225,7 @@ function setupScene(THREE) {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
 
-  camera = new THREE.PerspectiveCamera(66, 1, 0.00001, 50000);
+  camera = new THREE.PerspectiveCamera(66, 1, 0.00000001, 50000);
   orbit.target = new THREE.Vector3(0, 0, 0);
 
   renderer = new THREE.WebGLRenderer({
@@ -1247,6 +1322,8 @@ function setupScene(THREE) {
     launchController = createLaunchControllerFn({
       getEarthRadiusKm: () => bodyRadiusKmById("earth"),
       getEarthMassKg: () => bodyMassKgById("earth"),
+      getBodyRadiusKm: (bodyId) => bodyRadiusKmById(bodyId),
+      getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
       getEarthFixedAxesEcliptic: (timestampMs) => {
         const pole = sourcePoleUnitVectorEclipticForBody("earth", timestampMs);
         const fixedAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, timestampMs);
@@ -1379,6 +1456,11 @@ function rebuildBodyLegend() {
   legendButtonsById = new Map();
   legendGravityPanelsById = new Map();
   legendGravityToggleButtonsById = new Map();
+  legendVehicleViewButtonsByKey = {
+    starship: null,
+    booster: null,
+  };
+  legendLaunchMissionSelect = null;
   const fragment = document.createDocumentFragment();
   if (legendBodyCountNode) {
     legendBodyCountNode.textContent = `${bodies.length} tracked`;
@@ -1445,6 +1527,7 @@ function rebuildBodyLegend() {
   updateLegendSelection();
   updateLegendFallbackIndicators();
   updateLegendGravityArrowIndicators();
+  updateLegendVehicleViewButtons();
   updateLaunchControls();
 }
 
@@ -1478,6 +1561,11 @@ function createLegendEntry(body, isMoon) {
     const panel = createLegendGravityPanel(body, isMoon);
     entry.appendChild(panel);
     legendGravityPanelsById.set(body.id, panel);
+  }
+
+  if (body.id === LAUNCH_BODY_ID) {
+    const panel = createLegendVehicleViewPanel();
+    entry.appendChild(panel);
   }
 
   return entry;
@@ -1561,6 +1649,98 @@ function createLegendGravityPanel(body, isMoon) {
   return panel;
 }
 
+function hasVisibleBodyState(bodyId) {
+  const visual = bodyVisuals.get(bodyId);
+  const hasCoords = Boolean(runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km);
+  return Boolean(metaById.has(bodyId) && visual?.root?.visible && hasCoords);
+}
+
+function focusLegendVehicleView(viewMode = "starship") {
+  const wantsBooster = viewMode === "booster";
+  launchVehicleViewPreference = wantsBooster ? "booster" : "starship";
+
+  const starshipAvailable = hasVisibleBodyState(LAUNCH_BODY_ID);
+  const boosterAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
+  let targetBodyId = null;
+
+  if (wantsBooster) {
+    targetBodyId = boosterAvailable ? LAUNCH_BOOSTER_BODY_ID : (starshipAvailable ? LAUNCH_BODY_ID : null);
+  } else {
+    targetBodyId = starshipAvailable ? LAUNCH_BODY_ID : (boosterAvailable ? LAUNCH_BOOSTER_BODY_ID : null);
+  }
+
+  if (!targetBodyId) {
+    updateLaunchStatusPanel(true, "Launch vehicle is not available in the current scene.");
+    updateLegendVehicleViewButtons();
+    return;
+  }
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+    setObservationMode(OBSERVATION_MODES.BODY_LOCK);
+  }
+  if (wantsBooster && !boosterAvailable && starshipAvailable) {
+    updateLaunchStatusPanel(true, "Booster View armed. Tracking stacked booster until separation.");
+  }
+  setSelected(targetBodyId, true);
+  updateLaunchControls();
+  updateLegendVehicleViewButtons();
+}
+
+function createLegendVehicleViewPanel() {
+  const panel = document.createElement("div");
+  panel.className = "legend-vehicle-panel";
+
+  const label = document.createElement("span");
+  label.className = "legend-vehicle-label";
+  label.textContent = "Tracking Views";
+  panel.appendChild(label);
+
+  const row = document.createElement("div");
+  row.className = "legend-vehicle-view-row";
+
+  const starshipButton = document.createElement("button");
+  starshipButton.type = "button";
+  starshipButton.className = "legend-vehicle-view-button";
+  starshipButton.textContent = "Starship View";
+  starshipButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    focusLegendVehicleView("starship");
+  });
+  row.appendChild(starshipButton);
+  legendVehicleViewButtonsByKey.starship = starshipButton;
+
+  const boosterButton = document.createElement("button");
+  boosterButton.type = "button";
+  boosterButton.className = "legend-vehicle-view-button";
+  boosterButton.textContent = "Booster View";
+  boosterButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    focusLegendVehicleView("booster");
+  });
+  row.appendChild(boosterButton);
+  legendVehicleViewButtonsByKey.booster = boosterButton;
+
+  panel.appendChild(row);
+  const missionLabel = document.createElement("label");
+  missionLabel.className = "legend-vehicle-mission-label";
+  missionLabel.textContent = "Mission";
+  panel.appendChild(missionLabel);
+
+  const missionSelect = document.createElement("select");
+  missionSelect.id = "legend-vehicle-mission-select";
+  missionSelect.className = "legend-vehicle-mission-select";
+  missionSelect.title = "Select launch mission";
+  missionLabel.htmlFor = missionSelect.id;
+  panel.appendChild(missionSelect);
+  legendLaunchMissionSelect = missionSelect;
+  setupLaunchMissionPicker();
+
+  return panel;
+}
+
 function sortBySemimajorAxisThenName(a, b) {
   const aAxis = Number(a?.semimajor_axis_km);
   const bAxis = Number(b?.semimajor_axis_km);
@@ -1576,6 +1756,7 @@ function updateLegendSelection() {
   for (const [bodyId, button] of legendButtonsById.entries()) {
     button.classList.toggle("selected", bodyId === selectedId);
   }
+  updateLegendVehicleViewButtons();
 }
 
 function isBodyNBodyFallback(bodyId) {
@@ -1628,6 +1809,36 @@ function updateLegendGravityArrowIndicators() {
     toggle.textContent = enabled ? "On" : "Off";
     toggle.classList.toggle("on", enabled);
     toggle.setAttribute("aria-pressed", enabled ? "true" : "false");
+  }
+  updateLegendVehicleViewButtons();
+}
+
+function updateLegendVehicleViewButtons() {
+  const inBodyLock = observation.mode === OBSERVATION_MODES.BODY_LOCK;
+  const starshipAvailable = hasVisibleBodyState(LAUNCH_BODY_ID);
+  const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
+
+  const starshipButton = legendVehicleViewButtonsByKey.starship;
+  if (starshipButton) {
+    const active = inBodyLock
+      && selectedId === LAUNCH_BODY_ID
+      && launchVehicleViewPreference !== "booster";
+    starshipButton.disabled = !starshipAvailable;
+    starshipButton.classList.toggle("on", active);
+    starshipButton.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+
+  const boosterButton = legendVehicleViewButtonsByKey.booster;
+  if (boosterButton) {
+    const boosterViewAvailable = boosterDetachedAvailable || starshipAvailable;
+    const active = inBodyLock
+      && (
+        selectedId === LAUNCH_BOOSTER_BODY_ID
+        || (selectedId === LAUNCH_BODY_ID && launchVehicleViewPreference === "booster")
+      );
+    boosterButton.disabled = !boosterViewAvailable;
+    boosterButton.classList.toggle("on", active);
+    boosterButton.setAttribute("aria-pressed", active ? "true" : "false");
   }
 }
 
@@ -1691,6 +1902,42 @@ function updatePhysicsOverlayControls() {
   }
 }
 
+function setupLaunchMissionPicker() {
+  if (!legendLaunchMissionSelect) {
+    return;
+  }
+  const profiles = launchController?.getMissionProfiles?.() || [];
+  const selectedProfile = launchController?.getMissionProfile?.() || null;
+  const selectedId = selectedProfile?.id || "";
+
+  legendLaunchMissionSelect.innerHTML = "";
+  for (const profile of profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    option.title = profile.description || profile.name;
+    legendLaunchMissionSelect.appendChild(option);
+  }
+  if (selectedId && profiles.some((profile) => profile.id === selectedId)) {
+    legendLaunchMissionSelect.value = selectedId;
+  } else if (profiles.length > 0) {
+    legendLaunchMissionSelect.value = profiles[0].id;
+  }
+  legendLaunchMissionSelect.disabled = profiles.length <= 0;
+
+  if (legendLaunchMissionSelect.dataset.bound !== "true") {
+    legendLaunchMissionSelect.addEventListener("change", () => {
+      const selected = legendLaunchMissionSelect.value;
+      const applied = launchController?.setMissionProfile?.(selected);
+      if (!applied) {
+        return;
+      }
+      updateLaunchStatusPanel(true, `Mission selected: ${applied.name}`);
+    });
+    legendLaunchMissionSelect.dataset.bound = "true";
+  }
+}
+
 function setupLaunchControls() {
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
@@ -1698,6 +1945,7 @@ function setupLaunchControls() {
     launchResetButton?.remove();
     return;
   }
+  setupLaunchMissionPicker();
   if (launchControlButton) {
     launchControlButton.addEventListener("click", () => {
       if (launchModuleLoadError) {
@@ -1712,6 +1960,9 @@ function setupLaunchControls() {
         updateLaunchStatusPanel(true, "Launch already active.");
         updateLaunchControls();
         return;
+      }
+      if (legendLaunchMissionSelect?.value) {
+        launchController.setMissionProfile?.(legendLaunchMissionSelect.value);
       }
       const started = launchController.startLaunch(nBodyState, Date.now());
       if (started) {
@@ -1782,6 +2033,14 @@ function updateLaunchControls() {
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
   }
+  if (legendLaunchMissionSelect) {
+    const selectedMissionId = launchController?.getMissionProfile?.()?.id || "";
+    if (selectedMissionId && legendLaunchMissionSelect.value !== selectedMissionId) {
+      legendLaunchMissionSelect.value = selectedMissionId;
+    }
+    legendLaunchMissionSelect.disabled = !launchController || legendLaunchMissionSelect.options.length <= 0;
+  }
+  updateLegendVehicleViewButtons();
 }
 
 function updateLaunchStatusPanel(force = false, fallbackLine = "") {
@@ -1830,7 +2089,13 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const rcsLine = snapshot.rcsActive
     ? ` | RCS ${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 0)}% [${Array.isArray(snapshot.rcsJets) && snapshot.rcsJets.length > 0 ? snapshot.rcsJets.join(",") : "active"}]`
     : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine} | ${snapshot.launchSiteName || "Launch Site"}`;
+  const boosterLine = snapshot.boosterPhase
+    ? ` | Booster ${snapshot.boosterPhase}${Number.isFinite(snapshot.boosterAltitudeKm) ? ` ${formatNumber(snapshot.boosterAltitudeKm, 2)} km` : ""}`
+    : "";
+  const missionLine = snapshot.missionName
+    ? ` | Mission ${snapshot.missionName}${snapshot.missionPhase ? ` (${snapshot.missionPhase})` : ""}${snapshot.missionCompleted ? " [complete]" : ""}`
+    : "";
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine}${boosterLine}${missionLine} | ${snapshot.launchSiteName || "Launch Site"}`;
 }
 
 function phaseLabelForLaunch(phase) {
@@ -1920,6 +2185,66 @@ function updateLaunchVehicleVisuals() {
   const targetQuaternion = new THREE_NS.Quaternion()
     .setFromUnitVectors(defaultAxis, targetDirection);
   visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
+}
+
+function updateBoosterVehicleVisuals() {
+  if (!launchFeatureEnabled || !THREE_NS) {
+    return;
+  }
+  const visual = bodyVisuals.get(LAUNCH_BOOSTER_BODY_ID);
+  if (!visual?.root?.visible) {
+    return;
+  }
+  const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BOOSTER_BODY_ID);
+  const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
+  const boosterCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BOOSTER_BODY_ID);
+  const earthCoordsKm = runtimeCoordsOrLiveById("earth");
+  if (!velocityKmS) {
+    return;
+  }
+
+  const relVelocityKmS = earthVelocityKmS
+    ? {
+        x: (Number(velocityKmS.x) || 0) - (Number(earthVelocityKmS.x) || 0),
+        y: (Number(velocityKmS.y) || 0) - (Number(earthVelocityKmS.y) || 0),
+        z: (Number(velocityKmS.z) || 0) - (Number(earthVelocityKmS.z) || 0),
+      }
+    : velocityKmS;
+  const velocityScene = new THREE_NS.Vector3(
+    Number(relVelocityKmS.x) || 0,
+    Number(relVelocityKmS.z) || 0,
+    Number(relVelocityKmS.y) || 0,
+  );
+  const speed = velocityScene.length();
+  const prograde = speed > 1e-12 ? velocityScene.clone().multiplyScalar(1 / speed) : null;
+
+  let upScene = null;
+  if (boosterCoordsKm && earthCoordsKm) {
+    const up = new THREE_NS.Vector3(
+      (Number(boosterCoordsKm.x) || 0) - (Number(earthCoordsKm.x) || 0),
+      (Number(boosterCoordsKm.z) || 0) - (Number(earthCoordsKm.z) || 0),
+      (Number(boosterCoordsKm.y) || 0) - (Number(earthCoordsKm.y) || 0),
+    );
+    const upLen = up.length();
+    if (upLen > 1e-12) {
+      upScene = up.multiplyScalar(1 / upLen);
+    }
+  }
+
+  const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
+  let targetDirection = upScene || prograde || defaultAxis;
+  if (upScene && prograde) {
+    const altitudeKm = Number(launchController?.statusSnapshot()?.boosterAltitudeKm) || 0;
+    const blend = clamp((altitudeKm - 3) / 80, 0, 1) * clamp((speed - 0.02) / 0.35, 0, 1);
+    targetDirection = upScene
+      .clone()
+      .multiplyScalar(1 - blend)
+      .add(prograde.clone().multiplyScalar(blend))
+      .normalize();
+  }
+  const targetQuaternion = new THREE_NS.Quaternion()
+    .setFromUnitVectors(defaultAxis, targetDirection);
+  visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.2);
 }
 
 function setupObservationControls() {
@@ -2111,6 +2436,8 @@ async function createSpacecraftVisual(body) {
   const renderRadius = starshipPhysicalRenderRadiusSceneFn
     ? starshipPhysicalRenderRadiusSceneFn(DISTANCE_SCALE)
     : Math.max((Number(body?.radius_km) || 0.0045) * DISTANCE_SCALE, 1e-8);
+  const isLaunchVehicle = body?.id === LAUNCH_BODY_ID;
+  const isLaunchBooster = body?.id === LAUNCH_BOOSTER_BODY_ID;
   const root = new THREE_NS.Object3D();
   const tiltGroup = new THREE_NS.Object3D();
   const spinGroup = new THREE_NS.Object3D();
@@ -2118,16 +2445,20 @@ async function createSpacecraftVisual(body) {
   tiltGroup.add(spinGroup);
 
   let stack = null;
-  if (createStarshipStackVisualFn) {
-    try {
-      stack = await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE);
-    } catch (error) {
-      console.warn("[launch] Starship visual stack creation failed, using inline fallback.", error);
-      stack = null;
+  if (isLaunchBooster) {
+    stack = createInlineBoosterVisual(THREE_NS, DISTANCE_SCALE);
+  } else {
+    if (createStarshipStackVisualFn) {
+      try {
+        stack = await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE);
+      } catch (error) {
+        console.warn("[launch] Starship visual stack creation failed, using inline fallback.", error);
+        stack = null;
+      }
     }
-  }
-  if (!stack?.root) {
-    stack = createInlineStarshipStackVisual(THREE_NS, DISTANCE_SCALE);
+    if (!stack?.root) {
+      stack = createInlineStarshipStackVisual(THREE_NS, DISTANCE_SCALE);
+    }
   }
   if (stack?.root) {
     spinGroup.add(stack.root);
@@ -2173,10 +2504,12 @@ async function createSpacecraftVisual(body) {
     locationMarker: null,
     textureMode: isExternalStack ? "external_spacecraft" : "procedural_spacecraft",
     ringMode: "none",
-    mapSource: isExternalStack
+    mapSource: isLaunchBooster
+      ? "inline_super_heavy_booster_geometry"
+      : isExternalStack
       ? `${externalStackSource}${externalStackResolution ? ` (${externalStackResolution})` : ""}`
       : (isInlineStack ? "inline_starship_booster_geometry" : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry")),
-    launchStackState: stack?.state || null,
+    launchStackState: isLaunchVehicle ? (stack?.state || null) : null,
     extraMaterials: stack?.materials || [],
   };
 
@@ -4446,10 +4779,11 @@ function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceCon
   };
 }
 
-function integrateNBodyStep(state, dtSeconds) {
-  const oblateSourceContextById = buildOblateSourceContextMapForNBody(state, Date.now());
+function integrateNBodyStep(state, dtSeconds, stepNowMs = Date.now(), oblateSourceContextByIdInput = null) {
+  const oblateSourceContextById =
+    oblateSourceContextByIdInput || buildOblateSourceContextMapForNBody(state, stepNowMs);
   if (launchFeatureEnabled) {
-    launchController?.prepareStep(state, dtSeconds, Date.now());
+    launchController?.prepareStep(state, dtSeconds, stepNowMs);
   }
   const accelerationStartById = new Map();
   for (const bodyId of state.dynamicBodies.keys()) {
@@ -4477,8 +4811,27 @@ function integrateNBodyStep(state, dtSeconds) {
     bodyState.velocity.z += 0.5 * accel.z * dtSeconds;
   }
   if (launchFeatureEnabled) {
-    launchController?.finalizeStep(state, dtSeconds, Date.now());
+    launchController?.finalizeStep(state, dtSeconds, stepNowMs);
   }
+}
+
+function launchStepSecondsFromSnapshot(snapshot) {
+  const phase = String(snapshot?.phase || "").toLowerCase();
+  const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
+  const boosterBurning =
+    boosterPhase.includes("burn") ||
+    boosterPhase.includes("boostback");
+
+  if (phase === "powered" || boosterBurning) {
+    return N_BODY_STEP_SECONDS_LAUNCH_ACTIVE;
+  }
+  if (phase === "coast") {
+    return N_BODY_STEP_SECONDS_LAUNCH_COAST;
+  }
+  if (phase === "orbit") {
+    return N_BODY_STEP_SECONDS_LAUNCH_ORBIT;
+  }
+  return Math.max(N_BODY_STEP_SECONDS_LAUNCH_ACTIVE, N_BODY_STEP_SECONDS_LAUNCH_COAST);
 }
 
 function updateNBodySimulation(nowMs) {
@@ -4502,11 +4855,28 @@ function updateNBodySimulation(nowMs) {
   }
 
   const launchActive = launchFeatureEnabled && Boolean(launchController?.isActive?.());
-  const stepSeconds = launchActive ? N_BODY_STEP_SECONDS_LAUNCH_ACTIVE : N_BODY_STEP_SECONDS;
-  while (elapsedSeconds > 1e-9) {
+  const launchSnapshot = launchActive ? (launchController?.statusSnapshot?.() || null) : null;
+  const stepSeconds = launchSnapshot
+    ? launchStepSecondsFromSnapshot(launchSnapshot)
+    : N_BODY_STEP_SECONDS;
+  const oblateSourceContextById = buildOblateSourceContextMapForNBody(nBodyState, nowMs);
+  let substeps = 0;
+  let stepNowMs = nBodyState.lastUpdateMs;
+  while (elapsedSeconds > 1e-9 && substeps < N_BODY_MAX_SUBSTEPS_PER_FRAME) {
     const dtSeconds = Math.min(stepSeconds, elapsedSeconds);
-    integrateNBodyStep(nBodyState, dtSeconds);
+    integrateNBodyStep(nBodyState, dtSeconds, stepNowMs, oblateSourceContextById);
     elapsedSeconds -= dtSeconds;
+    stepNowMs += dtSeconds * 1000;
+    substeps += 1;
+  }
+  if (elapsedSeconds > 1e-6) {
+    const now = Date.now();
+    if (now - lastNBodyBacklogWarnMs > 4000) {
+      lastNBodyBacklogWarnMs = now;
+      console.warn(
+        `[n-body] backlog drop: skipped ${elapsedSeconds.toFixed(3)}s after ${substeps} substeps (step=${stepSeconds}s)`,
+      );
+    }
   }
   nBodyState.lastUpdateMs = nowMs;
 }
@@ -5027,7 +5397,12 @@ function applyScenePositions(runtimeCoordsKm) {
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
     const selected = bodyVisuals.get(selectedId);
     if (selected) {
-      orbit.target.copy(selected.root.position);
+      const lockTarget = resolveBodyLockTargetPosition(selectedId);
+      if (lockTarget) {
+        orbit.target.copy(lockTarget);
+      } else {
+        orbit.target.copy(selected.root.position);
+      }
     }
   }
 }
@@ -5326,6 +5701,52 @@ function preferredCameraDistanceForSelection(visual) {
   );
 }
 
+function resolveBodyLockTargetPosition(bodyId) {
+  const visual = bodyVisuals.get(bodyId);
+  if (!visual) {
+    return null;
+  }
+  const target = visual.root.position.clone();
+  if (bodyId !== LAUNCH_BODY_ID || !THREE_NS) {
+    return target;
+  }
+  const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
+  if (boosterDetachedAvailable) {
+    return target;
+  }
+  const spinGroup = visual.spinGroup;
+  if (!spinGroup) {
+    return target;
+  }
+  const worldQuat = new THREE_NS.Quaternion();
+  spinGroup.getWorldQuaternion(worldQuat);
+  const stackAxis = new THREE_NS.Vector3(0, 1, 0).applyQuaternion(worldQuat).normalize();
+  const stackHalfHeightScene = (INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM * DISTANCE_SCALE) * 0.5;
+  const offsetMagnitude = Math.max(visual.renderRadius * 0.52, stackHalfHeightScene * 0.9);
+  if (launchVehicleViewPreference === "booster") {
+    target.addScaledVector(stackAxis, -offsetMagnitude);
+  } else {
+    target.addScaledVector(stackAxis, offsetMagnitude * 0.38);
+  }
+  return target;
+}
+
+function syncLaunchVehicleViewSelection() {
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+    return;
+  }
+  if (launchVehicleViewPreference !== "booster") {
+    return;
+  }
+  if (selectedId !== LAUNCH_BODY_ID) {
+    return;
+  }
+  if (!hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID)) {
+    return;
+  }
+  setSelected(LAUNCH_BOOSTER_BODY_ID, false);
+}
+
 function setSelected(bodyId, moveCamera) {
   const selectionChanged = selectedId !== bodyId;
   selectedId = bodyId;
@@ -5345,7 +5766,12 @@ function setSelected(bodyId, moveCamera) {
   const canReframe = observation.mode === OBSERVATION_MODES.BODY_LOCK;
   if (canReframe && liveCoords) {
     orbit.minDistance = minOrbitDistanceForVisual(visual);
-    orbit.target.copy(visual.root.position);
+    const lockTarget = resolveBodyLockTargetPosition(bodyId);
+    if (lockTarget) {
+      orbit.target.copy(lockTarget);
+    } else {
+      orbit.target.copy(visual.root.position);
+    }
   }
   if (moveCamera && canReframe) {
     if (liveCoords) {
@@ -6283,6 +6709,9 @@ function animate(timestampMs = 0) {
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
     applyScenePositions(runtimeCoordsKmById);
   }
+  if (launchFeatureEnabled) {
+    syncLaunchVehicleViewSelection();
+  }
   updateGravityVectors();
   updatePhysicsOverlays();
   if (launchFeatureEnabled) {
@@ -6291,6 +6720,7 @@ function animate(timestampMs = 0) {
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
   if (launchFeatureEnabled) {
     updateLaunchVehicleVisuals();
+    updateBoosterVehicleVisuals();
   }
   updateBodyEclipseUniforms();
   updateSunlightModel();
@@ -6457,7 +6887,7 @@ function updateInfoOverlay() {
   const dominantGravityMS2 = Number.isFinite(gravity?.dominantContributionMS2)
     ? gravity.dominantContributionMS2
     : null;
-  const launchSnapshot = launchFeatureEnabled && meta.id === LAUNCH_BODY_ID
+  const launchSnapshot = launchFeatureEnabled && (meta.id === LAUNCH_BODY_ID || meta.id === LAUNCH_BOOSTER_BODY_ID)
     ? (launchController?.statusSnapshot() || null)
     : null;
   const launchDurationLabel = launchSnapshot?.phase === "complete"
@@ -6488,6 +6918,70 @@ function updateInfoOverlay() {
       <p class="line">Days Remaining in Orbit: ${formatNumber(Math.max(remainingDays, 0))}</p>
     `;
   }
+
+  if (meta.id === LAUNCH_BODY_ID || meta.id === LAUNCH_BOOSTER_BODY_ID) {
+    const selectedVehicleLabel = meta.id === LAUNCH_BODY_ID ? "Starship" : "Booster";
+    const missionElapsedLine = launchSnapshot
+      ? `${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}`
+      : "Mission Elapsed: n/a";
+    const launchGuidanceMode = launchSnapshot?.guidanceMode || launchSnapshot?.autopilotMode || "n/a";
+    const boosterGuidanceMode = launchSnapshot?.boosterGuidanceMode || "n/a";
+    const starshipAltitudeLine = Number.isFinite(launchSnapshot?.altitudeKm)
+      ? `${formatNumber(launchSnapshot.altitudeKm)} km`
+      : "n/a";
+    const starshipSpeedLine = Number.isFinite(launchSnapshot?.speedKmS)
+      ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s`
+      : "n/a";
+    const starshipDistanceLine = Number.isFinite(launchSnapshot?.starshipDistanceKm)
+      ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km`
+      : "n/a";
+    const starshipThrustLine = Number.isFinite(launchSnapshot?.thrustN)
+      ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN @ ${Number.isFinite(launchSnapshot?.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}`
+      : "n/a";
+    const starshipOrbitLine = `${Number.isFinite(launchSnapshot?.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot?.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}`;
+    const boosterAltitudeLine = Number.isFinite(launchSnapshot?.boosterAltitudeKm)
+      ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km`
+      : "n/a";
+    const boosterSpeedLine = Number.isFinite(launchSnapshot?.boosterSpeedKmS)
+      ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s`
+      : "n/a";
+    const boosterPropellantLine = Number.isFinite(launchSnapshot?.boosterPropellantKg)
+      ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg`
+      : "n/a";
+    const boosterDistanceLine = Number.isFinite(launchSnapshot?.boosterDistanceKm)
+      ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km`
+      : "n/a";
+    const coordsLine = hasCoords ? `${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}` : "n/a";
+
+    infoCard.innerHTML = `
+      <p class="title">Launch Telemetry (${selectedVehicleLabel})</p>
+      <p class="line">Observation Mode: ${observationModeLabel}</p>
+      <p class="line">Data Source: ${live.source}${sourceError}</p>
+      <p class="line">Mission: ${launchSnapshot?.missionName || "n/a"} | Phase: ${launchSnapshot?.missionPhase || "n/a"} | Complete: ${launchSnapshot?.missionCompleted ? "yes" : "no"}</p>
+      <p class="line launch-line">${missionElapsedLine}</p>
+      <p class="line launch-line">Launch Site: ${launchSnapshot?.launchSiteName || "n/a"}</p>
+      <p class="line launch-line">Starship</p>
+      <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
+      <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
+      <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
+      <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
+      <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
+      <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
+      <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>
+      <p class="line launch-line">Booster</p>
+      <p class="line launch-line">Phase: ${launchSnapshot?.boosterPhase || "n/a"} | Guidance: ${boosterGuidanceMode}</p>
+      <p class="line launch-line">Altitude: ${boosterAltitudeLine} | Speed: ${boosterSpeedLine}</p>
+      <p class="line launch-line">Propellant: ${boosterPropellantLine}</p>
+      <p class="line launch-line">Distance Traveled: ${boosterDistanceLine}</p>
+      <p class="line launch-line">Landed: ${launchSnapshot?.boosterLanded ? "yes" : "no"}</p>
+      <p class="line">Map Texture Source: ${visual.mapSource || "n/a"}</p>
+      <p class="line">Camera Distance: ${formatNumber(cameraDistance)} scene units</p>
+      <p class="line">XYZ (km): ${coordsLine}</p>
+    `;
+    infoCard.classList.add("visible");
+    return;
+  }
+
   const eclipseOccluderNames = eclipseOccluderIdsForBody(meta)
     .map((bodyId) => metaById.get(bodyId)?.name || bodyId);
   const eclipseCenterTransmittancePct =
@@ -6503,11 +6997,15 @@ function updateInfoOverlay() {
   const launchPhysicsLine = launchSnapshot
     ? `<p class="line launch-line">Launch Phase: ${launchSnapshot.phaseLabel || launchSnapshot.phase || "n/a"}</p>
        <p class="line launch-line">Launch Stage: ${launchSnapshot.stageName || "n/a"}</p>
+       <p class="line launch-line">Mission: ${launchSnapshot.missionName || "n/a"} | Phase: ${launchSnapshot.missionPhase || "n/a"} | Complete: ${launchSnapshot.missionCompleted ? "yes" : "no"}</p>
        <p class="line launch-line">${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}</p>
        <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
        <p class="line launch-line">Altitude Above Terrain: ${Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
        <p class="line launch-line">Local Terrain Elevation: ${Number.isFinite(launchSnapshot.terrainElevationKm) ? `${formatNumber(launchSnapshot.terrainElevationKm, 3)} km` : "n/a"} | Lat/Lon: ${Number.isFinite(launchSnapshot.latitudeDeg) && Number.isFinite(launchSnapshot.longitudeDeg) ? `${formatNumber(launchSnapshot.latitudeDeg, 4)}°, ${formatNumber(launchSnapshot.longitudeDeg, 4)}°` : "n/a"}</p>
        <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Booster Phase: ${launchSnapshot.boosterPhase || "n/a"} | Guidance: ${launchSnapshot.boosterGuidanceMode || "n/a"} | Landed: ${launchSnapshot.boosterLanded ? "yes" : "no"}</p>
+       <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed: ${Number.isFinite(launchSnapshot.boosterSpeedKmS) ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}</p>
        <p class="line launch-line">Booster Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Starship Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.starshipDistanceKm) ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Thrust: ${Number.isFinite(launchSnapshot.thrustN) ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}</p>
