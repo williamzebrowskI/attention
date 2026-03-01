@@ -130,7 +130,15 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
   if (!THREE || !stageGroup) {
     return null;
   }
-  const engineCount = Math.max(1, Number(options.engineCount) || 1);
+  const explicitOffsets = Array.isArray(options.offsets)
+    ? options.offsets
+      .map((entry) => ({
+        x: Number(entry?.x) || 0,
+        z: Number(entry?.z) || 0,
+      }))
+      .filter((entry) => Number.isFinite(entry.x) && Number.isFinite(entry.z))
+    : null;
+  const engineCount = explicitOffsets?.length || Math.max(1, Number(options.engineCount) || 1);
   const anchorY = Number(options.anchorY) || 0;
   const ringRadius = Math.max(0, Number(options.ringRadius) || 0);
   const basePlumeLength = Math.max(1e-12, Number(options.plumeLength) || 1e-6);
@@ -160,9 +168,16 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
 
   const entries = [];
   for (let i = 0; i < engineCount; i += 1) {
-    const angle = (i / engineCount) * Math.PI * 2;
-    const offsetX = engineCount > 1 ? Math.cos(angle) * ringRadius : 0;
-    const offsetZ = engineCount > 1 ? Math.sin(angle) * ringRadius : 0;
+    let offsetX = 0;
+    let offsetZ = 0;
+    if (explicitOffsets?.length) {
+      offsetX = explicitOffsets[i].x;
+      offsetZ = explicitOffsets[i].z;
+    } else {
+      const angle = (i / engineCount) * Math.PI * 2;
+      offsetX = engineCount > 1 ? Math.cos(angle) * ringRadius : 0;
+      offsetZ = engineCount > 1 ? Math.sin(angle) * ringRadius : 0;
+    }
 
     const plume = new THREE.Mesh(
       new THREE.ConeGeometry(basePlumeRadius, basePlumeLength, 10, 1, true),
@@ -228,6 +243,213 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
   shipGroup.add(centerBell);
   engineMeshes.push(centerBell);
   return engineMeshes;
+}
+
+function createCircularOffsets(count, ringRadius, phaseRadians = 0) {
+  const samples = Math.max(1, Number(count) || 1);
+  const radius = Math.max(0, Number(ringRadius) || 0);
+  const offsets = [];
+  for (let i = 0; i < samples; i += 1) {
+    const angle = ((i / samples) * Math.PI * 2) + phaseRadians;
+    offsets.push({
+      x: Math.cos(angle) * radius,
+      z: Math.sin(angle) * radius,
+    });
+  }
+  return offsets;
+}
+
+function createSuperHeavyEngineOffsets(radius) {
+  const safeRadius = Math.max(1e-9, Number(radius) || 1e-9);
+  const outerRingRadius = clamp(safeRadius * 0.69, safeRadius * 0.42, safeRadius * 0.74);
+  const midRingRadius = clamp(outerRingRadius * 0.57, safeRadius * 0.22, outerRingRadius * 0.63);
+  const coreRingRadius = clamp(outerRingRadius * 0.24, safeRadius * 0.08, outerRingRadius * 0.3);
+  return {
+    outerRingRadius,
+    offsets: [
+      ...createCircularOffsets(20, outerRingRadius, Math.PI / 20),
+      ...createCircularOffsets(10, midRingRadius, Math.PI / 10),
+      ...createCircularOffsets(3, coreRingRadius, Math.PI / 6),
+    ],
+  };
+}
+
+function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight) {
+  const boosterBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, boosterHeight, 64, 1, false),
+    stainless,
+  );
+  boosterGroup.add(boosterBody);
+
+  const engineSkirtHeight = clamp(boosterHeight * 0.16, radius * 0.8, boosterHeight * 0.22);
+  const engineSkirt = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.01, radius * 1.01, engineSkirtHeight, 64, 1, false),
+    darkSteel,
+  );
+  engineSkirt.position.y = (-0.5 * boosterHeight) + (0.5 * engineSkirtHeight);
+  boosterGroup.add(engineSkirt);
+
+  const thrustPuckHeight = clamp(boosterHeight * 0.028, radius * 0.12, boosterHeight * 0.055);
+  const thrustPuck = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 0.84, radius * 0.8, thrustPuckHeight, 48, 1, false),
+    darkSteel,
+  );
+  thrustPuck.position.y = (-0.5 * boosterHeight) + (thrustPuckHeight * 0.5);
+  boosterGroup.add(thrustPuck);
+
+  const boosterTopCap = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.5),
+    stainless,
+  );
+  boosterTopCap.position.y = 0.5 * boosterHeight;
+  boosterGroup.add(boosterTopCap);
+
+  const hotStageBandHeight = clamp(boosterHeight * 0.045, radius * 0.28, boosterHeight * 0.08);
+  const hotStageBand = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.035, radius * 1.035, hotStageBandHeight, 64, 1, true),
+    darkSteel,
+  );
+  hotStageBand.position.y = (0.5 * boosterHeight) + (hotStageBandHeight * 0.42);
+  boosterGroup.add(hotStageBand);
+
+  const ventCount = 24;
+  const ventWidth = clamp(radius * 0.06, radius * 0.03, radius * 0.08);
+  const ventHeight = clamp(hotStageBandHeight * 0.42, hotStageBandHeight * 0.25, hotStageBandHeight * 0.58);
+  const ventDepth = clamp(radius * 0.025, radius * 0.012, radius * 0.035);
+  for (let i = 0; i < ventCount; i += 1) {
+    const angle = (i / ventCount) * Math.PI * 2;
+    const vent = new THREE.Mesh(
+      new THREE.BoxGeometry(ventWidth, ventHeight, ventDepth),
+      darkSteel,
+    );
+    vent.position.set(
+      Math.cos(angle) * (radius * 1.035),
+      hotStageBand.position.y,
+      Math.sin(angle) * (radius * 1.035),
+    );
+    vent.rotation.y = angle;
+    boosterGroup.add(vent);
+  }
+
+  const seamFractions = [0.11, 0.24, 0.36, 0.49, 0.61, 0.74, 0.86];
+  const seamTubeRadius = clamp(radius * 0.006, radius * 0.0025, radius * 0.01);
+  for (const fraction of seamFractions) {
+    const seam = new THREE.Mesh(
+      new THREE.TorusGeometry(radius * 1.003, seamTubeRadius, 10, 64),
+      darkSteel,
+    );
+    seam.rotation.x = Math.PI * 0.5;
+    seam.position.y = (-0.5 * boosterHeight) + (fraction * boosterHeight);
+    boosterGroup.add(seam);
+  }
+
+  const stringerCount = 24;
+  const stringerHeight = boosterHeight * 0.68;
+  const stringerWidth = clamp(radius * 0.02, radius * 0.009, radius * 0.03);
+  const stringerDepth = clamp(radius * 0.01, radius * 0.0045, radius * 0.017);
+  for (let i = 0; i < stringerCount; i += 1) {
+    const angle = (i / stringerCount) * Math.PI * 2;
+    const rib = new THREE.Mesh(
+      new THREE.BoxGeometry(stringerWidth, stringerHeight, stringerDepth),
+      darkSteel,
+    );
+    rib.position.set(
+      Math.cos(angle) * (radius + (stringerDepth * 0.5)),
+      (-0.5 * boosterHeight) + (stringerHeight * 0.55),
+      Math.sin(angle) * (radius + (stringerDepth * 0.5)),
+    );
+    rib.rotation.y = angle;
+    boosterGroup.add(rib);
+  }
+
+  const gridFinWidth = clamp(radius * 1.02, radius * 0.65, radius * 1.24);
+  const gridFinHeight = clamp(radius * 0.78, radius * 0.34, radius * 1.02);
+  const gridFinDepth = clamp(radius * 0.15, radius * 0.07, radius * 0.24);
+  const gridFinY = (0.5 * boosterHeight) - (radius * 0.62);
+  for (let i = 0; i < 4; i += 1) {
+    const angle = (i / 4) * Math.PI * 2;
+    const finAssembly = new THREE.Group();
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(gridFinWidth, gridFinHeight, gridFinDepth),
+      darkSteel,
+    );
+    finAssembly.add(frame);
+
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(gridFinWidth * 0.84, gridFinHeight * 0.82, gridFinDepth * 0.62),
+      darkSteel,
+    );
+    panel.material = darkSteel.clone();
+    panel.material.opacity = 0.9;
+    panel.material.transparent = true;
+    finAssembly.add(panel);
+
+    const latticeBarWidth = gridFinWidth * 0.03;
+    const latticeBarHeight = gridFinHeight * 0.86;
+    const latticeBarDepth = gridFinDepth * 0.68;
+    for (let barIndex = -2; barIndex <= 2; barIndex += 1) {
+      const verticalBar = new THREE.Mesh(
+        new THREE.BoxGeometry(latticeBarWidth, latticeBarHeight, latticeBarDepth),
+        darkSteel,
+      );
+      verticalBar.position.x = barIndex * (gridFinWidth * 0.14);
+      finAssembly.add(verticalBar);
+    }
+    const crossBarWidth = gridFinWidth * 0.84;
+    const crossBarHeight = gridFinHeight * 0.03;
+    for (let barIndex = -1; barIndex <= 1; barIndex += 1) {
+      const horizontalBar = new THREE.Mesh(
+        new THREE.BoxGeometry(crossBarWidth, crossBarHeight, latticeBarDepth),
+        darkSteel,
+      );
+      horizontalBar.position.y = barIndex * (gridFinHeight * 0.2);
+      finAssembly.add(horizontalBar);
+    }
+
+    finAssembly.position.set(
+      Math.cos(angle) * (radius + (gridFinDepth * 0.45)),
+      gridFinY,
+      Math.sin(angle) * (radius + (gridFinDepth * 0.45)),
+    );
+    finAssembly.rotation.y = angle;
+    boosterGroup.add(finAssembly);
+  }
+
+  const engineLayout = createSuperHeavyEngineOffsets(radius);
+  const engineBellRadius = clamp(radius * 0.102, radius * 0.054, radius * 0.13);
+  const engineBellHeight = clamp(radius * 0.205, radius * 0.11, radius * 0.27);
+  const engineY = -0.5 * boosterHeight - (engineBellHeight * 0.46);
+
+  for (const offset of engineLayout.offsets) {
+    const bell = new THREE.Mesh(
+      new THREE.ConeGeometry(engineBellRadius, engineBellHeight, 14, 1, true),
+      darkSteel,
+    );
+    bell.position.set(offset.x, engineY, offset.z);
+    bell.rotation.x = Math.PI;
+    boosterGroup.add(bell);
+
+    const nozzleInterior = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        engineBellRadius * 0.4,
+        engineBellRadius * 0.33,
+        engineBellHeight * 0.28,
+        10,
+        1,
+        true,
+      ),
+      darkSteel,
+    );
+    nozzleInterior.rotation.x = Math.PI;
+    nozzleInterior.position.set(offset.x, engineY - (engineBellHeight * 0.22), offset.z);
+    boosterGroup.add(nozzleInterior);
+  }
+
+  return {
+    engineOffsets: engineLayout.offsets,
+    plumeAnchorY: -0.5 * boosterHeight - (engineBellHeight * 0.5),
+    plumeRingRadius: engineLayout.outerRingRadius,
+  };
 }
 
 function seededNoise(x, y, seed) {
@@ -551,62 +773,14 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   boosterGroup.position.y = fullBoosterCenterY;
   stackRoot.add(boosterGroup);
 
-  const boosterBody = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, boosterHeight, 40, 1, false),
+  const boosterVisualState = addSuperHeavyBoosterVisuals(
+    THREE,
+    boosterGroup,
     stainless,
+    darkSteel,
+    radius,
+    boosterHeight,
   );
-  boosterGroup.add(boosterBody);
-
-  const boosterTopCap = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 32, 20, 0, Math.PI * 2, 0, Math.PI * 0.5),
-    stainless,
-  );
-  boosterTopCap.position.y = 0.5 * boosterHeight;
-  boosterGroup.add(boosterTopCap);
-
-  const gridFinWidth = clamp(radius * 0.95, radius * 0.45, radius * 1.1);
-  const gridFinHeight = clamp(radius * 0.6, radius * 0.2, radius * 0.8);
-  const gridFinDepth = clamp(radius * 0.12, radius * 0.06, radius * 0.2);
-  const gridFinY = (0.5 * boosterHeight) - (radius * 0.55);
-  for (let i = 0; i < 4; i += 1) {
-    const angle = (i / 4) * Math.PI * 2;
-    const fin = new THREE.Mesh(
-      new THREE.BoxGeometry(gridFinWidth, gridFinHeight, gridFinDepth),
-      darkSteel,
-    );
-    fin.position.set(
-      Math.cos(angle) * (radius + (gridFinDepth * 0.35)),
-      gridFinY,
-      Math.sin(angle) * (radius + (gridFinDepth * 0.35)),
-    );
-    fin.rotation.y = angle;
-    boosterGroup.add(fin);
-  }
-
-  const engineBellRadius = clamp(radius * 0.19, radius * 0.08, radius * 0.22);
-  const engineBellHeight = clamp(radius * 0.28, radius * 0.12, radius * 0.32);
-  const engineRingRadius = clamp(radius * 0.56, radius * 0.15, radius * 0.62);
-  for (let i = 0; i < 9; i += 1) {
-    const angle = (i / 9) * Math.PI * 2;
-    const bell = new THREE.Mesh(
-      new THREE.ConeGeometry(engineBellRadius, engineBellHeight, 16, 1, true),
-      darkSteel.clone(),
-    );
-    bell.position.set(
-      Math.cos(angle) * engineRingRadius,
-      -0.5 * boosterHeight - (engineBellHeight * 0.45),
-      Math.sin(angle) * engineRingRadius,
-    );
-    bell.rotation.x = Math.PI;
-    boosterGroup.add(bell);
-  }
-  const centerBell = new THREE.Mesh(
-    new THREE.ConeGeometry(engineBellRadius * 1.1, engineBellHeight * 1.08, 18, 1, true),
-    darkSteel.clone(),
-  );
-  centerBell.position.y = -0.5 * boosterHeight - (engineBellHeight * 0.5);
-  centerBell.rotation.x = Math.PI;
-  boosterGroup.add(centerBell);
 
   const shipGroup = new THREE.Group();
   shipGroup.position.y = fullShipCenterY;
@@ -668,12 +842,12 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   }
   addShipEngineCluster(THREE, shipGroup, darkSteel, radius, shipHeight);
   const boosterMainEnginePlume = createMainEnginePlumeCluster(THREE, boosterGroup, {
-    engineCount: 9,
-    anchorY: -0.5 * boosterHeight - (engineBellHeight * 0.48),
-    ringRadius: engineRingRadius,
-    plumeLength: clamp(boosterHeight * 0.085, radius * 0.5, boosterHeight * 0.18),
-    plumeRadius: clamp(radius * 0.14, radius * 0.07, radius * 0.2),
-    glowRadius: clamp(radius * 0.11, radius * 0.05, radius * 0.16),
+    offsets: boosterVisualState.engineOffsets,
+    anchorY: boosterVisualState.plumeAnchorY,
+    ringRadius: boosterVisualState.plumeRingRadius,
+    plumeLength: clamp(boosterHeight * 0.058, radius * 0.2, boosterHeight * 0.12),
+    plumeRadius: clamp(radius * 0.058, radius * 0.024, radius * 0.09),
+    glowRadius: clamp(radius * 0.046, radius * 0.02, radius * 0.07),
   });
   const shipMainEnginePlume = createMainEnginePlumeCluster(THREE, shipGroup, {
     engineCount: 6,

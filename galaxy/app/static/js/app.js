@@ -1096,6 +1096,95 @@ async function loadLaunchFeatureModules() {
   }
 }
 
+function createInlineCircularOffsets(count, radius, phaseRadians = 0) {
+  const samples = Math.max(1, Number(count) || 1);
+  const ringRadius = Math.max(0, Number(radius) || 0);
+  const offsets = [];
+  for (let i = 0; i < samples; i += 1) {
+    const angle = ((i / samples) * Math.PI * 2) + phaseRadians;
+    offsets.push({
+      x: Math.cos(angle) * ringRadius,
+      z: Math.sin(angle) * ringRadius,
+    });
+  }
+  return offsets;
+}
+
+function createInlineSuperHeavyEngineOffsets(radius) {
+  const safeRadius = Math.max(1e-9, Number(radius) || 1e-9);
+  const outerRingRadius = clamp(safeRadius * 0.69, safeRadius * 0.42, safeRadius * 0.74);
+  const middleRingRadius = clamp(outerRingRadius * 0.57, safeRadius * 0.22, outerRingRadius * 0.63);
+  const innerRingRadius = clamp(outerRingRadius * 0.24, safeRadius * 0.08, outerRingRadius * 0.3);
+  return [
+    ...createInlineCircularOffsets(20, outerRingRadius, Math.PI / 20),
+    ...createInlineCircularOffsets(10, middleRingRadius, Math.PI / 10),
+    ...createInlineCircularOffsets(3, innerRingRadius, Math.PI / 6),
+  ];
+}
+
+function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight) {
+  const boosterBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, boosterHeight, 48, 1, false),
+    stainless,
+  );
+  boosterGroup.add(boosterBody);
+
+  const engineSkirtHeight = clamp(boosterHeight * 0.16, radius * 0.8, boosterHeight * 0.22);
+  const engineSkirt = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.01, radius * 1.01, engineSkirtHeight, 48, 1, false),
+    darkSteel,
+  );
+  engineSkirt.position.y = (-0.5 * boosterHeight) + (0.5 * engineSkirtHeight);
+  boosterGroup.add(engineSkirt);
+
+  const topCap = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 28, 20, 0, Math.PI * 2, 0, Math.PI * 0.5),
+    stainless,
+  );
+  topCap.position.y = 0.5 * boosterHeight;
+  boosterGroup.add(topCap);
+
+  const hotStageBand = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.03, radius * 1.03, clamp(boosterHeight * 0.045, radius * 0.28, boosterHeight * 0.08), 48, 1, true),
+    darkSteel,
+  );
+  hotStageBand.position.y = (0.5 * boosterHeight) + (hotStageBand.geometry.parameters.height * 0.42);
+  boosterGroup.add(hotStageBand);
+
+  const gridFinWidth = clamp(radius * 1.02, radius * 0.65, radius * 1.24);
+  const gridFinHeight = clamp(radius * 0.78, radius * 0.34, radius * 1.02);
+  const gridFinDepth = clamp(radius * 0.15, radius * 0.07, radius * 0.24);
+  const gridFinY = (0.5 * boosterHeight) - (radius * 0.62);
+  for (let i = 0; i < 4; i += 1) {
+    const angle = (i / 4) * Math.PI * 2;
+    const fin = new THREE.Mesh(
+      new THREE.BoxGeometry(gridFinWidth, gridFinHeight, gridFinDepth),
+      darkSteel,
+    );
+    fin.position.set(
+      Math.cos(angle) * (radius + (gridFinDepth * 0.4)),
+      gridFinY,
+      Math.sin(angle) * (radius + (gridFinDepth * 0.4)),
+    );
+    fin.rotation.y = angle;
+    boosterGroup.add(fin);
+  }
+
+  const engineOffsets = createInlineSuperHeavyEngineOffsets(radius);
+  const bellRadius = clamp(radius * 0.102, radius * 0.054, radius * 0.13);
+  const bellHeight = clamp(radius * 0.205, radius * 0.11, radius * 0.27);
+  const engineY = -0.5 * boosterHeight - (bellHeight * 0.46);
+  for (const offset of engineOffsets) {
+    const bell = new THREE.Mesh(
+      new THREE.ConeGeometry(bellRadius, bellHeight, 12, 1, true),
+      darkSteel,
+    );
+    bell.rotation.x = Math.PI;
+    bell.position.set(offset.x, engineY, offset.z);
+    boosterGroup.add(bell);
+  }
+}
+
 function createInlineStarshipStackVisual(THREE, distanceScale) {
   const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
   const radius = dims.diameterKm * 0.5 * distanceScale;
@@ -1127,36 +1216,7 @@ function createInlineStarshipStackVisual(THREE, distanceScale) {
   root.add(boosterGroup);
   root.add(shipGroup);
 
-  const boosterBody = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, boosterHeight, 32, 1, false),
-    stainless,
-  );
-  boosterGroup.add(boosterBody);
-
-  const boosterTop = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.5),
-    stainless,
-  );
-  boosterTop.position.y = 0.5 * boosterHeight;
-  boosterGroup.add(boosterTop);
-
-  const boosterBellRadius = clamp(radius * 0.18, radius * 0.08, radius * 0.22);
-  const boosterBellHeight = clamp(radius * 0.26, radius * 0.1, radius * 0.33);
-  const boosterEngineRing = clamp(radius * 0.58, radius * 0.2, radius * 0.66);
-  for (let i = 0; i < 9; i += 1) {
-    const angle = (i / 9) * Math.PI * 2;
-    const bell = new THREE.Mesh(
-      new THREE.ConeGeometry(boosterBellRadius, boosterBellHeight, 14, 1, true),
-      darkSteel,
-    );
-    bell.rotation.x = Math.PI;
-    bell.position.set(
-      Math.cos(angle) * boosterEngineRing,
-      -0.5 * boosterHeight - (boosterBellHeight * 0.42),
-      Math.sin(angle) * boosterEngineRing,
-    );
-    boosterGroup.add(bell);
-  }
+  addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
 
   const shipBody = new THREE.Mesh(
     new THREE.CylinderGeometry(radius, radius, shipBodyHeight, 32, 1, false),
@@ -1238,36 +1298,7 @@ function createInlineBoosterVisual(THREE, distanceScale) {
   const boosterGroup = new THREE.Group();
   root.add(boosterGroup);
 
-  const boosterBody = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius * 1.02, boosterHeight, 36, 1, false),
-    stainless,
-  );
-  boosterGroup.add(boosterBody);
-
-  const topCap = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.5),
-    stainless,
-  );
-  topCap.position.y = 0.5 * boosterHeight;
-  boosterGroup.add(topCap);
-
-  const bellRadius = clamp(radius * 0.18, radius * 0.08, radius * 0.24);
-  const bellHeight = clamp(radius * 0.28, radius * 0.1, radius * 0.36);
-  const engineRing = clamp(radius * 0.58, radius * 0.18, radius * 0.7);
-  for (let i = 0; i < 9; i += 1) {
-    const angle = (i / 9) * Math.PI * 2;
-    const bell = new THREE.Mesh(
-      new THREE.ConeGeometry(bellRadius, bellHeight, 14, 1, true),
-      darkSteel,
-    );
-    bell.rotation.x = Math.PI;
-    bell.position.set(
-      Math.cos(angle) * engineRing,
-      -0.5 * boosterHeight - (bellHeight * 0.42),
-      Math.sin(angle) * engineRing,
-    );
-    boosterGroup.add(bell);
-  }
+  addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
 
   return {
     root,
