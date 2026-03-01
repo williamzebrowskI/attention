@@ -59,13 +59,6 @@ body {
   font-size: 10px;
 }
 
-.launch-track-button {
-  top: 120px;
-  min-width: 82px;
-  padding: 5px 10px;
-  font-size: 10px;
-}
-
 .launch-floating-button:disabled {
   opacity: 0.46;
   cursor: not-allowed;

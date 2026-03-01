@@ -51,7 +51,6 @@ const physicsOverlayStatusNode = document.getElementById("physics-overlay-status
 const launchControlButton = document.getElementById("launch-control-button");
 const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
-const launchTrackToggleButton = document.getElementById("launch-track-toggle-button");
 const launchStatusNode = document.getElementById("launch-status");
 
 const INCLUDE_MOONS = true;
@@ -92,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301af";
+const FRONTEND_MODULE_VERSION = "20260301ag";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -112,12 +111,10 @@ const RIGID_BODY_ATTITUDE_ENABLED = true;
 let LAUNCH_BODY_ID = "earth_launch_vehicle";
 let launchFeatureEnabled = true;
 let createLaunchControllerFn = null;
-let createLaunchTrailControllerFn = null;
 let applyStarshipVisualStageFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
-let launchTrackLineEnabled = true;
 const INLINE_STARSHIP_STACK_DIMENSIONS_KM = Object.freeze({
   diameterKm: 0.009,
   boosterHeightKm: 0.071,
@@ -750,7 +747,6 @@ let lagrangeOverlayController = null;
 let earthAtmosphereController = null;
 let atmosphereDynamicsController = null;
 let launchController = null;
-let launchTrailController = null;
 let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
 let startupSeedLocked = false;
@@ -866,7 +862,6 @@ async function loadRuntimeConfig() {
     launchControlButton?.remove();
     launchReturnButton?.remove();
     launchResetButton?.remove();
-    launchTrackToggleButton?.remove();
   }
 }
 
@@ -874,7 +869,6 @@ async function loadLaunchFeatureModules() {
   launchModuleLoadError = "";
   let controllerModule = null;
   let visualsModule = null;
-  let trailModule = null;
 
   try {
     controllerModule = await import(`./physics/launch/launchController.js?v=${FRONTEND_MODULE_VERSION}`);
@@ -886,17 +880,11 @@ async function loadLaunchFeatureModules() {
   } catch (error) {
     console.warn("[launch] launchVisuals module unavailable, using basic launch visuals.", error);
   }
-  try {
-    trailModule = await import(`./physics/launch/launchTrail.js?v=${FRONTEND_MODULE_VERSION}`);
-  } catch (error) {
-    console.warn("[launch] launchTrail module unavailable, launch trail disabled.", error);
-  }
 
   if (typeof controllerModule?.LAUNCH_BODY_ID === "string" && controllerModule.LAUNCH_BODY_ID) {
     LAUNCH_BODY_ID = controllerModule.LAUNCH_BODY_ID;
   }
   createLaunchControllerFn = controllerModule?.createLaunchController || null;
-  createLaunchTrailControllerFn = trailModule?.createLaunchTrailController || null;
   applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
   createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
   starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
@@ -1266,24 +1254,8 @@ function setupScene(THREE) {
       sampleEarthAtmosphere: (altitudeKm) => earthAtmosphereSampleUS1976(altitudeKm),
       gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
     });
-    if (createLaunchTrailControllerFn) {
-      launchTrailController = createLaunchTrailControllerFn({
-        THREE,
-        scene,
-        distanceScale: DISTANCE_SCALE,
-        getLaunchSnapshot: () => launchController?.statusSnapshot() || null,
-        getCoordinatesKmById: (bodyId) => runtimeCoordsOrLiveById(bodyId),
-        getVelocityKmSById: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
-        getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
-        launchBodyId: LAUNCH_BODY_ID,
-      });
-      launchTrailController?.setEnabled(launchTrackLineEnabled);
-    } else {
-      launchTrailController = null;
-    }
   } else {
     launchController = null;
-    launchTrailController = null;
   }
 
   canvas.addEventListener("pointerdown", onPointerDown);
@@ -1719,7 +1691,6 @@ function setupLaunchControls() {
     launchControlButton?.remove();
     launchReturnButton?.remove();
     launchResetButton?.remove();
-    launchTrackToggleButton?.remove();
     return;
   }
   if (launchControlButton) {
@@ -1739,7 +1710,6 @@ function setupLaunchControls() {
       }
       const started = launchController.startLaunch(nBodyState, Date.now());
       if (started) {
-        launchTrailController?.clear();
         setSelected(LAUNCH_BODY_ID, true);
       }
       updateLaunchControls();
@@ -1770,19 +1740,9 @@ function setupLaunchControls() {
         updateLaunchStatusPanel(true, "Reset unavailable until startup seed is ready.");
         return;
       }
-      const reset = launchController.resetToPad(nBodyState, Date.now());
-      if (reset) {
-        launchTrailController?.clear();
-      }
+      launchController.resetToPad(nBodyState, Date.now());
       updateLaunchControls();
       updateLaunchStatusPanel(true);
-    });
-  }
-  if (launchTrackToggleButton) {
-    launchTrackToggleButton.addEventListener("click", () => {
-      launchTrackLineEnabled = !launchTrackLineEnabled;
-      launchTrailController?.setEnabled(launchTrackLineEnabled);
-      updateLaunchControls();
     });
   }
   updateLaunchControls();
@@ -1816,14 +1776,6 @@ function updateLaunchControls() {
     launchResetButton.disabled = !launchController;
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
-  }
-  if (launchTrackToggleButton) {
-    const trailAvailable = Boolean(launchTrailController);
-    const isOn = trailAvailable && launchTrackLineEnabled;
-    launchTrackToggleButton.disabled = !trailAvailable;
-    launchTrackToggleButton.textContent = isOn ? "Track: On" : "Track: Off";
-    launchTrackToggleButton.classList.toggle("on", isOn);
-    launchTrackToggleButton.setAttribute("aria-pressed", isOn ? "true" : "false");
   }
 }
 
@@ -6331,7 +6283,6 @@ function animate(timestampMs = 0) {
   updatePhysicsOverlays();
   if (launchFeatureEnabled) {
     updateLaunchStatusPanel();
-    launchTrailController?.update(deltaSeconds);
   }
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
   if (launchFeatureEnabled) {
