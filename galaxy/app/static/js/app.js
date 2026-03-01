@@ -7673,7 +7673,8 @@ function updateInfoOverlay() {
   }
 
   if (meta.id === LAUNCH_BODY_ID || meta.id === LAUNCH_BOOSTER_BODY_ID) {
-    const selectedVehicleLabel = meta.id === LAUNCH_BODY_ID ? "Starship" : "Booster";
+    const isBoosterSelected = meta.id === LAUNCH_BOOSTER_BODY_ID;
+    const selectedVehicleLabel = isBoosterSelected ? "Booster" : "Starship";
     const missionElapsedLine = launchSnapshot
       ? `${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}`
       : "Mission Elapsed: n/a";
@@ -7705,28 +7706,37 @@ function updateInfoOverlay() {
       ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km`
       : "n/a";
     const coordsLine = hasCoords ? `${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}` : "n/a";
+    let selectedVehicleLines = "";
+    if (isBoosterSelected) {
+      selectedVehicleLines = `
+        <p class="line launch-line">Phase: ${launchSnapshot?.boosterPhase || "n/a"}</p>
+        <p class="line launch-line">Guidance: ${boosterGuidanceMode}</p>
+        <p class="line launch-line">Altitude: ${boosterAltitudeLine}</p>
+        <p class="line launch-line">Speed: ${boosterSpeedLine}</p>
+        <p class="line launch-line">Propellant: ${boosterPropellantLine}</p>
+        <p class="line launch-line">Distance Traveled: ${boosterDistanceLine}</p>
+        <p class="line launch-line">Landed: ${launchSnapshot?.boosterLanded ? "yes" : "no"}</p>
+      `;
+    } else {
+      selectedVehicleLines = `
+        <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
+        <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
+        <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
+        <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
+        <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
+        <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
+        <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>
+      `;
+    }
 
     infoCard.innerHTML = `
-      <p class="title">Launch Telemetry (${selectedVehicleLabel})</p>
+      <p class="title">${selectedVehicleLabel} Telemetry</p>
       <p class="line">Observation Mode: ${observationModeLabel}</p>
       <p class="line">Data Source: ${live.source}${sourceError}</p>
       <p class="line">Mission: ${launchSnapshot?.missionName || "n/a"} | Phase: ${launchSnapshot?.missionPhase || "n/a"} | Complete: ${launchSnapshot?.missionCompleted ? "yes" : "no"}</p>
       <p class="line launch-line">${missionElapsedLine}</p>
       <p class="line launch-line">Launch Site: ${launchSnapshot?.launchSiteName || "n/a"}</p>
-      <p class="line launch-line">Starship</p>
-      <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
-      <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
-      <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
-      <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
-      <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
-      <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
-      <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>
-      <p class="line launch-line">Booster</p>
-      <p class="line launch-line">Phase: ${launchSnapshot?.boosterPhase || "n/a"} | Guidance: ${boosterGuidanceMode}</p>
-      <p class="line launch-line">Altitude: ${boosterAltitudeLine} | Speed: ${boosterSpeedLine}</p>
-      <p class="line launch-line">Propellant: ${boosterPropellantLine}</p>
-      <p class="line launch-line">Distance Traveled: ${boosterDistanceLine}</p>
-      <p class="line launch-line">Landed: ${launchSnapshot?.boosterLanded ? "yes" : "no"}</p>
+      ${selectedVehicleLines}
       <p class="line">Map Texture Source: ${visual.mapSource || "n/a"}</p>
       <p class="line">Camera Distance: ${formatNumber(cameraDistance)} scene units</p>
       <p class="line">XYZ (km): ${coordsLine}</p>
