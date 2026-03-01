@@ -3,10 +3,12 @@ import {
   LAUNCH_EXHAUST_VISUAL_CONFIG,
 } from "./launchConfig.js";
 
-const MAX_TRAIL_POINTS = 520;
+const MAX_TRAIL_POINTS = 8000;
 const TRAIL_CORE_COLOR = 0x59cbff;
 const TRAIL_GLOW_COLOR = 0x2e8cff;
 const TRAIL_SMOKE_COLOR = 0xb4d4ff;
+const TRAIL_REFERENCE_BODY_ID = "earth";
+const MIN_TRACK_POINT_SPACING_KM = 0.5;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -18,6 +20,14 @@ function toSceneVector(THREE, coordsKm, distanceScale) {
     Number(coordsKm.z) * distanceScale,
     Number(coordsKm.y) * distanceScale,
   );
+}
+
+function subtractCoordsKm(a, b) {
+  return {
+    x: (Number(a?.x) || 0) - (Number(b?.x) || 0),
+    y: (Number(a?.y) || 0) - (Number(b?.y) || 0),
+    z: (Number(a?.z) || 0) - (Number(b?.z) || 0),
+  };
 }
 
 function createSmokeTexture(THREE) {
@@ -57,7 +67,6 @@ export function createLaunchTrailController(options) {
   let lastPoint = null;
   let cachedScenePos = null;
   const trailPoints = [];
-  const trailPointAgesSec = [];
 
   const group = new THREE.Group();
   group.renderOrder = 62;
@@ -113,6 +122,7 @@ export function createLaunchTrailController(options) {
     const trailPointSpacingScene = Math.max(
       LAUNCH_EXHAUST_VISUAL_CONFIG.trailPointSpacingKm * distanceScale,
       vehicleRadiusScene * 1.2,
+      MIN_TRACK_POINT_SPACING_KM * distanceScale,
     );
     const smokePointSizeScene = Math.max(
       vehicleRadiusScene * LAUNCH_EXHAUST_VISUAL_CONFIG.smokePointRadiusScaleToVehicleRadius,
@@ -143,9 +153,9 @@ export function createLaunchTrailController(options) {
 
   function clear() {
     trailPoints.length = 0;
-    trailPointAgesSec.length = 0;
     lastPoint = null;
     cachedScenePos = null;
+    group.position.set(0, 0, 0);
     rebuildGeometry();
   }
 
@@ -156,47 +166,37 @@ export function createLaunchTrailController(options) {
     const spacing = Math.max(minDistanceScene || 0, 1e-12);
     if (!lastPoint || lastPoint.distanceToSquared(scenePos) >= (spacing * spacing)) {
       trailPoints.push(scenePos.clone());
-      trailPointAgesSec.push(0);
       if (trailPoints.length > MAX_TRAIL_POINTS) {
         trailPoints.shift();
-        trailPointAgesSec.shift();
       }
       lastPoint = scenePos.clone();
       rebuildGeometry();
     }
   }
 
-  function ageAndCullTrail(deltaSeconds) {
-    if (!(deltaSeconds > 0) || trailPointAgesSec.length === 0) {
-      return;
-    }
-    const maxAgeSec = Math.max(8, Number(LAUNCH_EXHAUST_VISUAL_CONFIG.smokeTrailPersistSeconds) || 42);
-    for (let i = 0; i < trailPointAgesSec.length; i += 1) {
-      trailPointAgesSec[i] += deltaSeconds;
-    }
-    let removeCount = 0;
-    while (removeCount < trailPointAgesSec.length && trailPointAgesSec[removeCount] > maxAgeSec) {
-      removeCount += 1;
-    }
-    if (removeCount > 0) {
-      trailPoints.splice(0, removeCount);
-      trailPointAgesSec.splice(0, removeCount);
-      lastPoint = trailPoints.length > 0 ? trailPoints[trailPoints.length - 1].clone() : null;
-      rebuildGeometry();
-    }
-  }
-
   function update(deltaSeconds = 0) {
     group.visible = enabled;
-    ageAndCullTrail(Math.max(0, Number(deltaSeconds) || 0));
 
     const snapshot = getLaunchSnapshot?.() || null;
     const coordsKm = getCoordinatesKmById?.(launchBodyId);
     if (!coordsKm) {
       return;
     }
+    const referenceCoordsKm = getCoordinatesKmById?.(TRAIL_REFERENCE_BODY_ID) || null;
     const velocityKmS = getVelocityKmSById?.(launchBodyId) || null;
-    const scenePos = toSceneVector(THREE, coordsKm, distanceScale);
+    let scenePos = null;
+    if (
+      Number.isFinite(Number(referenceCoordsKm?.x))
+      && Number.isFinite(Number(referenceCoordsKm?.y))
+      && Number.isFinite(Number(referenceCoordsKm?.z))
+    ) {
+      group.position.copy(toSceneVector(THREE, referenceCoordsKm, distanceScale));
+      const relCoordsKm = subtractCoordsKm(coordsKm, referenceCoordsKm);
+      scenePos = toSceneVector(THREE, relCoordsKm, distanceScale);
+    } else {
+      group.position.set(0, 0, 0);
+      scenePos = toSceneVector(THREE, coordsKm, distanceScale);
+    }
     cachedScenePos = scenePos.clone();
 
     const phase = snapshot?.phase || "idle";
