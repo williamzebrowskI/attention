@@ -90,6 +90,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
+const FRONTEND_MODULE_VERSION = "20260301a";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -593,9 +594,9 @@ async function loadRuntimeConfig() {
 
 async function loadLaunchFeatureModules() {
   const [controllerModule, visualsModule, trailModule] = await Promise.all([
-    import("./physics/launch/launchController.js"),
-    import("./physics/launch/launchVisuals.js"),
-    import("./physics/launch/launchTrail.js"),
+    import(`./physics/launch/launchController.js?v=${FRONTEND_MODULE_VERSION}`),
+    import(`./physics/launch/launchVisuals.js?v=${FRONTEND_MODULE_VERSION}`),
+    import(`./physics/launch/launchTrail.js?v=${FRONTEND_MODULE_VERSION}`),
   ]);
   if (typeof controllerModule?.LAUNCH_BODY_ID === "string" && controllerModule.LAUNCH_BODY_ID) {
     LAUNCH_BODY_ID = controllerModule.LAUNCH_BODY_ID;

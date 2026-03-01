@@ -1,23 +1,12 @@
 import {
   LAUNCH_BODY_ID,
   LAUNCH_EXHAUST_VISUAL_CONFIG,
-  STARSHIP_STACK_DIMENSIONS_KM,
-  STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
 
 const MAX_TRAIL_POINTS = 520;
-const ENABLE_LAUNCH_PLUME_VISUAL = false;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function lerp(a, b, t) {
-  return a + ((b - a) * clamp(t, 0, 1));
-}
-
-function vectorLength(v) {
-  return Math.sqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
 }
 
 function toSceneVector(THREE, coordsKm, distanceScale) {
@@ -46,18 +35,6 @@ function createSmokeTexture(THREE) {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
   return texture;
-}
-
-function createPlumeMaterial(THREE) {
-  return new THREE.MeshBasicMaterial({
-    color: new THREE.Color(0xffd8ad),
-    transparent: true,
-    opacity: 0.56,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-    side: THREE.DoubleSide,
-  });
 }
 
 export function createLaunchTrailController(options) {
@@ -112,16 +89,6 @@ export function createLaunchTrailController(options) {
   smokePoints.frustumCulled = false;
   group.add(smokePoints);
 
-  const plumeGeometry = new THREE.ConeGeometry(1, 1, 16, 1, true);
-  const plumeMaterial = createPlumeMaterial(THREE);
-  const plumeMesh = new THREE.Mesh(plumeGeometry, plumeMaterial);
-  plumeMesh.visible = false;
-  plumeMesh.renderOrder = 68;
-  group.add(plumeMesh);
-
-  const fullStackHalfHeightScene = STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5 * distanceScale;
-  const shipOnlyHalfHeightScene = STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5 * distanceScale;
-
   function launchVisualScaleMetrics() {
     const visual = getBodyVisual?.(launchBodyId);
     const vehicleRadiusKm = Math.max(Number(visual?.body?.radius_km) || 0, 0.0045);
@@ -159,7 +126,6 @@ export function createLaunchTrailController(options) {
     trailPointAgesSec.length = 0;
     lastPoint = null;
     cachedScenePos = null;
-    plumeMesh.visible = false;
     rebuildGeometry();
   }
 
@@ -200,64 +166,6 @@ export function createLaunchTrailController(options) {
     }
   }
 
-  function updatePlume(snapshot, scenePos, velocityKmS) {
-    if (!ENABLE_LAUNCH_PLUME_VISUAL) {
-      plumeMesh.visible = false;
-      return;
-    }
-    const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
-    const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
-    const altitudeKm = Number(snapshot?.altitudeKm) || 0;
-    const powered = snapshot?.phase === "powered" && throttle > 0.01 && thrustN > 0;
-    if (!powered || altitudeKm > 140 || !scenePos) {
-      plumeMesh.visible = false;
-      return;
-    }
-
-    const {
-      vehicleRadiusScene,
-    } = launchVisualScaleMetrics();
-    const stageIndex = Number.isFinite(Number(snapshot?.stageIndex)) ? Number(snapshot.stageIndex) : 0;
-    const vehicleHalfHeightScene = stageIndex >= 1 ? shipOnlyHalfHeightScene : fullStackHalfHeightScene;
-    const vacuumBlend = clamp((altitudeKm - 5) / 80, 0, 1);
-    const basePlumeLengthScene = lerp(
-      LAUNCH_EXHAUST_VISUAL_CONFIG.plumeSeaLevelLengthKm * distanceScale,
-      LAUNCH_EXHAUST_VISUAL_CONFIG.plumeVacuumLengthKm * distanceScale,
-      vacuumBlend,
-    );
-    const plumeLength = basePlumeLengthScene * (0.35 + (0.65 * throttle));
-    const plumeRadius = vehicleRadiusScene
-      * lerp(
-        LAUNCH_EXHAUST_VISUAL_CONFIG.plumeSeaLevelRadiusScaleToVehicleRadius,
-        LAUNCH_EXHAUST_VISUAL_CONFIG.plumeVacuumRadiusScaleToVehicleRadius,
-        vacuumBlend,
-      )
-      * (0.7 + (0.3 * throttle));
-
-    let dirScene = null;
-    if (velocityKmS) {
-      const speed = vectorLength(velocityKmS);
-      if (speed > 1e-10) {
-        dirScene = new THREE.Vector3(
-          Number(velocityKmS.x) / speed,
-          Number(velocityKmS.z) / speed,
-          Number(velocityKmS.y) / speed,
-        );
-      }
-    }
-    if (!dirScene) {
-      dirScene = cachedScenePos?.clone()?.normalize() || new THREE.Vector3(0, 1, 0);
-    }
-    const exhaustDirection = dirScene.clone().multiplyScalar(-1).normalize();
-    plumeMesh.visible = true;
-    plumeMesh.scale.set(plumeRadius, plumeLength, plumeRadius);
-    plumeMesh.position
-      .copy(scenePos)
-      .add(exhaustDirection.clone().multiplyScalar(vehicleHalfHeightScene + (plumeLength * 0.5)));
-    plumeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), exhaustDirection);
-    plumeMesh.material.opacity = 0.18 + (0.22 * throttle);
-  }
-
   function update(deltaSeconds = 0) {
     if (!enabled) {
       group.visible = false;
@@ -269,7 +177,6 @@ export function createLaunchTrailController(options) {
     const snapshot = getLaunchSnapshot?.() || null;
     const coordsKm = getCoordinatesKmById?.(launchBodyId);
     if (!coordsKm) {
-      plumeMesh.visible = false;
       return;
     }
     const velocityKmS = getVelocityKmSById?.(launchBodyId) || null;
@@ -311,7 +218,7 @@ export function createLaunchTrailController(options) {
       pathMaterial.opacity = trailPoints.length > 0 ? 0.015 : 0;
     }
 
-    updatePlume(snapshot, scenePos, velocityKmS);
+    void velocityKmS;
     wasActive = active;
   }
 
@@ -329,11 +236,9 @@ export function createLaunchTrailController(options) {
     }
     pathGeometry.dispose();
     pointGeometry.dispose();
-    plumeGeometry.dispose();
     pathMaterial.dispose();
     pointMaterial.map?.dispose?.();
     pointMaterial.dispose();
-    plumeMaterial.dispose();
   }
 
   return {
