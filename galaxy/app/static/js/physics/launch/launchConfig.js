@@ -50,6 +50,11 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
     liftoffThrottleValue: 0.72,
     maxThrustAccelerationGsStage1: 2.8,
     maxThrustAccelerationGsStage2: 3.2,
+    verticalHoldSeconds: 26,
+    verticalHoldMaxAltitudeKm: 12,
+    verticalHoldMaxLateralSpeedKmS: 0.015,
+    verticalHoldCorrectionGain: 0.85,
+    verticalHoldMaxTiltDeg: 7.0,
   }),
   stages: Object.freeze([
     Object.freeze({

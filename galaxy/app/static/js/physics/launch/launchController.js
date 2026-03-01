@@ -457,9 +457,64 @@ function autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole) {
   return tangent;
 }
 
+function applyVerticalHoldSteering({
+  baseDirection,
+  relPos,
+  relVel,
+  earthPole,
+  altitudeKm,
+  elapsedSeconds,
+}) {
+  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
+  const holdSeconds = Math.max(0, Number(guidance.verticalHoldSeconds) || 0);
+  const holdAltitudeKm = Math.max(0, Number(guidance.verticalHoldMaxAltitudeKm) || 0);
+  const holdActive =
+    (holdSeconds > 0 && elapsedSeconds < holdSeconds)
+    || (holdAltitudeKm > 0 && altitudeKm < holdAltitudeKm);
+  if (!holdActive) {
+    return {
+      direction: normalize(baseDirection, normalize(relPos)),
+      active: false,
+    };
+  }
+
+  const up = normalize(relPos, normalize(baseDirection, { x: 0, y: 0, z: 1 }));
+  const relAir = atmosphereRelativeVelocityKmS(relPos, relVel, earthPole);
+  const radialAirKmS = dot(relAir, up);
+  const lateralAir = subtract(relAir, scale(up, radialAirKmS));
+  const lateralSpeedKmS = length(lateralAir);
+  const maxLateralSpeedKmS = Math.max(0, Number(guidance.verticalHoldMaxLateralSpeedKmS) || 0);
+
+  if (!(lateralSpeedKmS > maxLateralSpeedKmS + 1e-9)) {
+    return {
+      direction: up,
+      active: true,
+    };
+  }
+
+  const lateralDir = normalize(lateralAir, { x: 0, y: 0, z: 0 });
+  const gain = clamp(Number(guidance.verticalHoldCorrectionGain) || 0.85, 0, 3);
+  const maxTiltRad = rad(clamp(Number(guidance.verticalHoldMaxTiltDeg) || 7, 0, 20));
+  const overSpeedRatio = clamp(
+    (lateralSpeedKmS - maxLateralSpeedKmS) / Math.max(maxLateralSpeedKmS, 1e-6),
+    0,
+    3,
+  );
+  const correctionWeight = Math.min(Math.tan(maxTiltRad), overSpeedRatio * gain * 0.35);
+  const corrected = normalize(
+    add(up, scale(lateralDir, -correctionWeight)),
+    up,
+  );
+  return {
+    direction: corrected,
+    active: true,
+  };
+}
+
 function computeAutopilotCommand({
   runtime,
   orbital,
+  relPos,
   dynamicPressurePa,
   relVel,
   up,
@@ -572,12 +627,20 @@ function computeAutopilotCommand({
     runtime.elapsedSeconds < config.verticalAscentMinSeconds
     || orbital.altitudeKm < config.verticalAscentMaxAltitudeKm
   ) {
+    const hold = applyVerticalHoldSteering({
+      baseDirection: up,
+      relPos,
+      relVel,
+      earthPole,
+      altitudeKm: orbital.altitudeKm,
+      elapsedSeconds: runtime.elapsedSeconds,
+    });
     runtime.autopilotMode = "autopilot-vertical-ascent";
     return {
       phase: "powered",
       throttle: throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa),
-      direction: up,
-      mode: "autopilot-vertical-ascent",
+      direction: hold.direction,
+      mode: hold.active ? "autopilot-vertical-hold" : "autopilot-vertical-ascent",
     };
   }
 
@@ -656,6 +719,21 @@ function computeAutopilotCommand({
       direction,
       mode: "autopilot-meco-coast",
     };
+  }
+
+  const hold = applyVerticalHoldSteering({
+    baseDirection: direction,
+    relPos,
+    relVel,
+    earthPole,
+    altitudeKm: orbital.altitudeKm,
+    elapsedSeconds: runtime.elapsedSeconds,
+  });
+  if (hold.active) {
+    direction = hold.direction;
+    if (!mode.includes("vertical-hold")) {
+      mode = `${mode}+vertical-hold`;
+    }
   }
 
   return {
@@ -1222,6 +1300,7 @@ export function createLaunchController(options) {
         const autopilotCommand = computeAutopilotCommand({
           runtime,
           orbital,
+          relPos,
           relVel,
           up: orbital.up,
           earthPole: currentEarthAxes.pole,
@@ -1354,6 +1433,7 @@ export function createLaunchController(options) {
       const autopilotCommand = computeAutopilotCommand({
         runtime,
         orbital,
+        relPos,
         relVel,
         up: orbital.up,
         earthPole: currentEarthAxes.pole,
