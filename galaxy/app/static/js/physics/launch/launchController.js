@@ -660,14 +660,26 @@ export function createLaunchController(options) {
     runtime.lastTrackedPositionKm = null;
   }
 
-  function accumulateDistanceTravelled(positionKm, stageIndexForDistance = runtime.stageIndex) {
-    if (!positionKm) {
+  function earthRelativePositionKm(rocketState, earthState) {
+    if (!rocketState?.position || !earthState?.position) {
+      return null;
+    }
+    return subtract(rocketState.position, earthState.position);
+  }
+
+  function accumulateDistanceTravelled(
+    rocketState,
+    earthState,
+    stageIndexForDistance = runtime.stageIndex,
+  ) {
+    const relativePositionKm = earthRelativePositionKm(rocketState, earthState);
+    if (!relativePositionKm) {
       return;
     }
     const current = {
-      x: Number(positionKm.x) || 0,
-      y: Number(positionKm.y) || 0,
-      z: Number(positionKm.z) || 0,
+      x: Number(relativePositionKm.x) || 0,
+      y: Number(relativePositionKm.y) || 0,
+      z: Number(relativePositionKm.z) || 0,
     };
     if (!runtime.lastTrackedPositionKm) {
       runtime.lastTrackedPositionKm = current;
@@ -797,7 +809,7 @@ export function createLaunchController(options) {
     rocketState.velocity = { ...pad.velocity };
     rocketState.massKg = LAUNCH_INITIAL_MASS_KG;
     resetRuntime();
-    runtime.lastTrackedPositionKm = { ...rocketState.position };
+    runtime.lastTrackedPositionKm = earthRelativePositionKm(rocketState, earthState);
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(earthAxes(nowMs));
     runtime.phase = "idle";
     runtime.lastTelemetry = telemetryFromState({
@@ -1094,7 +1106,7 @@ export function createLaunchController(options) {
       return;
     }
     const distanceStageIndex = runtime.stageIndex;
-    accumulateDistanceTravelled(rocketState.position, distanceStageIndex);
+    accumulateDistanceTravelled(rocketState, earthState, distanceStageIndex);
 
     if (runtime.phase === "orbit") {
       const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
