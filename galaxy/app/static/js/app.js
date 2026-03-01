@@ -6438,9 +6438,13 @@ function minOrbitDistanceForVisual(visual) {
   if (!visual || !(visual.renderRadius > 0)) {
     return ORBIT_MIN_DISTANCE_BASE;
   }
+  const bodyType = String(visual?.body?.body_type || "").toLowerCase();
+  const radiusFactor = bodyType === "spacecraft"
+    ? Math.max(ORBIT_MIN_DISTANCE_RADIUS_FACTOR, 1.08)
+    : ORBIT_MIN_DISTANCE_RADIUS_FACTOR;
   return Math.max(
     ORBIT_MIN_DISTANCE_ABSOLUTE,
-    visual.renderRadius * ORBIT_MIN_DISTANCE_RADIUS_FACTOR,
+    visual.renderRadius * radiusFactor,
   );
 }
 
@@ -6709,7 +6713,16 @@ function updateCameraFromOrbit() {
     }
   }
 
-  const desiredNear = clamp(orbit.radius * 0.02, 0.00000005, 0.05);
+  let nearFactor = 0.008;
+  if (selectedId) {
+    const selectedVisual = bodyVisuals.get(selectedId);
+    if (selectedVisual?.body?.body_type === "spacecraft") {
+      nearFactor = 0.0006;
+    } else if ((selectedVisual?.renderRadius > 0) && orbit.radius < selectedVisual.renderRadius * 8) {
+      nearFactor = 0.0024;
+    }
+  }
+  const desiredNear = clamp(orbit.radius * nearFactor, 0.000000001, 0.05);
   if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
     camera.near = desiredNear;
     camera.updateProjectionMatrix();

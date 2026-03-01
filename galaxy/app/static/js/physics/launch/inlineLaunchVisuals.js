@@ -83,6 +83,20 @@ function rad(degrees) {
   return (degrees * Math.PI) / 180;
 }
 
+function enforceSolidOpaqueMaterial(THREE, material) {
+  if (!THREE || !material) {
+    return material;
+  }
+  material.transparent = false;
+  material.opacity = 1;
+  material.alphaTest = 0;
+  material.depthWrite = true;
+  material.depthTest = true;
+  material.side = THREE.DoubleSide;
+  material.needsUpdate = true;
+  return material;
+}
+
 function resolveThrusterDefinitions(THREE, layout, radius, bodyHeight) {
   if (!THREE || !layout || !(radius > 0) || !(bodyHeight > 0)) {
     return [];
@@ -661,11 +675,13 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
     roughness: 0.38,
     metalness: 0.82,
   });
+  enforceSolidOpaqueMaterial(THREE, stainless);
   const darkSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x1b212b),
     roughness: 0.56,
     metalness: 0.62,
   });
+  enforceSolidOpaqueMaterial(THREE, darkSteel);
 
   const root = new THREE.Group();
   const boosterGroup = new THREE.Group();
@@ -769,11 +785,13 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
     roughness: 0.4,
     metalness: 0.82,
   });
+  enforceSolidOpaqueMaterial(THREE, stainless);
   const darkSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x1d222d),
     roughness: 0.58,
     metalness: 0.6,
   });
+  enforceSolidOpaqueMaterial(THREE, darkSteel);
 
   const root = new THREE.Group();
   const boosterGroup = new THREE.Group();

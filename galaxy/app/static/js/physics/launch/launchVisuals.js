@@ -20,6 +20,20 @@ function kmToScene(kmValue, distanceScale) {
   return kmValue * distanceScale;
 }
 
+function enforceSolidOpaqueMaterial(THREE, material) {
+  if (!THREE || !material) {
+    return material;
+  }
+  material.transparent = false;
+  material.opacity = 1;
+  material.alphaTest = 0;
+  material.depthWrite = true;
+  material.depthTest = true;
+  material.side = THREE.DoubleSide;
+  material.needsUpdate = true;
+  return material;
+}
+
 function resolveThrusterDefinitions(THREE, layout, radius, bodyHeight) {
   if (!THREE || !layout || !(radius > 0) || !(bodyHeight > 0)) {
     return [];
@@ -415,8 +429,7 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
       darkSteel,
     );
     panel.material = darkSteel.clone();
-    panel.material.opacity = 0.9;
-    panel.material.transparent = true;
+    enforceSolidOpaqueMaterial(THREE, panel.material);
     finAssembly.add(panel);
 
     const latticeBarWidth = gridFinWidth * 0.03;
@@ -804,6 +817,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     emissive: new THREE.Color(0x12161d),
     emissiveIntensity: 0.05,
   });
+  enforceSolidOpaqueMaterial(THREE, stainless);
   const darkSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0xe6eef8),
     map: engine.map,
@@ -813,6 +827,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     emissive: new THREE.Color(0x080a0f),
     emissiveIntensity: 0.03,
   });
+  enforceSolidOpaqueMaterial(THREE, darkSteel);
   const tileBlack = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0xffffff),
     map: tiles.map,
@@ -822,6 +837,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     emissive: new THREE.Color(0x05070c),
     emissiveIntensity: 0.04,
   });
+  enforceSolidOpaqueMaterial(THREE, tileBlack);
   const materials = [stainless, darkSteel, tileBlack];
 
   const stackRoot = new THREE.Group();
