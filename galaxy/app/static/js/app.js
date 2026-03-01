@@ -91,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301i";
+const FRONTEND_MODULE_VERSION = "20260301j";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -603,11 +603,26 @@ async function loadRuntimeConfig() {
 
 async function loadLaunchFeatureModules() {
   launchModuleLoadError = "";
-  const [controllerModule, visualsModule, trailModule] = await Promise.all([
-    import(`./physics/launch/launchController.js?v=${FRONTEND_MODULE_VERSION}`),
-    import(`./physics/launch/launchVisuals.js?v=${FRONTEND_MODULE_VERSION}`),
-    import(`./physics/launch/launchTrail.js?v=${FRONTEND_MODULE_VERSION}`),
-  ]);
+  let controllerModule = null;
+  let visualsModule = null;
+  let trailModule = null;
+
+  try {
+    controllerModule = await import(`./physics/launch/launchController.js?v=${FRONTEND_MODULE_VERSION}`);
+  } catch (error) {
+    throw new Error(`launchController import failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    visualsModule = await import(`./physics/launch/launchVisuals.js?v=${FRONTEND_MODULE_VERSION}`);
+  } catch (error) {
+    console.warn("[launch] launchVisuals module unavailable, using basic launch visuals.", error);
+  }
+  try {
+    trailModule = await import(`./physics/launch/launchTrail.js?v=${FRONTEND_MODULE_VERSION}`);
+  } catch (error) {
+    console.warn("[launch] launchTrail module unavailable, launch trail disabled.", error);
+  }
+
   if (typeof controllerModule?.LAUNCH_BODY_ID === "string" && controllerModule.LAUNCH_BODY_ID) {
     LAUNCH_BODY_ID = controllerModule.LAUNCH_BODY_ID;
   }
@@ -616,6 +631,9 @@ async function loadLaunchFeatureModules() {
   applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
   createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
   starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
+  if (!createLaunchControllerFn) {
+    throw new Error("launchController export missing.");
+  }
 }
 
 function setupRigidBodyAttitudeModel() {
@@ -810,7 +828,7 @@ function setupScene(THREE) {
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
     getBodySpinAxisEcliptic: (bodyId) => sourcePoleUnitVectorEclipticForBody(bodyId, Date.now()),
   });
-  if (launchFeatureEnabled && createLaunchControllerFn && createLaunchTrailControllerFn) {
+  if (launchFeatureEnabled && createLaunchControllerFn) {
     launchController = createLaunchControllerFn({
       getEarthRadiusKm: () => bodyRadiusKmById("earth"),
       getEarthMassKg: () => bodyMassKgById("earth"),
@@ -826,16 +844,20 @@ function setupScene(THREE) {
       sampleEarthAtmosphere: (altitudeKm) => earthAtmosphereSampleUS1976(altitudeKm),
       gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
     });
-    launchTrailController = createLaunchTrailControllerFn({
-      THREE,
-      scene,
-      distanceScale: DISTANCE_SCALE,
-      getLaunchSnapshot: () => launchController?.statusSnapshot() || null,
-      getCoordinatesKmById: (bodyId) => runtimeCoordsOrLiveById(bodyId),
-      getVelocityKmSById: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
-      getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
-      launchBodyId: LAUNCH_BODY_ID,
-    });
+    if (createLaunchTrailControllerFn) {
+      launchTrailController = createLaunchTrailControllerFn({
+        THREE,
+        scene,
+        distanceScale: DISTANCE_SCALE,
+        getLaunchSnapshot: () => launchController?.statusSnapshot() || null,
+        getCoordinatesKmById: (bodyId) => runtimeCoordsOrLiveById(bodyId),
+        getVelocityKmSById: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
+        getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
+        launchBodyId: LAUNCH_BODY_ID,
+      });
+    } else {
+      launchTrailController = null;
+    }
   } else {
     launchController = null;
     launchTrailController = null;
@@ -1343,11 +1365,10 @@ function updateLaunchControls() {
   if (!launchControlButton) {
     return;
   }
-  const hasModuleError = Boolean(launchModuleLoadError);
-  const initialized = !hasModuleError && Boolean(launchController && nBodyState?.initialized);
+  const initialized = Boolean(launchController && nBodyState?.initialized);
   const active = Boolean(launchController?.isActive());
   launchControlButton.textContent = "Launch";
-  launchControlButton.disabled = !initialized || active;
+  launchControlButton.disabled = active;
   launchControlButton.classList.toggle("on", active);
   launchControlButton.setAttribute("aria-pressed", active ? "true" : "false");
   if (launchReturnButton) {
@@ -1361,7 +1382,7 @@ function updateLaunchControls() {
     launchReturnButton.setAttribute("aria-pressed", isTracking ? "true" : "false");
   }
   if (launchResetButton) {
-    launchResetButton.disabled = !initialized;
+    launchResetButton.disabled = !launchController;
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
   }
