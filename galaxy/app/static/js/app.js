@@ -48,6 +48,7 @@ const physicsLagrangeToggleButton = document.getElementById("physics-toggle-lagr
 const physicsAtmosphereToggleButton = document.getElementById("physics-toggle-atmosphere");
 const physicsOverlayStatusNode = document.getElementById("physics-overlay-status");
 const launchControlButton = document.getElementById("launch-control-button");
+const launchReturnButton = document.getElementById("launch-return-button");
 const launchStatusNode = document.getElementById("launch-status");
 
 const INCLUDE_MOONS = true;
@@ -582,8 +583,9 @@ async function loadRuntimeConfig() {
   } catch (error) {
     console.warn("[solar-system] Using default runtime config:", error);
   }
-  if (!launchFeatureEnabled && launchControlButton) {
-    launchControlButton.remove();
+  if (!launchFeatureEnabled) {
+    launchControlButton?.remove();
+    launchReturnButton?.remove();
   }
 }
 
@@ -1208,9 +1210,8 @@ function updatePhysicsOverlayControls() {
 
 function setupLaunchControls() {
   if (!launchFeatureEnabled) {
-    if (launchControlButton) {
-      launchControlButton.remove();
-    }
+    launchControlButton?.remove();
+    launchReturnButton?.remove();
     return;
   }
   if (launchControlButton) {
@@ -1233,6 +1234,20 @@ function setupLaunchControls() {
       updateLaunchStatusPanel(true);
     });
   }
+  if (launchReturnButton) {
+    launchReturnButton.addEventListener("click", () => {
+      const launchVisual = bodyVisuals.get(LAUNCH_BODY_ID);
+      if (!metaById.has(LAUNCH_BODY_ID) || !launchVisual?.root?.visible) {
+        updateLaunchStatusPanel(true, "Launch vehicle is unavailable in the current scene.");
+        return;
+      }
+      if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+        setObservationMode(OBSERVATION_MODES.BODY_LOCK);
+      }
+      setSelected(LAUNCH_BODY_ID, true);
+      updateLaunchControls();
+    });
+  }
   updateLaunchControls();
   updateLaunchStatusPanel(true);
 }
@@ -1248,6 +1263,18 @@ function updateLaunchControls() {
   launchControlButton.textContent = active ? "Reset" : "Launch";
   launchControlButton.classList.toggle("on", active);
   launchControlButton.setAttribute("aria-pressed", active ? "true" : "false");
+  if (launchReturnButton) {
+    const launchVisible = Boolean(bodyVisuals.get(LAUNCH_BODY_ID)?.root?.visible);
+    const launchSelectable = launchVisible && metaById.has(LAUNCH_BODY_ID);
+    const showReturn = active || selectedId === LAUNCH_BODY_ID;
+    const isTracking =
+      selectedId === LAUNCH_BODY_ID
+      && observation.mode === OBSERVATION_MODES.BODY_LOCK;
+    launchReturnButton.classList.toggle("hidden", !showReturn);
+    launchReturnButton.disabled = !launchSelectable;
+    launchReturnButton.classList.toggle("on", isTracking);
+    launchReturnButton.setAttribute("aria-pressed", isTracking ? "true" : "false");
+  }
 }
 
 function updateLaunchStatusPanel(force = false, fallbackLine = "") {

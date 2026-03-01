@@ -45,6 +45,17 @@ body {
   color: #ffe7b7;
 }
 
+.launch-return-button {
+  top: 48px;
+  min-width: 98px;
+  padding: 5px 10px;
+  font-size: 10px;
+}
+
+.launch-return-button.hidden {
+  display: none;
+}
+
 .planet-info {
   position: fixed;
   left: 16px;
