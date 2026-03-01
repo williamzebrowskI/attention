@@ -131,6 +131,17 @@ export function createLaunchTrailController(options) {
       scenePos = toSceneVector(THREE, coordsKm, distanceScale);
     }
 
+    const visual = getBodyVisual?.(launchBodyId);
+    const visualPosition = visual?.root?.position;
+    if (
+      visualPosition
+      && Number.isFinite(Number(visualPosition.x))
+      && Number.isFinite(Number(visualPosition.y))
+      && Number.isFinite(Number(visualPosition.z))
+    ) {
+      scenePos = visualPosition.clone().sub(group.position);
+    }
+
     cachedScenePos = scenePos.clone();
 
     const phase = snapshot?.phase || "idle";
