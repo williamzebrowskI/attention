@@ -7,14 +7,8 @@ import {
 
 const MAX_TRAIL_POINTS = 8000;
 const TRAIL_CORE_COLOR = 0x59cbff;
-const TRAIL_GLOW_COLOR = 0x2e8cff;
-const TRAIL_SMOKE_COLOR = 0xb4d4ff;
 const TRAIL_REFERENCE_BODY_ID = "earth";
 const MIN_TRACK_POINT_SPACING_KM = 0.5;
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
 
 function toSceneVector(THREE, coordsKm, distanceScale) {
   return new THREE.Vector3(
@@ -43,26 +37,6 @@ function stageTailOffsetKm(snapshot) {
   return (Number.isFinite(stageIndex) && stageIndex >= 1 ? shipHalfKm : fullStackHalfKm) * 0.96;
 }
 
-function createSmokeTexture(THREE) {
-  const size = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  const gradient = ctx.createRadialGradient(size * 0.5, size * 0.5, size * 0.08, size * 0.5, size * 0.5, size * 0.5);
-  gradient.addColorStop(0, "rgba(238, 242, 248, 0.96)");
-  gradient.addColorStop(0.24, "rgba(214, 220, 230, 0.88)");
-  gradient.addColorStop(0.62, "rgba(165, 174, 187, 0.46)");
-  gradient.addColorStop(1, "rgba(122, 132, 144, 0)");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
-  return texture;
-}
-
 export function createLaunchTrailController(options) {
   const {
     THREE,
@@ -89,44 +63,14 @@ export function createLaunchTrailController(options) {
   const pathMaterial = new THREE.LineBasicMaterial({
     color: new THREE.Color(TRAIL_CORE_COLOR),
     transparent: true,
-    opacity: 0.28,
+    opacity: 0.38,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.NormalBlending,
     toneMapped: false,
   });
   const pathLine = new THREE.Line(pathGeometry, pathMaterial);
   pathLine.frustumCulled = false;
   group.add(pathLine);
-
-  const glowGeometry = new THREE.BufferGeometry();
-  const glowMaterial = new THREE.LineBasicMaterial({
-    color: new THREE.Color(TRAIL_GLOW_COLOR),
-    transparent: true,
-    opacity: 0.15,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-  });
-  const glowLine = new THREE.Line(glowGeometry, glowMaterial);
-  glowLine.frustumCulled = false;
-  group.add(glowLine);
-
-  const pointGeometry = new THREE.BufferGeometry();
-  const pointMaterial = new THREE.PointsMaterial({
-    map: createSmokeTexture(THREE),
-    color: new THREE.Color(TRAIL_SMOKE_COLOR),
-    size: 1e-10,
-    sizeAttenuation: true,
-    transparent: true,
-    opacity: 0.08,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    alphaTest: 0.02,
-    toneMapped: false,
-  });
-  const smokePoints = new THREE.Points(pointGeometry, pointMaterial);
-  smokePoints.frustumCulled = false;
-  group.add(smokePoints);
 
   function launchVisualScaleMetrics() {
     const visual = getBodyVisual?.(launchBodyId);
@@ -137,31 +81,20 @@ export function createLaunchTrailController(options) {
       vehicleRadiusScene * 1.2,
       MIN_TRACK_POINT_SPACING_KM * distanceScale,
     );
-    const smokePointSizeScene = Math.max(
-      vehicleRadiusScene * LAUNCH_EXHAUST_VISUAL_CONFIG.smokePointRadiusScaleToVehicleRadius,
-      1e-12,
-    );
     return {
       vehicleRadiusKm,
       vehicleRadiusScene,
       trailPointSpacingScene,
-      smokePointSizeScene,
     };
   }
 
   function rebuildGeometry() {
     if (trailPoints.length === 0) {
       pathGeometry.setFromPoints([]);
-      glowGeometry.setFromPoints([]);
-      pointGeometry.setFromPoints([]);
       return;
     }
     pathGeometry.setFromPoints(trailPoints);
-    glowGeometry.setFromPoints(trailPoints);
-    pointGeometry.setFromPoints(trailPoints);
     pathGeometry.computeBoundingSphere();
-    glowGeometry.computeBoundingSphere();
-    pointGeometry.computeBoundingSphere();
   }
 
   function clear() {
@@ -187,7 +120,7 @@ export function createLaunchTrailController(options) {
     }
   }
 
-  function update(deltaSeconds = 0) {
+  function update(_deltaSeconds = 0) {
     group.visible = enabled;
 
     const snapshot = getLaunchSnapshot?.() || null;
@@ -243,39 +176,12 @@ export function createLaunchTrailController(options) {
       clear();
     }
 
-    const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
-    const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
-    const altitudeKm = Number(snapshot?.altitudeKm) || 0;
-
-    const {
-      smokePointSizeScene,
-      trailPointSpacingScene,
-    } = launchVisualScaleMetrics();
+    const { trailPointSpacingScene } = launchVisualScaleMetrics();
 
     if (active || phase === "complete") {
       appendPoint(scenePos, trailPointSpacingScene);
     } else if (trailPoints.length === 0) {
       appendPoint(scenePos, trailPointSpacingScene);
-    }
-
-    if (!enabled) {
-      void velocityKmS;
-      wasActive = active;
-      return;
-    }
-
-    const smokeActive = active && thrustN > 0.01 && altitudeKm <= LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm;
-    if (smokeActive) {
-      const densityFade = clamp(1 - (altitudeKm / LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm), 0.04, 1);
-      pointMaterial.size = smokePointSizeScene * (0.95 + (0.38 * throttle));
-      pointMaterial.opacity = 0.022 + (0.054 * throttle * densityFade);
-      pathMaterial.opacity = 0.22 + (0.28 * densityFade);
-      glowMaterial.opacity = 0.16 + (0.22 * densityFade);
-    } else {
-      pointMaterial.size = smokePointSizeScene;
-      pointMaterial.opacity = trailPoints.length > 0 ? 0.016 : 0;
-      pathMaterial.opacity = trailPoints.length > 0 ? 0.18 : 0;
-      glowMaterial.opacity = trailPoints.length > 0 ? 0.14 : 0;
     }
 
     void velocityKmS;
@@ -295,12 +201,7 @@ export function createLaunchTrailController(options) {
       group.parent.remove(group);
     }
     pathGeometry.dispose();
-    glowGeometry.dispose();
-    pointGeometry.dispose();
     pathMaterial.dispose();
-    glowMaterial.dispose();
-    pointMaterial.map?.dispose?.();
-    pointMaterial.dispose();
   }
 
   return {
