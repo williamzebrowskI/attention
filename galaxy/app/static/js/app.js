@@ -92,7 +92,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301at";
+const FRONTEND_MODULE_VERSION = "20260301au";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -865,6 +865,36 @@ let lastNBodyNumericWarnMs = 0;
 let lastAnimationLoopErrorMs = 0;
 let latestSolarTimestampMs = Date.now();
 const lastFrameTaskErrorMsByKey = new Map();
+const LAUNCH_EVENT_LOG_MAX_ENTRIES = 500;
+const launchEventLogEntries = [];
+
+function appendLaunchLogEntry(level, entry) {
+  const safeLevel = level === "error" ? "error" : "info";
+  const payload = (entry && typeof entry === "object") ? { ...entry } : { detail: String(entry) };
+  const name = typeof payload.name === "string" ? payload.name : "launch_event";
+  const logEntry = {
+    timestampUtc: payload.timestampUtc || new Date().toISOString(),
+    level: safeLevel,
+    ...payload,
+  };
+  launchEventLogEntries.push(logEntry);
+  if (launchEventLogEntries.length > LAUNCH_EVENT_LOG_MAX_ENTRIES) {
+    launchEventLogEntries.splice(0, launchEventLogEntries.length - LAUNCH_EVENT_LOG_MAX_ENTRIES);
+  }
+  if (safeLevel === "error") {
+    console.error(`[launch:${name}]`, logEntry);
+  } else {
+    console.info(`[launch:${name}]`, logEntry);
+  }
+}
+
+function registerLaunchLogDebugHandles() {
+  window.__launchEventLog = launchEventLogEntries;
+  window.getLaunchEventLog = () => launchEventLogEntries.map((entry) => ({ ...entry }));
+  window.clearLaunchEventLog = () => {
+    launchEventLogEntries.length = 0;
+  };
+}
 
 const orbit = {
   target: null,
@@ -919,6 +949,7 @@ init().catch((error) => {
 
 async function init() {
   assertPhysicsLockInvariants();
+  registerLaunchLogDebugHandles();
   await loadRuntimeConfig();
   if (launchFeatureEnabled) {
     try {
@@ -1423,6 +1454,12 @@ function setupScene(THREE) {
       },
       sampleEarthAtmosphere: (altitudeKm) => earthAtmosphereSampleUS1976(altitudeKm),
       gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+      onEvent: (event) => {
+        appendLaunchLogEntry("info", event);
+      },
+      onError: (event) => {
+        appendLaunchLogEntry("error", event);
+      },
     });
   } else {
     launchController = null;
@@ -2018,8 +2055,17 @@ function setupLaunchMissionPicker() {
       const selected = legendLaunchMissionSelect.value;
       const applied = launchController?.setMissionProfile?.(selected);
       if (!applied) {
+        appendLaunchLogEntry("error", {
+          name: "mission_selection_rejected",
+          selectedMissionId: selected,
+        });
         return;
       }
+      appendLaunchLogEntry("info", {
+        name: "mission_selection_changed",
+        selectedMissionId: applied.id,
+        selectedMissionName: applied.name,
+      });
       updateLaunchStatusPanel(true, `Mission selected: ${applied.name}`);
     });
     legendLaunchMissionSelect.dataset.bound = "true";
@@ -2037,14 +2083,26 @@ function setupLaunchControls() {
   if (launchControlButton) {
     launchControlButton.addEventListener("click", () => {
       if (launchModuleLoadError) {
+        appendLaunchLogEntry("error", {
+          name: "launch_command_rejected",
+          reason: launchModuleLoadError,
+        });
         updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
         return;
       }
       if (!launchController || !nBodyState?.initialized) {
+        appendLaunchLogEntry("error", {
+          name: "launch_command_rejected",
+          reason: "startup_seed_not_ready",
+        });
         updateLaunchStatusPanel(true, "Launch unavailable until startup seed is ready.");
         return;
       }
       if (launchController.isActive()) {
+        appendLaunchLogEntry("info", {
+          name: "launch_command_ignored",
+          reason: "launch_already_active",
+        });
         updateLaunchStatusPanel(true, "Launch already active.");
         updateLaunchControls();
         return;
@@ -2055,6 +2113,11 @@ function setupLaunchControls() {
       const started = launchController.startLaunch(nBodyState, Date.now());
       if (started) {
         setSelected(LAUNCH_BODY_ID, true);
+      } else {
+        appendLaunchLogEntry("error", {
+          name: "launch_command_failed",
+          reason: "controller_rejected_start",
+        });
       }
       updateLaunchControls();
       updateLaunchStatusPanel(true);
@@ -2077,14 +2140,25 @@ function setupLaunchControls() {
   if (launchResetButton) {
     launchResetButton.addEventListener("click", () => {
       if (launchModuleLoadError) {
+        appendLaunchLogEntry("error", {
+          name: "launch_reset_rejected",
+          reason: launchModuleLoadError,
+        });
         updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
         return;
       }
       if (!launchController || !nBodyState?.initialized) {
+        appendLaunchLogEntry("error", {
+          name: "launch_reset_rejected",
+          reason: "startup_seed_not_ready",
+        });
         updateLaunchStatusPanel(true, "Reset unavailable until startup seed is ready.");
         return;
       }
       launchController.resetToPad(nBodyState, Date.now());
+      appendLaunchLogEntry("info", {
+        name: "launch_reset_requested",
+      });
       updateLaunchControls();
       updateLaunchStatusPanel(true);
     });

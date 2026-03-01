@@ -1309,6 +1309,8 @@ export function createLaunchController(options) {
     getEarthFixedAxesEcliptic,
     sampleEarthAtmosphere,
     gravitationalConstantKm3PerKgS2,
+    onEvent,
+    onError,
   } = options || {};
 
   const runtime = {
@@ -1348,6 +1350,152 @@ export function createLaunchController(options) {
       contactHoldSec: 0,
     },
   };
+
+  function telemetryLogDetails(telemetry) {
+    if (!telemetry) {
+      return {};
+    }
+    return {
+      altitudeKm: Number(telemetry.altitudeKm),
+      speedKmS: Number(telemetry.speedKmS),
+      stageIndex: Number(telemetry.stageIndex),
+      stageName: telemetry.stageName,
+      guidanceMode: telemetry.guidanceMode,
+      missionId: telemetry.missionId,
+      missionPhase: telemetry.missionPhase,
+      boosterPhase: telemetry.boosterPhase,
+      boosterAltitudeKm: Number(telemetry.boosterAltitudeKm),
+      boosterSpeedKmS: Number(telemetry.boosterSpeedKmS),
+    };
+  }
+
+  function emitLaunchEvent(name, details = {}) {
+    if (typeof onEvent !== "function") {
+      return;
+    }
+    const payload = {
+      timestampUtc: new Date().toISOString(),
+      name,
+      elapsedSeconds: Number(runtime.elapsedSeconds) || 0,
+      phase: runtime.phase,
+      stageIndex: runtime.stageIndex,
+      stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
+      missionId: runtime.mission.selectedId,
+      missionPhase: runtime.mission.phase,
+      boosterPhase: runtime.booster.phase,
+      ...details,
+    };
+    try {
+      onEvent(payload);
+    } catch (error) {
+      console.warn("[launch] event callback failed:", error);
+    }
+  }
+
+  function emitLaunchError(name, details = {}) {
+    const payload = {
+      timestampUtc: new Date().toISOString(),
+      name,
+      severity: "error",
+      elapsedSeconds: Number(runtime.elapsedSeconds) || 0,
+      phase: runtime.phase,
+      stageIndex: runtime.stageIndex,
+      stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
+      missionId: runtime.mission.selectedId,
+      missionPhase: runtime.mission.phase,
+      boosterPhase: runtime.booster.phase,
+      ...details,
+    };
+    if (typeof onError === "function") {
+      try {
+        onError(payload);
+      } catch (error) {
+        console.warn("[launch] error callback failed:", error);
+      }
+      return;
+    }
+    emitLaunchEvent(name, { severity: "error", ...details });
+  }
+
+  function captureRuntimeLogState() {
+    return {
+      phase: runtime.phase,
+      stageIndex: runtime.stageIndex,
+      missionPhase: runtime.mission.phase,
+      missionCompleted: Boolean(runtime.mission.completed),
+      boosterActive: Boolean(runtime.booster.active),
+      boosterPhase: runtime.booster.phase,
+      boosterLanded: Boolean(runtime.booster.landed),
+      lastError: runtime.lastError || "",
+    };
+  }
+
+  let lastRuntimeLogState = captureRuntimeLogState();
+
+  function emitRuntimeTransitionEvents(trigger) {
+    const current = captureRuntimeLogState();
+    const previous = lastRuntimeLogState;
+
+    if (current.phase !== previous.phase) {
+      emitLaunchEvent("starship_phase_changed", {
+        trigger,
+        fromPhase: previous.phase,
+        toPhase: current.phase,
+        ...telemetryLogDetails(runtime.lastTelemetry),
+      });
+    }
+    if (current.stageIndex !== previous.stageIndex) {
+      emitLaunchEvent("starship_stage_changed", {
+        trigger,
+        fromStageIndex: previous.stageIndex,
+        toStageIndex: current.stageIndex,
+        fromStageName: stageAtIndex(previous.stageIndex)?.name || "Coast/Complete",
+        toStageName: stageAtIndex(current.stageIndex)?.name || "Coast/Complete",
+      });
+    }
+    if (current.missionPhase !== previous.missionPhase) {
+      emitLaunchEvent("mission_phase_changed", {
+        trigger,
+        fromMissionPhase: previous.missionPhase,
+        toMissionPhase: current.missionPhase,
+      });
+    }
+    if (!previous.missionCompleted && current.missionCompleted) {
+      emitLaunchEvent("mission_completed", {
+        trigger,
+        missionPhase: current.missionPhase,
+      });
+    }
+    if (current.boosterActive !== previous.boosterActive) {
+      emitLaunchEvent("booster_activity_changed", {
+        trigger,
+        boosterActive: current.boosterActive,
+      });
+    }
+    if (current.boosterPhase !== previous.boosterPhase) {
+      emitLaunchEvent("booster_phase_changed", {
+        trigger,
+        fromBoosterPhase: previous.boosterPhase,
+        toBoosterPhase: current.boosterPhase,
+        ...telemetryLogDetails(runtime.booster.telemetry),
+      });
+    }
+    if (!previous.boosterLanded && current.boosterLanded) {
+      emitLaunchEvent("booster_landed", {
+        trigger,
+        ...telemetryLogDetails(runtime.booster.telemetry),
+      });
+    }
+    if (current.lastError !== previous.lastError && current.lastError) {
+      emitLaunchError("launch_runtime_error", {
+        trigger,
+        errorMessage: current.lastError,
+        ...telemetryLogDetails(runtime.lastTelemetry),
+      });
+    }
+
+    lastRuntimeLogState = current;
+  }
 
   function earthAxes(timestampMs = Date.now()) {
     return sanitizeAxes(getEarthFixedAxesEcliptic?.(timestampMs) || fallbackAxes());
@@ -1395,6 +1543,7 @@ export function createLaunchController(options) {
     runtime.booster.lastTrackedPositionKm = null;
     runtime.booster.telemetry = null;
     runtime.booster.contactHoldSec = 0;
+    lastRuntimeLogState = captureRuntimeLogState();
   }
 
   function clearBoosterFromState(state) {
@@ -1606,6 +1755,8 @@ export function createLaunchController(options) {
     const rocketState = ensureRocketInNBody(state, nowMs);
     if (!earthState || !rocketState) {
       runtime.lastError = "Earth/rocket state unavailable";
+      emitLaunchError("reset_to_pad_failed", { reason: runtime.lastError });
+      emitRuntimeTransitionEvents("reset_to_pad_failed");
       return false;
     }
     const currentEarthAxes = earthAxes(nowMs);
@@ -1616,6 +1767,8 @@ export function createLaunchController(options) {
     });
     if (!pad) {
       runtime.lastError = "Pad state unavailable";
+      emitLaunchError("reset_to_pad_failed", { reason: runtime.lastError });
+      emitRuntimeTransitionEvents("reset_to_pad_failed");
       return false;
     }
     rocketState.position = { ...pad.position };
@@ -1668,6 +1821,13 @@ export function createLaunchController(options) {
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
+    emitLaunchEvent("launch_vehicle_reset_to_pad", {
+      launchSiteName: LAUNCH_SITE.name || "Launch Site",
+      launchSiteLatitudeDeg: Number(LAUNCH_SITE.latitudeDeg),
+      launchSiteLongitudeDeg: Number(LAUNCH_SITE.longitudeDeg),
+      ...telemetryLogDetails(runtime.lastTelemetry),
+    });
+    emitRuntimeTransitionEvents("reset_to_pad");
     return true;
   }
 
@@ -1680,6 +1840,13 @@ export function createLaunchController(options) {
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(runtime.mission.selectedId));
     runtime.mission.phaseStartedElapsedSec = runtime.elapsedSeconds;
     runtime.mission.completed = false;
+    emitLaunchEvent("launch_started", {
+      launchSiteName: LAUNCH_SITE.name || "Launch Site",
+      autopilotEnabled: runtime.autopilotEnabled,
+      missionId: runtime.mission.selectedId,
+      missionPhase: runtime.mission.phase,
+    });
+    emitRuntimeTransitionEvents("start_launch");
     return true;
   }
 
@@ -1738,6 +1905,14 @@ export function createLaunchController(options) {
       currentEarthAxes,
     );
     runtime.booster.telemetry = null;
+    emitLaunchEvent("stage_separation_booster_detached", {
+      stageIndex: runtime.stageIndex,
+      boosterMassKg,
+      reservePropellantKg,
+      separationOffsetKm,
+      separationImpulseKmS,
+    });
+    emitRuntimeTransitionEvents("stage_separation");
     return boosterState;
   }
 
@@ -1931,13 +2106,14 @@ export function createLaunchController(options) {
 
   function prepareStep(state, dtSeconds, nowMs = Date.now()) {
     runtime.lastStep = null;
-    prepareBoosterStep(state, dtSeconds, nowMs);
-    if (runtime.phase === "idle") {
-      return;
-    }
-    if (runtime.phase === "complete") {
-      runtime.phase = "coast";
-    }
+    try {
+      prepareBoosterStep(state, dtSeconds, nowMs);
+      if (runtime.phase === "idle") {
+        return;
+      }
+      if (runtime.phase === "complete") {
+        runtime.phase = "coast";
+      }
 
     const earthState = earthStateFromNBody(state);
     const rocketState = ensureRocketInNBody(state, nowMs);
@@ -2338,17 +2514,20 @@ export function createLaunchController(options) {
       rcsAuthority: rcs.authority,
       rcsJets: rcs.jets,
     };
-    runtime.lastTelemetry = telemetryFromState({
-      gravitationalConstantKm3PerKgS2,
-      earthMassKg: Number(getEarthMassKg?.()) || 0,
-      earthRadiusKm,
-      earthState,
-      rocketState,
-      atmosphereSample: atmo,
-      earthPole: currentEarthAxes.pole,
-      dynamicPressurePaOverride: dynamicPressurePa,
-      runtime,
-    });
+      runtime.lastTelemetry = telemetryFromState({
+        gravitationalConstantKm3PerKgS2,
+        earthMassKg: Number(getEarthMassKg?.()) || 0,
+        earthRadiusKm,
+        earthState,
+        rocketState,
+        atmosphereSample: atmo,
+        earthPole: currentEarthAxes.pole,
+        dynamicPressurePaOverride: dynamicPressurePa,
+        runtime,
+      });
+    } finally {
+      emitRuntimeTransitionEvents("prepare_step");
+    }
   }
 
   function externalAccelerationKmS2(bodyId) {
@@ -2362,50 +2541,51 @@ export function createLaunchController(options) {
   }
 
   function finalizeStep(state, dtSeconds, nowMs = Date.now()) {
-    if (runtime.phase === "idle" && !runtime.booster.active) {
-      return;
-    }
-    if (runtime.phase === "complete") {
-      runtime.phase = "coast";
-    }
-    const rocketState = rocketStateFromNBody(state);
-    const earthState = earthStateFromNBody(state);
-    if (!rocketState || !earthState) {
-      runtime.phase = "idle";
-      return;
-    }
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
-    const currentEarthAxes = earthAxes(nowMs);
-    const distanceStageIndex = runtime.stageIndex;
-    accumulateDistanceTravelled(
-      rocketState,
-      earthState,
-      currentEarthAxes,
-      distanceStageIndex,
-    );
-    const boosterState = boosterStateFromNBody(state);
-    if (boosterState) {
-      accumulateBoosterDistanceTravelled(
-        boosterState,
+    try {
+      if (runtime.phase === "idle" && !runtime.booster.active) {
+        return;
+      }
+      if (runtime.phase === "complete") {
+        runtime.phase = "coast";
+      }
+      const rocketState = rocketStateFromNBody(state);
+      const earthState = earthStateFromNBody(state);
+      if (!rocketState || !earthState) {
+        runtime.phase = "idle";
+        return;
+      }
+      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+      const currentEarthAxes = earthAxes(nowMs);
+      const distanceStageIndex = runtime.stageIndex;
+      accumulateDistanceTravelled(
+        rocketState,
         earthState,
         currentEarthAxes,
+        distanceStageIndex,
       );
-    }
-    const contact = applyEarthSurfaceContactForVehicle({
-      rocketState,
-      earthState,
-      earthAxes: currentEarthAxes,
-      earthRadiusKm,
-      earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
-      referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
-      dtSeconds,
-      thrustN: Number(runtime.lastStep?.thrustN) || 0,
-    });
-    if (contact?.surfaceSample) {
-      runtime.lastSurfaceSample = contact.surfaceSample;
-    } else {
-      updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
-    }
+      const boosterState = boosterStateFromNBody(state);
+      if (boosterState) {
+        accumulateBoosterDistanceTravelled(
+          boosterState,
+          earthState,
+          currentEarthAxes,
+        );
+      }
+      const contact = applyEarthSurfaceContactForVehicle({
+        rocketState,
+        earthState,
+        earthAxes: currentEarthAxes,
+        earthRadiusKm,
+        earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+        referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+        dtSeconds,
+        thrustN: Number(runtime.lastStep?.thrustN) || 0,
+      });
+      if (contact?.surfaceSample) {
+        runtime.lastSurfaceSample = contact.surfaceSample;
+      } else {
+        updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
+      }
 
     if (runtime.phase === "orbit") {
       const relPosNow = subtract(rocketState.position, earthState.position);
@@ -2515,18 +2695,21 @@ export function createLaunchController(options) {
       relVelNow,
       currentEarthAxes.pole,
     );
-    runtime.lastTelemetry = telemetryFromState({
-      gravitationalConstantKm3PerKgS2,
-      earthMassKg: Number(getEarthMassKg?.()) || 0,
-      earthRadiusKm,
-      earthState,
-      rocketState,
-      atmosphereSample,
-      earthPole: currentEarthAxes.pole,
-      dynamicPressurePaOverride: dynamicPressurePa,
-      runtime,
-    });
-    finalizeBoosterStep(state, dtSeconds, nowMs);
+      runtime.lastTelemetry = telemetryFromState({
+        gravitationalConstantKm3PerKgS2,
+        earthMassKg: Number(getEarthMassKg?.()) || 0,
+        earthRadiusKm,
+        earthState,
+        rocketState,
+        atmosphereSample,
+        earthPole: currentEarthAxes.pole,
+        dynamicPressurePaOverride: dynamicPressurePa,
+        runtime,
+      });
+      finalizeBoosterStep(state, dtSeconds, nowMs);
+    } finally {
+      emitRuntimeTransitionEvents("finalize_step");
+    }
   }
 
   function statusSnapshot() {
@@ -2614,10 +2797,19 @@ export function createLaunchController(options) {
   }
 
   function setMissionProfile(missionId) {
+    const previousMissionId = runtime.mission.selectedId;
+    const previousMissionPhase = runtime.mission.phase;
     const normalized = normalizeMissionId(missionId);
     runtime.mission.selectedId = normalized;
     runtime.mission.completed = false;
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(normalized));
+    emitLaunchEvent("mission_profile_selected", {
+      fromMissionId: previousMissionId,
+      toMissionId: normalized,
+      fromMissionPhase: previousMissionPhase,
+      toMissionPhase: runtime.mission.phase,
+    });
+    emitRuntimeTransitionEvents("set_mission_profile");
     return {
       ...safeMissionProfile(normalized),
       phase: runtime.mission.phase,
@@ -2637,6 +2829,14 @@ export function createLaunchController(options) {
   function getMissionProfiles() {
     return LAUNCH_MISSION_PROFILES.map((profile) => ({ ...profile }));
   }
+
+  emitLaunchEvent("launch_controller_initialized", {
+    autopilotEnabled: runtime.autopilotEnabled,
+    defaultMissionId: runtime.mission.selectedId,
+    defaultMissionPhase: runtime.mission.phase,
+    launchSiteName: LAUNCH_SITE.name || "Launch Site",
+  });
+  emitRuntimeTransitionEvents("controller_initialized");
 
   return {
     ensureCatalogBodies,
