@@ -478,6 +478,25 @@ function autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole) {
   return tangent;
 }
 
+function orbitInsertionWithinTolerance(orbital, config, targetAltitudeKm) {
+  if (!orbital || !config) {
+    return false;
+  }
+  const periapsisKm = Number(orbital.periapsisKm);
+  const apoapsisKm = Number(orbital.apoapsisKm);
+  if (!Number.isFinite(periapsisKm) || !Number.isFinite(apoapsisKm)) {
+    return false;
+  }
+  if (!(Number(orbital.specificEnergy) < 0)) {
+    return false;
+  }
+  const periTolKm = Math.max(0, Number(config.orbitalHoldMaxPeriapsisErrorKm) || 0);
+  const apoTolKm = Math.max(0, Number(config.orbitalHoldMaxApoapsisErrorKm) || 0);
+  const periErrorKm = Math.abs(targetAltitudeKm - periapsisKm);
+  const apoErrorKm = Math.abs(targetAltitudeKm - apoapsisKm);
+  return periErrorKm <= periTolKm && apoErrorKm <= apoTolKm;
+}
+
 function applyVerticalHoldSteering({
   baseDirection,
   relPos,
@@ -544,7 +563,7 @@ function computeAutopilotCommand({
   earthRadiusKm,
 }) {
   const config = LAUNCH_AUTOPILOT_CONFIG;
-  const targetAltitudeKm = config.targetOrbitAltitudeKm;
+  const targetAltitudeKm = Number(runtime?.targetOrbitAltitudeKm) || config.targetOrbitAltitudeKm;
   const targetAltitudeSafe = Math.max(targetAltitudeKm, 1);
   const apoapsisKm = Number(orbital.apoapsisKm);
   const periapsisKm = Number(orbital.periapsisKm);
@@ -555,11 +574,21 @@ function computeAutopilotCommand({
   const tangentialSpeedKmS = Number(orbital.tangentialSpeedKmS) || 0;
   const targetRadiusKm = Math.max(1, earthRadiusKm + targetAltitudeKm);
   const targetCircularSpeedKmS = circularOrbitSpeedKmS(muKm3S2, targetRadiusKm);
+  const stableTargetOrbit = orbitInsertionWithinTolerance(orbital, config, targetAltitudeKm);
 
   const planeNormal = runtime.launchPlaneNormal || normalize(cross(up, relVel), earthPole);
   const tangent = autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole);
 
   if (runtime.autopilotMode === "autopilot-orbital-hold") {
+    if (!stableTargetOrbit) {
+      runtime.autopilotMode = "autopilot-coast-to-circularize";
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "autopilot-reacquire-orbit",
+      };
+    }
     return {
       phase: "orbit",
       throttle: 0,
@@ -605,9 +634,7 @@ function computeAutopilotCommand({
     const periErrorKm = periDefined ? targetAltitudeKm - periapsisKm : targetAltitudeKm;
     const tangentialSpeedErrorKmS = circularSpeedKmS - tangentialSpeedKmS;
     const aboveCircularSpeed = tangentialSpeedErrorKmS <= -0.02;
-    const doneCircularizing =
-      periErrorKm <= config.orbitalHoldMaxPeriapsisErrorKm
-      && tangentialSpeedErrorKmS <= 0.02;
+    const doneCircularizing = stableTargetOrbit && tangentialSpeedErrorKmS <= 0.02;
     if (doneCircularizing) {
       runtime.autopilotMode = "autopilot-orbital-hold";
       return {
@@ -618,12 +645,12 @@ function computeAutopilotCommand({
       };
     }
     if (aboveCircularSpeed) {
-      runtime.autopilotMode = "autopilot-orbital-hold";
+      runtime.autopilotMode = "autopilot-coast-to-circularize";
       return {
-        phase: "orbit",
+        phase: "coast",
         throttle: 0,
         direction: tangent,
-        mode: "autopilot-orbital-hold",
+        mode: "autopilot-coast-for-recapture",
       };
     }
     const radialDamping = clamp(-radialSpeedKmS * 0.55, -0.22, 0.22);
@@ -2350,31 +2377,41 @@ export function createLaunchController(options) {
       runtime.phase = "coast";
     }
     if (runtime.phase === "orbit") {
-      runtime.lastStep = {
-        accelerationKmS2: { x: 0, y: 0, z: 0 },
-        throttle: 0,
-        thrustN: 0,
-        burnKg: 0,
-        burnRateKgS: 0,
-        dynamicPressurePa,
-        guidanceMode: runtime.autopilotMode || "orbit-hold",
-        rcsActive: false,
-        rcsErrorDeg: 0,
-        rcsAuthority: 0,
-        rcsJets: [],
-      };
-      runtime.lastTelemetry = telemetryFromState({
-        gravitationalConstantKm3PerKgS2,
-        earthMassKg: Number(getEarthMassKg?.()) || 0,
-        earthRadiusKm,
-        earthState,
-        rocketState,
-        atmosphereSample: atmo,
-        earthPole: currentEarthAxes.pole,
-        dynamicPressurePaOverride: dynamicPressurePa,
-        runtime,
-      });
-      return;
+      const stableTargetOrbit = orbitInsertionWithinTolerance(
+        orbital,
+        LAUNCH_AUTOPILOT_CONFIG,
+        runtime.targetOrbitAltitudeKm || LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm,
+      );
+      if (!stableTargetOrbit) {
+        runtime.phase = "coast";
+        runtime.autopilotMode = "autopilot-coast-to-circularize";
+      } else {
+        runtime.lastStep = {
+          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          throttle: 0,
+          thrustN: 0,
+          burnKg: 0,
+          burnRateKgS: 0,
+          dynamicPressurePa,
+          guidanceMode: runtime.autopilotMode || "orbit-hold",
+          rcsActive: false,
+          rcsErrorDeg: 0,
+          rcsAuthority: 0,
+          rcsJets: [],
+        };
+        runtime.lastTelemetry = telemetryFromState({
+          gravitationalConstantKm3PerKgS2,
+          earthMassKg: Number(getEarthMassKg?.()) || 0,
+          earthRadiusKm,
+          earthState,
+          rocketState,
+          atmosphereSample: atmo,
+          earthPole: currentEarthAxes.pole,
+          dynamicPressurePaOverride: dynamicPressurePa,
+          runtime,
+        });
+        return;
+      }
     }
 
     if (runtime.coastRemainingSec > 0) {
@@ -2855,6 +2892,17 @@ export function createLaunchController(options) {
         rocketState.velocity || { x: 0, y: 0, z: 0 },
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
+      const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+      const orbitalNow = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPosNow, relVelNow);
+      const stableTargetOrbit = orbitInsertionWithinTolerance(
+        orbitalNow,
+        LAUNCH_AUTOPILOT_CONFIG,
+        runtime.targetOrbitAltitudeKm || LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm,
+      );
+      if (!stableTargetOrbit) {
+        runtime.phase = "coast";
+        runtime.autopilotMode = "autopilot-coast-to-circularize";
+      } else {
       const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
       const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
       const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
@@ -2877,6 +2925,7 @@ export function createLaunchController(options) {
       finalizeBoosterStep(state, dtSeconds, nowMs);
       runtime.elapsedSeconds += dtSeconds;
       return;
+      }
     }
 
     runtime.elapsedSeconds += dtSeconds;
