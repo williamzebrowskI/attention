@@ -546,7 +546,7 @@ window.addEventListener("resize", onResize);
 init().catch((error) => {
   console.error("[solar-system] Initialization failed:", error);
   showFatalOverlay(
-    "Three.js failed to initialize. Confirm internet access to load CDN modules and refresh.",
+    "3D renderer failed to initialize. The app could not load Three.js modules (local vendor or CDN). Add local files at /static/vendor/three or restore internet access, then refresh.",
   );
 });
 
@@ -684,8 +684,12 @@ function primeMeridianCoverageMissingIds() {
 
 async function loadThreeModule() {
   const urls = [
+    "/static/vendor/three/three.module.js",
     "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
     "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "https://esm.sh/three@0.160.0",
+    "https://cdn.skypack.dev/three@0.160.0",
+    "https://threejs.org/build/three.module.js",
   ];
   let lastError = null;
   for (const url of urls) {

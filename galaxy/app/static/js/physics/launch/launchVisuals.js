@@ -4,7 +4,13 @@ import {
 } from "./launchConfig.js";
 
 const STARSHIP_MODEL_MANIFEST_URL = "/static/assets/models/starship/model_manifest.json";
-const STARSHIP_LOADER_CDN_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
+const STARSHIP_LOADER_MODULE_URLS = Object.freeze([
+  "/static/vendor/three/loaders/GLTFLoader.module.js",
+  "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm",
+  "https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+  "https://cdn.skypack.dev/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+  "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js?module",
+]);
 const STARSHIP_EXTERNAL_BLACK_TILE_COLOR = 0x151b24;
 const STARSHIP_EXTERNAL_BLACK_TILE_EMISSIVE = 0x05070d;
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
@@ -643,12 +649,23 @@ async function loadStarshipModelManifest() {
 
 async function loadGltfLoaderClass() {
   if (!cachedExternalLoaderPromise) {
-    cachedExternalLoaderPromise = import(STARSHIP_LOADER_CDN_URL)
-      .then((mod) => mod?.GLTFLoader || null)
-      .catch((error) => {
-        console.warn("[launch] Could not import GLTFLoader for external Starship model:", error);
-        return null;
-      });
+    cachedExternalLoaderPromise = (async () => {
+      let lastError = null;
+      for (const url of STARSHIP_LOADER_MODULE_URLS) {
+        try {
+          const mod = await import(url);
+          if (mod?.GLTFLoader) {
+            return mod.GLTFLoader;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError) {
+        console.warn("[launch] Could not import GLTFLoader for external Starship model:", lastError);
+      }
+      return null;
+    })();
   }
   return cachedExternalLoaderPromise;
 }
