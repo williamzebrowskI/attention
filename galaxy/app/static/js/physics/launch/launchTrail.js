@@ -1,28 +1,13 @@
 import {
   LAUNCH_BODY_ID,
   LAUNCH_EXHAUST_VISUAL_CONFIG,
+  STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
 
-const MAX_TRAIL_POINTS = 8000;
+const MAX_TRAIL_POINTS = 12000;
 const TRAIL_CORE_COLOR = 0x59cbff;
-const TRAIL_REFERENCE_BODY_ID = "earth";
-const MIN_TRACK_POINT_SPACING_KM = 0.5;
-
-function toSceneVector(THREE, coordsKm, distanceScale) {
-  return new THREE.Vector3(
-    Number(coordsKm.x) * distanceScale,
-    Number(coordsKm.z) * distanceScale,
-    Number(coordsKm.y) * distanceScale,
-  );
-}
-
-function subtractCoordsKm(a, b) {
-  return {
-    x: (Number(a?.x) || 0) - (Number(b?.x) || 0),
-    y: (Number(a?.y) || 0) - (Number(b?.y) || 0),
-    z: (Number(a?.z) || 0) - (Number(b?.z) || 0),
-  };
-}
+const MIN_TRACK_POINT_SPACING_KM = 0.1;
+const AXIS_EPS = 1e-12;
 
 export function createLaunchTrailController(options) {
   const {
@@ -30,7 +15,6 @@ export function createLaunchTrailController(options) {
     scene,
     getLaunchSnapshot,
     getCoordinatesKmById,
-    getVelocityKmSById,
     getBodyVisual,
     distanceScale = 1,
     launchBodyId = LAUNCH_BODY_ID,
@@ -38,9 +22,8 @@ export function createLaunchTrailController(options) {
 
   let enabled = true;
   let wasActive = false;
-  let lastPoint = null;
-  let cachedScenePos = null;
-  const trailPoints = [];
+  let lastPointKm = null;
+  const trailPointsKm = [];
 
   const group = new THREE.Group();
   group.renderOrder = 62;
@@ -59,90 +42,140 @@ export function createLaunchTrailController(options) {
   pathLine.frustumCulled = false;
   group.add(pathLine);
 
-  function launchVisualScaleMetrics() {
+  function trailSpacingKm() {
     const visual = getBodyVisual?.(launchBodyId);
-    const vehicleRadiusKm = Math.max(Number(visual?.body?.radius_km) || 0, 0.0045);
-    const vehicleRadiusScene = Math.max(vehicleRadiusKm * distanceScale, 1e-12);
-    const trailPointSpacingScene = Math.max(
-      LAUNCH_EXHAUST_VISUAL_CONFIG.trailPointSpacingKm * distanceScale,
-      vehicleRadiusScene * 1.2,
-      MIN_TRACK_POINT_SPACING_KM * distanceScale,
+    const vehicleDiameterKm = Math.max((Number(visual?.body?.radius_km) || 0.0045) * 2, 0.009);
+    return Math.max(
+      LAUNCH_EXHAUST_VISUAL_CONFIG.trailPointSpacingKm,
+      vehicleDiameterKm * 2.4,
+      MIN_TRACK_POINT_SPACING_KM,
     );
+  }
+
+  function toSceneVector(coordsKm) {
+    if (!coordsKm) {
+      return null;
+    }
+    return new THREE.Vector3(
+      Number(coordsKm.x || 0) * distanceScale,
+      Number(coordsKm.z || 0) * distanceScale,
+      Number(coordsKm.y || 0) * distanceScale,
+    );
+  }
+
+  function toKmVector(sceneVec) {
+    if (!sceneVec || !(distanceScale > 0)) {
+      return null;
+    }
     return {
-      vehicleRadiusKm,
-      vehicleRadiusScene,
-      trailPointSpacingScene,
+      x: Number(sceneVec.x || 0) / distanceScale,
+      y: Number(sceneVec.z || 0) / distanceScale,
+      z: Number(sceneVec.y || 0) / distanceScale,
     };
   }
 
+  function kmDistanceSquared(a, b) {
+    const dx = (Number(a?.x) || 0) - (Number(b?.x) || 0);
+    const dy = (Number(a?.y) || 0) - (Number(b?.y) || 0);
+    const dz = (Number(a?.z) || 0) - (Number(b?.z) || 0);
+    return (dx * dx) + (dy * dy) + (dz * dz);
+  }
+
+  function stageHalfHeightKm(stageIndex) {
+    if (Number.isFinite(stageIndex) && stageIndex >= 1) {
+      return STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5;
+    }
+    return STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
+  }
+
+  function resolveActiveAnchorScene(snapshot, visual) {
+    const stageIndex = Number(snapshot?.stageIndex);
+    const stageState = visual?.launchStackState || null;
+    const stageAnchor =
+      Number.isFinite(stageIndex) && stageIndex >= 1
+        ? (stageState?.shipGroup || visual?.root)
+        : (stageState?.boosterGroup || visual?.root);
+
+    if (!stageAnchor) {
+      return null;
+    }
+    const anchor = new THREE.Vector3();
+    if (typeof stageAnchor.getWorldPosition === "function") {
+      stageAnchor.getWorldPosition(anchor);
+    } else if (stageAnchor.position) {
+      anchor.copy(stageAnchor.position);
+    } else {
+      return null;
+    }
+
+    const tiltGroup = visual?.tiltGroup || null;
+    if (tiltGroup && typeof tiltGroup.getWorldQuaternion === "function") {
+      const orientation = new THREE.Quaternion();
+      tiltGroup.getWorldQuaternion(orientation);
+      const upAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(orientation);
+      if (upAxis.lengthSq() > AXIS_EPS) {
+        const tailOffsetScene = stageHalfHeightKm(stageIndex) * distanceScale;
+        anchor.addScaledVector(upAxis.normalize(), -tailOffsetScene);
+      }
+    }
+    return anchor;
+  }
+
   function rebuildGeometry() {
-    if (trailPoints.length === 0) {
+    if (trailPointsKm.length === 0) {
       pathGeometry.setFromPoints([]);
       return;
     }
-    pathGeometry.setFromPoints(trailPoints);
+    const trailPointsScene = trailPointsKm
+      .map((coordsKm) => toSceneVector(coordsKm))
+      .filter(Boolean);
+    pathGeometry.setFromPoints(trailPointsScene);
     pathGeometry.computeBoundingSphere();
   }
 
   function clear() {
-    trailPoints.length = 0;
-    lastPoint = null;
-    cachedScenePos = null;
+    trailPointsKm.length = 0;
+    lastPointKm = null;
     group.position.set(0, 0, 0);
     rebuildGeometry();
   }
 
-  function appendPoint(scenePos, minDistanceScene) {
-    if (!scenePos) {
+  function appendPoint(pointKm, minDistanceKm) {
+    if (!pointKm) {
       return;
     }
-    const spacing = Math.max(minDistanceScene || 0, 1e-12);
-    if (!lastPoint || lastPoint.distanceToSquared(scenePos) >= (spacing * spacing)) {
-      trailPoints.push(scenePos.clone());
-      if (trailPoints.length > MAX_TRAIL_POINTS) {
-        trailPoints.shift();
+    const spacing = Math.max(minDistanceKm || 0, 1e-12);
+    if (!lastPointKm || kmDistanceSquared(lastPointKm, pointKm) >= (spacing * spacing)) {
+      trailPointsKm.push({
+        x: Number(pointKm.x) || 0,
+        y: Number(pointKm.y) || 0,
+        z: Number(pointKm.z) || 0,
+      });
+      if (trailPointsKm.length > MAX_TRAIL_POINTS) {
+        trailPointsKm.shift();
       }
-      lastPoint = scenePos.clone();
+      lastPointKm = {
+        x: Number(pointKm.x) || 0,
+        y: Number(pointKm.y) || 0,
+        z: Number(pointKm.z) || 0,
+      };
       rebuildGeometry();
     }
   }
 
   function update(_deltaSeconds = 0) {
     group.visible = enabled;
+    group.position.set(0, 0, 0);
 
     const snapshot = getLaunchSnapshot?.() || null;
-    const coordsKm = getCoordinatesKmById?.(launchBodyId);
+    const visual = getBodyVisual?.(launchBodyId);
+    const launchCoordsKm = getCoordinatesKmById?.(launchBodyId) || null;
+    const anchorScene = resolveActiveAnchorScene(snapshot, visual);
+    const anchorKm = toKmVector(anchorScene);
+    const coordsKm = anchorKm || launchCoordsKm || toKmVector(visual?.root?.position);
     if (!coordsKm) {
       return;
     }
-    const referenceCoordsKm = getCoordinatesKmById?.(TRAIL_REFERENCE_BODY_ID) || null;
-    const velocityKmS = getVelocityKmSById?.(launchBodyId) || null;
-    let scenePos = null;
-    if (
-      Number.isFinite(Number(referenceCoordsKm?.x))
-      && Number.isFinite(Number(referenceCoordsKm?.y))
-      && Number.isFinite(Number(referenceCoordsKm?.z))
-    ) {
-      group.position.copy(toSceneVector(THREE, referenceCoordsKm, distanceScale));
-      const relCoordsKm = subtractCoordsKm(coordsKm, referenceCoordsKm);
-      scenePos = toSceneVector(THREE, relCoordsKm, distanceScale);
-    } else {
-      group.position.set(0, 0, 0);
-      scenePos = toSceneVector(THREE, coordsKm, distanceScale);
-    }
-
-    const visual = getBodyVisual?.(launchBodyId);
-    const visualPosition = visual?.root?.position;
-    if (
-      visualPosition
-      && Number.isFinite(Number(visualPosition.x))
-      && Number.isFinite(Number(visualPosition.y))
-      && Number.isFinite(Number(visualPosition.z))
-    ) {
-      scenePos = visualPosition.clone().sub(group.position);
-    }
-
-    cachedScenePos = scenePos.clone();
 
     const phase = snapshot?.phase || "idle";
     const active = phase === "powered" || phase === "coast";
@@ -152,15 +185,14 @@ export function createLaunchTrailController(options) {
       clear();
     }
 
-    const { trailPointSpacingScene } = launchVisualScaleMetrics();
+    const spacingKm = trailSpacingKm();
 
     if (active || phase === "complete") {
-      appendPoint(scenePos, trailPointSpacingScene);
-    } else if (trailPoints.length === 0) {
-      appendPoint(scenePos, trailPointSpacingScene);
+      appendPoint(coordsKm, spacingKm);
+    } else if (trailPointsKm.length === 0) {
+      appendPoint(coordsKm, spacingKm);
     }
 
-    void velocityKmS;
     wasActive = active;
   }
 
