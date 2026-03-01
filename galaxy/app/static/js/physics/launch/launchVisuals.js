@@ -14,6 +14,7 @@ const STARSHIP_LOADER_MODULE_URLS = Object.freeze([
 const STARSHIP_EXTERNAL_BLACK_TILE_COLOR = 0x151b24;
 const STARSHIP_EXTERNAL_BLACK_TILE_EMISSIVE = 0x05070d;
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
+const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
 
 let cachedExternalManifest = null;
 let cachedExternalManifestPromise = null;
@@ -123,20 +124,88 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   return jets;
 }
 
+function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
+  if (!THREE || !stageGroup) {
+    return null;
+  }
+  const engineCount = Math.max(1, Number(options.engineCount) || 1);
+  const anchorY = Number(options.anchorY) || 0;
+  const ringRadius = Math.max(0, Number(options.ringRadius) || 0);
+  const basePlumeLength = Math.max(1e-12, Number(options.plumeLength) || 1e-6);
+  const basePlumeRadius = Math.max(1e-12, Number(options.plumeRadius) || 1e-6);
+  const baseGlowRadius = Math.max(basePlumeRadius * 0.75, Number(options.glowRadius) || basePlumeRadius * 0.9);
+
+  const cluster = new THREE.Group();
+  cluster.visible = false;
+  cluster.renderOrder = 24;
+
+  const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(STARSHIP_MAIN_ENGINE_PLUME_COLOR),
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const glowTemplateMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(STARSHIP_MAIN_ENGINE_PLUME_COLOR),
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+
+  const entries = [];
+  for (let i = 0; i < engineCount; i += 1) {
+    const angle = (i / engineCount) * Math.PI * 2;
+    const offsetX = engineCount > 1 ? Math.cos(angle) * ringRadius : 0;
+    const offsetZ = engineCount > 1 ? Math.sin(angle) * ringRadius : 0;
+
+    const plume = new THREE.Mesh(
+      new THREE.ConeGeometry(basePlumeRadius, basePlumeLength, 10, 1, true),
+      plumeTemplateMaterial.clone(),
+    );
+    plume.rotation.x = Math.PI;
+    plume.position.set(offsetX, anchorY - (basePlumeLength * 0.38), offsetZ);
+    plume.renderOrder = 24;
+
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(baseGlowRadius, 10, 10),
+      glowTemplateMaterial.clone(),
+    );
+    glow.position.set(offsetX, anchorY, offsetZ);
+    glow.renderOrder = 25;
+
+    cluster.add(plume);
+    cluster.add(glow);
+    entries.push({ plume, glow });
+  }
+  stageGroup.add(cluster);
+  return {
+    cluster,
+    entries,
+    basePlumeLength,
+    basePlumeRadius,
+    baseGlowRadius,
+  };
+}
+
 function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
   if (!THREE || !shipGroup || !material || !(radius > 0) || !(shipHeight > 0)) {
-    return;
+    return [];
   }
   const engineBellRadius = clamp(radius * 0.17, radius * 0.075, radius * 0.21);
   const engineBellHeight = clamp(radius * 0.25, radius * 0.11, radius * 0.3);
   const engineRingRadius = clamp(radius * 0.45, radius * 0.14, radius * 0.52);
   const engineY = (-0.5 * shipHeight) - (engineBellHeight * 0.42);
+  const engineMeshes = [];
 
   for (let i = 0; i < 6; i += 1) {
     const angle = (i / 6) * Math.PI * 2;
     const bell = new THREE.Mesh(
       new THREE.ConeGeometry(engineBellRadius, engineBellHeight, 16, 1, true),
-      material,
+      material.clone(),
     );
     bell.position.set(
       Math.cos(angle) * engineRingRadius,
@@ -145,15 +214,18 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
     );
     bell.rotation.x = Math.PI;
     shipGroup.add(bell);
+    engineMeshes.push(bell);
   }
 
   const centerBell = new THREE.Mesh(
     new THREE.ConeGeometry(engineBellRadius * 1.05, engineBellHeight * 1.05, 18, 1, true),
-    material,
+    material.clone(),
   );
   centerBell.position.y = (-0.5 * shipHeight) - (engineBellHeight * 0.47);
   centerBell.rotation.x = Math.PI;
   shipGroup.add(centerBell);
+  engineMeshes.push(centerBell);
+  return engineMeshes;
 }
 
 function seededNoise(x, y, seed) {
@@ -516,7 +588,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     const angle = (i / 9) * Math.PI * 2;
     const bell = new THREE.Mesh(
       new THREE.ConeGeometry(engineBellRadius, engineBellHeight, 16, 1, true),
-      darkSteel,
+      darkSteel.clone(),
     );
     bell.position.set(
       Math.cos(angle) * engineRingRadius,
@@ -528,7 +600,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   }
   const centerBell = new THREE.Mesh(
     new THREE.ConeGeometry(engineBellRadius * 1.1, engineBellHeight * 1.08, 18, 1, true),
-    darkSteel,
+    darkSteel.clone(),
   );
   centerBell.position.y = -0.5 * boosterHeight - (engineBellHeight * 0.5);
   centerBell.rotation.x = Math.PI;
@@ -593,6 +665,22 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     shipGroup.add(fore);
   }
   addShipEngineCluster(THREE, shipGroup, darkSteel, radius, shipHeight);
+  const boosterMainEnginePlume = createMainEnginePlumeCluster(THREE, boosterGroup, {
+    engineCount: 9,
+    anchorY: -0.5 * boosterHeight - (engineBellHeight * 0.48),
+    ringRadius: engineRingRadius,
+    plumeLength: clamp(boosterHeight * 0.085, radius * 0.5, boosterHeight * 0.18),
+    plumeRadius: clamp(radius * 0.14, radius * 0.07, radius * 0.2),
+    glowRadius: clamp(radius * 0.11, radius * 0.05, radius * 0.16),
+  });
+  const shipMainEnginePlume = createMainEnginePlumeCluster(THREE, shipGroup, {
+    engineCount: 6,
+    anchorY: -0.5 * shipHeight - (shipHeight * 0.06),
+    ringRadius: clamp(radius * 0.45, radius * 0.14, radius * 0.52),
+    plumeLength: clamp(shipHeight * 0.14, radius * 0.42, shipHeight * 0.24),
+    plumeRadius: clamp(radius * 0.11, radius * 0.05, radius * 0.16),
+    glowRadius: clamp(radius * 0.09, radius * 0.04, radius * 0.13),
+  });
   const rcsJets = createRcsJetVisuals(THREE, shipGroup, radius, shipHeight);
 
   return {
@@ -604,6 +692,10 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
       fullShipCenterY,
       detachedShipCenterY,
       rcsJets,
+      mainEnginePlumes: {
+        booster: boosterMainEnginePlume,
+        ship: shipMainEnginePlume,
+      },
     },
     physical: {
       radiusScene: starshipPhysicalRenderRadiusScene(distanceScale),
@@ -964,10 +1056,10 @@ function updateRcsJetVisuals(stageState, snapshot) {
   const active = Boolean(snapshot?.rcsActive) && requestedJetSet.size > 0;
   const authority = clamp(Number(snapshot?.rcsAuthority) || 0, 0, 1);
   const pulse = 0.82 + (0.18 * Math.sin((Date.now() / 1000) * 26));
-  const opacity = (0.14 + (authority * 0.44)) * pulse;
+  const opacity = (0.2 + (authority * 0.55)) * pulse;
   const stretch = 0.75 + (authority * 0.85);
-  const radiusScale = 0.75 + (authority * 0.65);
-  const glowScale = 0.7 + (authority * 1.0);
+  const radiusScale = 0.82 + (authority * 0.75);
+  const glowScale = 0.78 + (authority * 1.16);
 
   for (const [jetName, entry] of Object.entries(jets)) {
     if (!entry) {
@@ -988,9 +1080,58 @@ function updateRcsJetVisuals(stageState, snapshot) {
       entry.glow.scale.set(glowScale, glowScale, glowScale);
     }
     if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
-      entry.glow.material.opacity = opacity * 0.7;
+      entry.glow.material.opacity = opacity * 0.85;
     }
   }
+}
+
+function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
+  if (!plumeState?.cluster || !Array.isArray(plumeState.entries)) {
+    return;
+  }
+  plumeState.cluster.visible = Boolean(firing);
+  if (!firing) {
+    return;
+  }
+  const t = clamp(Number(throttle) || 0, 0, 1);
+  const plumeOpacity = (0.34 + (t * 0.58)) * pulse;
+  const glowOpacity = (0.44 + (t * 0.5)) * pulse;
+  const stretch = 0.82 + (t * 2.05);
+  const radiusScale = 0.9 + (t * 0.52);
+  const glowScale = 0.95 + (t * 0.72);
+  for (const entry of plumeState.entries) {
+    if (!entry) {
+      continue;
+    }
+    if (entry.plume?.scale) {
+      entry.plume.scale.set(radiusScale, stretch, radiusScale);
+    }
+    if (entry.plume?.material && !Array.isArray(entry.plume.material)) {
+      entry.plume.material.opacity = plumeOpacity;
+    }
+    if (entry.glow?.scale) {
+      entry.glow.scale.set(glowScale, glowScale, glowScale);
+    }
+    if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
+      entry.glow.material.opacity = glowOpacity;
+    }
+  }
+}
+
+function updateMainEnginePlumes(stageState, stageIndex, snapshot) {
+  const plumes = stageState?.mainEnginePlumes;
+  if (!plumes) {
+    return;
+  }
+  const separated = Number.isFinite(stageIndex) && stageIndex >= 1;
+  const phase = String(snapshot?.phase || "").toLowerCase();
+  const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
+  const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
+  const powered = phase === "powered" && thrustN > 0.01;
+  const pulse = 0.92 + (0.08 * Math.sin((Date.now() / 1000) * 44));
+
+  setMainEnginePlumeVisual(plumes.booster, powered && !separated, throttle, pulse);
+  setMainEnginePlumeVisual(plumes.ship, powered && separated, throttle, pulse);
 }
 
 export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null) {
@@ -1009,5 +1150,6 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
       ? stageState.detachedShipCenterY
       : stageState.fullShipCenterY;
   }
+  updateMainEnginePlumes(stageState, stageIndex, snapshot);
   updateRcsJetVisuals(stageState, snapshot);
 }
