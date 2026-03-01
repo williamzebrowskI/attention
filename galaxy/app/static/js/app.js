@@ -92,7 +92,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301au";
+const FRONTEND_MODULE_VERSION = "20260301av";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -867,6 +867,8 @@ let latestSolarTimestampMs = Date.now();
 const lastFrameTaskErrorMsByKey = new Map();
 const LAUNCH_EVENT_LOG_MAX_ENTRIES = 500;
 const launchEventLogEntries = [];
+let lastLaunchEventSummary = "";
+let lastLaunchEventTimestampUtc = "";
 
 function appendLaunchLogEntry(level, entry) {
   const safeLevel = level === "error" ? "error" : "info";
@@ -881,10 +883,22 @@ function appendLaunchLogEntry(level, entry) {
   if (launchEventLogEntries.length > LAUNCH_EVENT_LOG_MAX_ENTRIES) {
     launchEventLogEntries.splice(0, launchEventLogEntries.length - LAUNCH_EVENT_LOG_MAX_ENTRIES);
   }
+  lastLaunchEventSummary = name;
+  lastLaunchEventTimestampUtc = logEntry.timestampUtc;
+  const highlightEvents = new Set([
+    "launch_started",
+    "starship_stage_changed",
+    "stage_separation_booster_detached",
+    "booster_phase_changed",
+    "booster_landed",
+    "launch_runtime_error",
+  ]);
   if (safeLevel === "error") {
     console.error(`[launch:${name}]`, logEntry);
+  } else if (highlightEvents.has(name)) {
+    console.warn(`[launch:${name}]`, logEntry);
   } else {
-    console.info(`[launch:${name}]`, logEntry);
+    console.log(`[launch:${name}]`, logEntry);
   }
 }
 
@@ -893,6 +907,8 @@ function registerLaunchLogDebugHandles() {
   window.getLaunchEventLog = () => launchEventLogEntries.map((entry) => ({ ...entry }));
   window.clearLaunchEventLog = () => {
     launchEventLogEntries.length = 0;
+    lastLaunchEventSummary = "";
+    lastLaunchEventTimestampUtc = "";
   };
 }
 
@@ -2257,7 +2273,13 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const missionLine = snapshot.missionName
     ? ` | Mission ${snapshot.missionName}${snapshot.missionPhase ? ` (${snapshot.missionPhase})` : ""}${snapshot.missionCompleted ? " [complete]" : ""}`
     : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine}${boosterLine}${missionLine} | ${snapshot.launchSiteName || "Launch Site"}`;
+  const eventAgeSeconds = lastLaunchEventTimestampUtc
+    ? Math.max(0, (Date.now() - Date.parse(lastLaunchEventTimestampUtc)) / 1000)
+    : null;
+  const eventLine = lastLaunchEventSummary
+    ? ` | Event ${lastLaunchEventSummary}${Number.isFinite(eventAgeSeconds) ? ` (${formatNumber(eventAgeSeconds, 1)}s ago)` : ""}`
+    : "";
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine}${boosterLine}${missionLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
 }
 
 function phaseLabelForLaunch(phase) {
