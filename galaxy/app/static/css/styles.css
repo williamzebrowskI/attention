@@ -80,7 +80,7 @@ body {
   font-size: 13px;
   line-height: 1.36;
   backdrop-filter: blur(8px);
-  pointer-events: none;
+  pointer-events: auto;
   opacity: 0;
   transition: opacity 140ms linear;
 }
@@ -89,14 +89,56 @@ body {
   opacity: 1;
 }
 
+.planet-info.collapsed {
+  max-width: 300px;
+  padding: 8px 10px;
+}
+
+.planet-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planet-info-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(86, 186, 255, 0.36);
+  background: rgba(6, 15, 28, 0.76);
+  color: #d7ecff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.planet-info-toggle:hover {
+  border-color: rgba(136, 210, 255, 0.62);
+}
+
+.planet-info-content {
+  display: block;
+}
+
 .planet-info .title {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 14px;
   font-weight: 600;
 }
 
 .planet-info .line {
   margin: 0;
+}
+
+.planet-info-content .line:first-child {
+  margin-top: 6px;
 }
 
 .planet-info .line.launch-line {

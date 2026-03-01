@@ -54,6 +54,8 @@ const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
 let launchStatusNode = document.getElementById("launch-status");
 let launchEventLogNode = document.getElementById("launch-event-log");
+const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
+let infoPanelCollapsed = false;
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
@@ -7534,6 +7536,70 @@ function detailThreshold(renderRadius) {
   return Math.max(DETAIL_MIN_DISTANCE, renderRadius * DETAIL_DISTANCE_MULTIPLIER);
 }
 
+function readInfoPanelCollapsedPreference() {
+  try {
+    return window.localStorage?.getItem(INFO_PANEL_COLLAPSED_STORAGE_KEY) === "1";
+  } catch (_error) {
+    return false;
+  }
+}
+
+function persistInfoPanelCollapsedPreference(collapsed) {
+  try {
+    window.localStorage?.setItem(INFO_PANEL_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch (_error) {
+    // Ignore preference persistence failures.
+  }
+}
+
+function renderInfoCardContent(title, contentHtml) {
+  if (!infoCard) {
+    return;
+  }
+  const toggleIcon = infoPanelCollapsed ? "+" : "-";
+  const toggleLabel = infoPanelCollapsed ? "Expand info panel" : "Minimize info panel";
+  const contentSection = infoPanelCollapsed
+    ? ""
+    : `<div class="planet-info-content">${contentHtml}</div>`;
+  infoCard.innerHTML = `
+    <div class="planet-info-header">
+      <p class="title">${title}</p>
+      <button type="button" class="planet-info-toggle" data-info-toggle="true" aria-label="${toggleLabel}" aria-expanded="${infoPanelCollapsed ? "false" : "true"}">${toggleIcon}</button>
+    </div>
+    ${contentSection}
+  `;
+  infoCard.classList.toggle("collapsed", infoPanelCollapsed);
+  infoCard.classList.add("visible");
+}
+
+function toggleInfoPanelCollapsed() {
+  infoPanelCollapsed = !infoPanelCollapsed;
+  persistInfoPanelCollapsedPreference(infoPanelCollapsed);
+  updateInfoOverlay();
+}
+
+function initializeInfoPanelControls() {
+  if (!infoCard) {
+    return;
+  }
+  infoPanelCollapsed = readInfoPanelCollapsedPreference();
+  infoCard.classList.toggle("collapsed", infoPanelCollapsed);
+  infoCard.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (!target.closest("[data-info-toggle='true']")) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    toggleInfoPanelCollapsed();
+  });
+}
+
+initializeInfoPanelControls();
+
 function updateInfoOverlay() {
   if (!detailBodyId) {
     infoCard.classList.remove("visible");
@@ -7741,8 +7807,7 @@ function updateInfoOverlay() {
       `;
     }
 
-    infoCard.innerHTML = `
-      <p class="title">${selectedVehicleLabel} Telemetry</p>
+    const launchTelemetryContent = `
       <p class="line">Observation Mode: ${observationModeLabel}</p>
       <p class="line">Data Source: ${live.source}${sourceError}</p>
       <p class="line">Mission: ${launchSnapshot?.missionName || "n/a"} | Phase: ${launchSnapshot?.missionPhase || "n/a"} | Complete: ${launchSnapshot?.missionCompleted ? "yes" : "no"}</p>
@@ -7753,7 +7818,7 @@ function updateInfoOverlay() {
       <p class="line">Camera Distance: ${formatNumber(cameraDistance)} scene units</p>
       <p class="line">XYZ (km): ${coordsLine}</p>
     `;
-    infoCard.classList.add("visible");
+    renderInfoCardContent(`${selectedVehicleLabel} Telemetry`, launchTelemetryContent);
     return;
   }
 
@@ -7789,8 +7854,7 @@ function updateInfoOverlay() {
        <p class="line launch-line">Apoapsis/Periapsis: ${Number.isFinite(launchSnapshot.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}</p>`
     : "";
 
-  infoCard.innerHTML = `
-    <p class="title">${meta.name}</p>
+  const bodyInfoContent = `
     <p class="line">Type: ${meta.body_type}</p>
     <p class="line">Parent Body: ${parent}</p>
     <p class="line">Data Source: ${live.source}${sourceError}</p>
@@ -7824,7 +7888,7 @@ function updateInfoOverlay() {
     <p class="line">XYZ (km): ${hasCoords ? `${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}` : "n/a"}</p>
     <p class="line">${description}</p>
   `;
-  infoCard.classList.add("visible");
+  renderInfoCardContent(meta.name, bodyInfoContent);
 }
 
 function onResize() {
@@ -7839,8 +7903,7 @@ function onResize() {
 }
 
 function showFatalOverlay(message) {
-  infoCard.innerHTML = `<p class="title">3D Renderer Error</p><p class="line">${message}</p>`;
-  infoCard.classList.add("visible");
+  renderInfoCardContent("3D Renderer Error", `<p class="line">${message}</p>`);
 }
 
 function renderScaleForBody(body) {
