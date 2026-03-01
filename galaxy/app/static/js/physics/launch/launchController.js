@@ -1004,6 +1004,12 @@ const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   parkingOrbitPeriapsisMinKm: 150,
   parkingOrbitApoapsisMinKm: 180,
   tliTargetApoapsisKm: 382_000,
+  tliApoapsisMarginKm: 3_000,
+  tliMinSpecificEnergyKm2S2: -0.28,
+  tliReigniteEarthDistanceKm: 370_000,
+  tliReigniteFallbackRadialKmS: -0.006,
+  tliReigniteThrottleBase: 0.42,
+  tliReigniteThrottleMax: 0.96,
   moonApproachDistanceKm: 120_000,
   midcourseMinClosingSpeedKmS: 0.02,
   midcourseClosingSpeedWindowKmS: 0.18,
@@ -1137,11 +1143,12 @@ function computeMoonOrbitReturnAutopilotCommand({
 
   if (phase === "tli_burn") {
     const apo = Number(orbital.apoapsisKm);
-    const apoReached = Number.isFinite(apo) && apo >= (config.tliTargetApoapsisKm - 3000);
+    const apoReached = Number.isFinite(apo) && apo >= (config.tliTargetApoapsisKm - config.tliApoapsisMarginKm);
     const lunarInterceptTrending =
       moonDistanceKm <= config.tliTargetApoapsisKm
       || moonClosingSpeedKmS >= config.midcourseMinClosingSpeedKmS;
-    if (apoReached && lunarInterceptTrending) {
+    const escapeReady = Number(orbital.specificEnergy) >= config.tliMinSpecificEnergyKm2S2;
+    if (apoReached && lunarInterceptTrending && escapeReady) {
       setMissionPhase(runtime, "coast_to_moon");
       return {
         phase: "coast",
@@ -1151,22 +1158,31 @@ function computeMoonOrbitReturnAutopilotCommand({
       };
     }
     const apoDeficitKm = Number.isFinite(apo) ? (config.tliTargetApoapsisKm - apo) : config.tliTargetApoapsisKm;
+    const energyDeficit = clamp(
+      (config.tliMinSpecificEnergyKm2S2 - Number(orbital.specificEnergy))
+        / Math.max(Math.abs(config.tliMinSpecificEnergyKm2S2), 1e-6),
+      0,
+      1,
+    );
     const closingDeficit = clamp(
       (config.midcourseMinClosingSpeedKmS - moonClosingSpeedKmS) / Math.max(config.midcourseClosingSpeedWindowKmS, 1e-6),
       0,
       1,
     );
     const throttle = clamp(
-      0.24 + (clamp(apoDeficitKm / config.tliTargetApoapsisKm, 0, 1) * 0.5) + (closingDeficit * 0.22),
+      0.24
+        + (clamp(apoDeficitKm / config.tliTargetApoapsisKm, 0, 1) * 0.42)
+        + (closingDeficit * 0.18)
+        + (energyDeficit * 0.24),
       0.18,
-      0.9,
+      0.96,
     );
     const direction = normalize(
       add(
-        scale(tangent, 0.72),
+        scale(tangent, 0.68),
         add(
-          scale(moonDirection, 0.22),
-          scale(up, 0.06),
+          scale(moonDirection, 0.26),
+          scale(up, 0.08),
         ),
       ),
       tangent,
@@ -1187,6 +1203,39 @@ function computeMoonOrbitReturnAutopilotCommand({
         throttle: 0,
         direction: tangent,
         mode: "mission-moon-orbit-return:lunar-insertion-setup",
+      };
+    }
+    const needsEscapeReignite =
+      Number(orbital.specificEnergy) < config.tliMinSpecificEnergyKm2S2
+      && earthDistanceKm < config.tliReigniteEarthDistanceKm
+      && earthRadialSpeedKmS < config.tliReigniteFallbackRadialKmS;
+    if (needsEscapeReignite) {
+      const radialFallbackFactor = clamp(
+        (config.tliReigniteFallbackRadialKmS - earthRadialSpeedKmS)
+          / Math.max(Math.abs(config.tliReigniteFallbackRadialKmS), 1e-6),
+        0,
+        1,
+      );
+      const reigniteDirection = normalize(
+        add(
+          scale(tangent, 0.66),
+          add(
+            scale(moonDirection, 0.28),
+            scale(up, 0.06),
+          ),
+        ),
+        tangent,
+      );
+      const reigniteThrottle = clamp(
+        config.tliReigniteThrottleBase + (radialFallbackFactor * 0.34),
+        config.tliReigniteThrottleBase,
+        config.tliReigniteThrottleMax,
+      );
+      return {
+        phase: "powered",
+        throttle: reigniteThrottle,
+        direction: reigniteDirection,
+        mode: "mission-moon-orbit-return:tli-reignite",
       };
     }
     const fallingBackToEarth =
