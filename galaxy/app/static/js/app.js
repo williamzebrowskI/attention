@@ -91,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301g";
+const FRONTEND_MODULE_VERSION = "20260301h";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -546,8 +546,10 @@ window.addEventListener("resize", onResize);
 
 init().catch((error) => {
   console.error("[solar-system] Initialization failed:", error);
+  const reason = String(error?.message || "").trim();
+  const details = reason ? ` Details: ${reason}` : "";
   showFatalOverlay(
-    "3D renderer failed to initialize. The app could not load Three.js modules (local vendor or CDN). Add local files at /static/vendor/three or restore internet access, then refresh.",
+    `3D renderer failed to initialize.${details}`,
   );
 });
 
@@ -555,7 +557,15 @@ async function init() {
   assertPhysicsLockInvariants();
   await loadRuntimeConfig();
   if (launchFeatureEnabled) {
-    await loadLaunchFeatureModules();
+    try {
+      await loadLaunchFeatureModules();
+    } catch (error) {
+      console.warn("[launch] Launch modules failed to load. Disabling launch feature for this session.", error);
+      launchFeatureEnabled = false;
+      launchControlButton?.remove();
+      launchReturnButton?.remove();
+      launchResetButton?.remove();
+    }
   }
   THREE_NS = await loadThreeModule();
   setupScene(THREE_NS);
@@ -692,15 +702,16 @@ async function loadThreeModule() {
     "https://cdn.skypack.dev/three@0.160.0",
     "https://threejs.org/build/three.module.js",
   ];
-  let lastError = null;
+  const failures = [];
   for (const url of urls) {
     try {
       return await import(url);
     } catch (error) {
-      lastError = error;
+      const reason = error instanceof Error ? error.message : String(error);
+      failures.push(`${url} -> ${reason}`);
     }
   }
-  throw lastError || new Error("Unable to load Three.js module.");
+  throw new Error(`Unable to load Three.js module from local vendor or CDN. ${failures.join(" | ")}`);
 }
 
 function setupScene(THREE) {
