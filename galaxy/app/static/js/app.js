@@ -4485,29 +4485,17 @@ function performRaycastSelection(clientX, clientY) {
 
   const pickMeshes = [];
   for (const visual of bodyVisuals.values()) {
-    if (visual.pickMesh) {
+    if (visual.pickMesh && visual.root?.visible) {
       pickMeshes.push(visual.pickMesh);
     }
   }
   const hits = raycaster.intersectObjects(pickMeshes, false);
-  const hitIds = new Set();
   for (const hit of hits) {
     const hitId = findBodyIdFromHit(hit.object);
-    if (hitId && metaById.has(hitId)) {
-      hitIds.add(hitId);
+    if (hitId && metaById.has(hitId) && bodyVisuals.get(hitId)?.root?.visible) {
+      setSelected(hitId, true);
+      return;
     }
-  }
-
-  let bodyId = null;
-  if (hitIds.size > 0) {
-    bodyId = chooseBodyFromScreenProximity(clientX, clientY, bounds, hitIds);
-  }
-  if (!bodyId) {
-    bodyId = chooseBodyFromScreenProximity(clientX, clientY, bounds, null);
-  }
-
-  if (bodyId) {
-    setSelected(bodyId, true);
   }
 }
 
