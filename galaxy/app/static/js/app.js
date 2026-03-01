@@ -1829,8 +1829,9 @@ function createPlanetAccordionEntry(planet, moons) {
 
   const trigger = createLegendEntry(planet, false, {
     onClick: () => {
+      const wasExpanded = isLegendPlanetAccordionExpanded(planet.id);
       setSelected(planet.id, true);
-      const nextExpanded = !isLegendPlanetAccordionExpanded(planet.id);
+      const nextExpanded = !wasExpanded;
       setLegendPlanetAccordionExpanded(planet.id, nextExpanded, true);
     },
   });
