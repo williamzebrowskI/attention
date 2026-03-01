@@ -499,6 +499,7 @@ let rigidBodyAttitudeController = null;
 let startupSeedLocked = false;
 let suppressCanvasSelectionUntilMs = 0;
 let legendGlobalClickHandlerBound = false;
+let pointerInsideLegend = false;
 const bodyEclipseMaterialStates = new Set();
 const physicsOverlayState = {
   tidal: false,
@@ -4455,8 +4456,22 @@ function setupLegendInputGuards() {
   if (!bodyLegend) {
     return;
   }
-  bodyLegend.addEventListener("pointerdown", () => {
+  bodyLegend.addEventListener("pointerenter", () => {
+    pointerInsideLegend = true;
+  }, { capture: true });
+  bodyLegend.addEventListener("pointerleave", () => {
+    pointerInsideLegend = false;
+  }, { capture: true });
+  bodyLegend.addEventListener("pointerdown", (event) => {
+    pointerInsideLegend = true;
+    event.stopPropagation();
     markLegendInteractionGuard();
+  }, { capture: true });
+  bodyLegend.addEventListener("pointerup", (event) => {
+    event.stopPropagation();
+  }, { capture: true });
+  bodyLegend.addEventListener("click", (event) => {
+    event.stopPropagation();
   }, { capture: true });
   if (!legendGlobalClickHandlerBound) {
     document.addEventListener("click", onGlobalLegendClickCapture, true);
@@ -4488,6 +4503,9 @@ function onGlobalLegendClickCapture(event) {
 }
 
 function performRaycastSelection(clientX, clientY) {
+  if (pointerInsideLegend) {
+    return;
+  }
   if (Date.now() < suppressCanvasSelectionUntilMs) {
     return;
   }
