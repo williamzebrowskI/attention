@@ -3150,6 +3150,9 @@ export function createLaunchController(options) {
         boosterLanded: runtime.booster.landed,
         boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
         boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
+        boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
+          ? Number(runtime.booster.telemetry?.altitudeAboveTerrainKm)
+          : null,
         boosterPropellantKg: Number(runtime.booster.propellantKg) || 0,
         boosterLaunchSiteRangeKm: Number(runtime.booster.telemetry?.launchSiteRangeKm) || null,
         boosterLaunchSiteLateralRangeKm: Number(runtime.booster.telemetry?.launchSiteLateralRangeKm) || null,
@@ -3202,6 +3205,9 @@ export function createLaunchController(options) {
       boosterLanded: runtime.booster.landed,
       boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
       boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
+      boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
+        ? Number(runtime.booster.telemetry?.altitudeAboveTerrainKm)
+        : null,
       boosterPropellantKg: Number(runtime.booster.telemetry?.propellantKg) || Number(runtime.booster.propellantKg) || 0,
       boosterLaunchSiteRangeKm: Number(runtime.booster.telemetry?.launchSiteRangeKm) || null,
       boosterLaunchSiteLateralRangeKm: Number(runtime.booster.telemetry?.launchSiteLateralRangeKm) || null,
