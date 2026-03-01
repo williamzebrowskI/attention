@@ -156,6 +156,12 @@ function guidanceDirection({
     subtract(rocketState.position, earthState.position),
     earthAxes.pole,
   );
+  if (LAUNCH_VEHICLE_CONFIG.guidance?.enforceVerticalAscent) {
+    return {
+      direction: up,
+      mode: "vertical-ascent",
+    };
+  }
   const east = normalize(
     cross(earthAxes.pole, up),
     normalize(cross({ x: 0, y: 0, z: 1 }, up), { x: 1, y: 0, z: 0 }),

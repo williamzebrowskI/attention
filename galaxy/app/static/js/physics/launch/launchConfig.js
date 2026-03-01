@@ -32,6 +32,7 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
   referenceAreaM2: 10.75,
   dragCoefficient: 0.32,
   guidance: Object.freeze({
+    enforceVerticalAscent: true,
     ascentHeadingDegFromEast: 18,
     pitchoverStartSec: 12,
     pitchoverDurationSec: 170,
