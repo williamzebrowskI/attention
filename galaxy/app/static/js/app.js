@@ -93,7 +93,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301ax";
+const FRONTEND_MODULE_VERSION = "20260301ay";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -834,6 +834,9 @@ let orbitVisuals = new Map();
 let legendButtonsById = new Map();
 let legendGravityPanelsById = new Map();
 let legendGravityToggleButtonsById = new Map();
+let legendPlanetAccordionContentById = new Map();
+let legendPlanetAccordionTriggerById = new Map();
+let legendPlanetAccordionStateById = new Map();
 let legendVehicleViewButtonsByKey = {
   starship: null,
   booster: null,
@@ -1630,6 +1633,8 @@ function rebuildBodyLegend() {
   legendButtonsById = new Map();
   legendGravityPanelsById = new Map();
   legendGravityToggleButtonsById = new Map();
+  legendPlanetAccordionContentById = new Map();
+  legendPlanetAccordionTriggerById = new Map();
   legendVehicleViewButtonsByKey = {
     starship: null,
     booster: null,
@@ -1655,21 +1660,20 @@ function rebuildBodyLegend() {
   const planets = bodies
     .filter((body) => body.body_type === "planet" && body.id !== "sun")
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
+  const planetaryGroup = createLegendGroup("Planets");
 
   for (const planet of planets) {
     const moons = bodies
       .filter((body) => body.body_type === "moon" && body.parent === planet.id)
       .sort((a, b) => sortBySemimajorAxisThenName(a, b));
 
-    const group = createLegendGroup(
-      moons.length > 0 ? `${planet.name} System` : `${planet.name}`,
-    );
-    group.appendChild(createLegendEntry(planet, false));
-    for (const moon of moons) {
-      group.appendChild(createLegendEntry(moon, true));
+    if (moons.length > 0) {
+      planetaryGroup.appendChild(createPlanetAccordionEntry(planet, moons));
+      continue;
     }
-    fragment.appendChild(group);
+    planetaryGroup.appendChild(createLegendEntry(planet, false));
   }
+  fragment.appendChild(planetaryGroup);
 
   const orphanMoons = bodies
     .filter((body) => body.body_type === "moon" && !metaById.has(body.parent || ""))
@@ -1717,6 +1721,80 @@ function createLegendGroup(title) {
   return group;
 }
 
+function isLegendPlanetAccordionExpanded(planetId) {
+  return Boolean(legendPlanetAccordionStateById.get(planetId));
+}
+
+function setLegendPlanetAccordionExpanded(planetId, expanded, persist = true) {
+  const open = Boolean(expanded);
+  if (persist) {
+    legendPlanetAccordionStateById.set(planetId, open);
+  }
+  const content = legendPlanetAccordionContentById.get(planetId);
+  if (content) {
+    content.classList.toggle("open", open);
+  }
+  const trigger = legendPlanetAccordionTriggerById.get(planetId);
+  if (trigger) {
+    trigger.classList.toggle("open", open);
+  }
+  const planetButton = legendButtonsById.get(planetId);
+  if (planetButton) {
+    planetButton.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+}
+
+function selectedBodyBelongsToPlanetSystem(planetId) {
+  const selectedBody = selectedId ? metaById.get(selectedId) : null;
+  if (!selectedBody) {
+    return false;
+  }
+  if (selectedBody.id === planetId) {
+    return true;
+  }
+  return selectedBody.body_type === "moon" && selectedBody.parent === planetId;
+}
+
+function syncLegendPlanetAccordionsWithSelection() {
+  for (const planetId of legendPlanetAccordionContentById.keys()) {
+    if (selectedBodyBelongsToPlanetSystem(planetId)) {
+      setLegendPlanetAccordionExpanded(planetId, true, true);
+    }
+  }
+}
+
+function createPlanetAccordionEntry(planet, moons) {
+  const accordion = document.createElement("div");
+  accordion.className = "legend-planet-accordion";
+  accordion.dataset.planetId = planet.id;
+
+  const trigger = createLegendEntry(planet, false, {
+    onClick: () => {
+      setSelected(planet.id, true);
+      const nextExpanded = !isLegendPlanetAccordionExpanded(planet.id);
+      setLegendPlanetAccordionExpanded(planet.id, nextExpanded, true);
+    },
+  });
+  trigger.classList.add("legend-planet-accordion-trigger");
+  accordion.appendChild(trigger);
+  legendPlanetAccordionTriggerById.set(planet.id, trigger);
+
+  const moonList = document.createElement("div");
+  moonList.className = "legend-planet-accordion-content";
+  for (const moon of moons) {
+    moonList.appendChild(createLegendEntry(moon, true));
+  }
+  accordion.appendChild(moonList);
+  legendPlanetAccordionContentById.set(planet.id, moonList);
+
+  const persistedState = legendPlanetAccordionStateById.get(planet.id);
+  const initialExpanded = typeof persistedState === "boolean"
+    ? persistedState
+    : selectedBodyBelongsToPlanetSystem(planet.id);
+  setLegendPlanetAccordionExpanded(planet.id, initialExpanded, true);
+  return accordion;
+}
+
 function supportsLegendGravityControlByBody(body) {
   return body?.body_type === "planet" || body?.body_type === "moon" || body?.body_type === "spacecraft";
 }
@@ -1725,10 +1803,10 @@ function supportsLegendGravityControl(bodyId) {
   return supportsLegendGravityControlByBody(metaById.get(bodyId));
 }
 
-function createLegendEntry(body, isMoon) {
+function createLegendEntry(body, isMoon, options = {}) {
   const entry = document.createElement("div");
   entry.className = isMoon ? "legend-entry moon" : "legend-entry";
-  const button = createLegendButton(body, isMoon);
+  const button = createLegendButton(body, isMoon, options);
   entry.appendChild(button);
 
   if (supportsLegendGravityControlByBody(body)) {
@@ -1745,7 +1823,7 @@ function createLegendEntry(body, isMoon) {
   return entry;
 }
 
-function createLegendButton(body, isMoon) {
+function createLegendButton(body, isMoon, options = {}) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = isMoon ? "legend-button moon" : "legend-button";
@@ -1777,6 +1855,10 @@ function createLegendButton(body, isMoon) {
     event.preventDefault();
     event.stopPropagation();
     markLegendInteractionGuard();
+    if (typeof options.onClick === "function") {
+      options.onClick();
+      return;
+    }
     setSelected(body.id, true);
   });
   legendButtonsById.set(body.id, button);
@@ -1945,6 +2027,7 @@ function updateLegendSelection() {
   for (const [bodyId, button] of legendButtonsById.entries()) {
     button.classList.toggle("selected", bodyId === selectedId);
   }
+  syncLegendPlanetAccordionsWithSelection();
   updateLegendVehicleViewButtons();
 }
 
@@ -1968,15 +2051,17 @@ function updateLegendGravityArrowIndicators() {
       gravityArrowsLegendActivated &&
       gravityArrowFocusBodyId === bodyId,
     );
-    const showCaret = Boolean(
+    const isAccordionPlanet = legendPlanetAccordionContentById.has(bodyId);
+    const showGravityCaret = Boolean(
       selectedId === bodyId &&
-      supportsLegendGravityControl(bodyId),
+      supportsLegendGravityControl(bodyId) &&
+      !isAccordionPlanet,
     );
-    button.classList.toggle("show-gravity-caret", showCaret);
+    button.classList.toggle("show-gravity-caret", showGravityCaret);
     button.classList.toggle("gravity-arrow-enabled", isArrowEnabled);
-    if (showCaret) {
+    if (showGravityCaret && !isAccordionPlanet) {
       button.setAttribute("aria-expanded", "true");
-    } else {
+    } else if (!isAccordionPlanet) {
       button.removeAttribute("aria-expanded");
     }
   }
