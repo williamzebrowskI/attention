@@ -11,6 +11,11 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
 } from "./launchConfig.js";
+import {
+  applyEarthSurfaceContactForVehicle,
+  sampleEarthSurfaceAtRelativePosition,
+  terrainHeightKmAtLatLon,
+} from "../surface/earthSurfacePhysics.js";
 
 const MIN_ROCKET_MASS_KG = 500;
 const EPS = 1e-12;
@@ -124,8 +129,13 @@ function computePadState({ earthState, earthRadiusKm, earthAxes }) {
     LAUNCH_SITE.latitudeDeg,
     LAUNCH_SITE.longitudeDeg,
   );
+  const terrainElevationKm = terrainHeightKmAtLatLon(
+    LAUNCH_SITE.latitudeDeg,
+    LAUNCH_SITE.longitudeDeg,
+  );
   const launchRadiusKm =
     earthRadiusKm
+    + terrainElevationKm
     + LAUNCH_SITE.altitudeKm
     + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM;
   const relPositionKm = scale(up, launchRadiusKm);
@@ -147,6 +157,26 @@ function pressureRatio(pressurePa) {
 function interpolateSeaToVac(vacuumValue, seaLevelValue, pressurePa) {
   const sea = Number.isFinite(seaLevelValue) ? seaLevelValue : vacuumValue;
   return vacuumValue - ((vacuumValue - sea) * pressureRatio(pressurePa));
+}
+
+function atmosphereRelativeVelocityKmS(relPos, relVel, earthPole) {
+  const pole = normalize(earthPole || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  const omega = scale(pole, EARTH_SIDEREAL_ANGULAR_RATE_RAD_S);
+  const atmosphereCoRotation = cross(omega, relPos);
+  return subtract(relVel, atmosphereCoRotation);
+}
+
+function dynamicPressurePaFromAtmosphere(atmosphereSample, relPos, relVel, earthPole) {
+  const densityKgM3 = Number(atmosphereSample?.densityKgM3) || 0;
+  if (!(densityKgM3 > 0) || !relPos || !relVel) {
+    return 0;
+  }
+  const relAirVelocity = atmosphereRelativeVelocityKmS(relPos, relVel, earthPole);
+  const speedKmS = length(relAirVelocity);
+  if (!(speedKmS > 1e-12)) {
+    return 0;
+  }
+  return 0.5 * densityKgM3 * Math.pow(speedKmS * 1000, 2);
 }
 
 function guidanceDirection({
@@ -430,6 +460,7 @@ function autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole) {
 function computeAutopilotCommand({
   runtime,
   orbital,
+  dynamicPressurePa,
   relVel,
   up,
   earthPole,
@@ -544,7 +575,7 @@ function computeAutopilotCommand({
     runtime.autopilotMode = "autopilot-vertical-ascent";
     return {
       phase: "powered",
-      throttle: throttleForState(runtime.stageIndex, runtime.elapsedSeconds),
+      throttle: throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa),
       direction: up,
       mode: "autopilot-vertical-ascent",
     };
@@ -562,7 +593,7 @@ function computeAutopilotCommand({
   );
 
   let direction = turnDirection;
-  let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds);
+  let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa);
   let mode = "autopilot-gravity-turn";
   if (gravityTurnBlend >= 1) {
     runtime.autopilotMode = "autopilot-apoapsis-raise";
@@ -635,20 +666,36 @@ function computeAutopilotCommand({
   };
 }
 
-function throttleForState(stageIndex, elapsedSeconds) {
+function throttleForState(stageIndex, elapsedSeconds, dynamicPressurePa = 0) {
+  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
   if (stageIndex !== 0) {
     return 1;
   }
-  if (elapsedSeconds < LAUNCH_VEHICLE_CONFIG.guidance.liftoffThrottleSec) {
-    return LAUNCH_VEHICLE_CONFIG.guidance.liftoffThrottleValue;
+  let throttle = 1;
+  if (elapsedSeconds < guidance.liftoffThrottleSec) {
+    throttle = Math.min(throttle, clamp(guidance.liftoffThrottleValue, 0.3, 1));
   }
-  if (
-    elapsedSeconds >= LAUNCH_VEHICLE_CONFIG.guidance.maxQThrottleStartSec
-    && elapsedSeconds <= LAUNCH_VEHICLE_CONFIG.guidance.maxQThrottleEndSec
-  ) {
-    return LAUNCH_VEHICLE_CONFIG.guidance.maxQThrottleValue;
+
+  const qTargetPa = Number(guidance.maxQTargetPa) || 0;
+  const qControlStartRatio = clamp(Number(guidance.maxQControlStartRatio) || 0.78, 0.2, 1.2);
+  if (qTargetPa > 0 && Number.isFinite(dynamicPressurePa) && dynamicPressurePa > 0) {
+    const qRatio = dynamicPressurePa / qTargetPa;
+    if (qRatio > qControlStartRatio) {
+      const gain = Math.max(0.05, Number(guidance.maxQThrottleGain) || 0.92);
+      const floor = clamp(
+        Number(guidance.maxQThrottleFloor ?? guidance.maxQThrottleValue ?? 0.58),
+        0.3,
+        1,
+      );
+      const reduction = clamp((qRatio - qControlStartRatio) * gain, 0, 1);
+      throttle = Math.min(throttle, clamp(1 - reduction, floor, 1));
+    }
   }
-  return 1;
+
+  if (elapsedSeconds >= guidance.maxQThrottleStartSec && elapsedSeconds <= guidance.maxQThrottleEndSec) {
+    throttle = Math.min(throttle, clamp(Number(guidance.maxQThrottleValue) || 0.72, 0.3, 1));
+  }
+  return clamp(throttle, 0, 1);
 }
 
 function telemetryFromState({
@@ -658,6 +705,8 @@ function telemetryFromState({
   earthState,
   rocketState,
   atmosphereSample,
+  earthPole,
+  dynamicPressurePaOverride,
   runtime,
 }) {
   if (!rocketState || !earthState) {
@@ -673,8 +722,15 @@ function telemetryFromState({
   const apoapsisKm = Number.isFinite(orbital.apoapsisKm) ? orbital.apoapsisKm : null;
   const periapsisKm = Number.isFinite(orbital.periapsisKm) ? orbital.periapsisKm : null;
 
-  const densityKgM3 = Number(atmosphereSample?.densityKgM3) || 0;
-  const dynamicPressurePa = 0.5 * densityKgM3 * Math.pow(orbital.speedKmS * 1000, 2);
+  const dynamicPressurePa =
+    Number.isFinite(Number(dynamicPressurePaOverride))
+      ? Number(dynamicPressurePaOverride)
+      : dynamicPressurePaFromAtmosphere(atmosphereSample, relPos, relVel, earthPole);
+  const surfaceSample = runtime.lastSurfaceSample || null;
+  const centerAltitudeAboveTerrainKm = Number(surfaceSample?.altitudeAboveTerrainKm);
+  const vehicleAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
+    ? centerAltitudeAboveTerrainKm - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM
+    : null;
   return {
     phase: runtime.phase,
     elapsedSeconds: runtime.elapsedSeconds,
@@ -695,6 +751,18 @@ function telemetryFromState({
     thrustN: runtime.lastStep?.thrustN || 0,
     burnRateKgS: runtime.lastStep?.burnRateKgS || 0,
     dynamicPressurePa,
+    terrainElevationKm: Number.isFinite(Number(surfaceSample?.terrainHeightKm))
+      ? Number(surfaceSample.terrainHeightKm)
+      : null,
+    altitudeAboveTerrainKm: Number.isFinite(vehicleAltitudeAboveTerrainKm)
+      ? vehicleAltitudeAboveTerrainKm
+      : null,
+    latitudeDeg: Number.isFinite(Number(surfaceSample?.latitudeDeg))
+      ? Number(surfaceSample.latitudeDeg)
+      : null,
+    longitudeDeg: Number.isFinite(Number(surfaceSample?.longitudeDeg))
+      ? Number(surfaceSample.longitudeDeg)
+      : null,
     guidanceMode: runtime.lastStep?.guidanceMode || "idle",
     rcsActive: Boolean(runtime.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.lastStep?.rcsErrorDeg) || 0,
@@ -748,6 +816,7 @@ export function createLaunchController(options) {
     boosterDistanceKm: 0,
     starshipDistanceKm: 0,
     lastTrackedPositionKm: null,
+    lastSurfaceSample: null,
   };
 
   function earthAxes(timestampMs = Date.now()) {
@@ -775,6 +844,7 @@ export function createLaunchController(options) {
     runtime.boosterDistanceKm = 0;
     runtime.starshipDistanceKm = 0;
     runtime.lastTrackedPositionKm = null;
+    runtime.lastSurfaceSample = null;
   }
 
   function earthFixedRelativePositionKm(rocketState, earthState, earthFrameAxes) {
@@ -787,6 +857,21 @@ export function createLaunchController(options) {
       y: dot(rel, earthFrameAxes.yAxis),
       z: dot(rel, earthFrameAxes.pole),
     };
+  }
+
+  function updateRuntimeSurfaceSample(rocketState, earthState, earthFrameAxes, earthRadiusKm) {
+    if (!rocketState?.position || !earthState?.position) {
+      runtime.lastSurfaceSample = null;
+      return null;
+    }
+    const relativePosition = subtract(rocketState.position, earthState.position);
+    const sample = sampleEarthSurfaceAtRelativePosition(
+      relativePosition,
+      earthFrameAxes,
+      earthRadiusKm,
+    );
+    runtime.lastSurfaceSample = sample || null;
+    return runtime.lastSurfaceSample;
   }
 
   function accumulateDistanceTravelled(
@@ -923,10 +1008,11 @@ export function createLaunchController(options) {
       runtime.lastError = "Earth/rocket state unavailable";
       return false;
     }
+    const currentEarthAxes = earthAxes(nowMs);
     const pad = computePadState({
       earthState,
       earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
-      earthAxes: earthAxes(nowMs),
+      earthAxes: currentEarthAxes,
     });
     if (!pad) {
       runtime.lastError = "Pad state unavailable";
@@ -935,21 +1021,51 @@ export function createLaunchController(options) {
     rocketState.position = { ...pad.position };
     rocketState.velocity = { ...pad.velocity };
     rocketState.massKg = LAUNCH_INITIAL_MASS_KG;
+    applyEarthSurfaceContactForVehicle({
+      rocketState,
+      earthState,
+      earthAxes: currentEarthAxes,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+      referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+      dtSeconds: 0,
+      thrustN: 0,
+    });
     resetRuntime();
     runtime.lastTrackedPositionKm = earthFixedRelativePositionKm(
       rocketState,
       earthState,
-      earthAxes(nowMs),
+      currentEarthAxes,
     );
-    runtime.launchPlaneNormal = computeLaunchPlaneNormal(earthAxes(nowMs));
+    updateRuntimeSurfaceSample(
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      Number(getEarthRadiusKm?.()) || 6371,
+    );
+    runtime.launchPlaneNormal = computeLaunchPlaneNormal(currentEarthAxes);
     runtime.phase = "idle";
+    const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const atmosphereSample = sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null;
+    const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+      atmosphereSample,
+      relPos,
+      relVel,
+      currentEarthAxes.pole,
+    );
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
       earthMassKg: Number(getEarthMassKg?.()) || 0,
       earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
       earthState,
       rocketState,
-      atmosphereSample: sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null,
+      atmosphereSample,
+      earthPole: currentEarthAxes.pole,
+      dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
     return true;
@@ -992,6 +1108,13 @@ export function createLaunchController(options) {
     const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
     const atmo = sampleEarthAtmosphere?.(altitudeKm) || null;
     const currentEarthAxes = earthAxes(nowMs);
+    const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+      atmo,
+      relPos,
+      relVel,
+      currentEarthAxes.pole,
+    );
+    updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
 
     if (runtime.phase === "orbit") {
       runtime.lastStep = {
@@ -1000,6 +1123,7 @@ export function createLaunchController(options) {
         thrustN: 0,
         burnKg: 0,
         burnRateKgS: 0,
+        dynamicPressurePa,
         guidanceMode: runtime.autopilotMode || "orbit-hold",
         rcsActive: false,
         rcsErrorDeg: 0,
@@ -1013,6 +1137,8 @@ export function createLaunchController(options) {
         earthState,
         rocketState,
         atmosphereSample: atmo,
+        earthPole: currentEarthAxes.pole,
+        dynamicPressurePaOverride: dynamicPressurePa,
         runtime,
       });
       return;
@@ -1034,6 +1160,7 @@ export function createLaunchController(options) {
         thrustN: 0,
         burnKg: 0,
         burnRateKgS: 0,
+        dynamicPressurePa,
         guidanceMode: "stage-separation-coast",
         rcsActive: rcs.active,
         rcsErrorDeg: rcs.errorDeg,
@@ -1047,6 +1174,8 @@ export function createLaunchController(options) {
         earthState,
         rocketState,
         atmosphereSample: atmo,
+        earthPole: currentEarthAxes.pole,
+        dynamicPressurePaOverride: dynamicPressurePa,
         runtime,
       });
       return;
@@ -1062,6 +1191,7 @@ export function createLaunchController(options) {
           earthPole: currentEarthAxes.pole,
           muKm3S2,
           earthRadiusKm,
+          dynamicPressurePa,
         });
         if (autopilotCommand.phase === "powered") {
           runtime.phase = "powered";
@@ -1080,6 +1210,7 @@ export function createLaunchController(options) {
             thrustN: 0,
             burnKg: 0,
             burnRateKgS: 0,
+            dynamicPressurePa,
             guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
             rcsActive: rcs.active,
             rcsErrorDeg: rcs.errorDeg,
@@ -1093,6 +1224,8 @@ export function createLaunchController(options) {
             earthState,
             rocketState,
             atmosphereSample: atmo,
+            earthPole: currentEarthAxes.pole,
+            dynamicPressurePaOverride: dynamicPressurePa,
             runtime,
           });
           return;
@@ -1109,6 +1242,7 @@ export function createLaunchController(options) {
             thrustN: 0,
             burnKg: 0,
             burnRateKgS: 0,
+            dynamicPressurePa,
             guidanceMode: autopilotCommand.mode || "coast",
             rcsActive: rcs.active,
             rcsErrorDeg: rcs.errorDeg,
@@ -1122,6 +1256,8 @@ export function createLaunchController(options) {
             earthState,
             rocketState,
             atmosphereSample: atmo,
+            earthPole: currentEarthAxes.pole,
+            dynamicPressurePaOverride: dynamicPressurePa,
             runtime,
           });
           return;
@@ -1139,6 +1275,7 @@ export function createLaunchController(options) {
           thrustN: 0,
           burnKg: 0,
           burnRateKgS: 0,
+          dynamicPressurePa,
           guidanceMode: "coast",
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
@@ -1152,6 +1289,8 @@ export function createLaunchController(options) {
           earthState,
           rocketState,
           atmosphereSample: atmo,
+          earthPole: currentEarthAxes.pole,
+          dynamicPressurePaOverride: dynamicPressurePa,
           runtime,
         });
         return;
@@ -1167,7 +1306,7 @@ export function createLaunchController(options) {
     }
 
     const pressurePa = Number(atmo?.pressurePa) || 0;
-    let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds);
+    let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa);
     let guidance = guidanceDirection({
       rocketState,
       earthState,
@@ -1184,6 +1323,7 @@ export function createLaunchController(options) {
         earthPole: currentEarthAxes.pole,
         muKm3S2,
         earthRadiusKm,
+        dynamicPressurePa,
       });
       if (autopilotCommand.phase === "coast") {
         runtime.phase = "coast";
@@ -1199,6 +1339,7 @@ export function createLaunchController(options) {
           thrustN: 0,
           burnKg: 0,
           burnRateKgS: 0,
+          dynamicPressurePa,
           guidanceMode: autopilotCommand.mode || "autopilot-coast",
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
@@ -1212,6 +1353,8 @@ export function createLaunchController(options) {
           earthState,
           rocketState,
           atmosphereSample: atmo,
+          earthPole: currentEarthAxes.pole,
+          dynamicPressurePaOverride: dynamicPressurePa,
           runtime,
         });
         return;
@@ -1231,6 +1374,7 @@ export function createLaunchController(options) {
           thrustN: 0,
           burnKg: 0,
           burnRateKgS: 0,
+          dynamicPressurePa,
           guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
@@ -1244,6 +1388,8 @@ export function createLaunchController(options) {
           earthState,
           rocketState,
           atmosphereSample: atmo,
+          earthPole: currentEarthAxes.pole,
+          dynamicPressurePaOverride: dynamicPressurePa,
           runtime,
         });
         return;
@@ -1283,6 +1429,7 @@ export function createLaunchController(options) {
       thrustN,
       burnKg,
       burnRateKgS,
+      dynamicPressurePa,
       guidanceMode: guidance.mode,
       rcsActive: rcs.active,
       rcsErrorDeg: rcs.errorDeg,
@@ -1296,6 +1443,8 @@ export function createLaunchController(options) {
       earthState,
       rocketState,
       atmosphereSample: atmo,
+      earthPole: currentEarthAxes.pole,
+      dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
   }
@@ -1320,24 +1469,54 @@ export function createLaunchController(options) {
       runtime.phase = "idle";
       return;
     }
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const currentEarthAxes = earthAxes(nowMs);
     const distanceStageIndex = runtime.stageIndex;
     accumulateDistanceTravelled(
       rocketState,
       earthState,
-      earthAxes(nowMs),
+      currentEarthAxes,
       distanceStageIndex,
     );
+    const contact = applyEarthSurfaceContactForVehicle({
+      rocketState,
+      earthState,
+      earthAxes: currentEarthAxes,
+      earthRadiusKm,
+      earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+      referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+      dtSeconds,
+      thrustN: Number(runtime.lastStep?.thrustN) || 0,
+    });
+    if (contact?.surfaceSample) {
+      runtime.lastSurfaceSample = contact.surfaceSample;
+    } else {
+      updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
+    }
 
     if (runtime.phase === "orbit") {
-      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
-      const altitudeKm = Math.max(0, length(subtract(rocketState.position, earthState.position)) - earthRadiusKm);
+      const relPosNow = subtract(rocketState.position, earthState.position);
+      const relVelNow = subtract(
+        rocketState.velocity || { x: 0, y: 0, z: 0 },
+        earthState.velocity || { x: 0, y: 0, z: 0 },
+      );
+      const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
+      const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
+      const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+        atmosphereSample,
+        relPosNow,
+        relVelNow,
+        currentEarthAxes.pole,
+      );
       runtime.lastTelemetry = telemetryFromState({
         gravitationalConstantKm3PerKgS2,
         earthMassKg: Number(getEarthMassKg?.()) || 0,
         earthRadiusKm,
         earthState,
         rocketState,
-        atmosphereSample: sampleEarthAtmosphere?.(altitudeKm) || null,
+        atmosphereSample,
+        earthPole: currentEarthAxes.pole,
+        dynamicPressurePaOverride: dynamicPressurePa,
         runtime,
       });
       runtime.elapsedSeconds += dtSeconds;
@@ -1369,7 +1548,6 @@ export function createLaunchController(options) {
         runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
       } else {
         runtime.stagePropellantKg = 0;
-        const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
         const relPos = subtract(rocketState.position, earthState.position);
         const relVel = subtract(
           rocketState.velocity || { x: 0, y: 0, z: 0 },
@@ -1383,15 +1561,28 @@ export function createLaunchController(options) {
       }
     }
 
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
-    const altitudeKm = Math.max(0, length(subtract(rocketState.position, earthState.position)) - earthRadiusKm);
+    const relPosNow = subtract(rocketState.position, earthState.position);
+    const relVelNow = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
+    const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
+    const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+      atmosphereSample,
+      relPosNow,
+      relVelNow,
+      currentEarthAxes.pole,
+    );
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
       earthMassKg: Number(getEarthMassKg?.()) || 0,
       earthRadiusKm,
       earthState,
       rocketState,
-      atmosphereSample: sampleEarthAtmosphere?.(altitudeKm) || null,
+      atmosphereSample,
+      earthPole: currentEarthAxes.pole,
+      dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
   }
@@ -1412,6 +1603,10 @@ export function createLaunchController(options) {
         rcsJets: [],
         boosterDistanceKm: runtime.boosterDistanceKm,
         starshipDistanceKm: runtime.starshipDistanceKm,
+        terrainElevationKm: null,
+        altitudeAboveTerrainKm: null,
+        latitudeDeg: null,
+        longitudeDeg: null,
         launchSiteName: LAUNCH_SITE.name || "Launch Site",
         statusLine: `Launch vehicle initialized at ${LAUNCH_SITE.name || "launch site"}.`,
       };
@@ -1446,6 +1641,10 @@ export function createLaunchController(options) {
       timeToApoapsisSec: telemetry.timeToApoapsisSec,
       boosterDistanceKm: telemetry.boosterDistanceKm,
       starshipDistanceKm: telemetry.starshipDistanceKm,
+      terrainElevationKm: telemetry.terrainElevationKm,
+      altitudeAboveTerrainKm: telemetry.altitudeAboveTerrainKm,
+      latitudeDeg: telemetry.latitudeDeg,
+      longitudeDeg: telemetry.longitudeDeg,
       statusLine: runtime.lastError || `${phaseLabel(runtime.phase)} | ${telemetry.stageName}`,
     };
   }

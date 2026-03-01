@@ -921,8 +921,6 @@ async function createExternalStarshipStackVisual(THREE, distanceScale) {
     emissive: new THREE.Color(STARSHIP_EXTERNAL_BLACK_TILE_EMISSIVE),
     emissiveIntensity: 0.03,
   });
-  const shipRadius = kmToScene(STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5, distanceScale);
-  const shipHeight = kmToScene(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm, distanceScale);
   addShipEngineCluster(THREE, shipGroup, proceduralDarkSteel, shipRadius, shipHeight);
   hybridStack.state.rcsJets = createRcsJetVisuals(THREE, shipGroup, shipRadius, shipHeight);
 

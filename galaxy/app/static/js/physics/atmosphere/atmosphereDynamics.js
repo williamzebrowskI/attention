@@ -4,6 +4,7 @@ const EARTH_MU_M3_PER_S2 = 3.986004418e14;
 const EARTH_SIDEREAL_ANGULAR_RATE_RAD_PER_SEC = 7.2921150e-5;
 const STANDARD_GRAVITY_MS2 = 9.80665;
 const AIR_GAS_CONSTANT_J_PER_KG_K = 287.05287;
+const DRY_AIR_HEAT_CAPACITY_RATIO = 1.4;
 
 const ATMOSPHERE_LAYER_BASE_ALT_KM = [0, 11, 20, 32, 47, 51, 71, 86];
 const ATMOSPHERE_LAYER_BASE_TEMP_K = [288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.946];
@@ -167,6 +168,47 @@ function dragConfigForBody(bodyId, bodyRadiusKm, bodyMassKg) {
   };
 }
 
+function lerp(a, b, t) {
+  return a + ((b - a) * t);
+}
+
+function speedOfSoundMs(temperatureK) {
+  if (!(temperatureK > 0)) {
+    return 0;
+  }
+  return Math.sqrt(DRY_AIR_HEAT_CAPACITY_RATIO * AIR_GAS_CONSTANT_J_PER_KG_K * temperatureK);
+}
+
+function launchVehicleDragCoefficientForMach(mach) {
+  if (!(mach > 0)) {
+    return 0.24;
+  }
+  if (mach < 0.8) {
+    return lerp(0.24, 0.30, mach / 0.8);
+  }
+  if (mach < 1.1) {
+    return lerp(0.30, 0.58, (mach - 0.8) / 0.3);
+  }
+  if (mach < 2.0) {
+    return lerp(0.58, 0.36, (mach - 1.1) / 0.9);
+  }
+  if (mach < 5.0) {
+    return lerp(0.36, 0.24, (mach - 2.0) / 3.0);
+  }
+  return 0.22;
+}
+
+function effectiveDragCoefficient(bodyId, baseDragCoefficient, speedMS, atmosphere) {
+  if (bodyId !== "earth_launch_vehicle") {
+    return baseDragCoefficient;
+  }
+  const soundSpeedMs = speedOfSoundMs(Number(atmosphere?.temperatureK) || 0);
+  const mach = soundSpeedMs > 0 ? (speedMS / soundSpeedMs) : 0;
+  const machModelCd = launchVehicleDragCoefficientForMach(mach);
+  // Blend user/base Cd with Mach model to preserve tunability while adding transonic realism.
+  return clamp((0.35 * baseDragCoefficient) + (0.65 * machModelCd), 0.16, 0.9);
+}
+
 function earthCoRotationVelocityKmS(relativePositionKm, spinAxisEcliptic) {
   const axis = normalizeOrNull(spinAxisEcliptic) || { x: 0, y: 0, z: 1 };
   const omega = {
@@ -244,10 +286,16 @@ export function createAtmosphereDynamicsController(options) {
     }
 
     const speedMS = speedKmS * 1000;
+    const effectiveCd = effectiveDragCoefficient(
+      bodyId,
+      dragConfig.dragCoefficient,
+      speedMS,
+      atmosphere,
+    );
     const dragMS2 =
       0.5
       * atmosphere.densityKgM3
-      * dragConfig.dragCoefficient
+      * effectiveCd
       * (dragConfig.areaM2 / dragConfig.massKg)
       * speedMS
       * speedMS;

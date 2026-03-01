@@ -91,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301k";
+const FRONTEND_MODULE_VERSION = "20260301s";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -106,6 +106,7 @@ const N_BODY_STATIC_SOURCE_IDS = new Set();
 const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
+const N_BODY_STEP_SECONDS_LAUNCH_ACTIVE = 0.25;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
 let LAUNCH_BODY_ID = "earth_launch_vehicle";
 let launchFeatureEnabled = true;
@@ -207,14 +208,26 @@ const PRIME_MERIDIAN_CALIBRATE_FROM_CURRENT_FOR_IDS = new Set(["earth", "moon"])
 const EARTH_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const MOON_TEXTURE_LONGITUDE_OFFSET_DEG = 0;
 const EARTH_LOCATION_MARKER = {
-  latitudeDeg: 39.9526,
-  longitudeDeg: -75.1652,
   dotColor: 0x3bff6a,
   glowColor: 0x6cff8d,
 };
+const DEFAULT_EARTH_LOCATION_COORDS = Object.freeze({
+  latitudeDeg: 39.9526,
+  longitudeDeg: -75.1652,
+});
+const GEOLOCATION_OPTIONS = Object.freeze({
+  enableHighAccuracy: false,
+  maximumAge: 120_000,
+  timeout: 12_000,
+});
 const EARTH_LOCATION_MARKER_HEIGHT_RATIO = 1.015;
-const EARTH_LOCATION_MARKER_DOT_RADIUS_RATIO = 0.012;
-const EARTH_LOCATION_MARKER_GLOW_SIZE_RATIO = 0.09;
+const EARTH_LOCATION_MARKER_DOT_RADIUS_RATIO = 0.009;
+const EARTH_LOCATION_MARKER_GLOW_SIZE_RATIO = 0.072;
+const EARTH_LOCATION_MARKER_PULSE_PERIOD_SECONDS = 6.8;
+const EARTH_LOCATION_MARKER_DOT_OPACITY_MIN = 0.46;
+const EARTH_LOCATION_MARKER_DOT_OPACITY_MAX = 0.86;
+const EARTH_LOCATION_MARKER_GLOW_OPACITY_MIN = 0.28;
+const EARTH_LOCATION_MARKER_GLOW_OPACITY_MAX = 0.72;
 const OBSERVATION_MODES = Object.freeze({
   BODY_LOCK: "body_lock",
   FREE: "free",
@@ -228,6 +241,15 @@ const SURFACE_OBSERVER_PRESETS = Object.freeze({
     bodyId: "earth",
     latitudeDeg: 39.9526,
     longitudeDeg: -75.1652,
+    altitudeKm: 1.4,
+  },
+  my_location: {
+    id: "my_location",
+    label: "My Location (Live)",
+    kind: "surface",
+    bodyId: "earth",
+    latitudeDeg: DEFAULT_EARTH_LOCATION_COORDS.latitudeDeg,
+    longitudeDeg: DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
     altitudeKm: 1.4,
   },
   iss: {
@@ -287,6 +309,228 @@ const LOCAL_TEXTURE_ASSET_VERSION = "20260228-local-pack-v2";
 
 function localTexture(relativePath) {
   return `${LOCAL_IMAGE_ROOT}/${relativePath}?v=${LOCAL_TEXTURE_ASSET_VERSION}`;
+}
+
+function normalizeLongitudeDeg(value) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  let lon = value % 360;
+  if (lon > 180) {
+    lon -= 360;
+  } else if (lon < -180) {
+    lon += 360;
+  }
+  return lon;
+}
+
+function earthLocationMarkerConfig() {
+  return {
+    ...EARTH_LOCATION_MARKER,
+    latitudeDeg: earthLocationState.latitudeDeg,
+    longitudeDeg: earthLocationState.longitudeDeg,
+  };
+}
+
+function getSurfaceObserverPreset(presetId = observation.surfacePresetId) {
+  const base = SURFACE_OBSERVER_PRESETS[presetId];
+  if (!base) {
+    return null;
+  }
+  const override = surfaceObserverRuntimeOverrides.get(presetId);
+  if (!override) {
+    return base;
+  }
+  return {
+    ...base,
+    ...override,
+  };
+}
+
+function updateSurfaceObserverTargetOptionLabel() {
+  if (!surfaceObserverTargetSelect) {
+    return;
+  }
+  const option = surfaceObserverTargetSelect.querySelector('option[value="my_location"]');
+  if (!option) {
+    return;
+  }
+  option.textContent = earthLocationState.source === "gps"
+    ? "My Location (Live)"
+    : "My Location (Live • Fallback)";
+}
+
+function updateEarthLocationMarkerPosition() {
+  if (!THREE_NS) {
+    return;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  const markerGroup = earthVisual?.locationMarker;
+  if (!earthVisual || !markerGroup || !(earthVisual.renderRadius > 0)) {
+    return;
+  }
+
+  const position = latLonToEarthVector(
+    earthLocationState.latitudeDeg,
+    earthLocationState.longitudeDeg,
+    earthVisual.renderRadius * EARTH_LOCATION_MARKER_HEIGHT_RATIO,
+  );
+  const dot = markerGroup.userData?.dot || null;
+  const glow = markerGroup.userData?.glow || null;
+  if (dot) {
+    dot.position.copy(position);
+  }
+  if (glow) {
+    glow.position.copy(position).multiplyScalar(1.0015);
+  }
+}
+
+function updateEarthLocationMarkerPulse(nowMs = Date.now()) {
+  const earthVisual = bodyVisuals.get("earth");
+  const markerGroup = earthVisual?.locationMarker;
+  if (!markerGroup) {
+    return;
+  }
+  const dot = markerGroup.userData?.dot || null;
+  const glow = markerGroup.userData?.glow || null;
+  if (!dot && !glow) {
+    return;
+  }
+
+  const seconds = nowMs / 1000;
+  const phase = (seconds / Math.max(EARTH_LOCATION_MARKER_PULSE_PERIOD_SECONDS, 0.1)) * (Math.PI * 2);
+  const wave = (Math.sin(phase) * 0.5) + 0.5;
+
+  if (dot?.material) {
+    const dotOpacity =
+      EARTH_LOCATION_MARKER_DOT_OPACITY_MIN
+      + ((EARTH_LOCATION_MARKER_DOT_OPACITY_MAX - EARTH_LOCATION_MARKER_DOT_OPACITY_MIN) * wave);
+    dot.material.opacity = clamp(dotOpacity, 0, 1);
+    dot.material.transparent = dot.material.opacity < 0.999;
+    dot.material.needsUpdate = true;
+  }
+
+  if (glow?.material) {
+    const glowOpacity =
+      EARTH_LOCATION_MARKER_GLOW_OPACITY_MIN
+      + ((EARTH_LOCATION_MARKER_GLOW_OPACITY_MAX - EARTH_LOCATION_MARKER_GLOW_OPACITY_MIN) * wave);
+    glow.material.opacity = clamp(glowOpacity, 0, 1);
+    const baseGlowSize = Number(markerGroup.userData?.baseGlowSize) || 0;
+    if (baseGlowSize > 0) {
+      const glowScale = baseGlowSize * (0.94 + (0.10 * wave));
+      glow.scale.set(glowScale, glowScale, 1);
+    }
+  }
+}
+
+function setLiveEarthLocation(latitudeDeg, longitudeDeg, source = "gps", accuracyM = null) {
+  const lat = clamp(Number(latitudeDeg) || 0, -90, 90);
+  const lon = normalizeLongitudeDeg(Number(longitudeDeg) || 0);
+  const hasAccuracy = Number.isFinite(Number(accuracyM)) && Number(accuracyM) > 0;
+  const safeAccuracyM = hasAccuracy ? Number(accuracyM) : null;
+  earthLocationState.latitudeDeg = lat;
+  earthLocationState.longitudeDeg = lon;
+  earthLocationState.accuracyM = safeAccuracyM;
+  earthLocationState.source = source === "gps" ? "gps" : "fallback";
+
+  const label = earthLocationState.source === "gps"
+    ? (safeAccuracyM !== null
+      ? `My Location, Earth (±${formatNumber(safeAccuracyM, 0)} m)`
+      : "My Location, Earth")
+    : "My Location (Fallback: Philadelphia)";
+  surfaceObserverRuntimeOverrides.set("my_location", {
+    latitudeDeg: lat,
+    longitudeDeg: lon,
+    label,
+    altitudeKm: 1.4,
+  });
+  updateSurfaceObserverTargetOptionLabel();
+  updateEarthLocationMarkerPosition();
+  updateObservationStatus();
+}
+
+function isLiveLocationRequested() {
+  return (
+    observation.mode === OBSERVATION_MODES.SURFACE
+    && observation.surfacePresetId === "my_location"
+  );
+}
+
+function stopLiveLocationTracking(resetToFallback = true) {
+  if (geolocationWatchId !== null && typeof navigator !== "undefined" && navigator.geolocation) {
+    navigator.geolocation.clearWatch(geolocationWatchId);
+    geolocationWatchId = null;
+  }
+  geolocationTrackingActive = false;
+  if (resetToFallback) {
+    setLiveEarthLocation(
+      DEFAULT_EARTH_LOCATION_COORDS.latitudeDeg,
+      DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
+      "fallback",
+      null,
+    );
+  }
+}
+
+function startLiveLocationTracking() {
+  if (geolocationTrackingActive) {
+    return;
+  }
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    setLiveEarthLocation(
+      DEFAULT_EARTH_LOCATION_COORDS.latitudeDeg,
+      DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
+      "fallback",
+      null,
+    );
+    return;
+  }
+
+  const onSuccess = (position) => {
+    const coords = position?.coords;
+    if (!coords) {
+      return;
+    }
+    setLiveEarthLocation(
+      Number(coords.latitude),
+      Number(coords.longitude),
+      "gps",
+      Number(coords.accuracy),
+    );
+  };
+
+  const onError = (error) => {
+    console.warn("[location] Browser geolocation unavailable, using fallback:", error);
+    setLiveEarthLocation(
+      DEFAULT_EARTH_LOCATION_COORDS.latitudeDeg,
+      DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
+      "fallback",
+      null,
+    );
+  };
+
+  try {
+    geolocationTrackingActive = true;
+    navigator.geolocation.getCurrentPosition(onSuccess, onError, GEOLOCATION_OPTIONS);
+    geolocationWatchId = navigator.geolocation.watchPosition(onSuccess, onError, GEOLOCATION_OPTIONS);
+  } catch (error) {
+    geolocationTrackingActive = false;
+    console.warn("[location] Failed to start browser geolocation watch:", error);
+    setLiveEarthLocation(
+      DEFAULT_EARTH_LOCATION_COORDS.latitudeDeg,
+      DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
+      "fallback",
+      null,
+    );
+  }
+}
+
+function syncLiveLocationTrackingState() {
+  if (isLiveLocationRequested()) {
+    startLiveLocationTracking();
+  } else {
+    stopLiveLocationTracking(true);
+  }
 }
 
 const MOON_TEXTURE_OVERRIDES = Object.freeze({
@@ -551,8 +795,20 @@ const observation = {
   surfacePitch: rad(2),
   surfaceAltitudeScale: 1,
 };
+const surfaceObserverRuntimeOverrides = new Map();
+const earthLocationState = {
+  latitudeDeg: DEFAULT_EARTH_LOCATION_COORDS.latitudeDeg,
+  longitudeDeg: DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
+  accuracyM: null,
+  source: "fallback",
+};
+let geolocationWatchId = null;
+let geolocationTrackingActive = false;
 
 window.addEventListener("resize", onResize);
+window.addEventListener("beforeunload", () => {
+  stopLiveLocationTracking(false);
+});
 
 init().catch((error) => {
   console.error("[solar-system] Initialization failed:", error);
@@ -578,6 +834,7 @@ async function init() {
   setupScene(THREE_NS);
   await loadBodyCatalog();
   setupObservationControls();
+  syncLiveLocationTrackingState();
   setupPhysicsOverlayControls();
   setupLaunchControls();
   setupLegendInputGuards();
@@ -1587,10 +1844,16 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const orbitTarget = Number.isFinite(Number(snapshot.targetOrbitAltitudeKm))
     ? ` | Target ${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km`
     : "";
+  const altitudeAgl = Number.isFinite(Number(snapshot.altitudeAboveTerrainKm))
+    ? Number(snapshot.altitudeAboveTerrainKm)
+    : null;
+  const altitudeLabel = altitudeAgl !== null
+    ? `${formatNumber(altitudeAgl, 3)} km AGL`
+    : `${formatNumber(snapshot.altitudeKm, 1)} km`;
   const rcsLine = snapshot.rcsActive
     ? ` | RCS ${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 0)}% [${Array.isArray(snapshot.rcsJets) && snapshot.rcsJets.length > 0 ? snapshot.rcsJets.join(",") : "active"}]`
     : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine} | ${snapshot.launchSiteName || "Launch Site"}`;
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine} | ${snapshot.launchSiteName || "Launch Site"}`;
 }
 
 function phaseLabelForLaunch(phase) {
@@ -1684,6 +1947,7 @@ function updateLaunchVehicleVisuals() {
 }
 
 function setupObservationControls() {
+  updateSurfaceObserverTargetOptionLabel();
   if (observationModeSelect) {
     observationModeSelect.value = observation.mode;
     observationModeSelect.addEventListener("change", () => {
@@ -1697,6 +1961,7 @@ function setupObservationControls() {
     });
   }
   updateObservationControlVisibility();
+  syncLiveLocationTrackingState();
   updateObservationStatus();
 }
 
@@ -1715,7 +1980,7 @@ function setObservationMode(mode) {
     syncOrbitFromCurrentCamera();
   }
   if (nextMode === OBSERVATION_MODES.SURFACE) {
-    const preset = SURFACE_OBSERVER_PRESETS[observation.surfacePresetId];
+    const preset = getSurfaceObserverPreset(observation.surfacePresetId);
     if (preset?.bodyId && metaById.has(preset.bodyId)) {
       setSelected(preset.bodyId, false);
     }
@@ -1727,11 +1992,12 @@ function setObservationMode(mode) {
       orbit.minDistance = minOrbitDistanceForVisual(visual);
     }
   }
+  syncLiveLocationTrackingState();
   updateObservationStatus();
 }
 
 function setSurfaceObserverPreset(presetId) {
-  const preset = SURFACE_OBSERVER_PRESETS[presetId];
+  const preset = getSurfaceObserverPreset(presetId);
   if (!preset) {
     return;
   }
@@ -1742,6 +2008,7 @@ function setSurfaceObserverPreset(presetId) {
   if (observation.mode === OBSERVATION_MODES.SURFACE && metaById.has(preset.bodyId)) {
     setSelected(preset.bodyId, false);
   }
+  syncLiveLocationTrackingState();
   updateObservationStatus();
 }
 
@@ -1770,7 +2037,7 @@ function updateObservationStatus(anchor = null) {
     observationStatusNode.textContent = `Body lock: ${bodyName}`;
     return;
   }
-  const preset = SURFACE_OBSERVER_PRESETS[observation.surfacePresetId];
+  const preset = getSurfaceObserverPreset(observation.surfacePresetId);
   if (!preset) {
     observationStatusNode.textContent = "Surface observer: n/a";
     return;
@@ -2088,7 +2355,7 @@ async function createBodyVisual(body) {
   }
 
   if (body.id === "earth") {
-    const locationMarker = createEarthLocationMarker(renderRadius, EARTH_LOCATION_MARKER);
+    const locationMarker = createEarthLocationMarker(renderRadius, earthLocationMarkerConfig());
     if (locationMarker) {
       spinGroup.add(locationMarker);
       visual.locationMarker = locationMarker;
@@ -3507,6 +3774,8 @@ function createEarthLocationMarker(renderRadius, markerConfig) {
     new THREE_NS.SphereGeometry(dotRadius, 20, 20),
     new THREE_NS.MeshBasicMaterial({
       color: markerConfig.dotColor,
+      transparent: true,
+      opacity: EARTH_LOCATION_MARKER_DOT_OPACITY_MAX,
       toneMapped: false,
     }),
   );
@@ -3520,7 +3789,7 @@ function createEarthLocationMarker(renderRadius, markerConfig) {
       map: glowTexture,
       color: markerConfig.glowColor,
       transparent: true,
-      opacity: 0.9,
+      opacity: EARTH_LOCATION_MARKER_GLOW_OPACITY_MAX,
       blending: THREE_NS.AdditiveBlending,
       depthWrite: false,
       toneMapped: false,
@@ -3530,6 +3799,9 @@ function createEarthLocationMarker(renderRadius, markerConfig) {
   glow.scale.set(glowSize, glowSize, 1);
   glow.renderOrder = 79;
   markerGroup.add(glow);
+  markerGroup.userData.dot = dot;
+  markerGroup.userData.glow = glow;
+  markerGroup.userData.baseGlowSize = glowSize;
 
   return markerGroup;
 }
@@ -4253,8 +4525,10 @@ function updateNBodySimulation(nowMs) {
     return;
   }
 
+  const launchActive = launchFeatureEnabled && Boolean(launchController?.isActive?.());
+  const stepSeconds = launchActive ? N_BODY_STEP_SECONDS_LAUNCH_ACTIVE : N_BODY_STEP_SECONDS;
   while (elapsedSeconds > 1e-9) {
-    const dtSeconds = Math.min(N_BODY_STEP_SECONDS, elapsedSeconds);
+    const dtSeconds = Math.min(stepSeconds, elapsedSeconds);
     integrateNBodyStep(nBodyState, dtSeconds);
     elapsedSeconds -= dtSeconds;
   }
@@ -5108,7 +5382,7 @@ function setSelected(bodyId, moveCamera) {
 }
 
 function resolveSurfaceObserverAnchor(nowMs = Date.now()) {
-  const preset = SURFACE_OBSERVER_PRESETS[observation.surfacePresetId];
+  const preset = getSurfaceObserverPreset(observation.surfacePresetId);
   if (!preset) {
     return null;
   }
@@ -6045,6 +6319,7 @@ function animate(timestampMs = 0) {
   }
   updateBodyEclipseUniforms();
   updateSunlightModel();
+  updateEarthLocationMarkerPulse(nowMs);
 
   for (const orbitVisual of orbitVisuals.values()) {
     updateOrbitMarkerFromTime(orbitVisual, nowMs);
@@ -6149,7 +6424,7 @@ function updateInfoOverlay() {
         : "Body Lock";
   const observerLabel =
     observation.mode === OBSERVATION_MODES.SURFACE
-      ? (SURFACE_OBSERVER_PRESETS[observation.surfacePresetId]?.label || "n/a")
+      ? (getSurfaceObserverPreset(observation.surfacePresetId)?.label || "n/a")
       : "n/a";
   const earthCoordsForAtmosphere = runtimeCoordsKmById.get("earth") || positionsById.get("earth")?.coordinates_km || null;
   let atmospherePhysicsLine = "";
@@ -6255,6 +6530,8 @@ function updateInfoOverlay() {
        <p class="line launch-line">Launch Stage: ${launchSnapshot.stageName || "n/a"}</p>
        <p class="line launch-line">${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}</p>
        <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
+       <p class="line launch-line">Altitude Above Terrain: ${Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
+       <p class="line launch-line">Local Terrain Elevation: ${Number.isFinite(launchSnapshot.terrainElevationKm) ? `${formatNumber(launchSnapshot.terrainElevationKm, 3)} km` : "n/a"} | Lat/Lon: ${Number.isFinite(launchSnapshot.latitudeDeg) && Number.isFinite(launchSnapshot.longitudeDeg) ? `${formatNumber(launchSnapshot.latitudeDeg, 4)}°, ${formatNumber(launchSnapshot.longitudeDeg, 4)}°` : "n/a"}</p>
        <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Starship Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.starshipDistanceKm) ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km` : "n/a"}</p>
