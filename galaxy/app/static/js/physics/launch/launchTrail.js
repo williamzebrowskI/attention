@@ -1,6 +1,8 @@
 import {
   LAUNCH_BODY_ID,
   LAUNCH_EXHAUST_VISUAL_CONFIG,
+  STARSHIP_STACK_DIMENSIONS_KM,
+  STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
 
 const MAX_TRAIL_POINTS = 8000;
@@ -28,6 +30,17 @@ function subtractCoordsKm(a, b) {
     y: (Number(a?.y) || 0) - (Number(b?.y) || 0),
     z: (Number(a?.z) || 0) - (Number(b?.z) || 0),
   };
+}
+
+function vectorLength(v) {
+  return Math.sqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
+}
+
+function stageTailOffsetKm(snapshot) {
+  const stageIndex = Number(snapshot?.stageIndex);
+  const fullStackHalfKm = STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5;
+  const shipHalfKm = STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5;
+  return (Number.isFinite(stageIndex) && stageIndex >= 1 ? shipHalfKm : fullStackHalfKm) * 0.96;
 }
 
 function createSmokeTexture(THREE) {
@@ -184,6 +197,7 @@ export function createLaunchTrailController(options) {
     }
     const referenceCoordsKm = getCoordinatesKmById?.(TRAIL_REFERENCE_BODY_ID) || null;
     const velocityKmS = getVelocityKmSById?.(launchBodyId) || null;
+    const referenceVelocityKmS = getVelocityKmSById?.(TRAIL_REFERENCE_BODY_ID) || null;
     let scenePos = null;
     if (
       Number.isFinite(Number(referenceCoordsKm?.x))
@@ -197,6 +211,28 @@ export function createLaunchTrailController(options) {
       group.position.set(0, 0, 0);
       scenePos = toSceneVector(THREE, coordsKm, distanceScale);
     }
+
+    const relVelocityKmS = referenceVelocityKmS
+      ? subtractCoordsKm(velocityKmS, referenceVelocityKmS)
+      : {
+          x: Number(velocityKmS?.x) || 0,
+          y: Number(velocityKmS?.y) || 0,
+          z: Number(velocityKmS?.z) || 0,
+        };
+    const relSpeedKmS = vectorLength(relVelocityKmS);
+    const velocityScene = toSceneVector(THREE, relVelocityKmS, 1);
+    let tailDirection = null;
+    if (relSpeedKmS > 1e-9 && velocityScene.lengthSq() > 1e-12) {
+      tailDirection = velocityScene.normalize().multiplyScalar(-1);
+    } else if (scenePos.lengthSq() > 1e-12) {
+      // Fallback near liftoff while speed is near zero: tail points toward the planet center.
+      tailDirection = scenePos.clone().normalize().multiplyScalar(-1);
+    }
+    if (tailDirection) {
+      const tailOffsetScene = stageTailOffsetKm(snapshot) * distanceScale;
+      scenePos.addScaledVector(tailDirection, tailOffsetScene);
+    }
+
     cachedScenePos = scenePos.clone();
 
     const phase = snapshot?.phase || "idle";
