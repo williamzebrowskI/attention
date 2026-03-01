@@ -349,6 +349,22 @@ function computeAutopilotCommand({
   }
 
   if (runtime.autopilotMode === "autopilot-coast-to-circularize") {
+    const coastMinAltitudeKm = Math.max(config.ascentCoastMinAltitudeKm || 0, 0);
+    const belowSafeCoastAltitude = orbital.altitudeKm < coastMinAltitudeKm;
+    const descendingTooFast = radialSpeedKmS < (config.ascentClimbRecoverRadialSpeedKmS ?? -0.01);
+    if (belowSafeCoastAltitude && descendingTooFast) {
+      runtime.autopilotMode = "autopilot-apoapsis-raise";
+      const recoveryDirection = normalize(
+        add(scale(tangent, 1), scale(up, 0.5)),
+        up,
+      );
+      return {
+        phase: "powered",
+        throttle: clamp(config.ascentClimbThrottleFloor ?? 0.92, 0.3, 1),
+        direction: recoveryDirection,
+        mode: "autopilot-climb-recovery",
+      };
+    }
     const tta = Number(orbital.timeToApoapsisSec);
     const readyForCircularization =
       (Number.isFinite(tta) && tta <= config.circularizationIgnitionLeadSeconds)
@@ -453,11 +469,35 @@ function computeAutopilotCommand({
     runtime.autopilotMode = "autopilot-gravity-turn";
   }
 
+  const climbGuardAltitudeKm = Math.max(config.ascentClimbGuardAltitudeKm || 0, config.verticalAscentMaxAltitudeKm || 0);
+  if (orbital.altitudeKm < climbGuardAltitudeKm) {
+    const altitudeDeficit = clamp((climbGuardAltitudeKm - orbital.altitudeKm) / Math.max(climbGuardAltitudeKm, 1), 0, 1);
+    const radialRecovery = clamp(
+      ((config.ascentClimbRecoverRadialSpeedKmS ?? -0.01) - radialSpeedKmS) * 3.5,
+      0,
+      0.85,
+    );
+    const upWeight = clamp(
+      (config.ascentClimbUpWeightMin ?? 0.2) + altitudeDeficit + radialRecovery,
+      config.ascentClimbUpWeightMin ?? 0.2,
+      config.ascentClimbUpWeightMax ?? 0.68,
+    );
+    direction = normalize(
+      add(scale(direction, 1), scale(up, upWeight)),
+      up,
+    );
+    if (radialSpeedKmS < (config.ascentClimbRecoverRadialSpeedKmS ?? -0.01)) {
+      throttle = Math.max(throttle, clamp(config.ascentClimbThrottleFloor ?? 0.92, 0.3, 1));
+      mode = "autopilot-climb-guard";
+    }
+  }
+
   const shouldCoastToApoapsis =
     (
       apoDefined
       && apoapsisKm >= (targetAltitudeKm + config.insertionCutoffApoapsisMarginKm)
       && radialSpeedKmS > -0.08
+      && orbital.altitudeKm >= Math.max(config.ascentCoastMinAltitudeKm || 0, 0)
     )
     || (
       orbital.altitudeKm >= config.circularizationMinAltitudeKm

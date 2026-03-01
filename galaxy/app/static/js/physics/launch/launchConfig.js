@@ -81,6 +81,12 @@ export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({
   circularizationMinAltitudeKm: 140,
   circularizationThrottle: 0.26,
   ascentMaxThrottle: 1.0,
+  ascentCoastMinAltitudeKm: 105,
+  ascentClimbGuardAltitudeKm: 110,
+  ascentClimbRecoverRadialSpeedKmS: -0.015,
+  ascentClimbThrottleFloor: 0.88,
+  ascentClimbUpWeightMin: 0.12,
+  ascentClimbUpWeightMax: 0.5,
   orbitalHoldMaxPeriapsisErrorKm: 8,
   orbitalHoldMaxApoapsisErrorKm: 14,
 });
