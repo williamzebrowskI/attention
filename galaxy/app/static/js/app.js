@@ -130,6 +130,10 @@ const REENTRY_HEAT_DESCENT_FULL_KM_S = 1.0;
 const REENTRY_HEAT_RISE_RESPONSE = 0.18;
 const REENTRY_HEAT_FALL_RESPONSE = 0.09;
 const REENTRY_HEAT_MAX_EMISSIVE_DELTA = 0.28;
+const BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX = 0xffd9a8;
+const BOOSTER_RCS_JET_COLOR_HEX = 0xb5d8ff;
+const BOOSTER_MAIN_PLUME_SIZE_SCALE = 0.24;
+const BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE = 0.26;
 const reentryHeatMaterialBaseState = new WeakMap();
 let reentryHeatColor = null;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
@@ -1157,6 +1161,56 @@ function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, r
   hotStageBand.position.y = (0.5 * boosterHeight) + (hotStageBand.geometry.parameters.height * 0.42);
   boosterGroup.add(hotStageBand);
 
+  const ventCount = 20;
+  const ventWidth = clamp(radius * 0.052, radius * 0.024, radius * 0.074);
+  const ventHeight = clamp(hotStageBand.geometry.parameters.height * 0.46, hotStageBand.geometry.parameters.height * 0.24, hotStageBand.geometry.parameters.height * 0.62);
+  const ventDepth = clamp(radius * 0.022, radius * 0.01, radius * 0.034);
+  for (let i = 0; i < ventCount; i += 1) {
+    const angle = (i / ventCount) * Math.PI * 2;
+    const vent = new THREE.Mesh(
+      new THREE.BoxGeometry(ventWidth, ventHeight, ventDepth),
+      darkSteel,
+    );
+    vent.position.set(
+      Math.cos(angle) * (radius * 1.03),
+      hotStageBand.position.y,
+      Math.sin(angle) * (radius * 1.03),
+    );
+    vent.rotation.y = angle;
+    boosterGroup.add(vent);
+  }
+
+  const seamFractions = [0.12, 0.24, 0.36, 0.5, 0.64, 0.78, 0.9];
+  const seamTubeRadius = clamp(radius * 0.0056, radius * 0.0022, radius * 0.009);
+  for (const fraction of seamFractions) {
+    const seam = new THREE.Mesh(
+      new THREE.TorusGeometry(radius * 1.002, seamTubeRadius, 8, 42),
+      darkSteel,
+    );
+    seam.rotation.x = Math.PI * 0.5;
+    seam.position.y = (-0.5 * boosterHeight) + (fraction * boosterHeight);
+    boosterGroup.add(seam);
+  }
+
+  const stringerCount = 18;
+  const stringerHeight = boosterHeight * 0.68;
+  const stringerWidth = clamp(radius * 0.018, radius * 0.0075, radius * 0.028);
+  const stringerDepth = clamp(radius * 0.008, radius * 0.003, radius * 0.014);
+  for (let i = 0; i < stringerCount; i += 1) {
+    const angle = (i / stringerCount) * Math.PI * 2;
+    const rib = new THREE.Mesh(
+      new THREE.BoxGeometry(stringerWidth, stringerHeight, stringerDepth),
+      darkSteel,
+    );
+    rib.position.set(
+      Math.cos(angle) * (radius + (stringerDepth * 0.5)),
+      (-0.5 * boosterHeight) + (stringerHeight * 0.54),
+      Math.sin(angle) * (radius + (stringerDepth * 0.5)),
+    );
+    rib.rotation.y = angle;
+    boosterGroup.add(rib);
+  }
+
   const gridFinWidth = clamp(radius * 1.02, radius * 0.65, radius * 1.24);
   const gridFinHeight = clamp(radius * 0.78, radius * 0.34, radius * 1.02);
   const gridFinDepth = clamp(radius * 0.15, radius * 0.07, radius * 0.24);
@@ -1188,7 +1242,262 @@ function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, r
     bell.rotation.x = Math.PI;
     bell.position.set(offset.x, engineY, offset.z);
     boosterGroup.add(bell);
+
+    const nozzleInterior = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        bellRadius * 0.42,
+        bellRadius * 0.33,
+        bellHeight * 0.28,
+        8,
+        1,
+        true,
+      ),
+      darkSteel,
+    );
+    nozzleInterior.rotation.x = Math.PI;
+    nozzleInterior.position.set(offset.x, engineY - (bellHeight * 0.22), offset.z);
+    boosterGroup.add(nozzleInterior);
   }
+}
+
+function createInlineEnginePlumeCluster(THREE, stageGroup, options = {}) {
+  if (!THREE || !stageGroup) {
+    return null;
+  }
+  const offsets = Array.isArray(options.offsets) && options.offsets.length > 0
+    ? options.offsets
+    : [{ x: 0, z: 0 }];
+  const anchorY = Number(options.anchorY) || 0;
+  const plumeLength = Math.max(1e-12, Number(options.plumeLength) || 1e-6);
+  const plumeRadius = Math.max(1e-12, Number(options.plumeRadius) || 1e-6);
+  const glowRadius = Math.max(plumeRadius * 0.75, Number(options.glowRadius) || plumeRadius * 0.9);
+  const color = new THREE.Color(options.colorHex || BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX);
+
+  const cluster = new THREE.Group();
+  cluster.visible = false;
+  cluster.renderOrder = 24;
+
+  const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const glowTemplateMaterial = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const entries = [];
+  for (const offset of offsets) {
+    const plume = new THREE.Mesh(
+      new THREE.ConeGeometry(plumeRadius, plumeLength, 10, 1, true),
+      plumeTemplateMaterial.clone(),
+    );
+    plume.rotation.x = Math.PI;
+    plume.position.set(
+      Number(offset?.x) || 0,
+      anchorY - (plumeLength * 0.38),
+      Number(offset?.z) || 0,
+    );
+    plume.renderOrder = 24;
+
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(glowRadius, 10, 10),
+      glowTemplateMaterial.clone(),
+    );
+    glow.position.set(
+      Number(offset?.x) || 0,
+      anchorY,
+      Number(offset?.z) || 0,
+    );
+    glow.renderOrder = 25;
+
+    cluster.add(plume);
+    cluster.add(glow);
+    entries.push({ plume, glow });
+  }
+  stageGroup.add(cluster);
+  return {
+    cluster,
+    entries,
+  };
+}
+
+function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHeight) {
+  if (!THREE || !boosterGroup || !(radius > 0) || !(boosterHeight > 0)) {
+    return null;
+  }
+  const plumeLength = clamp(boosterHeight * 0.028, radius * 0.18, boosterHeight * 0.062);
+  const plumeRadius = clamp(radius * 0.03, radius * 0.012, radius * 0.048);
+  const glowRadius = clamp(radius * 0.02, radius * 0.009, radius * 0.036);
+  const shellOffset = clamp(radius * 0.1, radius * 0.045, radius * 0.14);
+  const upperY = clamp(boosterHeight * 0.28, radius * 1.2, boosterHeight * 0.34);
+  const lowerY = clamp(boosterHeight * 0.08, radius * 0.5, boosterHeight * 0.16);
+  const yAxis = new THREE.Vector3(0, 1, 0);
+
+  const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(BOOSTER_RCS_JET_COLOR_HEX),
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const glowTemplateMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(BOOSTER_RCS_JET_COLOR_HEX),
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+
+  const definitions = [
+    { id: "port", direction: new THREE.Vector3(-1, 0, 0), anchor: new THREE.Vector3(-(radius + shellOffset), upperY, 0) },
+    { id: "starboard", direction: new THREE.Vector3(1, 0, 0), anchor: new THREE.Vector3(radius + shellOffset, upperY, 0) },
+    { id: "dorsal", direction: new THREE.Vector3(0, 0, 1), anchor: new THREE.Vector3(0, upperY, radius + shellOffset) },
+    { id: "ventral", direction: new THREE.Vector3(0, 0, -1), anchor: new THREE.Vector3(0, upperY, -(radius + shellOffset)) },
+    { id: "forward", direction: new THREE.Vector3(0, 1, 0), anchor: new THREE.Vector3(0, upperY + (radius * 0.16), 0) },
+    { id: "aft", direction: new THREE.Vector3(0, -1, 0), anchor: new THREE.Vector3(0, lowerY, 0) },
+  ];
+
+  const jets = {};
+  for (const definition of definitions) {
+    const group = new THREE.Group();
+    group.visible = false;
+
+    const plume = new THREE.Mesh(
+      new THREE.ConeGeometry(plumeRadius, plumeLength, 10, 1, true),
+      plumeTemplateMaterial.clone(),
+    );
+    plume.position.copy(definition.anchor).addScaledVector(definition.direction, plumeLength * 0.38);
+    plume.quaternion.setFromUnitVectors(yAxis, definition.direction.clone().normalize());
+    plume.renderOrder = 24;
+
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(glowRadius, 8, 8),
+      glowTemplateMaterial.clone(),
+    );
+    glow.position.copy(definition.anchor);
+    glow.renderOrder = 25;
+
+    group.add(plume);
+    group.add(glow);
+    boosterGroup.add(group);
+    jets[definition.id] = { group, plume, glow };
+  }
+  return jets;
+}
+
+function setInlineEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
+  if (!plumeState?.cluster || !Array.isArray(plumeState.entries)) {
+    return;
+  }
+  plumeState.cluster.visible = Boolean(firing);
+  if (!firing) {
+    return;
+  }
+  const t = clamp(Number(throttle) || 0, 0, 1);
+  const plumeOpacity = (0.34 + (t * 0.56)) * pulse;
+  const glowOpacity = (0.42 + (t * 0.52)) * pulse;
+  const stretch = 0.82 + (t * 2.1);
+  const radiusScale = 0.9 + (t * 0.5);
+  const glowScale = 0.94 + (t * 0.76);
+
+  for (const entry of plumeState.entries) {
+    if (!entry) {
+      continue;
+    }
+    if (entry.plume?.scale) {
+      entry.plume.scale.set(
+        radiusScale * BOOSTER_MAIN_PLUME_SIZE_SCALE,
+        stretch * BOOSTER_MAIN_PLUME_SIZE_SCALE,
+        radiusScale * BOOSTER_MAIN_PLUME_SIZE_SCALE,
+      );
+    }
+    if (entry.plume?.material && !Array.isArray(entry.plume.material)) {
+      entry.plume.material.opacity = plumeOpacity * BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE;
+    }
+    if (entry.glow?.scale) {
+      entry.glow.scale.set(
+        glowScale * BOOSTER_MAIN_PLUME_SIZE_SCALE,
+        glowScale * BOOSTER_MAIN_PLUME_SIZE_SCALE,
+        glowScale * BOOSTER_MAIN_PLUME_SIZE_SCALE,
+      );
+    }
+    if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
+      entry.glow.material.opacity = glowOpacity * BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE;
+    }
+  }
+}
+
+function updateInlineBoosterRcsJetVisuals(boosterState, snapshot) {
+  const jets = boosterState?.rcsJets;
+  if (!jets) {
+    return;
+  }
+  const requestedJets = Array.isArray(snapshot?.boosterRcsJets) ? snapshot.boosterRcsJets : [];
+  const requestedJetSet = new Set(requestedJets.map((jet) => String(jet || "").toLowerCase()));
+  const active = Boolean(snapshot?.boosterRcsActive) && requestedJetSet.size > 0;
+  const authority = clamp(Number(snapshot?.boosterRcsAuthority) || 0, 0, 1);
+  const pulse = 0.85 + (0.15 * Math.sin((Date.now() / 1000) * 22));
+  const opacity = (0.16 + (authority * 0.45)) * pulse;
+  const stretch = 0.72 + (authority * 0.95);
+  const radiusScale = 0.82 + (authority * 0.64);
+  const glowScale = 0.8 + (authority * 1.1);
+
+  for (const [jetName, entry] of Object.entries(jets)) {
+    if (!entry) {
+      continue;
+    }
+    const firing = active && requestedJetSet.has(jetName);
+    entry.group.visible = firing;
+    if (!firing) {
+      continue;
+    }
+    if (entry.plume?.scale) {
+      entry.plume.scale.set(radiusScale, stretch, radiusScale);
+    }
+    if (entry.plume?.material && !Array.isArray(entry.plume.material)) {
+      entry.plume.material.opacity = opacity;
+    }
+    if (entry.glow?.scale) {
+      entry.glow.scale.set(glowScale, glowScale, glowScale);
+    }
+    if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
+      entry.glow.material.opacity = opacity * 0.88;
+    }
+  }
+}
+
+function applyInlineBoosterManeuverVisuals(boosterState, snapshot = null) {
+  if (!boosterState) {
+    return;
+  }
+  if (!snapshot) {
+    setInlineEnginePlumeVisual(boosterState.mainEnginePlume, false, 0, 1);
+    updateInlineBoosterRcsJetVisuals(boosterState, null);
+    return;
+  }
+  const phase = String(snapshot.boosterPhase || "").toLowerCase();
+  const throttle = clamp(Number(snapshot.boosterThrottle) || 0, 0, 1);
+  const thrustN = Math.max(0, Number(snapshot.boosterThrustN) || 0);
+  const firing = thrustN > 0.01
+    && throttle > 0.01
+    && (
+      phase.includes("boostback")
+      || phase.includes("burn")
+      || phase.includes("landing")
+    );
+  const pulse = 0.9 + (0.1 * Math.sin((Date.now() / 1000) * 36));
+  setInlineEnginePlumeVisual(boosterState.mainEnginePlume, firing, throttle, pulse);
+  updateInlineBoosterRcsJetVisuals(boosterState, snapshot);
 }
 
 function createInlineStarshipStackVisual(THREE, distanceScale) {
@@ -1305,11 +1614,26 @@ function createInlineBoosterVisual(THREE, distanceScale) {
   root.add(boosterGroup);
 
   addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
+  const engineOffsets = createInlineSuperHeavyEngineOffsets(radius);
+  const engineBellHeight = clamp(radius * 0.205, radius * 0.11, radius * 0.27);
+  const mainEnginePlume = createInlineEnginePlumeCluster(THREE, boosterGroup, {
+    offsets: engineOffsets,
+    anchorY: -0.5 * boosterHeight - (engineBellHeight * 0.5),
+    plumeLength: clamp(boosterHeight * 0.058, radius * 0.2, boosterHeight * 0.12),
+    plumeRadius: clamp(radius * 0.056, radius * 0.022, radius * 0.088),
+    glowRadius: clamp(radius * 0.042, radius * 0.018, radius * 0.064),
+    colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
+  });
+  const rcsJets = createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHeight);
 
   return {
     root,
     materials: [stainless, darkSteel],
-    state: null,
+    state: {
+      boosterGroup,
+      mainEnginePlume,
+      rcsJets,
+    },
     physical: {
       radiusScene: Math.max(radius, boosterHeight * 0.5),
     },
@@ -2862,11 +3186,13 @@ function updateBoosterVehicleVisuals() {
   if (!visual) {
     return;
   }
+  const snapshot = launchController?.statusSnapshot() || null;
+  applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
   if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
+    applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
     applyReentryHeatToVisual(visual, 0, true);
     return;
   }
-  const snapshot = launchController?.statusSnapshot() || null;
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BOOSTER_BODY_ID);
   const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
   const boosterCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BOOSTER_BODY_ID);
@@ -2912,7 +3238,7 @@ function updateBoosterVehicleVisuals() {
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
   let targetDirection = upScene || prograde || defaultAxis;
   if (upScene && prograde) {
-    const altitudeKm = Number(launchController?.statusSnapshot()?.boosterAltitudeKm) || 0;
+    const altitudeKm = Number(snapshot?.boosterAltitudeKm) || 0;
     const blend = clamp((altitudeKm - 3) / 80, 0, 1) * clamp((speed - 0.02) / 0.35, 0, 1);
     targetDirection = safeNormalizeSceneDirection(
       upScene
@@ -3201,6 +3527,7 @@ async function createSpacecraftVisual(body) {
         ? `${stackSource}${stackResolution ? ` (${stackResolution})` : ""}`
         : (isInlineStack ? "inline_starship_booster_geometry" : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"))),
     launchStackState: isLaunchVehicle ? (stack?.state || null) : null,
+    boosterVisualState: isLaunchBooster ? (stack?.state || null) : null,
     extraMaterials: stack?.materials || [],
   };
 
@@ -7882,6 +8209,12 @@ function updateInfoOverlay() {
     const boosterPropellantLine = Number.isFinite(launchSnapshot?.boosterPropellantKg)
       ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg`
       : "n/a";
+    const boosterThrustLine = Number.isFinite(launchSnapshot?.boosterThrustN)
+      ? `${formatNumber(launchSnapshot.boosterThrustN / 1_000_000, 4)} MN @ ${Number.isFinite(launchSnapshot?.boosterThrottle) ? `${formatNumber(launchSnapshot.boosterThrottle * 100, 1)}%` : "n/a"}`
+      : "n/a";
+    const boosterRcsLine = launchSnapshot?.boosterRcsActive
+      ? `active (${formatNumber((Number(launchSnapshot?.boosterRcsAuthority) || 0) * 100, 1)}%)`
+      : "off";
     const boosterDistanceLine = Number.isFinite(launchSnapshot?.boosterDistanceKm)
       ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km`
       : "n/a";
@@ -7902,6 +8235,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">Guidance: ${boosterGuidanceMode}</p>
         <p class="line launch-line">Altitude: ${boosterAltitudeLine}</p>
         <p class="line launch-line">Speed: ${boosterSpeedLine}</p>
+        <p class="line launch-line">Thrust: ${boosterThrustLine}</p>
+        <p class="line launch-line">RCS: ${boosterRcsLine} | Jets: ${Array.isArray(launchSnapshot?.boosterRcsJets) && launchSnapshot.boosterRcsJets.length > 0 ? launchSnapshot.boosterRcsJets.join(", ") : "n/a"}</p>
         <p class="line launch-line">Propellant: ${boosterPropellantLine}</p>
         <p class="line launch-line">Distance Traveled: ${boosterDistanceLine}</p>
         <p class="line launch-line">Range to Launch Site: ${boosterLaunchSiteRangeLine}</p>
@@ -7960,6 +8295,8 @@ function updateInfoOverlay() {
        <p class="line launch-line">Booster Phase: ${launchSnapshot.boosterPhase || "n/a"} | Guidance: ${launchSnapshot.boosterGuidanceMode || "n/a"} | Landed: ${launchSnapshot.boosterLanded ? "yes" : "no"}</p>
        <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed: ${Number.isFinite(launchSnapshot.boosterSpeedKmS) ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}</p>
+       <p class="line launch-line">Booster Thrust: ${Number.isFinite(launchSnapshot.boosterThrustN) ? `${formatNumber(launchSnapshot.boosterThrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.boosterThrottle) ? `${formatNumber(launchSnapshot.boosterThrottle * 100, 1)}%` : "n/a"}</p>
+       <p class="line launch-line">Booster RCS: ${launchSnapshot.boosterRcsActive ? `active (${formatNumber((Number(launchSnapshot.boosterRcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot.boosterRcsJets) && launchSnapshot.boosterRcsJets.length > 0 ? launchSnapshot.boosterRcsJets.join(", ") : "n/a"}</p>
        <p class="line launch-line">Booster Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Starship Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.starshipDistanceKm) ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Thrust: ${Number.isFinite(launchSnapshot.thrustN) ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}</p>

@@ -382,6 +382,63 @@ function computeRcsAssist({
   };
 }
 
+function computeBoosterRcsAssist({
+  desiredDirection,
+  relVel,
+  up,
+  throttle = 0,
+  phase = "",
+  guidanceMode = "",
+}) {
+  const safeUp = normalize(up || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  const desired = normalize(desiredDirection || safeUp, safeUp);
+  const speedKmS = length(relVel);
+  const forward = speedKmS > 0.02
+    ? normalize(relVel, desired)
+    : desired;
+  const errorRad = angleBetweenRadians(forward, desired);
+  const errorDeg = degrees(errorRad);
+  const errorAuthority = clamp((errorDeg - 0.35) / 15, 0, 1);
+  const throttleBlend = clamp(1 - ((Number(throttle) || 0) / 0.45), 0, 1);
+  const modeText = `${String(phase || "")} ${String(guidanceMode || "")}`.toLowerCase();
+  const maneuveringMode = /(boostback|entry|landing|descent|separation|ballistic|coast)/.test(modeText);
+  const phaseAuthorityFloor = maneuveringMode
+    ? (0.08 + (0.24 * throttleBlend))
+    : 0;
+  const authority = Math.max(errorAuthority, phaseAuthorityFloor);
+  if (!(authority > 0.01)) {
+    return {
+      active: false,
+      errorDeg,
+      authority: 0,
+      jets: [],
+    };
+  }
+
+  const lateralCorrection = subtract(desired, scale(forward, dot(desired, forward)));
+  let correctionDir = unitOrNull(lateralCorrection);
+  if (!correctionDir && maneuveringMode) {
+    correctionDir = unitOrNull(cross(forward, safeUp)) || safeUp;
+  }
+  if (!correctionDir) {
+    return {
+      active: false,
+      errorDeg,
+      authority: 0,
+      jets: [],
+    };
+  }
+  const jets = Array.from(
+    new Set(rcsJetSelection(correctionDir, forward, safeUp)),
+  );
+  return {
+    active: jets.length > 0 && authority > 0.02,
+    errorDeg,
+    authority,
+    jets,
+  };
+}
+
 function circularOrbitSpeedKmS(muKm3S2, radiusKm) {
   if (!(muKm3S2 > 0) || !(radiusKm > 0)) {
     return 0;
@@ -1001,6 +1058,10 @@ function boosterTelemetryFromState({
     throttle: runtime.booster.lastStep?.throttle || 0,
     thrustN: runtime.booster.lastStep?.thrustN || 0,
     burnRateKgS: runtime.booster.lastStep?.burnRateKgS || 0,
+    rcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
+    rcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
+    rcsAuthority: Number(runtime.booster.lastStep?.rcsAuthority) || 0,
+    rcsJets: Array.isArray(runtime.booster.lastStep?.rcsJets) ? [...runtime.booster.lastStep.rcsJets] : [],
     terrainElevationKm: Number.isFinite(Number(surfaceSample?.terrainHeightKm))
       ? Number(surfaceSample.terrainHeightKm)
       : null,
@@ -1049,6 +1110,10 @@ function zeroBoosterStep(guidanceMode = "booster-idle") {
     burnRateKgS: 0,
     dynamicPressurePa: 0,
     guidanceMode,
+    rcsActive: false,
+    rcsErrorDeg: 0,
+    rcsAuthority: 0,
+    rcsJets: [],
   };
 }
 
@@ -2453,6 +2518,14 @@ export function createLaunchController(options) {
       : 0;
     runtime.booster.phase = command.phase || "descent";
     runtime.booster.guidanceMode = command.guidanceMode || "booster-guidance";
+    const boosterRcs = computeBoosterRcsAssist({
+      desiredDirection: direction,
+      relVel,
+      up,
+      throttle: requestedThrottle,
+      phase: command.phase || runtime.booster.phase,
+      guidanceMode: command.guidanceMode || runtime.booster.guidanceMode,
+    });
     runtime.booster.lastStep = {
       accelerationKmS2: scale(direction, accelerationMagKmS2),
       throttle: requestedThrottle,
@@ -2464,6 +2537,10 @@ export function createLaunchController(options) {
         ? `${runtime.booster.guidanceMode}+reserve-hold`
         : runtime.booster.guidanceMode,
       touchdownReady: Boolean(command.touchdownReady),
+      rcsActive: boosterRcs.active,
+      rcsErrorDeg: boosterRcs.errorDeg,
+      rcsAuthority: boosterRcs.authority,
+      rcsJets: boosterRcs.jets,
     };
     runtime.booster.telemetry = boosterTelemetryFromState({
       gravitationalConstantKm3PerKgS2,
@@ -3353,6 +3430,14 @@ export function createLaunchController(options) {
         boosterGuidanceMode: runtime.booster.guidanceMode,
         boosterActive: runtime.booster.active,
         boosterLanded: runtime.booster.landed,
+        boosterThrottle: Number(runtime.booster.lastStep?.throttle) || 0,
+        boosterThrustN: Number(runtime.booster.lastStep?.thrustN) || 0,
+        boosterRcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
+        boosterRcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
+        boosterRcsAuthority: Number(runtime.booster.lastStep?.rcsAuthority) || 0,
+        boosterRcsJets: Array.isArray(runtime.booster.lastStep?.rcsJets)
+          ? [...runtime.booster.lastStep.rcsJets]
+          : [],
         boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
         boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
         boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
@@ -3408,6 +3493,14 @@ export function createLaunchController(options) {
       boosterGuidanceMode: runtime.booster.telemetry?.guidanceMode || runtime.booster.guidanceMode,
       boosterActive: runtime.booster.active,
       boosterLanded: runtime.booster.landed,
+      boosterThrottle: Number(runtime.booster.telemetry?.throttle) || Number(runtime.booster.lastStep?.throttle) || 0,
+      boosterThrustN: Number(runtime.booster.telemetry?.thrustN) || Number(runtime.booster.lastStep?.thrustN) || 0,
+      boosterRcsActive: Boolean(runtime.booster.telemetry?.rcsActive ?? runtime.booster.lastStep?.rcsActive),
+      boosterRcsErrorDeg: Number(runtime.booster.telemetry?.rcsErrorDeg) || Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
+      boosterRcsAuthority: Number(runtime.booster.telemetry?.rcsAuthority) || Number(runtime.booster.lastStep?.rcsAuthority) || 0,
+      boosterRcsJets: Array.isArray(runtime.booster.telemetry?.rcsJets)
+        ? [...runtime.booster.telemetry.rcsJets]
+        : (Array.isArray(runtime.booster.lastStep?.rcsJets) ? [...runtime.booster.lastStep.rcsJets] : []),
       boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
       boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
       boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
