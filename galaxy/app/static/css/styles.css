@@ -88,6 +88,12 @@ body {
   border-bottom: 1px solid rgba(86, 186, 255, 0.25);
 }
 
+.launch-panel {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(86, 186, 255, 0.25);
+}
+
 .physics-toggle-row {
   display: flex;
   align-items: center;
@@ -160,7 +166,7 @@ body {
 }
 
 .body-legend-list {
-  max-height: calc(100vh - 220px);
+  max-height: calc(100vh - 280px);
   overflow-y: auto;
   padding-right: 2px;
 }
