@@ -12,7 +12,7 @@ export const INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM =
 const BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX = 0xffd9a8;
 const BOOSTER_RCS_JET_COLOR_HEX = 0xb5d8ff;
 const BOOSTER_MAIN_PLUME_SIZE_SCALE = 0.24;
-const BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE = 0.26;
+const BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE = 0.30;
 const BOOSTER_SEA_LEVEL_PRESSURE_PA = 101_325;
 const BOOSTER_RCS_Q_HALF_EFFECT_PA = 45_000;
 const BOOSTER_RCS_Q_MAX_EFFECT_PA = 130_000;
@@ -516,7 +516,7 @@ function updateInlineBoosterRcsJetVisuals(boosterState, snapshot, phaseProfile =
   const authority = clamp(authorityRaw * dynamicSuppression * (Number(phaseProfile?.rcsScale) || 1), 0, 1);
   const pulseHz = Math.max(6, Number(phaseProfile?.rcsPulseHz) || 20);
   const pulse = 0.86 + (0.14 * Math.sin((Date.now() / 1000) * pulseHz));
-  const opacity = (0.14 + (authority * 0.44)) * pulse;
+  const opacity = (0.16 + (authority * 0.48)) * pulse;
   const stretch = 0.7 + (authority * 0.92);
   const radiusScale = 0.8 + (authority * 0.6);
   const glowScale = 0.78 + (authority * 1.04);
@@ -540,7 +540,7 @@ function updateInlineBoosterRcsJetVisuals(boosterState, snapshot, phaseProfile =
       entry.glow.scale.set(glowScale, glowScale, glowScale);
     }
     if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
-      entry.glow.material.opacity = opacity * 0.88;
+      entry.glow.material.opacity = opacity * 0.92;
     }
   }
 }
