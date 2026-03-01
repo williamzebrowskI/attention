@@ -4,6 +4,7 @@ import {
   LAUNCH_BODY_ID,
   LAUNCH_BODY_META,
   LAUNCH_INITIAL_MASS_KG,
+  LAUNCH_RCS_CONFIG,
   LAUNCH_SITE,
   LAUNCH_VEHICLE_CONFIG,
   SEA_LEVEL_PRESSURE_PA,
@@ -211,6 +212,118 @@ function normalizeAngleRadians(angle) {
     normalized += TWO_PI;
   }
   return normalized;
+}
+
+function unitOrNull(v) {
+  const mag = length(v);
+  if (!(mag > EPS)) {
+    return null;
+  }
+  return { x: v.x / mag, y: v.y / mag, z: v.z / mag };
+}
+
+function angleBetweenRadians(a, b) {
+  const ua = unitOrNull(a);
+  const ub = unitOrNull(b);
+  if (!ua || !ub) {
+    return 0;
+  }
+  const cosTheta = clamp(dot(ua, ub), -1, 1);
+  return Math.acos(cosTheta);
+}
+
+function degrees(valueRad) {
+  return (valueRad * 180) / Math.PI;
+}
+
+function rcsJetSelection(correctionDir, referenceForward, referenceUp) {
+  const jets = [];
+  const forward = unitOrNull(referenceForward) || { x: 0, y: 1, z: 0 };
+  const up = unitOrNull(referenceUp) || { x: 0, y: 0, z: 1 };
+  const right = unitOrNull(cross(forward, up)) || { x: 1, y: 0, z: 0 };
+  const vertical = unitOrNull(cross(right, forward)) || up;
+  const threshold = 0.2;
+  const side = dot(correctionDir, right);
+  const verticalComp = dot(correctionDir, vertical);
+  const forwardComp = dot(correctionDir, forward);
+
+  if (side > threshold) {
+    jets.push("starboard");
+  } else if (side < -threshold) {
+    jets.push("port");
+  }
+
+  if (verticalComp > threshold) {
+    jets.push("dorsal");
+  } else if (verticalComp < -threshold) {
+    jets.push("ventral");
+  }
+
+  if (forwardComp > threshold) {
+    jets.push("aft");
+  } else if (forwardComp < -threshold) {
+    jets.push("forward");
+  }
+  return jets;
+}
+
+function computeRcsAssist({
+  stageIndex,
+  desiredDirection,
+  relVel,
+  up,
+}) {
+  if (!LAUNCH_RCS_CONFIG.enabled || stageIndex < LAUNCH_RCS_CONFIG.minStageIndex) {
+    return {
+      accelerationKmS2: { x: 0, y: 0, z: 0 },
+      active: false,
+      errorDeg: 0,
+      authority: 0,
+      jets: [],
+    };
+  }
+
+  const speedKmS = length(relVel);
+  const forward = speedKmS > LAUNCH_RCS_CONFIG.minReferenceSpeedKmS
+    ? normalize(relVel, desiredDirection || up || { x: 0, y: 1, z: 0 })
+    : normalize(desiredDirection || up || { x: 0, y: 1, z: 0 });
+  const desired = normalize(desiredDirection || forward, forward);
+  const errorRad = angleBetweenRadians(forward, desired);
+  const errorDeg = degrees(errorRad);
+  const deadbandDeg = LAUNCH_RCS_CONFIG.deadbandDeg;
+  const fullAuthorityDeg = Math.max(deadbandDeg + 0.1, LAUNCH_RCS_CONFIG.fullAuthorityDeg);
+  const authority = clamp((errorDeg - deadbandDeg) / (fullAuthorityDeg - deadbandDeg), 0, 1);
+  if (!(authority > 0)) {
+    return {
+      accelerationKmS2: { x: 0, y: 0, z: 0 },
+      active: false,
+      errorDeg,
+      authority: 0,
+      jets: [],
+    };
+  }
+
+  const lateralCorrection = subtract(desired, scale(forward, dot(desired, forward)));
+  const correctionDir = unitOrNull(lateralCorrection);
+  if (!correctionDir) {
+    return {
+      accelerationKmS2: { x: 0, y: 0, z: 0 },
+      active: false,
+      errorDeg,
+      authority: 0,
+      jets: [],
+    };
+  }
+
+  const accelerationMagnitude = LAUNCH_RCS_CONFIG.maxAccelerationKmS2 * authority;
+  const accelerationKmS2 = scale(correctionDir, accelerationMagnitude);
+  return {
+    accelerationKmS2,
+    active: true,
+    errorDeg,
+    authority,
+    jets: rcsJetSelection(correctionDir, forward, up),
+  };
 }
 
 function circularOrbitSpeedKmS(muKm3S2, radiusKm) {
@@ -583,6 +696,10 @@ function telemetryFromState({
     burnRateKgS: runtime.lastStep?.burnRateKgS || 0,
     dynamicPressurePa,
     guidanceMode: runtime.lastStep?.guidanceMode || "idle",
+    rcsActive: Boolean(runtime.lastStep?.rcsActive),
+    rcsErrorDeg: Number(runtime.lastStep?.rcsErrorDeg) || 0,
+    rcsAuthority: Number(runtime.lastStep?.rcsAuthority) || 0,
+    rcsJets: Array.isArray(runtime.lastStep?.rcsJets) ? [...runtime.lastStep.rcsJets] : [],
     boosterDistanceKm: runtime.boosterDistanceKm,
     starshipDistanceKm: runtime.starshipDistanceKm,
   };
@@ -849,8 +966,11 @@ export function createLaunchController(options) {
 
   function prepareStep(state, dtSeconds, nowMs = Date.now()) {
     runtime.lastStep = null;
-    if (runtime.phase === "idle" || runtime.phase === "complete") {
+    if (runtime.phase === "idle") {
       return;
+    }
+    if (runtime.phase === "complete") {
+      runtime.phase = "coast";
     }
 
     const earthState = earthStateFromNBody(state);
@@ -881,6 +1001,10 @@ export function createLaunchController(options) {
         burnKg: 0,
         burnRateKgS: 0,
         guidanceMode: runtime.autopilotMode || "orbit-hold",
+        rcsActive: false,
+        rcsErrorDeg: 0,
+        rcsAuthority: 0,
+        rcsJets: [],
       };
       runtime.lastTelemetry = telemetryFromState({
         gravitationalConstantKm3PerKgS2,
@@ -897,13 +1021,24 @@ export function createLaunchController(options) {
     if (runtime.coastRemainingSec > 0) {
       runtime.coastRemainingSec = Math.max(0, runtime.coastRemainingSec - dtSeconds);
       runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
+      const coastDirection = normalize(relVel, orbital.up);
+      const rcs = computeRcsAssist({
+        stageIndex: runtime.stageIndex,
+        desiredDirection: coastDirection,
+        relVel,
+        up: orbital.up,
+      });
       runtime.lastStep = {
-        accelerationKmS2: { x: 0, y: 0, z: 0 },
+        accelerationKmS2: rcs.accelerationKmS2,
         throttle: 0,
         thrustN: 0,
         burnKg: 0,
         burnRateKgS: 0,
         guidanceMode: "stage-separation-coast",
+        rcsActive: rcs.active,
+        rcsErrorDeg: rcs.errorDeg,
+        rcsAuthority: rcs.authority,
+        rcsJets: rcs.jets,
       };
       runtime.lastTelemetry = telemetryFromState({
         gravitationalConstantKm3PerKgS2,
@@ -933,13 +1068,23 @@ export function createLaunchController(options) {
         } else if (autopilotCommand.phase === "orbit") {
           runtime.phase = "orbit";
           runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
+          const rcs = computeRcsAssist({
+            stageIndex: runtime.stageIndex,
+            desiredDirection: autopilotCommand.direction || normalize(relVel, orbital.up),
+            relVel,
+            up: orbital.up,
+          });
           runtime.lastStep = {
-            accelerationKmS2: { x: 0, y: 0, z: 0 },
+            accelerationKmS2: rcs.accelerationKmS2,
             throttle: 0,
             thrustN: 0,
             burnKg: 0,
             burnRateKgS: 0,
             guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
+            rcsActive: rcs.active,
+            rcsErrorDeg: rcs.errorDeg,
+            rcsAuthority: rcs.authority,
+            rcsJets: rcs.jets,
           };
           runtime.lastTelemetry = telemetryFromState({
             gravitationalConstantKm3PerKgS2,
@@ -952,13 +1097,23 @@ export function createLaunchController(options) {
           });
           return;
         } else {
+          const rcs = computeRcsAssist({
+            stageIndex: runtime.stageIndex,
+            desiredDirection: autopilotCommand.direction || normalize(relVel, orbital.up),
+            relVel,
+            up: orbital.up,
+          });
           runtime.lastStep = {
-            accelerationKmS2: { x: 0, y: 0, z: 0 },
+            accelerationKmS2: rcs.accelerationKmS2,
             throttle: 0,
             thrustN: 0,
             burnKg: 0,
             burnRateKgS: 0,
             guidanceMode: autopilotCommand.mode || "coast",
+            rcsActive: rcs.active,
+            rcsErrorDeg: rcs.errorDeg,
+            rcsAuthority: rcs.authority,
+            rcsJets: rcs.jets,
           };
           runtime.lastTelemetry = telemetryFromState({
             gravitationalConstantKm3PerKgS2,
@@ -972,13 +1127,23 @@ export function createLaunchController(options) {
           return;
         }
       } else {
+        const rcs = computeRcsAssist({
+          stageIndex: runtime.stageIndex,
+          desiredDirection: normalize(relVel, orbital.up),
+          relVel,
+          up: orbital.up,
+        });
         runtime.lastStep = {
-          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          accelerationKmS2: rcs.accelerationKmS2,
           throttle: 0,
           thrustN: 0,
           burnKg: 0,
           burnRateKgS: 0,
           guidanceMode: "coast",
+          rcsActive: rcs.active,
+          rcsErrorDeg: rcs.errorDeg,
+          rcsAuthority: rcs.authority,
+          rcsJets: rcs.jets,
         };
         runtime.lastTelemetry = telemetryFromState({
           gravitationalConstantKm3PerKgS2,
@@ -995,7 +1160,9 @@ export function createLaunchController(options) {
 
     const stage = stageAtIndex(runtime.stageIndex);
     if (!stage) {
-      runtime.phase = "complete";
+      const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
+      runtime.phase = stableOrbit ? "orbit" : "coast";
+      runtime.autopilotMode = stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast";
       return;
     }
 
@@ -1020,13 +1187,23 @@ export function createLaunchController(options) {
       });
       if (autopilotCommand.phase === "coast") {
         runtime.phase = "coast";
+        const rcs = computeRcsAssist({
+          stageIndex: runtime.stageIndex,
+          desiredDirection: autopilotCommand.direction || guidance.direction,
+          relVel,
+          up: orbital.up,
+        });
         runtime.lastStep = {
-          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          accelerationKmS2: rcs.accelerationKmS2,
           throttle: 0,
           thrustN: 0,
           burnKg: 0,
           burnRateKgS: 0,
           guidanceMode: autopilotCommand.mode || "autopilot-coast",
+          rcsActive: rcs.active,
+          rcsErrorDeg: rcs.errorDeg,
+          rcsAuthority: rcs.authority,
+          rcsJets: rcs.jets,
         };
         runtime.lastTelemetry = telemetryFromState({
           gravitationalConstantKm3PerKgS2,
@@ -1042,13 +1219,23 @@ export function createLaunchController(options) {
       if (autopilotCommand.phase === "orbit") {
         runtime.phase = "orbit";
         runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
+        const rcs = computeRcsAssist({
+          stageIndex: runtime.stageIndex,
+          desiredDirection: autopilotCommand.direction || guidance.direction,
+          relVel,
+          up: orbital.up,
+        });
         runtime.lastStep = {
-          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          accelerationKmS2: rcs.accelerationKmS2,
           throttle: 0,
           thrustN: 0,
           burnKg: 0,
           burnRateKgS: 0,
           guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
+          rcsActive: rcs.active,
+          rcsErrorDeg: rcs.errorDeg,
+          rcsAuthority: rcs.authority,
+          rcsJets: rcs.jets,
         };
         runtime.lastTelemetry = telemetryFromState({
           gravitationalConstantKm3PerKgS2,
@@ -1083,13 +1270,24 @@ export function createLaunchController(options) {
     const accelerationMagKmS2 = thrustN > 0
       ? (thrustN / effectiveMassKg) / 1000
       : 0;
+    const mainAccelerationKmS2 = scale(guidance.direction, accelerationMagKmS2);
+    const rcs = computeRcsAssist({
+      stageIndex: runtime.stageIndex,
+      desiredDirection: guidance.direction,
+      relVel,
+      up: orbital.up,
+    });
     runtime.lastStep = {
-      accelerationKmS2: scale(guidance.direction, accelerationMagKmS2),
+      accelerationKmS2: add(mainAccelerationKmS2, rcs.accelerationKmS2),
       throttle,
       thrustN,
       burnKg,
       burnRateKgS,
       guidanceMode: guidance.mode,
+      rcsActive: rcs.active,
+      rcsErrorDeg: rcs.errorDeg,
+      rcsAuthority: rcs.authority,
+      rcsJets: rcs.jets,
     };
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
@@ -1110,8 +1308,11 @@ export function createLaunchController(options) {
   }
 
   function finalizeStep(state, dtSeconds, nowMs = Date.now()) {
-    if (runtime.phase === "idle" || runtime.phase === "complete") {
+    if (runtime.phase === "idle") {
       return;
+    }
+    if (runtime.phase === "complete") {
+      runtime.phase = "coast";
     }
     const rocketState = rocketStateFromNBody(state);
     const earthState = earthStateFromNBody(state);
@@ -1177,10 +1378,8 @@ export function createLaunchController(options) {
         const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
         const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
         const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
-        runtime.phase = stableOrbit ? "orbit" : "complete";
-        if (runtime.phase === "orbit") {
-          runtime.autopilotMode = "autopilot-ballistic-hold";
-        }
+        runtime.phase = stableOrbit ? "orbit" : "coast";
+        runtime.autopilotMode = stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast";
       }
     }
 
@@ -1207,6 +1406,10 @@ export function createLaunchController(options) {
         stageIndex: runtime.stageIndex,
         autopilotMode: runtime.autopilotMode || "manual",
         targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+        rcsActive: false,
+        rcsErrorDeg: 0,
+        rcsAuthority: 0,
+        rcsJets: [],
         boosterDistanceKm: runtime.boosterDistanceKm,
         starshipDistanceKm: runtime.starshipDistanceKm,
         launchSiteName: LAUNCH_SITE.name || "Launch Site",
@@ -1232,6 +1435,10 @@ export function createLaunchController(options) {
       dynamicPressurePa: telemetry.dynamicPressurePa,
       guidanceMode: telemetry.guidanceMode,
       autopilotMode: telemetry.autopilotMode,
+      rcsActive: telemetry.rcsActive,
+      rcsErrorDeg: telemetry.rcsErrorDeg,
+      rcsAuthority: telemetry.rcsAuthority,
+      rcsJets: telemetry.rcsJets,
       targetOrbitAltitudeKm: telemetry.targetOrbitAltitudeKm,
       radialSpeedKmS: telemetry.radialSpeedKmS,
       tangentialSpeedKmS: telemetry.tangentialSpeedKmS,
@@ -1254,7 +1461,7 @@ export function createLaunchController(options) {
     finalizeStep,
     statusSnapshot,
     isActive() {
-      return runtime.phase !== "idle" && runtime.phase !== "complete";
+      return runtime.phase !== "idle";
     },
   };
 }

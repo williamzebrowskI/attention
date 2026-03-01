@@ -91,6 +91,15 @@ export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({
   orbitalHoldMaxApoapsisErrorKm: 14,
 });
 
+export const LAUNCH_RCS_CONFIG = Object.freeze({
+  enabled: true,
+  minStageIndex: 1,
+  deadbandDeg: 0.8,
+  fullAuthorityDeg: 10.0,
+  maxAccelerationKmS2: 0.00004,
+  minReferenceSpeedKmS: 0.05,
+});
+
 // Visual-only exhaust sizing in physical km (kept true-to-scale, not visibility-scaled).
 export const LAUNCH_EXHAUST_VISUAL_CONFIG = Object.freeze({
   plumeSeaLevelLengthKm: 0.016,

@@ -1335,7 +1335,10 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const orbitTarget = Number.isFinite(Number(snapshot.targetOrbitAltitudeKm))
     ? ` | Target ${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km`
     : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget} | ${snapshot.launchSiteName || "Launch Site"}`;
+  const rcsLine = snapshot.rcsActive
+    ? ` | RCS ${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 0)}% [${Array.isArray(snapshot.rcsJets) && snapshot.rcsJets.length > 0 ? snapshot.rcsJets.join(",") : "active"}]`
+    : "";
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${rcsLine} | ${snapshot.launchSiteName || "Launch Site"}`;
 }
 
 function phaseLabelForLaunch(phase) {
@@ -1363,7 +1366,7 @@ function updateLaunchVehicleVisuals() {
     return;
   }
   const snapshot = launchController?.statusSnapshot() || null;
-  applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex);
+  applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex, snapshot);
 
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BODY_ID);
   const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
@@ -5991,6 +5994,8 @@ function updateInfoOverlay() {
        <p class="line launch-line">Booster Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Starship Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.starshipDistanceKm) ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Thrust: ${Number.isFinite(launchSnapshot.thrustN) ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}</p>
+       <p class="line launch-line">RCS: ${launchSnapshot.rcsActive ? `active (${formatNumber((Number(launchSnapshot.rcsAuthority) || 0) * 100, 1)}%)` : "off"}</p>
+       <p class="line launch-line">RCS Jets: ${Array.isArray(launchSnapshot.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>
        <p class="line launch-line">Apoapsis/Periapsis: ${Number.isFinite(launchSnapshot.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}</p>`
     : "";
 
