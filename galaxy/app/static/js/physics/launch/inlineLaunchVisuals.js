@@ -28,9 +28,9 @@ const BOOSTER_PHASE_VISUAL_PROFILE = Object.freeze({
   }),
   separation: Object.freeze({
     mainScale: 0.0,
-    rcsScale: 1.28,
+    rcsScale: 1.44,
     mainPulseHz: 24,
-    rcsPulseHz: 26,
+    rcsPulseHz: 30,
   }),
   boostback: Object.freeze({
     mainScale: 1.04,
