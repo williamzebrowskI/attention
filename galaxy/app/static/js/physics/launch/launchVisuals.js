@@ -4,7 +4,7 @@ import {
 } from "./launchConfig.js";
 
 const STARSHIP_MODEL_MANIFEST_URL = "/static/assets/models/starship/model_manifest.json";
-const STARSHIP_LOADER_CDN_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js";
+const STARSHIP_LOADER_CDN_URL = "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js/+esm";
 
 let cachedExternalManifest = null;
 let cachedExternalManifestPromise = null;
@@ -621,6 +621,25 @@ function gatherUniqueMaterials(root) {
   return [...materialSet];
 }
 
+function applyShadowFlags(root) {
+  root.traverse((node) => {
+    if (!node || node.isLight) {
+      return;
+    }
+    node.castShadow = true;
+    node.receiveShadow = true;
+  });
+}
+
+function clearGroupChildren(group) {
+  if (!group) {
+    return;
+  }
+  while (group.children.length > 0) {
+    group.remove(group.children[group.children.length - 1]);
+  }
+}
+
 async function createExternalStarshipStackVisual(THREE, distanceScale) {
   const manifest = await loadStarshipModelManifest();
   if (!manifest?.url) {
@@ -645,36 +664,58 @@ async function createExternalStarshipStackVisual(THREE, distanceScale) {
     return null;
   }
 
-  const stackRoot = new THREE.Group();
-  stackRoot.add(externalRoot);
-  orientRocketUpright(stackRoot, THREE);
-
-  const targetHeight = kmToScene(STARSHIP_STACK_TOTAL_HEIGHT_KM, distanceScale);
-  const normalized = normalizeRocketTransform(stackRoot, THREE, targetHeight);
-  if (!normalized) {
-    return null;
-  }
-
-  stackRoot.traverse((node) => {
-    if (!node || node.isLight) {
-      return;
-    }
-    node.castShadow = true;
-    node.receiveShadow = true;
-  });
-
-  const stageState = buildExternalStageState(stackRoot, distanceScale);
-  const materials = gatherUniqueMaterials(stackRoot);
   const textureLabel = manifest.textureMaxResolution > 0
     ? `${manifest.textureMaxResolution}px`
     : "external";
-  stackRoot.userData.starshipAssetSource = manifest.source || "external_starship_model";
-  stackRoot.userData.starshipTextureResolution = textureLabel;
+
+  const orientedRoot = new THREE.Group();
+  orientedRoot.add(externalRoot);
+  orientRocketUpright(orientedRoot, THREE);
+
+  const externalStageState = buildExternalStageState(orientedRoot, distanceScale);
+  if (externalStageState?.boosterGroup && externalStageState?.shipGroup) {
+    const targetHeight = kmToScene(STARSHIP_STACK_TOTAL_HEIGHT_KM, distanceScale);
+    const normalized = normalizeRocketTransform(orientedRoot, THREE, targetHeight);
+    if (!normalized) {
+      return null;
+    }
+    applyShadowFlags(orientedRoot);
+    orientedRoot.userData.starshipAssetSource = manifest.source || "external_starship_model";
+    orientedRoot.userData.starshipTextureResolution = textureLabel;
+    return {
+      root: orientedRoot,
+      materials: gatherUniqueMaterials(orientedRoot),
+      state: externalStageState,
+      physical: {
+        radiusScene: starshipPhysicalRenderRadiusScene(distanceScale),
+      },
+    };
+  }
+
+  // Starship-only external assets are mounted onto a separate procedural booster.
+  const targetShipHeight = kmToScene(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm, distanceScale);
+  const normalizedShip = normalizeRocketTransform(orientedRoot, THREE, targetShipHeight);
+  if (!normalizedShip) {
+    return null;
+  }
+  applyShadowFlags(orientedRoot);
+
+  const hybridStack = createProceduralStarshipStackVisual(THREE, distanceScale);
+  const shipGroup = hybridStack?.state?.shipGroup;
+  if (!hybridStack?.root || !shipGroup) {
+    return null;
+  }
+  clearGroupChildren(shipGroup);
+  shipGroup.add(orientedRoot);
+
+  const sourceLabel = manifest.source || "external_starship_model";
+  hybridStack.root.userData.starshipAssetSource = `${sourceLabel} + procedural_booster`;
+  hybridStack.root.userData.starshipTextureResolution = textureLabel;
 
   return {
-    root: stackRoot,
-    materials,
-    state: stageState,
+    root: hybridStack.root,
+    materials: gatherUniqueMaterials(hybridStack.root),
+    state: hybridStack.state,
     physical: {
       radiusScene: starshipPhysicalRenderRadiusScene(distanceScale),
     },
