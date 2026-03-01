@@ -1350,6 +1350,27 @@ export function createLaunchController(options) {
       contactHoldSec: 0,
     },
   };
+  const lastEmittedEventByKey = new Map();
+
+  function finiteVector(v) {
+    return Boolean(
+      v
+      && Number.isFinite(Number(v.x))
+      && Number.isFinite(Number(v.y))
+      && Number.isFinite(Number(v.z)),
+    );
+  }
+
+  function shouldEmitEvent(name, details) {
+    const signature = `${name}|${JSON.stringify(details || {})}`;
+    const now = Date.now();
+    const lastMs = lastEmittedEventByKey.get(signature) || 0;
+    if (now - lastMs < 400) {
+      return false;
+    }
+    lastEmittedEventByKey.set(signature, now);
+    return true;
+  }
 
   function telemetryLogDetails(telemetry) {
     if (!telemetry) {
@@ -1373,6 +1394,9 @@ export function createLaunchController(options) {
     if (typeof onEvent !== "function") {
       return;
     }
+    if (!shouldEmitEvent(name, details)) {
+      return;
+    }
     const payload = {
       timestampUtc: new Date().toISOString(),
       name,
@@ -1393,6 +1417,9 @@ export function createLaunchController(options) {
   }
 
   function emitLaunchError(name, details = {}) {
+    if (!shouldEmitEvent(`${name}:error`, details)) {
+      return;
+    }
     const payload = {
       timestampUtc: new Date().toISOString(),
       name,
@@ -1930,6 +1957,22 @@ export function createLaunchController(options) {
       runtime.booster.guidanceMode = "booster-inactive";
       return;
     }
+    if (
+      !finiteVector(earthState.position) ||
+      !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }) ||
+      !finiteVector(boosterState.position) ||
+      !finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      emitLaunchError("booster_state_non_finite_prepare", {
+        earthPositionFinite: finiteVector(earthState.position),
+        earthVelocityFinite: finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }),
+        boosterPositionFinite: finiteVector(boosterState.position),
+        boosterVelocityFinite: finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 }),
+      });
+      clearBoosterFromState(state);
+      runtime.booster.lastStep = zeroBoosterStep("booster-invalid-state");
+      return;
+    }
 
     const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
     const currentEarthAxes = earthAxes(nowMs);
@@ -2031,6 +2074,21 @@ export function createLaunchController(options) {
       clearBoosterFromState(state);
       return;
     }
+    if (
+      !finiteVector(earthState.position) ||
+      !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }) ||
+      !finiteVector(boosterState.position) ||
+      !finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      emitLaunchError("booster_state_non_finite_finalize", {
+        earthPositionFinite: finiteVector(earthState.position),
+        earthVelocityFinite: finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }),
+        boosterPositionFinite: finiteVector(boosterState.position),
+        boosterVelocityFinite: finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 }),
+      });
+      clearBoosterFromState(state);
+      return;
+    }
 
     const burnKg = Number(runtime.booster.lastStep?.burnKg) || 0;
     if (burnKg > 0) {
@@ -2119,6 +2177,22 @@ export function createLaunchController(options) {
     const rocketState = ensureRocketInNBody(state, nowMs);
     if (!earthState || !rocketState) {
       runtime.lastError = "Earth/rocket state unavailable";
+      runtime.phase = "idle";
+      return;
+    }
+    if (
+      !finiteVector(earthState.position) ||
+      !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }) ||
+      !finiteVector(rocketState.position) ||
+      !finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      runtime.lastError = "Earth/rocket state became non-finite during prepare step";
+      emitLaunchError("starship_state_non_finite_prepare", {
+        earthPositionFinite: finiteVector(earthState.position),
+        earthVelocityFinite: finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }),
+        rocketPositionFinite: finiteVector(rocketState.position),
+        rocketVelocityFinite: finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 }),
+      });
       runtime.phase = "idle";
       return;
     }
@@ -2551,6 +2625,22 @@ export function createLaunchController(options) {
       const rocketState = rocketStateFromNBody(state);
       const earthState = earthStateFromNBody(state);
       if (!rocketState || !earthState) {
+        runtime.phase = "idle";
+        return;
+      }
+      if (
+        !finiteVector(earthState.position) ||
+        !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }) ||
+        !finiteVector(rocketState.position) ||
+        !finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+      ) {
+        runtime.lastError = "Earth/rocket state became non-finite during finalize step";
+        emitLaunchError("starship_state_non_finite_finalize", {
+          earthPositionFinite: finiteVector(earthState.position),
+          earthVelocityFinite: finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }),
+          rocketPositionFinite: finiteVector(rocketState.position),
+          rocketVelocityFinite: finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 }),
+        });
         runtime.phase = "idle";
         return;
       }

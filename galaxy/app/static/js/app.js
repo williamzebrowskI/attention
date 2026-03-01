@@ -52,7 +52,8 @@ const physicsOverlayStatusNode = document.getElementById("physics-overlay-status
 const launchControlButton = document.getElementById("launch-control-button");
 const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
-const launchStatusNode = document.getElementById("launch-status");
+let launchStatusNode = document.getElementById("launch-status");
+let launchEventLogNode = document.getElementById("launch-event-log");
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
@@ -92,7 +93,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301av";
+const FRONTEND_MODULE_VERSION = "20260301aw";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -870,6 +871,23 @@ const launchEventLogEntries = [];
 let lastLaunchEventSummary = "";
 let lastLaunchEventTimestampUtc = "";
 
+function updateLaunchEventFeed() {
+  if (!launchEventLogNode) {
+    return;
+  }
+  const recent = launchEventLogEntries.slice(-8);
+  if (recent.length === 0) {
+    launchEventLogNode.textContent = "No launch events yet.";
+    return;
+  }
+  launchEventLogNode.textContent = recent
+    .map((entry) => {
+      const t = entry.timestampUtc ? new Date(entry.timestampUtc).toLocaleTimeString() : "--:--:--";
+      return `${entry.level === "error" ? "ERR" : "EVT"} ${t} ${entry.name}`;
+    })
+    .join("\n");
+}
+
 function appendLaunchLogEntry(level, entry) {
   const safeLevel = level === "error" ? "error" : "info";
   const payload = (entry && typeof entry === "object") ? { ...entry } : { detail: String(entry) };
@@ -900,6 +918,7 @@ function appendLaunchLogEntry(level, entry) {
   } else {
     console.log(`[launch:${name}]`, logEntry);
   }
+  updateLaunchEventFeed();
 }
 
 function registerLaunchLogDebugHandles() {
@@ -909,6 +928,7 @@ function registerLaunchLogDebugHandles() {
     launchEventLogEntries.length = 0;
     lastLaunchEventSummary = "";
     lastLaunchEventTimestampUtc = "";
+    updateLaunchEventFeed();
   };
 }
 
@@ -1878,6 +1898,21 @@ function createLegendVehicleViewPanel() {
   panel.appendChild(missionSelect);
   legendLaunchMissionSelect = missionSelect;
   setupLaunchMissionPicker();
+
+  const status = document.createElement("p");
+  status.id = "launch-status";
+  status.className = "legend-launch-status";
+  status.textContent = "Launch status unavailable.";
+  panel.appendChild(status);
+  launchStatusNode = status;
+
+  const eventLog = document.createElement("pre");
+  eventLog.id = "launch-event-log";
+  eventLog.className = "legend-launch-event-log";
+  eventLog.textContent = "No launch events yet.";
+  panel.appendChild(eventLog);
+  launchEventLogNode = eventLog;
+  updateLaunchEventFeed();
 
   return panel;
 }
