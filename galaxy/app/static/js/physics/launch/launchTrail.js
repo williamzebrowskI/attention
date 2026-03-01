@@ -1,13 +1,12 @@
 import {
   LAUNCH_BODY_ID,
   LAUNCH_EXHAUST_VISUAL_CONFIG,
-  STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
 
 const MAX_TRAIL_POINTS = 12000;
 const TRAIL_CORE_COLOR = 0x59cbff;
-const MIN_TRACK_POINT_SPACING_KM = 0.1;
-const AXIS_EPS = 1e-12;
+const MIN_TRACK_POINT_SPACING_KM = 0.25;
+const MAX_TELEPORT_STEP_KM = 600;
 
 export function createLaunchTrailController(options) {
   const {
@@ -43,11 +42,8 @@ export function createLaunchTrailController(options) {
   group.add(pathLine);
 
   function trailSpacingKm() {
-    const visual = getBodyVisual?.(launchBodyId);
-    const vehicleDiameterKm = Math.max((Number(visual?.body?.radius_km) || 0.0045) * 2, 0.009);
     return Math.max(
       LAUNCH_EXHAUST_VISUAL_CONFIG.trailPointSpacingKm,
-      vehicleDiameterKm * 2.4,
       MIN_TRACK_POINT_SPACING_KM,
     );
   }
@@ -81,46 +77,6 @@ export function createLaunchTrailController(options) {
     return (dx * dx) + (dy * dy) + (dz * dz);
   }
 
-  function stageHalfHeightKm(stageIndex) {
-    if (Number.isFinite(stageIndex) && stageIndex >= 1) {
-      return STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5;
-    }
-    return STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
-  }
-
-  function resolveActiveAnchorScene(snapshot, visual) {
-    const stageIndex = Number(snapshot?.stageIndex);
-    const stageState = visual?.launchStackState || null;
-    const stageAnchor =
-      Number.isFinite(stageIndex) && stageIndex >= 1
-        ? (stageState?.shipGroup || visual?.root)
-        : (stageState?.boosterGroup || visual?.root);
-
-    if (!stageAnchor) {
-      return null;
-    }
-    const anchor = new THREE.Vector3();
-    if (typeof stageAnchor.getWorldPosition === "function") {
-      stageAnchor.getWorldPosition(anchor);
-    } else if (stageAnchor.position) {
-      anchor.copy(stageAnchor.position);
-    } else {
-      return null;
-    }
-
-    const tiltGroup = visual?.tiltGroup || null;
-    if (tiltGroup && typeof tiltGroup.getWorldQuaternion === "function") {
-      const orientation = new THREE.Quaternion();
-      tiltGroup.getWorldQuaternion(orientation);
-      const upAxis = new THREE.Vector3(0, 1, 0).applyQuaternion(orientation);
-      if (upAxis.lengthSq() > AXIS_EPS) {
-        const tailOffsetScene = stageHalfHeightKm(stageIndex) * distanceScale;
-        anchor.addScaledVector(upAxis.normalize(), -tailOffsetScene);
-      }
-    }
-    return anchor;
-  }
-
   function rebuildGeometry() {
     if (trailPointsKm.length === 0) {
       pathGeometry.setFromPoints([]);
@@ -145,7 +101,11 @@ export function createLaunchTrailController(options) {
       return;
     }
     const spacing = Math.max(minDistanceKm || 0, 1e-12);
-    if (!lastPointKm || kmDistanceSquared(lastPointKm, pointKm) >= (spacing * spacing)) {
+    const distanceSq = lastPointKm ? kmDistanceSquared(lastPointKm, pointKm) : 0;
+    if (lastPointKm && distanceSq > (MAX_TELEPORT_STEP_KM * MAX_TELEPORT_STEP_KM)) {
+      clear();
+    }
+    if (!lastPointKm || distanceSq >= (spacing * spacing)) {
       trailPointsKm.push({
         x: Number(pointKm.x) || 0,
         y: Number(pointKm.y) || 0,
@@ -168,11 +128,9 @@ export function createLaunchTrailController(options) {
     group.position.set(0, 0, 0);
 
     const snapshot = getLaunchSnapshot?.() || null;
-    const visual = getBodyVisual?.(launchBodyId);
     const launchCoordsKm = getCoordinatesKmById?.(launchBodyId) || null;
-    const anchorScene = resolveActiveAnchorScene(snapshot, visual);
-    const anchorKm = toKmVector(anchorScene);
-    const coordsKm = anchorKm || launchCoordsKm || toKmVector(visual?.root?.position);
+    const visual = getBodyVisual?.(launchBodyId);
+    const coordsKm = launchCoordsKm || toKmVector(visual?.root?.position);
     if (!coordsKm) {
       return;
     }
