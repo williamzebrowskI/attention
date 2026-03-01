@@ -714,14 +714,14 @@ function computeAutopilotCommand({
   if (gravityTurnBlend >= 1) {
     runtime.autopilotMode = "autopilot-apoapsis-raise";
     const apoDeficitKm = apoDefined ? targetAltitudeKm - apoapsisKm : targetAltitudeKm;
-    const radialBias = clamp((apoDeficitKm / targetAltitudeSafe) * 0.42, -0.16, 0.22);
+    const radialBias = clamp((apoDeficitKm / targetAltitudeSafe) * 0.30, -0.12, 0.18);
     direction = normalize(
       add(scale(tangent, 1), scale(up, radialBias)),
       tangent,
     );
     throttle = clamp(
-      0.62 + clamp((apoDeficitKm / targetAltitudeSafe) * 0.45, -0.16, 0.22),
-      0.34,
+      0.84 + clamp((apoDeficitKm / targetAltitudeSafe) * 0.28, -0.10, 0.14),
+      0.72,
       config.ascentMaxThrottle,
     );
     mode = "autopilot-apoapsis-raise";
@@ -752,17 +752,31 @@ function computeAutopilotCommand({
     }
   }
 
+  // Prevent shallow descents during late ascent: keep slight "up" authority until
+  // we're safely above circularization gate and not bleeding altitude.
+  const highAltitudeGuardKm = Math.max(config.circularizationMinAltitudeKm + 30, climbGuardAltitudeKm);
+  if (orbital.altitudeKm < highAltitudeGuardKm && radialSpeedKmS < -0.002) {
+    const descentSeverity = clamp((-radialSpeedKmS) / 0.12, 0, 1);
+    const upWeight = clamp(0.30 + (descentSeverity * 0.44), 0.24, 0.76);
+    direction = normalize(
+      add(scale(direction, 1), scale(up, upWeight)),
+      up,
+    );
+    throttle = Math.max(throttle, clamp(0.9 + (descentSeverity * 0.1), 0.9, 1));
+    mode = "autopilot-climb-guard";
+  }
+
   const shouldCoastToApoapsis =
     (
       apoDefined
       && apoapsisKm >= (targetAltitudeKm + config.insertionCutoffApoapsisMarginKm)
-      && radialSpeedKmS > -0.08
+      && radialSpeedKmS > -0.005
       && orbital.altitudeKm >= Math.max(config.ascentCoastMinAltitudeKm || 0, 0)
     )
     || (
       orbital.altitudeKm >= config.circularizationMinAltitudeKm
       && tangentialSpeedKmS >= (targetCircularSpeedKmS * 0.9)
-      && radialSpeedKmS > -0.04
+      && radialSpeedKmS > -0.01
     );
   if (shouldCoastToApoapsis) {
     runtime.autopilotMode = "autopilot-coast-to-circularize";
