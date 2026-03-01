@@ -1,11 +1,18 @@
-import { LAUNCH_BODY_ID } from "./launchConfig.js";
+import {
+  LAUNCH_BODY_ID,
+  LAUNCH_EXHAUST_VISUAL_CONFIG,
+  STARSHIP_STACK_DIMENSIONS_KM,
+  STARSHIP_STACK_TOTAL_HEIGHT_KM,
+} from "./launchConfig.js";
 
-const MAX_TRAIL_POINTS = 2200;
-const APPEND_MIN_DISTANCE_SCENE = 0.00002;
-const TRAIL_POINT_SIZE_PX = 22;
+const MAX_TRAIL_POINTS = 1600;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function lerp(a, b, t) {
+  return a + ((b - a) * clamp(t, 0, 1));
 }
 
 function vectorLength(v) {
@@ -90,10 +97,10 @@ export function createLaunchTrailController(options) {
   const pointMaterial = new THREE.PointsMaterial({
     map: createSmokeTexture(THREE),
     color: new THREE.Color(0xb9c2cc),
-    size: TRAIL_POINT_SIZE_PX,
+    size: 1e-10,
     sizeAttenuation: true,
     transparent: true,
-    opacity: 0.42,
+    opacity: 0.08,
     depthWrite: false,
     blending: THREE.NormalBlending,
     alphaTest: 0.02,
@@ -109,6 +116,29 @@ export function createLaunchTrailController(options) {
   plumeMesh.visible = false;
   plumeMesh.renderOrder = 68;
   group.add(plumeMesh);
+
+  const fullStackHalfHeightScene = STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5 * distanceScale;
+  const shipOnlyHalfHeightScene = STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5 * distanceScale;
+
+  function launchVisualScaleMetrics() {
+    const visual = getBodyVisual?.(launchBodyId);
+    const vehicleRadiusKm = Math.max(Number(visual?.body?.radius_km) || 0, 0.0045);
+    const vehicleRadiusScene = Math.max(vehicleRadiusKm * distanceScale, 1e-12);
+    const trailPointSpacingScene = Math.max(
+      LAUNCH_EXHAUST_VISUAL_CONFIG.trailPointSpacingKm * distanceScale,
+      vehicleRadiusScene * 1.2,
+    );
+    const smokePointSizeScene = Math.max(
+      vehicleRadiusScene * LAUNCH_EXHAUST_VISUAL_CONFIG.smokePointRadiusScaleToVehicleRadius,
+      1e-12,
+    );
+    return {
+      vehicleRadiusKm,
+      vehicleRadiusScene,
+      trailPointSpacingScene,
+      smokePointSizeScene,
+    };
+  }
 
   function rebuildGeometry() {
     if (trailPoints.length === 0) {
@@ -130,11 +160,12 @@ export function createLaunchTrailController(options) {
     rebuildGeometry();
   }
 
-  function appendPoint(scenePos) {
+  function appendPoint(scenePos, minDistanceScene) {
     if (!scenePos) {
       return;
     }
-    if (!lastPoint || lastPoint.distanceToSquared(scenePos) >= (APPEND_MIN_DISTANCE_SCENE * APPEND_MIN_DISTANCE_SCENE)) {
+    const spacing = Math.max(minDistanceScene || 0, 1e-12);
+    if (!lastPoint || lastPoint.distanceToSquared(scenePos) >= (spacing * spacing)) {
       trailPoints.push(scenePos.clone());
       if (trailPoints.length > MAX_TRAIL_POINTS) {
         trailPoints.shift();
@@ -154,9 +185,25 @@ export function createLaunchTrailController(options) {
       return;
     }
 
-    const rocketRadius = Math.max(Number(getBodyVisual?.(launchBodyId)?.renderRadius) || 0.00002, 0.00002);
-    const plumeLength = rocketRadius * (5.0 + (8.0 * throttle));
-    const plumeRadius = rocketRadius * (0.7 + (0.3 * throttle));
+    const {
+      vehicleRadiusScene,
+    } = launchVisualScaleMetrics();
+    const stageIndex = Number.isFinite(Number(snapshot?.stageIndex)) ? Number(snapshot.stageIndex) : 0;
+    const vehicleHalfHeightScene = stageIndex >= 1 ? shipOnlyHalfHeightScene : fullStackHalfHeightScene;
+    const vacuumBlend = clamp((altitudeKm - 5) / 80, 0, 1);
+    const basePlumeLengthScene = lerp(
+      LAUNCH_EXHAUST_VISUAL_CONFIG.plumeSeaLevelLengthKm * distanceScale,
+      LAUNCH_EXHAUST_VISUAL_CONFIG.plumeVacuumLengthKm * distanceScale,
+      vacuumBlend,
+    );
+    const plumeLength = basePlumeLengthScene * (0.35 + (0.65 * throttle));
+    const plumeRadius = vehicleRadiusScene
+      * lerp(
+        LAUNCH_EXHAUST_VISUAL_CONFIG.plumeSeaLevelRadiusScaleToVehicleRadius,
+        LAUNCH_EXHAUST_VISUAL_CONFIG.plumeVacuumRadiusScaleToVehicleRadius,
+        vacuumBlend,
+      )
+      * (0.7 + (0.3 * throttle));
 
     let dirScene = null;
     if (velocityKmS) {
@@ -175,9 +222,11 @@ export function createLaunchTrailController(options) {
     const exhaustDirection = dirScene.clone().multiplyScalar(-1).normalize();
     plumeMesh.visible = true;
     plumeMesh.scale.set(plumeRadius, plumeLength, plumeRadius);
-    plumeMesh.position.copy(scenePos).add(exhaustDirection.clone().multiplyScalar(rocketRadius + (plumeLength * 0.28)));
+    plumeMesh.position
+      .copy(scenePos)
+      .add(exhaustDirection.clone().multiplyScalar(vehicleHalfHeightScene + (plumeLength * 0.5)));
     plumeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), exhaustDirection);
-    plumeMesh.material.opacity = 0.26 + (0.48 * throttle);
+    plumeMesh.material.opacity = 0.18 + (0.22 * throttle);
   }
 
   function update(deltaSeconds = 0) {
@@ -209,20 +258,27 @@ export function createLaunchTrailController(options) {
     const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
     const altitudeKm = Number(snapshot?.altitudeKm) || 0;
 
+    const {
+      smokePointSizeScene,
+      trailPointSpacingScene,
+    } = launchVisualScaleMetrics();
+
     if (active || phase === "complete") {
-      appendPoint(scenePos);
+      appendPoint(scenePos, trailPointSpacingScene);
     } else if (trailPoints.length === 0) {
-      appendPoint(scenePos);
+      appendPoint(scenePos, trailPointSpacingScene);
     }
 
-    const smokeActive = active && thrustN > 0.01 && altitudeKm <= 90;
+    const smokeActive = active && thrustN > 0.01 && altitudeKm <= LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm;
     if (smokeActive) {
-      const densityFade = clamp(1 - (altitudeKm / 90), 0.05, 1);
-      pointMaterial.opacity = 0.2 + (0.38 * throttle * densityFade);
-      pathMaterial.opacity = 0.2 + (0.34 * densityFade);
+      const densityFade = clamp(1 - (altitudeKm / LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm), 0.04, 1);
+      pointMaterial.size = smokePointSizeScene * (0.9 + (0.35 * throttle));
+      pointMaterial.opacity = 0.03 + (0.09 * throttle * densityFade);
+      pathMaterial.opacity = 0.04 + (0.12 * densityFade);
     } else {
-      pointMaterial.opacity = 0.18;
-      pathMaterial.opacity = 0.2;
+      pointMaterial.size = smokePointSizeScene;
+      pointMaterial.opacity = 0.02;
+      pathMaterial.opacity = 0.03;
     }
 
     updatePlume(snapshot, scenePos, velocityKmS);

@@ -19,7 +19,7 @@ export const LAUNCH_SITE = Object.freeze({
   name: "Cape Canaveral, FL (SLC-40)",
   latitudeDeg: 28.5618571,
   longitudeDeg: -80.577366,
-  altitudeKm: 0.005,
+  altitudeKm: 0.0,
 });
 
 export const STANDARD_GRAVITY_M_S2 = 9.80665;
@@ -64,6 +64,17 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
       coastAfterBurnSec: 0,
     }),
   ]),
+});
+
+// Visual-only exhaust sizing in physical km (kept true-to-scale, not visibility-scaled).
+export const LAUNCH_EXHAUST_VISUAL_CONFIG = Object.freeze({
+  plumeSeaLevelLengthKm: 0.022,
+  plumeVacuumLengthKm: 0.095,
+  plumeSeaLevelRadiusScaleToVehicleRadius: 0.42,
+  plumeVacuumRadiusScaleToVehicleRadius: 1.05,
+  smokeMaxAltitudeKm: 35,
+  trailPointSpacingKm: 0.012,
+  smokePointRadiusScaleToVehicleRadius: 0.75,
 });
 
 export const LAUNCH_INITIAL_MASS_KG = LAUNCH_VEHICLE_CONFIG.stages.reduce(
