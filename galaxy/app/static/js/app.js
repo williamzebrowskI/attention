@@ -1280,7 +1280,11 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   }
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
   const throttlePct = Number.isFinite(snapshot.throttle) ? snapshot.throttle * 100 : 0;
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${snapshot.launchSiteName || "Launch Site"}`;
+  const guidanceLine = snapshot.autopilotMode || snapshot.guidanceMode || "guidance";
+  const orbitTarget = Number.isFinite(Number(snapshot.targetOrbitAltitudeKm))
+    ? ` | Target ${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km`
+    : "";
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | Alt ${formatNumber(snapshot.altitudeKm, 1)} km | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget} | ${snapshot.launchSiteName || "Launch Site"}`;
 }
 
 function phaseLabelForLaunch(phase) {
@@ -1349,7 +1353,10 @@ function updateLaunchVehicleVisuals() {
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
   const launchActive = Boolean(launchController?.isActive());
   const guidanceMode = String(snapshot?.guidanceMode || "").toLowerCase();
-  const forceVerticalVisual = !launchActive || guidanceMode === "vertical-ascent";
+  const forceVerticalVisual =
+    !launchActive
+    || guidanceMode === "vertical-ascent"
+    || guidanceMode.includes("autopilot-vertical-ascent");
   let targetDirection = upScene || prograde || defaultAxis;
   if (!forceVerticalVisual && upScene && prograde) {
     const altitudeKm = Number(snapshot?.altitudeKm) || 0;

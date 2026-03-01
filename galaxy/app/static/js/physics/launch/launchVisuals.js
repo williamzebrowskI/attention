@@ -11,6 +11,267 @@ function kmToScene(kmValue, distanceScale) {
   return kmValue * distanceScale;
 }
 
+function seededNoise(x, y, seed) {
+  const value = Math.sin((x * 12.9898) + (y * 78.233) + (seed * 37.719)) * 43758.5453123;
+  return value - Math.floor(value);
+}
+
+function createCanvasTexture(THREE, width, height, drawFn, options = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  drawFn(ctx, width, height);
+  const texture = new THREE.CanvasTexture(canvas);
+  if (options.srgb) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+  }
+  texture.wrapS = options.wrapS || THREE.RepeatWrapping;
+  texture.wrapT = options.wrapT || THREE.RepeatWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createStarshipMetalTextureSet(THREE) {
+  const map = createCanvasTexture(
+    THREE,
+    2048,
+    2048,
+    (ctx, width, height) => {
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0, "#aeb8c6");
+      gradient.addColorStop(0.16, "#d9e0ea");
+      gradient.addColorStop(0.52, "#9eaab9");
+      gradient.addColorStop(0.82, "#d5dde8");
+      gradient.addColorStop(1, "#a7b3c2");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+
+      for (let i = 0; i < 4200; i += 1) {
+        const x = Math.floor(seededNoise(i, 1, 3) * width);
+        const alpha = 0.02 + (seededNoise(i, 2, 7) * 0.1);
+        const lineWidth = 1 + Math.floor(seededNoise(i, 3, 11) * 2);
+        const brightness = 182 + Math.floor(seededNoise(i, 4, 13) * 55);
+        ctx.strokeStyle = `rgba(${brightness}, ${brightness}, ${brightness}, ${alpha.toFixed(4)})`;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+
+      const ringSpacing = Math.floor(height / 24);
+      for (let y = ringSpacing; y < height; y += ringSpacing) {
+        ctx.strokeStyle = "rgba(76, 84, 96, 0.36)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      const panelSpacing = Math.floor(width / 14);
+      for (let x = panelSpacing; x < width; x += panelSpacing) {
+        ctx.strokeStyle = "rgba(86, 96, 112, 0.2)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+    },
+    { srgb: true },
+  );
+
+  const roughnessMap = createCanvasTexture(
+    THREE,
+    1024,
+    1024,
+    (ctx, width, height) => {
+      ctx.fillStyle = "rgb(126, 126, 126)";
+      ctx.fillRect(0, 0, width, height);
+      const image = ctx.getImageData(0, 0, width, height);
+      const data = image.data;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const idx = (y * width * 4) + (x * 4);
+          const streak = Math.floor(seededNoise(x * 0.09, y * 0.04, 17) * 24);
+          const ring = Math.sin((y / height) * Math.PI * 52) * 10;
+          const value = clamp(118 + streak + ring, 92, 168);
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    },
+  );
+
+  const metalnessMap = createCanvasTexture(
+    THREE,
+    1024,
+    1024,
+    (ctx, width, height) => {
+      ctx.fillStyle = "rgb(238, 238, 238)";
+      ctx.fillRect(0, 0, width, height);
+      const image = ctx.getImageData(0, 0, width, height);
+      const data = image.data;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const idx = (y * width * 4) + (x * 4);
+          const seam = Math.abs(Math.sin((y / height) * Math.PI * 38));
+          const variation = seededNoise(x * 0.12, y * 0.2, 23);
+          const value = clamp(220 + (variation * 22) - (seam * 10), 188, 248);
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    },
+  );
+
+  const normalMap = createCanvasTexture(
+    THREE,
+    1024,
+    1024,
+    (ctx, width, height) => {
+      const image = ctx.createImageData(width, height);
+      const data = image.data;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const idx = (y * width * 4) + (x * 4);
+          const nx = (seededNoise(x * 0.17, y * 0.11, 31) - 0.5) * 0.22;
+          const ny = (seededNoise(x * 0.13, y * 0.15, 37) - 0.5) * 0.22;
+          data[idx] = clamp(Math.floor(128 + (nx * 127)), 0, 255);
+          data[idx + 1] = clamp(Math.floor(128 + (ny * 127)), 0, 255);
+          data[idx + 2] = 255;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    },
+  );
+
+  return { map, roughnessMap, metalnessMap, normalMap };
+}
+
+function createStarshipTileTextureSet(THREE) {
+  const map = createCanvasTexture(
+    THREE,
+    2048,
+    1024,
+    (ctx, width, height) => {
+      ctx.fillStyle = "#0a0d13";
+      ctx.fillRect(0, 0, width, height);
+      const tileW = Math.max(8, Math.floor(width / 120));
+      const tileH = Math.max(8, Math.floor(height / 62));
+      for (let y = 0; y < height; y += tileH) {
+        for (let x = 0; x < width; x += tileW) {
+          const shade = Math.floor(20 + (seededNoise(x * 0.5, y * 0.8, 41) * 26));
+          ctx.fillStyle = `rgb(${shade}, ${shade + 1}, ${shade + 4})`;
+          ctx.fillRect(x, y, tileW - 1, tileH - 1);
+        }
+      }
+      ctx.strokeStyle = "rgba(78, 88, 104, 0.28)";
+      ctx.lineWidth = 1;
+      for (let y = 0; y < height; y += tileH) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      for (let x = 0; x < width; x += tileW) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+    },
+    { srgb: true },
+  );
+
+  const roughnessMap = createCanvasTexture(
+    THREE,
+    1024,
+    512,
+    (ctx, width, height) => {
+      ctx.fillStyle = "rgb(184, 184, 184)";
+      ctx.fillRect(0, 0, width, height);
+      const image = ctx.getImageData(0, 0, width, height);
+      const data = image.data;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const idx = (y * width * 4) + (x * 4);
+          const n = seededNoise(x * 0.21, y * 0.23, 47);
+          const value = clamp(172 + (n * 42), 140, 224);
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    },
+  );
+
+  return { map, roughnessMap };
+}
+
+function createEngineTextureSet(THREE) {
+  const map = createCanvasTexture(
+    THREE,
+    1024,
+    512,
+    (ctx, width, height) => {
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0, "#1b2028");
+      gradient.addColorStop(0.38, "#2d3440");
+      gradient.addColorStop(0.72, "#4d4135");
+      gradient.addColorStop(1, "#1a1f28");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+      for (let i = 0; i < 1800; i += 1) {
+        const x = Math.floor(seededNoise(i, 4, 53) * width);
+        const y = Math.floor(seededNoise(i, 5, 59) * height);
+        const alpha = 0.03 + (seededNoise(i, 6, 61) * 0.08);
+        const brightness = 70 + Math.floor(seededNoise(i, 7, 67) * 70);
+        ctx.fillStyle = `rgba(${brightness}, ${brightness * 0.94}, ${brightness * 0.8}, ${alpha.toFixed(4)})`;
+        ctx.fillRect(x, y, 2, 2);
+      }
+    },
+    { srgb: true },
+  );
+
+  const roughnessMap = createCanvasTexture(
+    THREE,
+    1024,
+    512,
+    (ctx, width, height) => {
+      ctx.fillStyle = "rgb(112, 112, 112)";
+      ctx.fillRect(0, 0, width, height);
+      const image = ctx.getImageData(0, 0, width, height);
+      const data = image.data;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const idx = (y * width * 4) + (x * 4);
+          const n = seededNoise(x * 0.18, y * 0.2, 71);
+          const value = clamp(96 + (n * 54), 74, 170);
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+      ctx.putImageData(image, 0, 0);
+    },
+  );
+
+  return { map, roughnessMap };
+}
+
 export function starshipPhysicalRenderRadiusScene(distanceScale) {
   return kmToScene(STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5, distanceScale);
 }
@@ -30,26 +291,38 @@ export function createStarshipStackVisual(THREE, distanceScale) {
   const fullShipCenterY = baseY + boosterHeight + (0.5 * shipHeight);
   const detachedShipCenterY = 0;
 
+  const metal = createStarshipMetalTextureSet(THREE);
+  const tiles = createStarshipTileTextureSet(THREE);
+  const engine = createEngineTextureSet(THREE);
+
   const stainless = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0xcfd6df),
-    roughness: 0.35,
-    metalness: 0.78,
+    color: new THREE.Color(0xffffff),
+    map: metal.map,
+    normalMap: metal.normalMap,
+    roughnessMap: metal.roughnessMap,
+    metalnessMap: metal.metalnessMap,
+    roughness: 0.24,
+    metalness: 0.94,
     emissive: new THREE.Color(0x12161d),
-    emissiveIntensity: 0.08,
+    emissiveIntensity: 0.05,
   });
   const darkSteel = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0x222833),
-    roughness: 0.46,
-    metalness: 0.68,
+    color: new THREE.Color(0xe6eef8),
+    map: engine.map,
+    roughnessMap: engine.roughnessMap,
+    roughness: 0.52,
+    metalness: 0.84,
     emissive: new THREE.Color(0x080a0f),
-    emissiveIntensity: 0.04,
+    emissiveIntensity: 0.03,
   });
   const tileBlack = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0x0f1219),
-    roughness: 0.76,
-    metalness: 0.09,
+    color: new THREE.Color(0xffffff),
+    map: tiles.map,
+    roughnessMap: tiles.roughnessMap,
+    roughness: 0.86,
+    metalness: 0.06,
     emissive: new THREE.Color(0x05070c),
-    emissiveIntensity: 0.05,
+    emissiveIntensity: 0.04,
   });
   const materials = [stainless, darkSteel, tileBlack];
 

@@ -26,7 +26,7 @@ const DRAG_CONFIG_BY_BODY_ID = Object.freeze({
   }),
   earth_launch_vehicle: Object.freeze({
     dragCoefficient: 0.32,
-    areaM2: 10.75,
+    areaM2: 63.62,
   }),
 });
 

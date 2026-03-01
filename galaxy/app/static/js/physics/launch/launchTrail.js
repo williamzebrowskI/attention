@@ -5,7 +5,7 @@ import {
   STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
 
-const MAX_TRAIL_POINTS = 1600;
+const MAX_TRAIL_POINTS = 520;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -76,6 +76,7 @@ export function createLaunchTrailController(options) {
   let lastPoint = null;
   let cachedScenePos = null;
   const trailPoints = [];
+  const trailPointAgesSec = [];
 
   const group = new THREE.Group();
   group.renderOrder = 62;
@@ -100,7 +101,7 @@ export function createLaunchTrailController(options) {
     size: 1e-10,
     sizeAttenuation: true,
     transparent: true,
-    opacity: 0.08,
+    opacity: 0.05,
     depthWrite: false,
     blending: THREE.NormalBlending,
     alphaTest: 0.02,
@@ -154,6 +155,7 @@ export function createLaunchTrailController(options) {
 
   function clear() {
     trailPoints.length = 0;
+    trailPointAgesSec.length = 0;
     lastPoint = null;
     cachedScenePos = null;
     plumeMesh.visible = false;
@@ -167,10 +169,32 @@ export function createLaunchTrailController(options) {
     const spacing = Math.max(minDistanceScene || 0, 1e-12);
     if (!lastPoint || lastPoint.distanceToSquared(scenePos) >= (spacing * spacing)) {
       trailPoints.push(scenePos.clone());
+      trailPointAgesSec.push(0);
       if (trailPoints.length > MAX_TRAIL_POINTS) {
         trailPoints.shift();
+        trailPointAgesSec.shift();
       }
       lastPoint = scenePos.clone();
+      rebuildGeometry();
+    }
+  }
+
+  function ageAndCullTrail(deltaSeconds) {
+    if (!(deltaSeconds > 0) || trailPointAgesSec.length === 0) {
+      return;
+    }
+    const maxAgeSec = Math.max(8, Number(LAUNCH_EXHAUST_VISUAL_CONFIG.smokeTrailPersistSeconds) || 42);
+    for (let i = 0; i < trailPointAgesSec.length; i += 1) {
+      trailPointAgesSec[i] += deltaSeconds;
+    }
+    let removeCount = 0;
+    while (removeCount < trailPointAgesSec.length && trailPointAgesSec[removeCount] > maxAgeSec) {
+      removeCount += 1;
+    }
+    if (removeCount > 0) {
+      trailPoints.splice(0, removeCount);
+      trailPointAgesSec.splice(0, removeCount);
+      lastPoint = trailPoints.length > 0 ? trailPoints[trailPoints.length - 1].clone() : null;
       rebuildGeometry();
     }
   }
@@ -235,6 +259,7 @@ export function createLaunchTrailController(options) {
       return;
     }
     group.visible = true;
+    ageAndCullTrail(Math.max(0, Number(deltaSeconds) || 0));
 
     const snapshot = getLaunchSnapshot?.() || null;
     const coordsKm = getCoordinatesKmById?.(launchBodyId);
@@ -273,12 +298,12 @@ export function createLaunchTrailController(options) {
     if (smokeActive) {
       const densityFade = clamp(1 - (altitudeKm / LAUNCH_EXHAUST_VISUAL_CONFIG.smokeMaxAltitudeKm), 0.04, 1);
       pointMaterial.size = smokePointSizeScene * (0.9 + (0.35 * throttle));
-      pointMaterial.opacity = 0.03 + (0.09 * throttle * densityFade);
-      pathMaterial.opacity = 0.04 + (0.12 * densityFade);
+      pointMaterial.opacity = 0.015 + (0.045 * throttle * densityFade);
+      pathMaterial.opacity = 0.02 + (0.065 * densityFade);
     } else {
       pointMaterial.size = smokePointSizeScene;
-      pointMaterial.opacity = 0.02;
-      pathMaterial.opacity = 0.03;
+      pointMaterial.opacity = trailPoints.length > 0 ? 0.012 : 0;
+      pathMaterial.opacity = trailPoints.length > 0 ? 0.015 : 0;
     }
 
     updatePlume(snapshot, scenePos, velocityKmS);

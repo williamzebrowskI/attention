@@ -28,8 +28,8 @@ export const SEA_LEVEL_PRESSURE_PA = 101325;
 
 export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
   name: "Earth Launch Vehicle",
-  payloadMassKg: 15_000,
-  referenceAreaM2: 10.75,
+  payloadMassKg: 100_000,
+  referenceAreaM2: 63.62,
   dragCoefficient: 0.32,
   guidance: Object.freeze({
     enforceVerticalAscent: true,
@@ -48,34 +48,53 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
   stages: Object.freeze([
     Object.freeze({
       name: "Stage 1",
-      dryMassKg: 25_600,
-      propellantMassKg: 395_700,
-      thrustSeaLevelN: 7_607_000,
-      thrustVacuumN: 8_227_000,
-      ispSeaLevelS: 282,
-      ispVacuumS: 311,
+      dryMassKg: 200_000,
+      propellantMassKg: 3_400_000,
+      thrustSeaLevelN: 74_000_000,
+      thrustVacuumN: 77_000_000,
+      ispSeaLevelS: 327,
+      ispVacuumS: 350,
       coastAfterBurnSec: 2,
     }),
     Object.freeze({
       name: "Stage 2",
-      dryMassKg: 4_000,
-      propellantMassKg: 92_670,
-      thrustVacuumN: 934_000,
-      ispVacuumS: 348,
+      dryMassKg: 120_000,
+      propellantMassKg: 1_200_000,
+      thrustSeaLevelN: 10_500_000,
+      thrustVacuumN: 13_800_000,
+      ispSeaLevelS: 353,
+      ispVacuumS: 380,
       coastAfterBurnSec: 0,
     }),
   ]),
 });
 
+export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({
+  enabled: true,
+  targetOrbitAltitudeKm: 250,
+  targetAltitudeToleranceKm: 8,
+  verticalAscentMinSeconds: 10,
+  verticalAscentMaxAltitudeKm: 2.2,
+  gravityTurnEndAltitudeKm: 60,
+  insertionCutoffApoapsisMarginKm: 14,
+  circularizationIgnitionLeadSeconds: 95,
+  circularizationMinAltitudeKm: 140,
+  circularizationThrottle: 0.26,
+  ascentMaxThrottle: 1.0,
+  orbitalHoldMaxPeriapsisErrorKm: 8,
+  orbitalHoldMaxApoapsisErrorKm: 14,
+});
+
 // Visual-only exhaust sizing in physical km (kept true-to-scale, not visibility-scaled).
 export const LAUNCH_EXHAUST_VISUAL_CONFIG = Object.freeze({
-  plumeSeaLevelLengthKm: 0.022,
-  plumeVacuumLengthKm: 0.095,
-  plumeSeaLevelRadiusScaleToVehicleRadius: 0.42,
-  plumeVacuumRadiusScaleToVehicleRadius: 1.05,
+  plumeSeaLevelLengthKm: 0.016,
+  plumeVacuumLengthKm: 0.064,
+  plumeSeaLevelRadiusScaleToVehicleRadius: 0.28,
+  plumeVacuumRadiusScaleToVehicleRadius: 0.62,
   smokeMaxAltitudeKm: 35,
-  trailPointSpacingKm: 0.012,
-  smokePointRadiusScaleToVehicleRadius: 0.75,
+  trailPointSpacingKm: 0.018,
+  smokePointRadiusScaleToVehicleRadius: 0.48,
+  smokeTrailPersistSeconds: 42,
 });
 
 export const LAUNCH_INITIAL_MASS_KG = LAUNCH_VEHICLE_CONFIG.stages.reduce(

@@ -1,5 +1,6 @@
 import {
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+  LAUNCH_AUTOPILOT_CONFIG,
   LAUNCH_BODY_ID,
   LAUNCH_BODY_META,
   LAUNCH_INITIAL_MASS_KG,
@@ -12,6 +13,7 @@ import {
 
 const MIN_ROCKET_MASS_KG = 500;
 const EPS = 1e-12;
+const TWO_PI = Math.PI * 2;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -200,6 +202,286 @@ function guidanceDirection({
   };
 }
 
+function normalizeAngleRadians(angle) {
+  if (!Number.isFinite(angle)) {
+    return 0;
+  }
+  let normalized = angle % TWO_PI;
+  if (normalized < 0) {
+    normalized += TWO_PI;
+  }
+  return normalized;
+}
+
+function circularOrbitSpeedKmS(muKm3S2, radiusKm) {
+  if (!(muKm3S2 > 0) || !(radiusKm > 0)) {
+    return 0;
+  }
+  return Math.sqrt(muKm3S2 / radiusKm);
+}
+
+function computeLaunchPlaneNormal(earthAxes) {
+  const up = bodyDirectionFromLatLon(
+    earthAxes,
+    LAUNCH_SITE.latitudeDeg,
+    LAUNCH_SITE.longitudeDeg,
+  );
+  const east = normalize(
+    cross(earthAxes.pole, up),
+    normalize(cross({ x: 0, y: 0, z: 1 }, up), { x: 1, y: 0, z: 0 }),
+  );
+  const north = normalize(cross(up, east), { x: 0, y: 1, z: 0 });
+  const heading = rad(LAUNCH_VEHICLE_CONFIG.guidance.ascentHeadingDegFromEast);
+  const headingDirection = normalize(
+    add(scale(east, Math.cos(heading)), scale(north, Math.sin(heading))),
+    east,
+  );
+  return normalize(cross(up, headingDirection), cross(up, east));
+}
+
+function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel) {
+  const radiusKm = length(relPos);
+  const speedKmS = length(relVel);
+  const altitudeKm = radiusKm - earthRadiusKm;
+  const up = normalize(relPos, { x: 0, y: 0, z: 1 });
+  const radialSpeedKmS = dot(relVel, up);
+  const tangentialVector = subtract(relVel, scale(up, radialSpeedKmS));
+  const tangentialSpeedKmS = length(tangentialVector);
+  const circularSpeedKmS = circularOrbitSpeedKmS(muKm3S2, radiusKm);
+  const specificEnergy = (radiusKm > 0)
+    ? (0.5 * speedKmS * speedKmS) - (muKm3S2 / radiusKm)
+    : Number.NaN;
+  const hVector = cross(relPos, relVel);
+  const h = length(hVector);
+
+  let semimajorKm = Number.NaN;
+  let eccentricity = Number.NaN;
+  let apoapsisKm = Number.NaN;
+  let periapsisKm = Number.NaN;
+  let timeToApoapsisSec = Number.NaN;
+
+  if (muKm3S2 > 0 && radiusKm > 0 && h > 0) {
+    if (specificEnergy < 0) {
+      semimajorKm = -muKm3S2 / (2 * specificEnergy);
+      eccentricity = Math.sqrt(
+        Math.max(0, 1 + ((2 * specificEnergy * h * h) / (muKm3S2 * muKm3S2))),
+      );
+      apoapsisKm = (semimajorKm * (1 + eccentricity)) - earthRadiusKm;
+      periapsisKm = (semimajorKm * (1 - eccentricity)) - earthRadiusKm;
+      if (eccentricity > 1e-8 && eccentricity < 0.99999 && semimajorKm > 0) {
+        const sqrtMuA = Math.sqrt(muKm3S2 * semimajorKm);
+        const cosE = clamp((1 - (radiusKm / semimajorKm)) / eccentricity, -1, 1);
+        const sinE = clamp(dot(relPos, relVel) / (eccentricity * sqrtMuA), -1, 1);
+        const E = Math.atan2(sinE, cosE);
+        const M = E - (eccentricity * Math.sin(E));
+        const meanMotion = Math.sqrt(muKm3S2 / (semimajorKm * semimajorKm * semimajorKm));
+        if (meanMotion > 0) {
+          const targetM = Math.PI;
+          const deltaM = normalizeAngleRadians(targetM - M);
+          timeToApoapsisSec = deltaM / meanMotion;
+        }
+      }
+    }
+  }
+
+  return {
+    radiusKm,
+    altitudeKm,
+    speedKmS,
+    radialSpeedKmS,
+    tangentialSpeedKmS,
+    tangentialVector,
+    circularSpeedKmS,
+    specificEnergy,
+    semimajorKm,
+    eccentricity,
+    apoapsisKm,
+    periapsisKm,
+    timeToApoapsisSec,
+    up,
+    hVector,
+  };
+}
+
+function autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole) {
+  let tangent = normalize(
+    cross(planeNormal, up),
+    normalize(cross(up, earthPole), normalize(relVel, up)),
+  );
+  if (dot(tangent, relVel) < 0) {
+    tangent = scale(tangent, -1);
+  }
+  return tangent;
+}
+
+function computeAutopilotCommand({
+  runtime,
+  orbital,
+  relVel,
+  up,
+  earthPole,
+  muKm3S2,
+  earthRadiusKm,
+}) {
+  const config = LAUNCH_AUTOPILOT_CONFIG;
+  const targetAltitudeKm = config.targetOrbitAltitudeKm;
+  const targetAltitudeSafe = Math.max(targetAltitudeKm, 1);
+  const apoapsisKm = Number(orbital.apoapsisKm);
+  const periapsisKm = Number(orbital.periapsisKm);
+  const apoDefined = Number.isFinite(apoapsisKm);
+  const periDefined = Number.isFinite(periapsisKm);
+  const radialSpeedKmS = Number(orbital.radialSpeedKmS) || 0;
+  const circularSpeedKmS = Number(orbital.circularSpeedKmS) || 0;
+  const tangentialSpeedKmS = Number(orbital.tangentialSpeedKmS) || 0;
+  const targetRadiusKm = Math.max(1, earthRadiusKm + targetAltitudeKm);
+  const targetCircularSpeedKmS = circularOrbitSpeedKmS(muKm3S2, targetRadiusKm);
+
+  const planeNormal = runtime.launchPlaneNormal || normalize(cross(up, relVel), earthPole);
+  const tangent = autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole);
+
+  if (runtime.autopilotMode === "autopilot-orbital-hold") {
+    return {
+      phase: "orbit",
+      throttle: 0,
+      direction: tangent,
+      mode: "autopilot-orbital-hold",
+    };
+  }
+
+  if (runtime.autopilotMode === "autopilot-coast-to-circularize") {
+    const tta = Number(orbital.timeToApoapsisSec);
+    const readyForCircularization =
+      (Number.isFinite(tta) && tta <= config.circularizationIgnitionLeadSeconds)
+      || (radialSpeedKmS <= 0 && orbital.altitudeKm >= config.circularizationMinAltitudeKm)
+      || (!Number.isFinite(tta) && orbital.altitudeKm >= config.circularizationMinAltitudeKm);
+    if (!readyForCircularization) {
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "autopilot-coast-to-apoapsis",
+      };
+    }
+    runtime.autopilotMode = "autopilot-circularization";
+  }
+
+  if (runtime.autopilotMode === "autopilot-circularization") {
+    const periErrorKm = periDefined ? targetAltitudeKm - periapsisKm : targetAltitudeKm;
+    const tangentialSpeedErrorKmS = circularSpeedKmS - tangentialSpeedKmS;
+    const aboveCircularSpeed = tangentialSpeedErrorKmS <= -0.02;
+    const doneCircularizing =
+      periErrorKm <= config.orbitalHoldMaxPeriapsisErrorKm
+      && tangentialSpeedErrorKmS <= 0.02;
+    if (doneCircularizing) {
+      runtime.autopilotMode = "autopilot-orbital-hold";
+      return {
+        phase: "orbit",
+        throttle: 0,
+        direction: tangent,
+        mode: "autopilot-orbital-hold",
+      };
+    }
+    if (aboveCircularSpeed) {
+      runtime.autopilotMode = "autopilot-orbital-hold";
+      return {
+        phase: "orbit",
+        throttle: 0,
+        direction: tangent,
+        mode: "autopilot-orbital-hold",
+      };
+    }
+    const radialDamping = clamp(-radialSpeedKmS * 0.55, -0.22, 0.22);
+    const direction = normalize(
+      add(scale(tangent, 1), scale(up, radialDamping)),
+      tangent,
+    );
+    const throttle = clamp(
+      config.circularizationThrottle + clamp(periErrorKm / targetAltitudeSafe, -0.2, 0.35),
+      0.18,
+      1,
+    );
+    return {
+      phase: "powered",
+      throttle,
+      direction,
+      mode: "autopilot-circularization",
+    };
+  }
+
+  if (
+    runtime.elapsedSeconds < config.verticalAscentMinSeconds
+    || orbital.altitudeKm < config.verticalAscentMaxAltitudeKm
+  ) {
+    runtime.autopilotMode = "autopilot-vertical-ascent";
+    return {
+      phase: "powered",
+      throttle: throttleForState(runtime.stageIndex, runtime.elapsedSeconds),
+      direction: up,
+      mode: "autopilot-vertical-ascent",
+    };
+  }
+
+  const gravityTurnBlend = clamp(
+    (orbital.altitudeKm - config.verticalAscentMaxAltitudeKm)
+      / Math.max(config.gravityTurnEndAltitudeKm - config.verticalAscentMaxAltitudeKm, 1),
+    0,
+    1,
+  );
+  const turnDirection = normalize(
+    mixVectors(up, tangent, Math.pow(gravityTurnBlend, 0.85)),
+    tangent,
+  );
+
+  let direction = turnDirection;
+  let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds);
+  let mode = "autopilot-gravity-turn";
+  if (gravityTurnBlend >= 1) {
+    runtime.autopilotMode = "autopilot-apoapsis-raise";
+    const apoDeficitKm = apoDefined ? targetAltitudeKm - apoapsisKm : targetAltitudeKm;
+    const radialBias = clamp((apoDeficitKm / targetAltitudeSafe) * 0.42, -0.16, 0.22);
+    direction = normalize(
+      add(scale(tangent, 1), scale(up, radialBias)),
+      tangent,
+    );
+    throttle = clamp(
+      0.62 + clamp((apoDeficitKm / targetAltitudeSafe) * 0.45, -0.16, 0.22),
+      0.34,
+      config.ascentMaxThrottle,
+    );
+    mode = "autopilot-apoapsis-raise";
+  } else {
+    runtime.autopilotMode = "autopilot-gravity-turn";
+  }
+
+  const shouldCoastToApoapsis =
+    (
+      apoDefined
+      && apoapsisKm >= (targetAltitudeKm + config.insertionCutoffApoapsisMarginKm)
+      && radialSpeedKmS > -0.08
+    )
+    || (
+      orbital.altitudeKm >= config.circularizationMinAltitudeKm
+      && tangentialSpeedKmS >= (targetCircularSpeedKmS * 0.9)
+      && radialSpeedKmS > -0.04
+    );
+  if (shouldCoastToApoapsis) {
+    runtime.autopilotMode = "autopilot-coast-to-circularize";
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction,
+      mode: "autopilot-meco-coast",
+    };
+  }
+
+  return {
+    phase: "powered",
+    throttle,
+    direction,
+    mode,
+  };
+}
+
 function throttleForState(stageIndex, elapsedSeconds) {
   if (stageIndex !== 0) {
     return 1;
@@ -233,39 +515,29 @@ function telemetryFromState({
     rocketState.velocity,
     earthState.velocity || { x: 0, y: 0, z: 0 },
   );
-  const radiusKm = length(relPos);
-  const speedKmS = length(relVel);
-  const altitudeKm = radiusKm - earthRadiusKm;
   const mu = gravitationalConstantKm3PerKgS2 * earthMassKg;
-
-  let apoapsisKm = null;
-  let periapsisKm = null;
-  if (mu > 0 && radiusKm > 0) {
-    const speedSq = speedKmS * speedKmS;
-    const specificEnergy = (0.5 * speedSq) - (mu / radiusKm);
-    const angularMomentum = length(cross(relPos, relVel));
-    if (specificEnergy < 0 && angularMomentum > 0) {
-      const semimajorKm = -mu / (2 * specificEnergy);
-      const eccentricity = Math.sqrt(
-        Math.max(0, 1 + ((2 * specificEnergy * angularMomentum * angularMomentum) / (mu * mu))),
-      );
-      apoapsisKm = (semimajorKm * (1 + eccentricity)) - earthRadiusKm;
-      periapsisKm = (semimajorKm * (1 - eccentricity)) - earthRadiusKm;
-    }
-  }
+  const orbital = orbitalStateFromRelative(mu, earthRadiusKm, relPos, relVel);
+  const apoapsisKm = Number.isFinite(orbital.apoapsisKm) ? orbital.apoapsisKm : null;
+  const periapsisKm = Number.isFinite(orbital.periapsisKm) ? orbital.periapsisKm : null;
 
   const densityKgM3 = Number(atmosphereSample?.densityKgM3) || 0;
-  const dynamicPressurePa = 0.5 * densityKgM3 * Math.pow(speedKmS * 1000, 2);
+  const dynamicPressurePa = 0.5 * densityKgM3 * Math.pow(orbital.speedKmS * 1000, 2);
   return {
     phase: runtime.phase,
     elapsedSeconds: runtime.elapsedSeconds,
     stageIndex: runtime.stageIndex,
     stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
     massKg: rocketState.massKg,
-    altitudeKm,
-    speedKmS,
+    altitudeKm: orbital.altitudeKm,
+    speedKmS: orbital.speedKmS,
+    radialSpeedKmS: orbital.radialSpeedKmS,
+    tangentialSpeedKmS: orbital.tangentialSpeedKmS,
+    circularSpeedKmS: orbital.circularSpeedKmS,
     apoapsisKm,
     periapsisKm,
+    timeToApoapsisSec: Number.isFinite(orbital.timeToApoapsisSec) ? orbital.timeToApoapsisSec : null,
+    autopilotMode: runtime.autopilotMode || "manual",
+    targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm || LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm,
     throttle: runtime.lastStep?.throttle || 0,
     thrustN: runtime.lastStep?.thrustN || 0,
     burnRateKgS: runtime.lastStep?.burnRateKgS || 0,
@@ -280,6 +552,9 @@ function phaseLabel(phase) {
   }
   if (phase === "coast") {
     return "Coast";
+  }
+  if (phase === "orbit") {
+    return "Orbit";
   }
   if (phase === "complete") {
     return "Mission Complete";
@@ -307,6 +582,10 @@ export function createLaunchController(options) {
     lastStep: null,
     lastTelemetry: null,
     lastError: "",
+    autopilotEnabled: Boolean(LAUNCH_AUTOPILOT_CONFIG.enabled),
+    autopilotMode: "idle",
+    targetOrbitAltitudeKm: Number(LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm) || 250,
+    launchPlaneNormal: null,
   };
 
   function earthAxes(timestampMs = Date.now()) {
@@ -329,6 +608,8 @@ export function createLaunchController(options) {
     runtime.coastRemainingSec = 0;
     runtime.lastStep = null;
     runtime.lastError = "";
+    runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-standby" : "manual-standby";
+    runtime.launchPlaneNormal = null;
   }
 
   function ensureCatalogBodies(catalogBodies) {
@@ -440,6 +721,8 @@ export function createLaunchController(options) {
     rocketState.velocity = { ...pad.velocity };
     rocketState.massKg = LAUNCH_INITIAL_MASS_KG;
     resetRuntime();
+    runtime.launchPlaneNormal = computeLaunchPlaneNormal(earthAxes(nowMs));
+    runtime.phase = "idle";
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
       earthMassKg: Number(getEarthMassKg?.()) || 0,
@@ -457,6 +740,7 @@ export function createLaunchController(options) {
       return false;
     }
     runtime.phase = "powered";
+    runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-vertical-ascent" : "manual-ascent";
     return true;
   }
 
@@ -476,19 +760,24 @@ export function createLaunchController(options) {
 
     const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
     const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+    const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
     const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
     const atmo = sampleEarthAtmosphere?.(altitudeKm) || null;
+    const currentEarthAxes = earthAxes(nowMs);
 
-    if (runtime.coastRemainingSec > 0) {
-      runtime.coastRemainingSec = Math.max(0, runtime.coastRemainingSec - dtSeconds);
-      runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
+    if (runtime.phase === "orbit") {
       runtime.lastStep = {
         accelerationKmS2: { x: 0, y: 0, z: 0 },
         throttle: 0,
         thrustN: 0,
         burnKg: 0,
         burnRateKgS: 0,
-        guidanceMode: "coast",
+        guidanceMode: runtime.autopilotMode || "orbit-hold",
       };
       runtime.lastTelemetry = telemetryFromState({
         gravitationalConstantKm3PerKgS2,
@@ -502,6 +791,105 @@ export function createLaunchController(options) {
       return;
     }
 
+    if (runtime.coastRemainingSec > 0) {
+      runtime.coastRemainingSec = Math.max(0, runtime.coastRemainingSec - dtSeconds);
+      runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
+      runtime.lastStep = {
+        accelerationKmS2: { x: 0, y: 0, z: 0 },
+        throttle: 0,
+        thrustN: 0,
+        burnKg: 0,
+        burnRateKgS: 0,
+        guidanceMode: "stage-separation-coast",
+      };
+      runtime.lastTelemetry = telemetryFromState({
+        gravitationalConstantKm3PerKgS2,
+        earthMassKg: Number(getEarthMassKg?.()) || 0,
+        earthRadiusKm,
+        earthState,
+        rocketState,
+        atmosphereSample: atmo,
+        runtime,
+      });
+      return;
+    }
+
+    if (runtime.phase === "coast") {
+      if (runtime.autopilotEnabled) {
+        const autopilotCommand = computeAutopilotCommand({
+          runtime,
+          orbital,
+          relVel,
+          up: orbital.up,
+          earthPole: currentEarthAxes.pole,
+          muKm3S2,
+          earthRadiusKm,
+        });
+        if (autopilotCommand.phase === "powered") {
+          runtime.phase = "powered";
+        } else if (autopilotCommand.phase === "orbit") {
+          runtime.phase = "orbit";
+          runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
+          runtime.lastStep = {
+            accelerationKmS2: { x: 0, y: 0, z: 0 },
+            throttle: 0,
+            thrustN: 0,
+            burnKg: 0,
+            burnRateKgS: 0,
+            guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
+          };
+          runtime.lastTelemetry = telemetryFromState({
+            gravitationalConstantKm3PerKgS2,
+            earthMassKg: Number(getEarthMassKg?.()) || 0,
+            earthRadiusKm,
+            earthState,
+            rocketState,
+            atmosphereSample: atmo,
+            runtime,
+          });
+          return;
+        } else {
+          runtime.lastStep = {
+            accelerationKmS2: { x: 0, y: 0, z: 0 },
+            throttle: 0,
+            thrustN: 0,
+            burnKg: 0,
+            burnRateKgS: 0,
+            guidanceMode: autopilotCommand.mode || "coast",
+          };
+          runtime.lastTelemetry = telemetryFromState({
+            gravitationalConstantKm3PerKgS2,
+            earthMassKg: Number(getEarthMassKg?.()) || 0,
+            earthRadiusKm,
+            earthState,
+            rocketState,
+            atmosphereSample: atmo,
+            runtime,
+          });
+          return;
+        }
+      } else {
+        runtime.lastStep = {
+          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          throttle: 0,
+          thrustN: 0,
+          burnKg: 0,
+          burnRateKgS: 0,
+          guidanceMode: "coast",
+        };
+        runtime.lastTelemetry = telemetryFromState({
+          gravitationalConstantKm3PerKgS2,
+          earthMassKg: Number(getEarthMassKg?.()) || 0,
+          earthRadiusKm,
+          earthState,
+          rocketState,
+          atmosphereSample: atmo,
+          runtime,
+        });
+        return;
+      }
+    }
+
     const stage = stageAtIndex(runtime.stageIndex);
     if (!stage) {
       runtime.phase = "complete";
@@ -509,7 +897,74 @@ export function createLaunchController(options) {
     }
 
     const pressurePa = Number(atmo?.pressurePa) || 0;
-    const throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds);
+    let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds);
+    let guidance = guidanceDirection({
+      rocketState,
+      earthState,
+      earthAxes: currentEarthAxes,
+      elapsedSeconds: runtime.elapsedSeconds,
+    });
+
+    if (runtime.autopilotEnabled) {
+      const autopilotCommand = computeAutopilotCommand({
+        runtime,
+        orbital,
+        relVel,
+        up: orbital.up,
+        earthPole: currentEarthAxes.pole,
+        muKm3S2,
+        earthRadiusKm,
+      });
+      if (autopilotCommand.phase === "coast") {
+        runtime.phase = "coast";
+        runtime.lastStep = {
+          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          throttle: 0,
+          thrustN: 0,
+          burnKg: 0,
+          burnRateKgS: 0,
+          guidanceMode: autopilotCommand.mode || "autopilot-coast",
+        };
+        runtime.lastTelemetry = telemetryFromState({
+          gravitationalConstantKm3PerKgS2,
+          earthMassKg: Number(getEarthMassKg?.()) || 0,
+          earthRadiusKm,
+          earthState,
+          rocketState,
+          atmosphereSample: atmo,
+          runtime,
+        });
+        return;
+      }
+      if (autopilotCommand.phase === "orbit") {
+        runtime.phase = "orbit";
+        runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
+        runtime.lastStep = {
+          accelerationKmS2: { x: 0, y: 0, z: 0 },
+          throttle: 0,
+          thrustN: 0,
+          burnKg: 0,
+          burnRateKgS: 0,
+          guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
+        };
+        runtime.lastTelemetry = telemetryFromState({
+          gravitationalConstantKm3PerKgS2,
+          earthMassKg: Number(getEarthMassKg?.()) || 0,
+          earthRadiusKm,
+          earthState,
+          rocketState,
+          atmosphereSample: atmo,
+          runtime,
+        });
+        return;
+      }
+      throttle = clamp(Number(autopilotCommand.throttle), 0, 1);
+      guidance = {
+        direction: autopilotCommand.direction || guidance.direction,
+        mode: autopilotCommand.mode || guidance.mode,
+      };
+    }
+
     const thrustN =
       interpolateSeaToVac(stage.thrustVacuumN, stage.thrustSeaLevelN, pressurePa)
       * throttle;
@@ -522,12 +977,6 @@ export function createLaunchController(options) {
       MIN_ROCKET_MASS_KG,
       rocketState.massKg - (0.5 * burnKg),
     );
-    const guidance = guidanceDirection({
-      rocketState,
-      earthState,
-      earthAxes: earthAxes(nowMs),
-      elapsedSeconds: runtime.elapsedSeconds,
-    });
     const accelerationMagKmS2 = thrustN > 0
       ? (thrustN / effectiveMassKg) / 1000
       : 0;
@@ -567,6 +1016,23 @@ export function createLaunchController(options) {
       runtime.phase = "idle";
       return;
     }
+
+    if (runtime.phase === "orbit") {
+      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+      const altitudeKm = Math.max(0, length(subtract(rocketState.position, earthState.position)) - earthRadiusKm);
+      runtime.lastTelemetry = telemetryFromState({
+        gravitationalConstantKm3PerKgS2,
+        earthMassKg: Number(getEarthMassKg?.()) || 0,
+        earthRadiusKm,
+        earthState,
+        rocketState,
+        atmosphereSample: sampleEarthAtmosphere?.(altitudeKm) || null,
+        runtime,
+      });
+      runtime.elapsedSeconds += dtSeconds;
+      return;
+    }
+
     runtime.elapsedSeconds += dtSeconds;
 
     const burnKg = Number(runtime.lastStep?.burnKg) || 0;
@@ -592,7 +1058,19 @@ export function createLaunchController(options) {
         runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
       } else {
         runtime.stagePropellantKg = 0;
-        runtime.phase = "complete";
+        const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+        const relPos = subtract(rocketState.position, earthState.position);
+        const relVel = subtract(
+          rocketState.velocity || { x: 0, y: 0, z: 0 },
+          earthState.velocity || { x: 0, y: 0, z: 0 },
+        );
+        const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+        const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
+        const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
+        runtime.phase = stableOrbit ? "orbit" : "complete";
+        if (runtime.phase === "orbit") {
+          runtime.autopilotMode = "autopilot-ballistic-hold";
+        }
       }
     }
 
@@ -617,6 +1095,8 @@ export function createLaunchController(options) {
         phase: runtime.phase,
         phaseLabel: phaseLabel(runtime.phase),
         stageIndex: runtime.stageIndex,
+        autopilotMode: runtime.autopilotMode || "manual",
+        targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
         launchSiteName: LAUNCH_SITE.name || "Launch Site",
         statusLine: `Launch vehicle initialized at ${LAUNCH_SITE.name || "launch site"}.`,
       };
@@ -639,6 +1119,12 @@ export function createLaunchController(options) {
       burnRateKgS: telemetry.burnRateKgS,
       dynamicPressurePa: telemetry.dynamicPressurePa,
       guidanceMode: telemetry.guidanceMode,
+      autopilotMode: telemetry.autopilotMode,
+      targetOrbitAltitudeKm: telemetry.targetOrbitAltitudeKm,
+      radialSpeedKmS: telemetry.radialSpeedKmS,
+      tangentialSpeedKmS: telemetry.tangentialSpeedKmS,
+      circularSpeedKmS: telemetry.circularSpeedKmS,
+      timeToApoapsisSec: telemetry.timeToApoapsisSec,
       statusLine: runtime.lastError || `${phaseLabel(runtime.phase)} | ${telemetry.stageName}`,
     };
   }
