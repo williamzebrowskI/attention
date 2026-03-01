@@ -38,6 +38,14 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
+Optional feature flags:
+
+```bash
+# true (default): launch system enabled
+# false: remove launch UI and skip all launch physics/runtime logic
+export ENABLE_STARSHIP_LAUNCH=false
+```
+
 Open:
 
 - App: `http://127.0.0.1:8000`
@@ -47,6 +55,7 @@ Open:
 
 - `GET /api/bodies?include_moons=true`
 - `GET /api/positions?include_moons=true`
+- `GET /api/config`
 - `WS /ws/positions?include_moons=true&interval=5`
 
 Example:

@@ -30,16 +30,6 @@ import {
   earthAtmosphereSampleUS1976,
 } from "./physics/atmosphere/atmosphereDynamics.js";
 import {
-  createLaunchController,
-  LAUNCH_BODY_ID,
-} from "./physics/launch/launchController.js";
-import {
-  applyStarshipVisualStage,
-  createStarshipStackVisual,
-  starshipPhysicalRenderRadiusScene,
-} from "./physics/launch/launchVisuals.js";
-import { createLaunchTrailController } from "./physics/launch/launchTrail.js";
-import {
   OBLATE_GRAVITY_ENABLED,
   OBLATE_GRAVITY_MODEL,
 } from "./physics/config/oblatenessConfig.js";
@@ -113,6 +103,13 @@ const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
 const N_BODY_STEP_SECONDS = 2;
 const RIGID_BODY_ATTITUDE_ENABLED = true;
+let LAUNCH_BODY_ID = "earth_launch_vehicle";
+let launchFeatureEnabled = true;
+let createLaunchControllerFn = null;
+let createLaunchTrailControllerFn = null;
+let applyStarshipVisualStageFn = null;
+let createStarshipStackVisualFn = null;
+let starshipPhysicalRenderRadiusSceneFn = null;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
   "mercury",
@@ -553,6 +550,10 @@ init().catch((error) => {
 
 async function init() {
   assertPhysicsLockInvariants();
+  await loadRuntimeConfig();
+  if (launchFeatureEnabled) {
+    await loadLaunchFeatureModules();
+  }
   THREE_NS = await loadThreeModule();
   setupScene(THREE_NS);
   await loadBodyCatalog();
@@ -566,6 +567,41 @@ async function init() {
     connectWebSocket();
   }
   animate();
+}
+
+async function loadRuntimeConfig() {
+  try {
+    const response = await fetch("/api/config", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Config request failed with ${response.status}`);
+    }
+    const payload = await response.json();
+    const launchFlag = payload?.features?.starship_launch;
+    if (typeof launchFlag === "boolean") {
+      launchFeatureEnabled = launchFlag;
+    }
+  } catch (error) {
+    console.warn("[solar-system] Using default runtime config:", error);
+  }
+  if (!launchFeatureEnabled && launchControlButton) {
+    launchControlButton.remove();
+  }
+}
+
+async function loadLaunchFeatureModules() {
+  const [controllerModule, visualsModule, trailModule] = await Promise.all([
+    import("./physics/launch/launchController.js"),
+    import("./physics/launch/launchVisuals.js"),
+    import("./physics/launch/launchTrail.js"),
+  ]);
+  if (typeof controllerModule?.LAUNCH_BODY_ID === "string" && controllerModule.LAUNCH_BODY_ID) {
+    LAUNCH_BODY_ID = controllerModule.LAUNCH_BODY_ID;
+  }
+  createLaunchControllerFn = controllerModule?.createLaunchController || null;
+  createLaunchTrailControllerFn = trailModule?.createLaunchTrailController || null;
+  applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
+  createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
+  starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
 }
 
 function setupRigidBodyAttitudeModel() {
@@ -755,31 +791,36 @@ function setupScene(THREE) {
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
     getBodySpinAxisEcliptic: (bodyId) => sourcePoleUnitVectorEclipticForBody(bodyId, Date.now()),
   });
-  launchController = createLaunchController({
-    getEarthRadiusKm: () => bodyRadiusKmById("earth"),
-    getEarthMassKg: () => bodyMassKgById("earth"),
-    getEarthFixedAxesEcliptic: (timestampMs) => {
-      const pole = sourcePoleUnitVectorEclipticForBody("earth", timestampMs);
-      const fixedAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, timestampMs);
-      return {
-        xAxis: fixedAxes?.xAxis || { x: 1, y: 0, z: 0 },
-        yAxis: fixedAxes?.yAxis || { x: 0, y: 1, z: 0 },
-        pole: pole || { x: 0, y: 0, z: 1 },
-      };
-    },
-    sampleEarthAtmosphere: (altitudeKm) => earthAtmosphereSampleUS1976(altitudeKm),
-    gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
-  });
-  launchTrailController = createLaunchTrailController({
-    THREE,
-    scene,
-    distanceScale: DISTANCE_SCALE,
-    getLaunchSnapshot: () => launchController?.statusSnapshot() || null,
-    getCoordinatesKmById: (bodyId) => runtimeCoordsOrLiveById(bodyId),
-    getVelocityKmSById: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
-    getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
-    launchBodyId: LAUNCH_BODY_ID,
-  });
+  if (launchFeatureEnabled && createLaunchControllerFn && createLaunchTrailControllerFn) {
+    launchController = createLaunchControllerFn({
+      getEarthRadiusKm: () => bodyRadiusKmById("earth"),
+      getEarthMassKg: () => bodyMassKgById("earth"),
+      getEarthFixedAxesEcliptic: (timestampMs) => {
+        const pole = sourcePoleUnitVectorEclipticForBody("earth", timestampMs);
+        const fixedAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, timestampMs);
+        return {
+          xAxis: fixedAxes?.xAxis || { x: 1, y: 0, z: 0 },
+          yAxis: fixedAxes?.yAxis || { x: 0, y: 1, z: 0 },
+          pole: pole || { x: 0, y: 0, z: 1 },
+        };
+      },
+      sampleEarthAtmosphere: (altitudeKm) => earthAtmosphereSampleUS1976(altitudeKm),
+      gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+    });
+    launchTrailController = createLaunchTrailControllerFn({
+      THREE,
+      scene,
+      distanceScale: DISTANCE_SCALE,
+      getLaunchSnapshot: () => launchController?.statusSnapshot() || null,
+      getCoordinatesKmById: (bodyId) => runtimeCoordsOrLiveById(bodyId),
+      getVelocityKmSById: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
+      getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
+      launchBodyId: LAUNCH_BODY_ID,
+    });
+  } else {
+    launchController = null;
+    launchTrailController = null;
+  }
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
@@ -815,7 +856,9 @@ async function loadBodyCatalog() {
 
   const payload = await response.json();
   const catalogBodies = payload.bodies || [];
-  bodies = launchController?.ensureCatalogBodies(catalogBodies) || catalogBodies;
+  bodies = launchFeatureEnabled
+    ? (launchController?.ensureCatalogBodies(catalogBodies) || catalogBodies)
+    : catalogBodies;
   metaById = new Map(bodies.map((body) => [body.id, body]));
   gravityArrowFocusBodyId = null;
   gravityArrowsLegendActivated = false;
@@ -1165,6 +1208,12 @@ function updatePhysicsOverlayControls() {
 }
 
 function setupLaunchControls() {
+  if (!launchFeatureEnabled) {
+    if (launchControlButton) {
+      launchControlButton.remove();
+    }
+    return;
+  }
   if (launchControlButton) {
     launchControlButton.addEventListener("click", () => {
       if (!launchController || !nBodyState?.initialized) {
@@ -1190,6 +1239,9 @@ function setupLaunchControls() {
 }
 
 function updateLaunchControls() {
+  if (!launchFeatureEnabled) {
+    return;
+  }
   if (!launchControlButton) {
     return;
   }
@@ -1200,6 +1252,9 @@ function updateLaunchControls() {
 }
 
 function updateLaunchStatusPanel(force = false, fallbackLine = "") {
+  if (!launchFeatureEnabled) {
+    return;
+  }
   if (!launchStatusNode) {
     return;
   }
@@ -1243,6 +1298,9 @@ function phaseLabelForLaunch(phase) {
 }
 
 function updateLaunchVehicleVisuals() {
+  if (!launchFeatureEnabled) {
+    return;
+  }
   if (!THREE_NS) {
     return;
   }
@@ -1251,7 +1309,7 @@ function updateLaunchVehicleVisuals() {
     return;
   }
   const snapshot = launchController?.statusSnapshot() || null;
-  applyStarshipVisualStage(visual.launchStackState, snapshot?.stageIndex);
+  applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex);
 
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BODY_ID);
   const rocketCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BODY_ID);
@@ -1479,16 +1537,32 @@ function createOrbitVisual(body) {
 }
 
 function createSpacecraftVisual(body) {
-  const renderRadius = starshipPhysicalRenderRadiusScene(DISTANCE_SCALE);
+  const renderRadius = starshipPhysicalRenderRadiusSceneFn
+    ? starshipPhysicalRenderRadiusSceneFn(DISTANCE_SCALE)
+    : Math.max((Number(body?.radius_km) || 0.0045) * DISTANCE_SCALE, 1e-8);
   const root = new THREE_NS.Object3D();
   const tiltGroup = new THREE_NS.Object3D();
   const spinGroup = new THREE_NS.Object3D();
   root.add(tiltGroup);
   tiltGroup.add(spinGroup);
 
-  const stack = createStarshipStackVisual(THREE_NS, DISTANCE_SCALE);
-  spinGroup.add(stack.root);
-  applyStarshipVisualStage(stack.state, 0);
+  const stack = createStarshipStackVisualFn ? createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE) : null;
+  if (stack?.root) {
+    spinGroup.add(stack.root);
+  } else {
+    const fallbackMesh = new THREE_NS.Mesh(
+      new THREE_NS.SphereGeometry(Math.max(renderRadius, 1e-8), 12, 12),
+      new THREE_NS.MeshStandardMaterial({
+        color: new THREE_NS.Color(0x9aa7ba),
+        roughness: 0.55,
+        metalness: 0.3,
+      }),
+    );
+    spinGroup.add(fallbackMesh);
+  }
+  if (stack?.state) {
+    applyStarshipVisualStageFn?.(stack.state, 0);
+  }
 
   const lod = {
     levels: [],
@@ -1512,9 +1586,9 @@ function createSpacecraftVisual(body) {
     locationMarker: null,
     textureMode: "procedural_spacecraft",
     ringMode: "none",
-    mapSource: "local_starship_geometry",
-    launchStackState: stack.state,
-    extraMaterials: stack.materials,
+    mapSource: stack ? "local_starship_geometry" : "fallback_spacecraft_geometry",
+    launchStackState: stack?.state || null,
+    extraMaterials: stack?.materials || [],
   };
 
   if (GRAVITY_VECTORS_ENABLED) {
@@ -3240,10 +3314,12 @@ function updatePositions(payload, source = "runtime") {
   const entries = payload.bodies || [];
   const entriesById = new Map(entries.map((body) => [body.id, body]));
   latestSolarTimestampMs = parseTimestampMs(payload.timestamp_utc);
-  launchController?.injectStartupEntry(
-    entriesById,
-    Number.isFinite(latestSolarTimestampMs) ? latestSolarTimestampMs : Date.now(),
-  );
+  if (launchFeatureEnabled) {
+    launchController?.injectStartupEntry(
+      entriesById,
+      Number.isFinite(latestSolarTimestampMs) ? latestSolarTimestampMs : Date.now(),
+    );
+  }
   positionsById = entriesById;
   if (!nBodyStartupSnapshotLoaded) {
     gravityArrowFocusBodyId = null;
@@ -3260,8 +3336,10 @@ function updatePositions(payload, source = "runtime") {
   updatePhysicsOverlays();
   updateSunlightModel();
   updateOrbitVisualAnchorsAndPhase();
-  updateLaunchControls();
-  updateLaunchStatusPanel(true);
+  if (launchFeatureEnabled) {
+    updateLaunchControls();
+    updateLaunchStatusPanel(true);
+  }
   if (source === "startup_seed") {
     startupSeedLocked = true;
   }
@@ -3350,8 +3428,10 @@ function initializeNBodyFromSnapshot(nowMs) {
     dynamicBodies,
     staticSources,
   };
-  launchController?.ensureRocketInNBody(nBodyState, nowMs);
-  launchController?.resetToPad(nBodyState, nowMs);
+  if (launchFeatureEnabled) {
+    launchController?.ensureRocketInNBody(nBodyState, nowMs);
+    launchController?.resetToPad(nBodyState, nowMs);
+  }
 }
 
 function isNBodyDrivenBodyId(bodyId) {
@@ -3759,7 +3839,9 @@ function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextB
 function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceContextById = null) {
   const gravity = computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById);
   const atmospheric = atmosphereDynamicsController?.computeAtmosphericAccelerationKmS2(state, targetId) || { x: 0, y: 0, z: 0 };
-  const thrust = launchController?.externalAccelerationKmS2(targetId) || { x: 0, y: 0, z: 0 };
+  const thrust = launchFeatureEnabled
+    ? (launchController?.externalAccelerationKmS2(targetId) || { x: 0, y: 0, z: 0 })
+    : { x: 0, y: 0, z: 0 };
   return {
     x: gravity.x + atmospheric.x + thrust.x,
     y: gravity.y + atmospheric.y + thrust.y,
@@ -3769,7 +3851,9 @@ function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceCon
 
 function integrateNBodyStep(state, dtSeconds) {
   const oblateSourceContextById = buildOblateSourceContextMapForNBody(state, Date.now());
-  launchController?.prepareStep(state, dtSeconds, Date.now());
+  if (launchFeatureEnabled) {
+    launchController?.prepareStep(state, dtSeconds, Date.now());
+  }
   const accelerationStartById = new Map();
   for (const bodyId of state.dynamicBodies.keys()) {
     accelerationStartById.set(
@@ -3795,7 +3879,9 @@ function integrateNBodyStep(state, dtSeconds) {
     bodyState.velocity.y += 0.5 * accel.y * dtSeconds;
     bodyState.velocity.z += 0.5 * accel.z * dtSeconds;
   }
-  launchController?.finalizeStep(state, dtSeconds, Date.now());
+  if (launchFeatureEnabled) {
+    launchController?.finalizeStep(state, dtSeconds, Date.now());
+  }
 }
 
 function updateNBodySimulation(nowMs) {
@@ -5634,10 +5720,14 @@ function animate(timestampMs = 0) {
   }
   updateGravityVectors();
   updatePhysicsOverlays();
-  updateLaunchStatusPanel();
-  launchTrailController?.update(deltaSeconds);
+  if (launchFeatureEnabled) {
+    updateLaunchStatusPanel();
+    launchTrailController?.update(deltaSeconds);
+  }
   updatePrimeMeridianSpins(nowMs, deltaSeconds);
-  updateLaunchVehicleVisuals();
+  if (launchFeatureEnabled) {
+    updateLaunchVehicleVisuals();
+  }
   updateBodyEclipseUniforms();
   updateSunlightModel();
 
@@ -5802,7 +5892,9 @@ function updateInfoOverlay() {
   const dominantGravityMS2 = Number.isFinite(gravity?.dominantContributionMS2)
     ? gravity.dominantContributionMS2
     : null;
-  const launchSnapshot = meta.id === LAUNCH_BODY_ID ? (launchController?.statusSnapshot() || null) : null;
+  const launchSnapshot = launchFeatureEnabled && meta.id === LAUNCH_BODY_ID
+    ? (launchController?.statusSnapshot() || null)
+    : null;
   const runtimeMassKg = nBodyState?.dynamicBodies?.get(meta.id)?.massKg;
   const displayedMassKg = Number.isFinite(runtimeMassKg) ? runtimeMassKg : Number(meta.mass_kg);
   const orbitDynamicsLine = isNBodyDrivenBodyId(meta.id)

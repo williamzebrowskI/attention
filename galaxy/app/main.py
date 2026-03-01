@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,15 @@ async def index() -> FileResponse:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/config")
+async def runtime_config() -> dict[str, object]:
+    return {
+        "features": {
+            "starship_launch": _parse_bool(os.getenv("ENABLE_STARSHIP_LAUNCH"), default=True),
+        },
+    }
 
 
 @app.get("/api/bodies")
