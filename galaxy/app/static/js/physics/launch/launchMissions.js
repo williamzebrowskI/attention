@@ -9,7 +9,7 @@ export const LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
     name: "Earth Orbit Hold",
-    description: "Launch to Earth orbit and hold station.",
+    description: "Launch to Earth orbit and hold station continuously until reset.",
   }),
   Object.freeze({
     id: LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,
@@ -31,4 +31,3 @@ export function normalizeMissionId(missionId) {
 export function missionProfileById(missionId) {
   return PROFILE_BY_ID.get(normalizeMissionId(missionId)) || PROFILE_BY_ID.get(DEFAULT_LAUNCH_MISSION_ID);
 }
-

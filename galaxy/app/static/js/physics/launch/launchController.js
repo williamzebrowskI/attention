@@ -1064,6 +1064,26 @@ const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   earthCapturePeriapsisMinKm: 120,
 });
 
+const EARTH_ORBIT_HOLD_MISSION_CONFIG = Object.freeze({
+  insertionPeriapsisMinKm: 80,
+  insertionApoapsisMinKm: 120,
+  stablePeriapsisErrorKm: 3.5,
+  stableApoapsisErrorKm: 3.5,
+  stableRadialSpeedKmS: 0.0035,
+  stableTangentialSpeedErrorKmS: 0.012,
+  burnApoapsisErrorWeight: 0.65,
+  burnPeriapsisErrorWeight: 0.95,
+  burnRadialSpeedWeight: 4.2,
+  burnDirectionRadialMixLimit: 0.38,
+  throttleMin: 0.05,
+  throttleMax: 0.74,
+  throttleBase: 0.08,
+  throttleAltitudeNormWindowKm: 18,
+  throttleSpeedNormWindowKmS: 0.09,
+  throttleRadialNormWindowKmS: 0.03,
+  sustainedOrbitReserveKg: 20_000,
+});
+
 function safeMissionProfile(missionId) {
   return missionProfileById(normalizeMissionId(missionId));
 }
@@ -1111,6 +1131,121 @@ function missionOrbitTangent(relVel, up, planeNormal, pole) {
     planeNormal || normalize(cross(up, relVel), pole),
     pole,
   );
+}
+
+function missionUsesSustainedOrbitReserve(runtime) {
+  if (
+    runtime?.mission?.selectedId !== LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD
+    || Number(runtime?.stageIndex) < 1
+  ) {
+    return false;
+  }
+  const guidanceMode = String(runtime?.lastStep?.guidanceMode || runtime?.autopilotMode || "");
+  const stationKeepingActive = guidanceMode.startsWith("mission-earth-orbit-hold:station-keeping");
+  return runtime?.phase === "orbit" || stationKeepingActive;
+}
+
+function computeEarthOrbitHoldAutopilotCommand({
+  runtime,
+  orbital,
+  relVel,
+  up,
+  earthPole,
+  muKm3S2,
+  earthRadiusKm,
+}) {
+  if (Number(runtime.stageIndex) < 1) {
+    setMissionPhase(runtime, "earth_orbit_hold");
+    return null;
+  }
+
+  const config = EARTH_ORBIT_HOLD_MISSION_CONFIG;
+  const periapsisKm = Number(orbital.periapsisKm);
+  const apoapsisKm = Number(orbital.apoapsisKm);
+  const hasBoundOrbit = Number(orbital.specificEnergy) < 0;
+  const insertionReady = hasBoundOrbit
+    && Number.isFinite(periapsisKm)
+    && Number.isFinite(apoapsisKm)
+    && periapsisKm >= config.insertionPeriapsisMinKm
+    && apoapsisKm >= config.insertionApoapsisMinKm;
+  if (!insertionReady) {
+    return null;
+  }
+
+  setMissionPhase(runtime, "earth_orbit_hold");
+  runtime.mission.completed = false;
+
+  const tangent = missionOrbitTangent(relVel, up, runtime.launchPlaneNormal, earthPole);
+  const targetAltitudeKm = Number(runtime.targetOrbitAltitudeKm) || Number(LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm) || 250;
+  const targetRadiusKm = Math.max(1, earthRadiusKm + targetAltitudeKm);
+  const targetTangentialSpeedKmS = circularOrbitSpeedKmS(muKm3S2, targetRadiusKm);
+  const radialSpeedKmS = Number(orbital.radialSpeedKmS) || 0;
+  const tangentialSpeedKmS = Number(orbital.tangentialSpeedKmS) || 0;
+
+  const apoErrorKm = Number.isFinite(apoapsisKm) ? (targetAltitudeKm - apoapsisKm) : targetAltitudeKm;
+  const periErrorKm = Number.isFinite(periapsisKm) ? (targetAltitudeKm - periapsisKm) : targetAltitudeKm;
+  const tangentialSpeedErrorKmS = targetTangentialSpeedKmS - tangentialSpeedKmS;
+
+  const stable = Math.abs(apoErrorKm) <= config.stableApoapsisErrorKm
+    && Math.abs(periErrorKm) <= config.stablePeriapsisErrorKm
+    && Math.abs(radialSpeedKmS) <= config.stableRadialSpeedKmS
+    && Math.abs(tangentialSpeedErrorKmS) <= config.stableTangentialSpeedErrorKmS;
+
+  if (stable) {
+    return {
+      phase: "orbit",
+      throttle: 0,
+      direction: tangent,
+      mode: "mission-earth-orbit-hold:station-keeping",
+    };
+  }
+
+  const tangentialSign = tangentialSpeedErrorKmS >= 0 ? 1 : -1;
+  const tangentialDirection = scale(tangent, tangentialSign);
+  const radialMixRaw = (
+    (periErrorKm * config.burnPeriapsisErrorWeight)
+    + (apoErrorKm * config.burnApoapsisErrorWeight)
+  ) / Math.max(targetAltitudeKm, 1) - (radialSpeedKmS * config.burnRadialSpeedWeight);
+  const radialMix = clamp(
+    radialMixRaw,
+    -config.burnDirectionRadialMixLimit,
+    config.burnDirectionRadialMixLimit,
+  );
+  const direction = normalize(
+    add(scale(tangentialDirection, 1), scale(up, radialMix)),
+    tangentialDirection,
+  );
+
+  const altitudeErrorNorm = clamp(
+    Math.max(Math.abs(apoErrorKm), Math.abs(periErrorKm)) / Math.max(config.throttleAltitudeNormWindowKm, 1),
+    0,
+    1,
+  );
+  const speedErrorNorm = clamp(
+    Math.abs(tangentialSpeedErrorKmS) / Math.max(config.throttleSpeedNormWindowKmS, 1e-6),
+    0,
+    1,
+  );
+  const radialErrorNorm = clamp(
+    Math.abs(radialSpeedKmS) / Math.max(config.throttleRadialNormWindowKmS, 1e-6),
+    0,
+    1,
+  );
+  const throttle = clamp(
+    config.throttleBase
+      + (altitudeErrorNorm * 0.44)
+      + (speedErrorNorm * 0.4)
+      + (radialErrorNorm * 0.24),
+    config.throttleMin,
+    config.throttleMax,
+  );
+
+  return {
+    phase: "powered",
+    throttle,
+    direction,
+    mode: "mission-earth-orbit-hold:station-keeping-burn",
+  };
 }
 
 function computeMoonOrbitReturnAutopilotCommand({
@@ -1447,6 +1582,54 @@ function computeMoonOrbitReturnAutopilotCommand({
     direction: tangent,
     mode: "mission-moon-orbit-return:earth-orbit-hold",
   };
+}
+
+function computeMissionAutopilotCommand({
+  runtime,
+  state,
+  earthState,
+  rocketState,
+  orbital,
+  relPos,
+  relVel,
+  up,
+  earthPole,
+  muKm3S2,
+  gravitationalConstantKm3PerKgS2,
+  earthRadiusKm,
+  getBodyRadiusKm,
+  getBodyMassKg,
+}) {
+  if (runtime?.mission?.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return computeMoonOrbitReturnAutopilotCommand({
+      runtime,
+      state,
+      earthState,
+      rocketState,
+      orbital,
+      relPos,
+      relVel,
+      up,
+      earthPole,
+      muKm3S2,
+      gravitationalConstantKm3PerKgS2,
+      earthRadiusKm,
+      getBodyRadiusKm,
+      getBodyMassKg,
+    });
+  }
+  if (runtime?.mission?.selectedId === LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD) {
+    return computeEarthOrbitHoldAutopilotCommand({
+      runtime,
+      orbital,
+      relVel,
+      up,
+      earthPole,
+      muKm3S2,
+      earthRadiusKm,
+    });
+  }
+  return null;
 }
 
 function phaseLabel(phase) {
@@ -2565,26 +2748,24 @@ export function createLaunchController(options) {
           earthRadiusKm,
           dynamicPressurePa,
         });
-        if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
-          const missionCommand = computeMoonOrbitReturnAutopilotCommand({
-            runtime,
-            state,
-            earthState,
-            rocketState,
-            orbital,
-            relPos,
-            relVel,
-            up: orbital.up,
-            earthPole: currentEarthAxes.pole,
-            muKm3S2,
-            gravitationalConstantKm3PerKgS2,
-            earthRadiusKm,
-            getBodyRadiusKm,
-            getBodyMassKg,
-          });
-          if (missionCommand) {
-            autopilotCommand = missionCommand;
-          }
+        const missionCommand = computeMissionAutopilotCommand({
+          runtime,
+          state,
+          earthState,
+          rocketState,
+          orbital,
+          relPos,
+          relVel,
+          up: orbital.up,
+          earthPole: currentEarthAxes.pole,
+          muKm3S2,
+          gravitationalConstantKm3PerKgS2,
+          earthRadiusKm,
+          getBodyRadiusKm,
+          getBodyMassKg,
+        });
+        if (missionCommand) {
+          autopilotCommand = missionCommand;
         }
         if (autopilotCommand.phase === "powered") {
           runtime.phase = "powered";
@@ -2719,26 +2900,24 @@ export function createLaunchController(options) {
         earthRadiusKm,
         dynamicPressurePa,
       });
-      if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
-        const missionCommand = computeMoonOrbitReturnAutopilotCommand({
-          runtime,
-          state,
-          earthState,
-          rocketState,
-          orbital,
-          relPos,
-          relVel,
-          up: orbital.up,
-          earthPole: currentEarthAxes.pole,
-          muKm3S2,
-          gravitationalConstantKm3PerKgS2,
-          earthRadiusKm,
-          getBodyRadiusKm,
-          getBodyMassKg,
-        });
-        if (missionCommand) {
-          autopilotCommand = missionCommand;
-        }
+      const missionCommand = computeMissionAutopilotCommand({
+        runtime,
+        state,
+        earthState,
+        rocketState,
+        orbital,
+        relPos,
+        relVel,
+        up: orbital.up,
+        earthPole: currentEarthAxes.pole,
+        muKm3S2,
+        gravitationalConstantKm3PerKgS2,
+        earthRadiusKm,
+        getBodyRadiusKm,
+        getBodyMassKg,
+      });
+      if (missionCommand) {
+        autopilotCommand = missionCommand;
       }
       if (autopilotCommand.phase === "coast") {
         runtime.phase = "coast";
@@ -3032,18 +3211,30 @@ export function createLaunchController(options) {
     runtime.elapsedSeconds += dtSeconds;
 
     const burnKg = Number(runtime.lastStep?.burnKg) || 0;
-    if (burnKg > 0) {
+    const sustainedOrbitReserveActive = missionUsesSustainedOrbitReserve(runtime);
+    const appliedBurnKg = sustainedOrbitReserveActive ? 0 : burnKg;
+    if (appliedBurnKg > 0) {
       rocketState.massKg = Math.max(
         MIN_ROCKET_MASS_KG,
-        rocketState.massKg - burnKg,
+        rocketState.massKg - appliedBurnKg,
       );
-      runtime.stagePropellantKg = Math.max(0, runtime.stagePropellantKg - burnKg);
+      runtime.stagePropellantKg = Math.max(0, runtime.stagePropellantKg - appliedBurnKg);
     }
 
     const stage = stageAtIndex(runtime.stageIndex);
     const reservePropellantKg = stageReservePropellantKg(runtime.stageIndex);
     const stagePropellantThresholdKg = reservePropellantKg + 1e-6;
-    if (stage && runtime.stagePropellantKg <= stagePropellantThresholdKg) {
+    if (
+      stage
+      && sustainedOrbitReserveActive
+      && runtime.stageIndex >= 1
+      && runtime.stagePropellantKg <= stagePropellantThresholdKg
+    ) {
+      runtime.stagePropellantKg = Math.max(
+        runtime.stagePropellantKg,
+        stagePropellantThresholdKg + EARTH_ORBIT_HOLD_MISSION_CONFIG.sustainedOrbitReserveKg,
+      );
+    } else if (stage && runtime.stagePropellantKg <= stagePropellantThresholdKg) {
       if (runtime.stageIndex === 0) {
         const separatedBooster = createSeparatedBoosterState({
           state,
