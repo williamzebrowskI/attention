@@ -91,7 +91,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301h";
+const FRONTEND_MODULE_VERSION = "20260301i";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -114,6 +114,7 @@ let createLaunchTrailControllerFn = null;
 let applyStarshipVisualStageFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
+let launchModuleLoadError = "";
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
   "mercury",
@@ -560,11 +561,8 @@ async function init() {
     try {
       await loadLaunchFeatureModules();
     } catch (error) {
-      console.warn("[launch] Launch modules failed to load. Disabling launch feature for this session.", error);
-      launchFeatureEnabled = false;
-      launchControlButton?.remove();
-      launchReturnButton?.remove();
-      launchResetButton?.remove();
+      launchModuleLoadError = error instanceof Error ? error.message : String(error || "Unknown launch module load error");
+      console.warn("[launch] Launch modules failed to load. Launch controls remain visible.", error);
     }
   }
   THREE_NS = await loadThreeModule();
@@ -604,6 +602,7 @@ async function loadRuntimeConfig() {
 }
 
 async function loadLaunchFeatureModules() {
+  launchModuleLoadError = "";
   const [controllerModule, visualsModule, trailModule] = await Promise.all([
     import(`./physics/launch/launchController.js?v=${FRONTEND_MODULE_VERSION}`),
     import(`./physics/launch/launchVisuals.js?v=${FRONTEND_MODULE_VERSION}`),
@@ -1279,6 +1278,10 @@ function setupLaunchControls() {
   }
   if (launchControlButton) {
     launchControlButton.addEventListener("click", () => {
+      if (launchModuleLoadError) {
+        updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
+        return;
+      }
       if (!launchController || !nBodyState?.initialized) {
         updateLaunchStatusPanel(true, "Launch unavailable until startup seed is ready.");
         return;
@@ -1313,6 +1316,10 @@ function setupLaunchControls() {
   }
   if (launchResetButton) {
     launchResetButton.addEventListener("click", () => {
+      if (launchModuleLoadError) {
+        updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
+        return;
+      }
       if (!launchController || !nBodyState?.initialized) {
         updateLaunchStatusPanel(true, "Reset unavailable until startup seed is ready.");
         return;
@@ -1336,7 +1343,8 @@ function updateLaunchControls() {
   if (!launchControlButton) {
     return;
   }
-  const initialized = Boolean(launchController && nBodyState?.initialized);
+  const hasModuleError = Boolean(launchModuleLoadError);
+  const initialized = !hasModuleError && Boolean(launchController && nBodyState?.initialized);
   const active = Boolean(launchController?.isActive());
   launchControlButton.textContent = "Launch";
   launchControlButton.disabled = !initialized || active;
@@ -1375,7 +1383,9 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   }
   lastLaunchStatusRenderMs = nowMs;
   if (!launchController) {
-    launchStatusNode.textContent = fallbackLine || "Launch controller unavailable.";
+    launchStatusNode.textContent = fallbackLine || (launchModuleLoadError
+      ? `Launch module load error: ${launchModuleLoadError}`
+      : "Launch controller unavailable.");
     return;
   }
   const snapshot = launchController.statusSnapshot();
