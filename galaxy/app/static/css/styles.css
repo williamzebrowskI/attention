@@ -406,7 +406,7 @@ body {
 }
 
 .legend-planet-accordion-content.open {
-  max-height: 720px;
+  max-height: 12000px;
   opacity: 1;
   pointer-events: auto;
 }

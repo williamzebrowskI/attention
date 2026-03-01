@@ -1701,7 +1701,7 @@ function rebuildBodyLegend() {
 
   for (const planet of planets) {
     const moons = bodies
-      .filter((body) => body.body_type === "moon" && body.parent === planet.id)
+      .filter((body) => moonBelongsToPlanet(body, planet))
       .sort((a, b) => sortBySemimajorAxisThenName(a, b));
 
     if (moons.length > 0) {
@@ -1713,7 +1713,10 @@ function rebuildBodyLegend() {
   fragment.appendChild(planetaryGroup);
 
   const orphanMoons = bodies
-    .filter((body) => body.body_type === "moon" && !metaById.has(body.parent || ""))
+    .filter((body) => (
+      body.body_type === "moon"
+      && !planets.some((planet) => moonBelongsToPlanet(body, planet))
+    ))
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
   if (orphanMoons.length > 0) {
     const group = createLegendGroup("Unassigned Moons");
@@ -1770,6 +1773,12 @@ function setLegendPlanetAccordionExpanded(planetId, expanded, persist = true) {
   const content = legendPlanetAccordionContentById.get(planetId);
   if (content) {
     content.classList.toggle("open", open);
+    if (open) {
+      const targetHeight = Math.max(content.scrollHeight, 0);
+      content.style.maxHeight = `${targetHeight}px`;
+    } else {
+      content.style.maxHeight = "0px";
+    }
   }
   const trigger = legendPlanetAccordionTriggerById.get(planetId);
   if (trigger) {
@@ -1778,6 +1787,19 @@ function setLegendPlanetAccordionExpanded(planetId, expanded, persist = true) {
   const planetButton = legendButtonsById.get(planetId);
   if (planetButton) {
     planetButton.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+}
+
+function refreshLegendAccordionHeights() {
+  for (const [planetId, content] of legendPlanetAccordionContentById.entries()) {
+    if (!content) {
+      continue;
+    }
+    const open = isLegendPlanetAccordionExpanded(planetId);
+    if (!open) {
+      continue;
+    }
+    content.style.maxHeight = `${Math.max(content.scrollHeight, 0)}px`;
   }
 }
 
@@ -2068,11 +2090,33 @@ function sortBySemimajorAxisThenName(a, b) {
   return (a?.name || "").localeCompare(b?.name || "");
 }
 
+function normalizeLegendParentKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[_-]/g, "");
+}
+
+function moonBelongsToPlanet(moon, planet) {
+  if (!moon || !planet || moon.body_type !== "moon") {
+    return false;
+  }
+  const parentKey = normalizeLegendParentKey(moon.parent);
+  if (!parentKey) {
+    return false;
+  }
+  const planetIdKey = normalizeLegendParentKey(planet.id);
+  const planetNameKey = normalizeLegendParentKey(planet.name);
+  return parentKey === planetIdKey || parentKey === planetNameKey;
+}
+
 function updateLegendSelection() {
   for (const [bodyId, button] of legendButtonsById.entries()) {
     button.classList.toggle("selected", bodyId === selectedId);
   }
   syncLegendPlanetAccordionsWithSelection();
+  refreshLegendAccordionHeights();
   updateLegendVehicleViewButtons();
 }
 
@@ -2129,6 +2173,7 @@ function updateLegendGravityArrowIndicators() {
     toggle.classList.toggle("on", enabled);
     toggle.setAttribute("aria-pressed", enabled ? "true" : "false");
   }
+  refreshLegendAccordionHeights();
   updateLegendVehicleViewButtons();
 }
 
