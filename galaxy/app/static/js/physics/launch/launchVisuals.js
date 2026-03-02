@@ -58,21 +58,31 @@ function addStaticThrusterNozzles(THREE, hostGroup, definitions, radius, materia
     return [];
   }
   const yAxis = new THREE.Vector3(0, 1, 0);
-  const nozzleLength = clamp(radius * 0.2, radius * 0.08, radius * 0.28);
-  const nozzleRadius = clamp(radius * 0.05, radius * 0.02, radius * 0.075);
+  const portLength = clamp(radius * 0.1, radius * 0.04, radius * 0.14);
+  const portRadius = clamp(radius * 0.03, radius * 0.012, radius * 0.045);
+  const lipThickness = clamp(portLength * 0.16, radius * 0.0022, portLength * 0.24);
   const nozzles = [];
   for (const definition of definitions) {
     if (!definition?.anchor || !definition?.direction) {
       continue;
     }
-    const nozzle = new THREE.Mesh(
-      new THREE.CylinderGeometry(nozzleRadius * 0.82, nozzleRadius, nozzleLength, 10, 1, true),
+    const port = new THREE.Mesh(
+      new THREE.CylinderGeometry(portRadius * 0.9, portRadius, portLength, 12, 1, true),
       material.clone(),
     );
-    nozzle.position.copy(definition.anchor).addScaledVector(definition.direction, nozzleLength * 0.2);
-    nozzle.quaternion.setFromUnitVectors(yAxis, definition.direction.clone());
-    hostGroup.add(nozzle);
-    nozzles.push(nozzle);
+    port.position.copy(definition.anchor).addScaledVector(definition.direction, -(portLength * 0.46));
+    port.quaternion.setFromUnitVectors(yAxis, definition.direction.clone());
+    hostGroup.add(port);
+    nozzles.push(port);
+
+    const lip = new THREE.Mesh(
+      new THREE.CylinderGeometry(portRadius * 1.06, portRadius * 1.06, lipThickness, 12, 1, false),
+      material.clone(),
+    );
+    lip.position.copy(definition.anchor).addScaledVector(definition.direction, -(lipThickness * 0.52));
+    lip.quaternion.setFromUnitVectors(yAxis, definition.direction.clone());
+    hostGroup.add(lip);
+    nozzles.push(lip);
   }
   return nozzles;
 }
