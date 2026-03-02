@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260301k" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260302a" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -14,52 +14,66 @@
     <div id="planet-info" class="planet-info"></div>
     <aside id="body-legend" class="body-legend" aria-label="Solar system bodies">
       <div class="legend-header">
-        <p class="body-legend-title">Solar System Navigator</p>
+        <div class="legend-header-row">
+          <p class="body-legend-title">Solar System Navigator</p>
+          <button
+            id="body-legend-toggle"
+            type="button"
+            class="legend-toggle"
+            data-legend-toggle="true"
+            aria-label="Collapse navigator"
+            aria-expanded="true"
+          >
+            -
+          </button>
+        </div>
         <p class="body-legend-subtitle">Select planets, moons, and spacecraft to inspect and track.</p>
       </div>
-      <div class="legend-controls">
-        <div class="observation-panel" aria-label="Observation controls">
-          <p class="body-legend-title">Observation</p>
-          <label class="observation-label" for="observation-mode">Mode</label>
-          <select id="observation-mode" class="observation-select">
-            <option value="body_lock">Body Lock</option>
-            <option value="free">Free Camera</option>
-            <option value="surface">Surface Observer</option>
-          </select>
-          <div id="surface-observer-row" class="surface-observer-row">
-            <label class="observation-label" for="surface-observer-target">Observer</label>
-            <select id="surface-observer-target" class="observation-select">
-              <option value="philadelphia">Philadelphia, Earth</option>
-              <option value="my_location">My Location (Live)</option>
-              <option value="iss">ISS</option>
-              <option value="moon_surface">Moon Surface</option>
+      <div id="body-legend-content" class="legend-content">
+        <div class="legend-controls">
+          <div class="observation-panel" aria-label="Observation controls">
+            <p class="body-legend-title">Observation</p>
+            <label class="observation-label" for="observation-mode">Mode</label>
+            <select id="observation-mode" class="observation-select">
+              <option value="body_lock">Body Lock</option>
+              <option value="free">Free Camera</option>
+              <option value="surface">Surface Observer</option>
             </select>
+            <div id="surface-observer-row" class="surface-observer-row">
+              <label class="observation-label" for="surface-observer-target">Observer</label>
+              <select id="surface-observer-target" class="observation-select">
+                <option value="philadelphia">Philadelphia, Earth</option>
+                <option value="my_location">My Location (Live)</option>
+                <option value="iss">ISS</option>
+                <option value="moon_surface">Moon Surface</option>
+              </select>
+            </div>
+            <p id="observation-status" class="observation-status"></p>
           </div>
-          <p id="observation-status" class="observation-status"></p>
+          <div id="physics-panel" class="physics-panel" aria-label="Physics overlays">
+            <p id="physics-panel-title" class="body-legend-title">Earth Physics Overlays</p>
+            <div class="physics-toggle-row">
+              <span class="physics-toggle-label">Tidal Force</span>
+              <button id="physics-toggle-tidal" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+            </div>
+            <div class="physics-toggle-row">
+              <span class="physics-toggle-label">Lagrange Points</span>
+              <button id="physics-toggle-lagrange" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+            </div>
+            <div class="physics-toggle-row">
+              <span class="physics-toggle-label">Atmosphere Physics</span>
+              <button id="physics-toggle-atmosphere" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+            </div>
+            <p id="physics-overlay-status" class="observation-status"></p>
+          </div>
         </div>
-        <div id="physics-panel" class="physics-panel" aria-label="Physics overlays">
-          <p id="physics-panel-title" class="body-legend-title">Earth Physics Overlays</p>
-          <div class="physics-toggle-row">
-            <span class="physics-toggle-label">Tidal Force</span>
-            <button id="physics-toggle-tidal" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
-          </div>
-          <div class="physics-toggle-row">
-            <span class="physics-toggle-label">Lagrange Points</span>
-            <button id="physics-toggle-lagrange" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
-          </div>
-          <div class="physics-toggle-row">
-            <span class="physics-toggle-label">Atmosphere Physics</span>
-            <button id="physics-toggle-atmosphere" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
-          </div>
-          <p id="physics-overlay-status" class="observation-status"></p>
+        <div class="legend-body-header">
+          <p class="body-legend-title">Bodies</p>
+          <p id="legend-body-count" class="legend-body-count"></p>
         </div>
+        <div id="body-legend-list" class="body-legend-list"></div>
       </div>
-      <div class="legend-body-header">
-        <p class="body-legend-title">Bodies</p>
-        <p id="legend-body-count" class="legend-body-count"></p>
-      </div>
-      <div id="body-legend-list" class="body-legend-list"></div>
     </aside>
-    <script type="module" src="/static/js/app.js?v=20260301az"></script>
+    <script type="module" src="/static/js/app.js?v=20260302ba"></script>
   </body>
 </html>

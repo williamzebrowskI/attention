@@ -49,6 +49,7 @@ import { createLaunchTrajectoryPathController } from "./physics/launch/trajector
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
 const bodyLegend = document.getElementById("body-legend");
+const bodyLegendToggleButton = document.getElementById("body-legend-toggle");
 const bodyLegendList = document.getElementById("body-legend-list");
 const legendBodyCountNode = document.getElementById("legend-body-count");
 const observationModeSelect = document.getElementById("observation-mode");
@@ -67,7 +68,9 @@ const launchResetButton = document.getElementById("launch-reset-button");
 let launchStatusNode = document.getElementById("launch-status");
 let launchEventLogNode = document.getElementById("launch-event-log");
 const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
+const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
 let infoPanelCollapsed = false;
+let legendPanelCollapsed = false;
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
@@ -107,7 +110,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260301ay";
+const FRONTEND_MODULE_VERSION = "20260302b";
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -319,7 +322,8 @@ const BODY_ECLIPSE_MAX_OCCLUDERS = 32;
 const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
-const SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR = 1.01;
+const SPACECRAFT_MIN_DISTANCE_ABSOLUTE = 0.000000003;
+const SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR = 1.002;
 const SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR = 2.8;
 const SPACECRAFT_WHEEL_ZOOM_MULTIPLIER = 1.9;
 const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
@@ -6466,9 +6470,17 @@ function minOrbitDistanceForVisual(visual) {
     );
   }
   const bodyType = String(visual?.body?.body_type || "").toLowerCase();
-  const radiusFactor = bodyType === "spacecraft"
-    ? SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR
-    : ORBIT_MIN_DISTANCE_RADIUS_FACTOR;
+  if (bodyType === "spacecraft") {
+    const bodyRadiusKm = Number(visual?.body?.radius_km);
+    const bodyRadiusScene = Number.isFinite(bodyRadiusKm) && bodyRadiusKm > 0
+      ? bodyRadiusKm * DISTANCE_SCALE
+      : Math.max((Number(visual.renderRadius) || 0) * 0.08, SPACECRAFT_MIN_DISTANCE_ABSOLUTE);
+    return Math.max(
+      SPACECRAFT_MIN_DISTANCE_ABSOLUTE,
+      bodyRadiusScene * SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR,
+    );
+  }
+  const radiusFactor = ORBIT_MIN_DISTANCE_RADIUS_FACTOR;
   return Math.max(
     ORBIT_MIN_DISTANCE_ABSOLUTE,
     visual.renderRadius * radiusFactor,
@@ -6579,8 +6591,12 @@ function preferredCameraDistanceForSelection(visual) {
   }
 
   if (body.body_type === "spacecraft") {
+    const bodyRadiusKm = Number(visual?.body?.radius_km);
+    const bodyRadiusScene = Number.isFinite(bodyRadiusKm) && bodyRadiusKm > 0
+      ? bodyRadiusKm * DISTANCE_SCALE
+      : Math.max((Number(visual.renderRadius) || 0) * 0.08, SPACECRAFT_MIN_DISTANCE_ABSOLUTE);
     return clamp(
-      Math.max(visual.renderRadius * SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR, 0.000001),
+      Math.max(bodyRadiusScene * SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR, 0.00000025),
       nearSurface,
       orbit.maxDistance,
     );
@@ -7746,6 +7762,62 @@ function detailThreshold(renderRadius) {
   return Math.max(DETAIL_MIN_DISTANCE, renderRadius * DETAIL_DISTANCE_MULTIPLIER);
 }
 
+function readLegendPanelCollapsedPreference() {
+  try {
+    return window.localStorage?.getItem(LEGEND_PANEL_COLLAPSED_STORAGE_KEY) === "1";
+  } catch (_error) {
+    return false;
+  }
+}
+
+function persistLegendPanelCollapsedPreference(collapsed) {
+  try {
+    window.localStorage?.setItem(LEGEND_PANEL_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch (_error) {
+    // Ignore preference persistence failures.
+  }
+}
+
+function renderLegendPanelCollapsedState() {
+  if (!bodyLegend) {
+    return;
+  }
+  bodyLegend.classList.toggle("collapsed", legendPanelCollapsed);
+  if (!bodyLegendToggleButton) {
+    return;
+  }
+  const collapsed = legendPanelCollapsed;
+  bodyLegendToggleButton.textContent = collapsed ? "+" : "-";
+  bodyLegendToggleButton.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  bodyLegendToggleButton.setAttribute("aria-label", collapsed ? "Expand navigator" : "Collapse navigator");
+}
+
+function toggleLegendPanelCollapsed() {
+  legendPanelCollapsed = !legendPanelCollapsed;
+  persistLegendPanelCollapsedPreference(legendPanelCollapsed);
+  renderLegendPanelCollapsedState();
+}
+
+function initializeLegendPanelControls() {
+  if (!bodyLegend) {
+    return;
+  }
+  legendPanelCollapsed = readLegendPanelCollapsedPreference();
+  renderLegendPanelCollapsedState();
+  bodyLegend.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      return;
+    }
+    if (!target.closest("[data-legend-toggle='true']")) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    toggleLegendPanelCollapsed();
+  });
+}
+
 function readInfoPanelCollapsedPreference() {
   try {
     return window.localStorage?.getItem(INFO_PANEL_COLLAPSED_STORAGE_KEY) === "1";
@@ -7808,6 +7880,7 @@ function initializeInfoPanelControls() {
   });
 }
 
+initializeLegendPanelControls();
 initializeInfoPanelControls();
 
 function updateInfoOverlay() {

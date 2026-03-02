@@ -206,29 +206,59 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
     basePlumeRadius * 0.75,
     Number(options.glowRadius) || basePlumeRadius * 0.9,
   );
+  const radialSegments = Math.max(20, Number(options.radialSegments) || 36);
 
   const exhaustDir = options.direction instanceof THREE.Vector3
     ? options.direction.clone().normalize()
     : new THREE.Vector3(0, -1, 0);
 
-  const plumeGeom = new THREE.ConeGeometry(basePlumeRadius, basePlumeLength, 10, 1, true);
-  plumeGeom.translate(0, -basePlumeLength * 0.5, 0);
+  const plumeOuterGeom = new THREE.ConeGeometry(
+    basePlumeRadius * 1.05,
+    basePlumeLength * 1.04,
+    radialSegments,
+    1,
+    true,
+  );
+  plumeOuterGeom.translate(0, -(basePlumeLength * 1.04) * 0.5, 0);
+  const plumeCoreGeom = new THREE.ConeGeometry(
+    basePlumeRadius * 0.62,
+    basePlumeLength * 0.86,
+    radialSegments,
+    1,
+    true,
+  );
+  plumeCoreGeom.translate(0, -(basePlumeLength * 0.86) * 0.5, 0);
 
-  const glowGeom = new THREE.SphereGeometry(baseGlowRadius, 10, 10);
+  const glowGeom = new THREE.SphereGeometry(baseGlowRadius, 12, 12);
+  const outerColor = new THREE.Color(STARSHIP_MAIN_ENGINE_PLUME_COLOR);
+  const coreColor = new THREE.Color(0xfff4de);
 
   const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(STARSHIP_MAIN_ENGINE_PLUME_COLOR),
+    color: outerColor,
     transparent: true,
     opacity: 0,
     depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const coreTemplateMaterial = new THREE.MeshBasicMaterial({
+    color: coreColor,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
     toneMapped: false,
   });
   const glowTemplateMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(STARSHIP_MAIN_ENGINE_PLUME_COLOR),
+    color: outerColor,
     transparent: true,
     opacity: 0,
     depthWrite: false,
+    depthTest: true,
     blending: THREE.AdditiveBlending,
     toneMapped: false,
   });
@@ -251,18 +281,29 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
 
     const anchor = new THREE.Vector3(offsetX, anchorY, offsetZ);
 
-    const plume = new THREE.Mesh(plumeGeom, plumeTemplateMaterial.clone());
-    plume.quaternion.copy(plumeQuat);
-    plume.position.copy(anchor);
-    plume.renderOrder = 24;
+    const plumeOuter = new THREE.Mesh(plumeOuterGeom, plumeTemplateMaterial.clone());
+    plumeOuter.quaternion.copy(plumeQuat);
+    plumeOuter.position.copy(anchor);
+    plumeOuter.renderOrder = 24;
+
+    const plumeCore = new THREE.Mesh(plumeCoreGeom, coreTemplateMaterial.clone());
+    plumeCore.quaternion.copy(plumeQuat);
+    plumeCore.position.copy(anchor);
+    plumeCore.renderOrder = 25;
 
     const glow = new THREE.Mesh(glowGeom, glowTemplateMaterial.clone());
     glow.position.copy(anchor);
-    glow.renderOrder = 25;
+    glow.renderOrder = 26;
 
-    cluster.add(plume);
+    cluster.add(plumeOuter);
+    cluster.add(plumeCore);
     cluster.add(glow);
-    entries.push({ plume, glow });
+    entries.push({
+      plume: plumeOuter,
+      plumeOuter,
+      plumeCore,
+      glow,
+    });
   }
 
   stageGroup.add(cluster);
@@ -390,7 +431,8 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
 
   const engineSkirtHeight = clamp(boosterHeight * 0.16, radius * 0.8, boosterHeight * 0.22);
   const engineSkirt = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.01, radius * 1.01, engineSkirtHeight, 64, 1, false),
+    // Slightly exaggerated radius to avoid z-fighting at extreme true-scale camera ranges.
+    new THREE.CylinderGeometry(radius * 1.045, radius * 1.045, engineSkirtHeight, 64, 1, false),
     darkSteel,
   );
   engineSkirt.position.y = (-0.5 * boosterHeight) + (0.5 * engineSkirtHeight);
@@ -413,7 +455,7 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
 
   const hotStageBandHeight = clamp(boosterHeight * 0.045, radius * 0.28, boosterHeight * 0.08);
   const hotStageBand = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.035, radius * 1.035, hotStageBandHeight, 64, 1, false),
+    new THREE.CylinderGeometry(radius * 1.06, radius * 1.06, hotStageBandHeight, 64, 1, false),
     darkSteel,
   );
   hotStageBand.position.y = (0.5 * boosterHeight) + (hotStageBandHeight * 0.42);
@@ -430,9 +472,9 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
       darkSteel,
     );
     vent.position.set(
-      Math.cos(angle) * (radius * 1.035),
+      Math.cos(angle) * (radius * 1.06),
       hotStageBand.position.y,
-      Math.sin(angle) * (radius * 1.035),
+      Math.sin(angle) * (radius * 1.06),
     );
     vent.rotation.y = angle;
     boosterGroup.add(vent);
@@ -442,7 +484,7 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
   const seamTubeRadius = clamp(radius * 0.006, radius * 0.0025, radius * 0.01);
   for (const fraction of seamFractions) {
     const seam = new THREE.Mesh(
-      new THREE.TorusGeometry(radius * 1.003, seamTubeRadius, 10, 64),
+      new THREE.TorusGeometry(radius * 1.015, seamTubeRadius, 10, 64),
       darkSteel,
     );
     seam.rotation.x = Math.PI * 0.5;
@@ -461,9 +503,9 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
       darkSteel,
     );
     rib.position.set(
-      Math.cos(angle) * (radius + (stringerDepth * 0.5)),
+      Math.cos(angle) * (radius + stringerDepth),
       (-0.5 * boosterHeight) + (stringerHeight * 0.55),
-      Math.sin(angle) * (radius + (stringerDepth * 0.5)),
+      Math.sin(angle) * (radius + stringerDepth),
     );
     rib.rotation.y = angle;
     boosterGroup.add(rib);
@@ -540,14 +582,19 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
   );
   innerGeom.translate(0, innerH * 0.5, 0);
 
+  // Avoid mutating the shared darkSteel material: booster bells need to be double-sided, but
+  // other booster/ship parts should stay front-sided to reduce visual artifacts.
+  const bellMaterial = darkSteel.clone();
+  enforceSolidOpaqueMaterial(THREE, bellMaterial);
+  bellMaterial.side = THREE.DoubleSide;
+  bellMaterial.needsUpdate = true;
+
   for (const offset of engineLayout.offsets) {
-    const bell = new THREE.Mesh(bellGeom, darkSteel);
-    bell.material.side = THREE.DoubleSide;
+    const bell = new THREE.Mesh(bellGeom, bellMaterial);
     bell.position.set(offset.x, engineExitY, offset.z);
     boosterGroup.add(bell);
 
-    const nozzleInterior = new THREE.Mesh(innerGeom, darkSteel);
-    nozzleInterior.material.side = THREE.DoubleSide;
+    const nozzleInterior = new THREE.Mesh(innerGeom, bellMaterial);
     nozzleInterior.position.set(offset.x, engineExitY + (engineBellHeight * 0.18), offset.z);
     boosterGroup.add(nozzleInterior);
   }
@@ -1192,29 +1239,67 @@ function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
   if (!plumeState?.cluster || !Array.isArray(plumeState.entries)) {
     return;
   }
-  plumeState.cluster.visible = Boolean(firing);
-  if (!firing) {
+  const nowMs = Date.now();
+  const targetFiring = Boolean(firing);
+  const wasTargetFiring = Boolean(plumeState.targetFiring);
+  if (!targetFiring && wasTargetFiring) {
+    plumeState.shutdownHoldUntilMs = nowMs + 140;
+  }
+  plumeState.targetFiring = targetFiring;
+  const fadeOutHold = Number(plumeState.shutdownHoldUntilMs) > nowMs;
+  const visible = targetFiring || fadeOutHold;
+  plumeState.cluster.visible = visible;
+  if (!visible) {
+    plumeState.smoothedThrottle = 0;
     return;
   }
-  const t = clamp(Number(throttle) || 0, 0, 1);
+  const targetThrottle = targetFiring ? clamp(Number(throttle) || 0, 0, 1) : 0;
+  const previousThrottle = Number.isFinite(plumeState.smoothedThrottle)
+    ? plumeState.smoothedThrottle
+    : targetThrottle;
+  const smoothing = targetFiring ? 0.22 : 0.1;
+  const t = clamp(previousThrottle + ((targetThrottle - previousThrottle) * smoothing), 0, 1);
+  plumeState.smoothedThrottle = t;
   const plumeOpacity = (0.34 + (t * 0.58)) * pulse;
   const glowOpacity = (0.44 + (t * 0.5)) * pulse;
   const stretch = 0.82 + (t * 2.05);
   const radiusScale = 0.9 + (t * 0.52);
   const glowScale = 0.95 + (t * 0.72);
-  for (const entry of plumeState.entries) {
+  const nowSec = Date.now() / 1000;
+  for (let index = 0; index < plumeState.entries.length; index += 1) {
+    const entry = plumeState.entries[index];
     if (!entry) {
       continue;
     }
-    if (entry.plume?.scale) {
-      entry.plume.scale.set(
+    const turbulence = 0.975 + (0.045 * Math.sin((nowSec * 8.5) + (index * 1.37)));
+    const flicker = 0.992 + (0.016 * Math.sin((nowSec * 3.4) + (index * 2.11)));
+    if (entry.plumeOuter?.scale) {
+      entry.plumeOuter.scale.set(
         radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
-        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE * turbulence,
         radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
       );
     }
-    if (entry.plume?.material && !Array.isArray(entry.plume.material)) {
-      entry.plume.material.opacity = plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE;
+    if (entry.plumeOuter?.material && !Array.isArray(entry.plumeOuter.material)) {
+      entry.plumeOuter.material.opacity = clamp(
+        plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 0.78 * flicker,
+        0,
+        1,
+      );
+    }
+    if (entry.plumeCore?.scale) {
+      entry.plumeCore.scale.set(
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * 0.62,
+        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE * turbulence * 0.9,
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * 0.62,
+      );
+    }
+    if (entry.plumeCore?.material && !Array.isArray(entry.plumeCore.material)) {
+      entry.plumeCore.material.opacity = clamp(
+        plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 1.05 * flicker,
+        0,
+        1,
+      );
     }
     if (entry.glow?.scale) {
       entry.glow.scale.set(
@@ -1224,7 +1309,11 @@ function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
       );
     }
     if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
-      entry.glow.material.opacity = glowOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE;
+      entry.glow.material.opacity = clamp(
+        glowOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 0.95 * flicker,
+        0,
+        1,
+      );
     }
   }
 }
@@ -1239,7 +1328,7 @@ function updateMainEnginePlumes(stageState, stageIndex, snapshot) {
   const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
   const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
   const powered = phase === "powered" && thrustN > 0.01;
-  const pulse = 0.92 + (0.08 * Math.sin((Date.now() / 1000) * 44));
+  const pulse = 1;
 
   setMainEnginePlumeVisual(plumes.booster, powered && !separated, throttle, pulse);
   setMainEnginePlumeVisual(plumes.ship, powered && separated, throttle, pulse);
@@ -1249,15 +1338,18 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
   if (!stageState || !stageState.shipGroup) {
     return;
   }
-  const separated = Number.isFinite(stageIndex) && stageIndex >= 1;
+  const stageTwoActive = Number.isFinite(stageIndex) && stageIndex >= 1;
+  const detached = snapshot && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive")
+    ? Boolean(snapshot.boosterActive)
+    : stageTwoActive;
   if (stageState.boosterGroup) {
-    stageState.boosterGroup.visible = !separated;
+    stageState.boosterGroup.visible = !detached;
   }
   if (
     Number.isFinite(stageState.detachedShipCenterY)
     && Number.isFinite(stageState.fullShipCenterY)
   ) {
-    stageState.shipGroup.position.y = separated
+    stageState.shipGroup.position.y = detached
       ? stageState.detachedShipCenterY
       : stageState.fullShipCenterY;
   }

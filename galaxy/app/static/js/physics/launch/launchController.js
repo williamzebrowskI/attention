@@ -127,8 +127,17 @@ function separationGapKm() {
   return 0.0025;
 }
 
-function stage2HotStagingThrottleCap(timeSinceSeparationSec) {
-  const t = Math.max(0, Number(timeSinceSeparationSec) || 0);
+function hotstageOverlapSeconds() {
+  return 1.8;
+}
+
+function hotstageSeparationRelativeSpeedKmS() {
+  // 2 m/s relative separation is enough to avoid overlapping without a cartoon kick.
+  return 0.002;
+}
+
+function stage2HotStagingThrottleCap(timeSinceIgnitionSec) {
+  const t = Math.max(0, Number(timeSinceIgnitionSec) || 0);
   const ramp = clamp(t / 4.5, 0, 1);
   return 0.20 + (0.70 * ramp);
 }
@@ -1825,6 +1834,12 @@ export function createLaunchController(options) {
       telemetry: null,
       contactHoldSec: 0,
     },
+    hotstage: {
+      active: false,
+      ignitionTimeSec: null,
+      overlapSeconds: hotstageOverlapSeconds(),
+      boosterReservePropellantKg: 0,
+    },
   };
   const lastEmittedEventByKey = new Map();
 
@@ -2051,6 +2066,10 @@ export function createLaunchController(options) {
     runtime.booster.lastTrackedPositionKm = null;
     runtime.booster.telemetry = null;
     runtime.booster.contactHoldSec = 0;
+    runtime.hotstage.active = false;
+    runtime.hotstage.ignitionTimeSec = null;
+    runtime.hotstage.overlapSeconds = hotstageOverlapSeconds();
+    runtime.hotstage.boosterReservePropellantKg = 0;
     lastRuntimeLogState = captureRuntimeLogState();
   }
 
@@ -2433,19 +2452,23 @@ export function createLaunchController(options) {
     earthState,
     currentEarthAxes,
     stage,
+    reservePropellantKgOverride = null,
   }) {
     if (!state?.dynamicBodies || !rocketState || !earthState || !stage) {
       return null;
     }
-    const reservePropellantKg = Math.min(
-      Math.max(0, runtime.stagePropellantKg),
-      stageReservePropellantKg(0),
-    );
+    const reserveLimitKg = stageReservePropellantKg(0);
+    const reserveOverride = Number(reservePropellantKgOverride);
+    const reservePropellantKg = Number.isFinite(reserveOverride)
+      ? clamp(reserveOverride, 0, reserveLimitKg)
+      : Math.min(Math.max(0, runtime.stagePropellantKg), reserveLimitKg);
     const boosterDryMassKg = Number(stage.dryMassKg) || Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0;
     const boosterMassKg = boosterDryMassKg + reservePropellantKg;
     if (!(boosterMassKg > 0)) {
       return null;
     }
+    const preSeparationStackMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || 0);
+    const shipMassKg = Math.max(MIN_ROCKET_MASS_KG, preSeparationStackMassKg - boosterMassKg);
 
     const relPos = subtract(rocketState.position, earthState.position);
     const relVel = subtract(
@@ -2458,17 +2481,29 @@ export function createLaunchController(options) {
     const shipCenterShiftKm = STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
     rocketState.position = add(rocketState.position, scale(up, shipCenterShiftKm));
 
-    // Place booster directly below Starship with only a small physical gap; no hard impulse kick.
+    // Place booster directly below Starship with only a small physical gap; add a tiny separation
+    // impulse that conserves momentum and yields a gentle relative separation speed.
     const separationOffsetKm =
       (STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5)
       + (STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5)
       + separationGapKm();
-    const separationImpulseKmS = { x: 0, y: 0, z: 0 };
+    const separationRelativeSpeedKmS = Math.max(0, hotstageSeparationRelativeSpeedKmS());
+    const totalMassKg = shipMassKg + boosterMassKg;
+    const dvShipKmS = totalMassKg > 0
+      ? separationRelativeSpeedKmS * (boosterMassKg / totalMassKg)
+      : 0;
+    const dvBoosterKmS = totalMassKg > 0
+      ? separationRelativeSpeedKmS * (shipMassKg / totalMassKg)
+      : 0;
+    const baseVelocityKmS = rocketState.velocity || { x: 0, y: 0, z: 0 };
+    const shipImpulseKmS = scale(up, dvShipKmS);
+    const separationImpulseKmS = scale(up, -dvBoosterKmS);
+    rocketState.velocity = add(baseVelocityKmS, shipImpulseKmS);
     const boosterState = {
       id: LAUNCH_BOOSTER_BODY_ID,
       massKg: boosterMassKg,
       position: add(rocketState.position, scale(up, -separationOffsetKm)),
-      velocity: add(rocketState.velocity, separationImpulseKmS),
+      velocity: add(baseVelocityKmS, separationImpulseKmS),
     };
     state.dynamicBodies.set(LAUNCH_BOOSTER_BODY_ID, boosterState);
 
@@ -2494,6 +2529,8 @@ export function createLaunchController(options) {
       reservePropellantKg,
       shipCenterShiftKm,
       separationOffsetKm,
+      shipMassKg,
+      shipImpulseKmS,
       separationImpulseKmS,
     });
     emitRuntimeTransitionEvents("stage_separation");
@@ -3264,18 +3301,19 @@ export function createLaunchController(options) {
       };
     }
 
-    // Gentle hot-staging ramp: avoid abrupt Stage 2 shove right after detach.
-    const timeSinceSeparationSec = runtime.booster.active
-      ? Math.max(0, runtime.elapsedSeconds - runtime.booster.separationTimeSec)
+    // Gentle hot-staging ramp: avoid abrupt Stage 2 shove right after ignition.
+    const ignitionTimeSec = Number(runtime.hotstage?.ignitionTimeSec);
+    const timeSinceIgnitionSec = Number.isFinite(ignitionTimeSec)
+      ? Math.max(0, runtime.elapsedSeconds - ignitionTimeSec)
       : Number.POSITIVE_INFINITY;
     if (
       runtime.stageIndex === 1
-      && Number.isFinite(timeSinceSeparationSec)
-      && timeSinceSeparationSec < 6
+      && Number.isFinite(timeSinceIgnitionSec)
+      && timeSinceIgnitionSec < 6
     ) {
-      const cap = stage2HotStagingThrottleCap(timeSinceSeparationSec);
+      const cap = stage2HotStagingThrottleCap(timeSinceIgnitionSec);
       throttle = Math.min(throttle, cap);
-      const rampBlend = clamp(timeSinceSeparationSec / 4.5, 0, 1);
+      const rampBlend = clamp(timeSinceIgnitionSec / 4.5, 0, 1);
       const upBias = 0.30 * (1 - rampBlend);
       if (upBias > 1e-6) {
         guidance = {
@@ -3500,52 +3538,97 @@ export function createLaunchController(options) {
       );
     } else if (stage && runtime.stagePropellantKg <= stagePropellantThresholdKg) {
       if (runtime.stageIndex === 0) {
-        const separatedBooster = createSeparatedBoosterState({
-          state,
-          rocketState,
-          earthState,
-          currentEarthAxes,
-          stage,
-        });
-        if (separatedBooster) {
-          const detachedMassKg =
-            (Number(stage.dryMassKg) || Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0)
-            + runtime.booster.propellantKg;
-          rocketState.massKg = Math.max(
-            MIN_ROCKET_MASS_KG,
-            rocketState.massKg - detachedMassKg,
+        const nextStage = stageAtIndex(1);
+        if (nextStage) {
+          const boosterReservePropellantKg = clamp(
+            Math.max(0, Number(runtime.stagePropellantKg) || 0),
+            0,
+            stageReservePropellantKg(0),
           );
+
+          runtime.hotstage.active = true;
+          runtime.hotstage.ignitionTimeSec = runtime.elapsedSeconds;
+          runtime.hotstage.overlapSeconds = hotstageOverlapSeconds();
+          runtime.hotstage.boosterReservePropellantKg = boosterReservePropellantKg;
+
+          // Switch propulsion to Stage 2 immediately (hot-staging overlap). Physical detachment is handled
+          // separately after a short overlap window.
+          runtime.stageIndex = 1;
+          runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
+          runtime.coastRemainingSec = 0;
+          runtime.phase = "powered";
+
+          emitLaunchEvent("hotstage_ignition", {
+            boosterReservePropellantKg,
+            overlapSeconds: runtime.hotstage.overlapSeconds,
+          });
         } else {
           rocketState.massKg = Math.max(
             MIN_ROCKET_MASS_KG,
             rocketState.massKg - (Number(stage.dryMassKg) || 0),
           );
+          runtime.stageIndex += 1;
+          runtime.stagePropellantKg = 0;
+          runtime.phase = "coast";
+          runtime.autopilotMode = "ballistic-coast";
         }
       } else {
         rocketState.massKg = Math.max(
           MIN_ROCKET_MASS_KG,
           rocketState.massKg - (Number(stage.dryMassKg) || 0),
         );
-      }
 
-      runtime.stageIndex += 1;
-      const nextStage = stageAtIndex(runtime.stageIndex);
-      if (nextStage) {
-        runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
-        runtime.coastRemainingSec = Math.max(0, Number(stage.coastAfterBurnSec) || 0);
-        runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
-      } else {
-        runtime.stagePropellantKg = 0;
-        const relPos = subtract(rocketState.position, earthState.position);
-        const relVel = subtract(
-          rocketState.velocity || { x: 0, y: 0, z: 0 },
-          earthState.velocity || { x: 0, y: 0, z: 0 },
-        );
-        const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
-        const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
-        const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
-        runtime.phase = stableOrbit ? "orbit" : "coast";
-        runtime.autopilotMode = stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast";
+        runtime.stageIndex += 1;
+        const nextStage = stageAtIndex(runtime.stageIndex);
+        if (nextStage) {
+          runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
+          runtime.coastRemainingSec = Math.max(0, Number(stage.coastAfterBurnSec) || 0);
+          runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
+        } else {
+          runtime.stagePropellantKg = 0;
+          const relPos = subtract(rocketState.position, earthState.position);
+          const relVel = subtract(
+            rocketState.velocity || { x: 0, y: 0, z: 0 },
+            earthState.velocity || { x: 0, y: 0, z: 0 },
+          );
+          const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+          const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
+          const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
+          runtime.phase = stableOrbit ? "orbit" : "coast";
+          runtime.autopilotMode = stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast";
+        }
+      }
+    }
+
+    // Hot-staging overlap: detach booster after a short overlap period.
+    if (runtime.hotstage.active && !runtime.booster.active) {
+      const ignitionTimeSec = Number(runtime.hotstage.ignitionTimeSec);
+      const overlapSeconds = Math.max(0, Number(runtime.hotstage.overlapSeconds) || hotstageOverlapSeconds());
+      const timeSinceIgnitionSec = Number.isFinite(ignitionTimeSec)
+        ? Math.max(0, runtime.elapsedSeconds - ignitionTimeSec)
+        : Number.POSITIVE_INFINITY;
+      if (
+        Number.isFinite(timeSinceIgnitionSec)
+        && Number.isFinite(overlapSeconds)
+        && timeSinceIgnitionSec >= overlapSeconds
+      ) {
+        const boosterStage = stageAtIndex(0);
+        const separatedBooster = createSeparatedBoosterState({
+          state,
+          rocketState,
+          earthState,
+          currentEarthAxes,
+          stage: boosterStage,
+          reservePropellantKgOverride: runtime.hotstage.boosterReservePropellantKg,
+        });
+        if (separatedBooster) {
+          rocketState.massKg = Math.max(
+            MIN_ROCKET_MASS_KG,
+            rocketState.massKg - (Number(separatedBooster.massKg) || 0),
+          );
+        }
+        runtime.hotstage.active = false;
+        runtime.hotstage.boosterReservePropellantKg = 0;
       }
     }
 
