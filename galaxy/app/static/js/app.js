@@ -321,6 +321,7 @@ const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
 const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
 const EARTH_SURFACE_CAMERA_CLEARANCE_KM = 1.5;
+const EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM = 0.005;
 const TIDAL_TARGET_CONFIG = Object.freeze([
   Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
   Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
@@ -6473,7 +6474,12 @@ function minCameraDistanceFromBodyCenter(visual) {
     return visual.renderRadius + (MOON_SURFACE_CAMERA_CLEARANCE_KM * DISTANCE_SCALE);
   }
   if (visual.body?.id === "earth") {
-    return visual.renderRadius + (EARTH_SURFACE_CAMERA_CLEARANCE_KM * DISTANCE_SCALE);
+    const selectedVisual = selectedId ? bodyVisuals.get(selectedId) : null;
+    const trackingSpacecraft = String(selectedVisual?.body?.body_type || "").toLowerCase() === "spacecraft";
+    const earthClearanceKm = trackingSpacecraft
+      ? EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM
+      : EARTH_SURFACE_CAMERA_CLEARANCE_KM;
+    return visual.renderRadius + (earthClearanceKm * DISTANCE_SCALE);
   }
   return Math.max(
     ORBIT_MIN_DISTANCE_ABSOLUTE,
@@ -6481,8 +6487,27 @@ function minCameraDistanceFromBodyCenter(visual) {
   );
 }
 
+function shouldRelaxEarthCameraCollision() {
+  if (!selectedId || !THREE_NS) {
+    return false;
+  }
+  if (selectedId !== LAUNCH_BODY_ID && selectedId !== LAUNCH_BOOSTER_BODY_ID) {
+    return false;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  const selectedVisual = bodyVisuals.get(selectedId);
+  if (!earthVisual?.root?.position || !(earthVisual.renderRadius > 0) || !selectedVisual?.root?.position) {
+    return false;
+  }
+  const selectedAltitudeScene = selectedVisual.root.position.distanceTo(earthVisual.root.position) - earthVisual.renderRadius;
+  return selectedAltitudeScene <= (2 * DISTANCE_SCALE);
+}
+
 function clampCameraOutsideBody(cameraPosition, bodyVisual) {
   if (!cameraPosition?.isVector3 || !bodyVisual?.root?.position || !(bodyVisual.renderRadius > 0) || !THREE_NS) {
+    return;
+  }
+  if (bodyVisual.body?.id === "earth" && shouldRelaxEarthCameraCollision()) {
     return;
   }
   const minDistance = minCameraDistanceFromBodyCenter(bodyVisual);
