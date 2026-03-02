@@ -43,7 +43,7 @@ import {
   createInlineBoosterVisual,
   createInlineStarshipStackVisual,
   inlineStarshipPhysicalRenderRadiusScene,
-} from "./physics/launch/inlineLaunchVisuals.js";
+} from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
 
 const canvas = document.getElementById("scene");

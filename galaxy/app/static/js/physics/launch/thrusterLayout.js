@@ -1,3 +1,4 @@
+// thrusterLayout.js
 /*
  * Thruster hardpoints normalized to vehicle geometry.
  *
