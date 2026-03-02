@@ -4,13 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260302d" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260302e" />
   </head>
   <body>
     <canvas id="scene"></canvas>
     <button id="launch-control-button" class="launch-floating-button" type="button" aria-pressed="false">Launch</button>
     <button id="launch-return-button" class="launch-floating-button launch-return-button" type="button" aria-pressed="false">Return to Ship</button>
     <button id="launch-reset-button" class="launch-floating-button launch-reset-button" type="button" aria-pressed="false">Reset</button>
+    <button id="launch-mission-control-button" class="launch-floating-button launch-mission-control-button" type="button" aria-pressed="false">Mission Control</button>
     <div id="planet-info" class="planet-info"></div>
     <aside id="body-legend" class="body-legend" aria-label="Solar system bodies">
       <div class="legend-header">
@@ -74,6 +75,45 @@
         <div id="body-legend-list" class="body-legend-list"></div>
       </div>
     </aside>
-    <script type="module" src="/static/js/app.js?v=20260302d"></script>
+    <section id="mission-control-screen" class="mission-control-screen" aria-hidden="true">
+      <div class="mission-control-shell">
+        <header class="mission-control-header">
+          <button id="mission-control-back-button" class="mission-control-back-button" type="button">Back To Main View</button>
+          <div class="mission-control-header-copy">
+            <p class="mission-control-kicker">Starship Flight Ops</p>
+            <h2 class="mission-control-title">Mission Control</h2>
+            <p id="mission-control-subtitle" class="mission-control-subtitle">Waiting for telemetry.</p>
+          </div>
+        </header>
+        <main class="mission-control-content">
+          <section class="mission-control-block mission-control-view-block">
+            <div class="mission-control-view-header">
+              <h3>Live Vehicle View</h3>
+              <div class="mission-control-view-buttons">
+                <button id="mission-control-view-starship" class="mission-control-view-button" type="button">Starship</button>
+                <button id="mission-control-view-booster" class="mission-control-view-button" type="button">Booster</button>
+              </div>
+            </div>
+            <p id="mission-control-view-status" class="mission-control-view-status">View standby. Select a vehicle to track.</p>
+            <div class="mission-control-live-viewport" aria-hidden="true">
+              <p class="mission-control-live-viewport-label">Scene Camera Feed</p>
+            </div>
+          </section>
+          <section class="mission-control-block mission-control-overview-block">
+            <h3>Flight Overview</h3>
+            <div id="mission-control-overview" class="mission-control-overview-grid"></div>
+          </section>
+          <section class="mission-control-block mission-control-sequence-block">
+            <h3>Mission Sequence</h3>
+            <ol id="mission-control-sequence" class="mission-control-sequence-list"></ol>
+          </section>
+          <section class="mission-control-block mission-control-events-block">
+            <h3>Event Timeline</h3>
+            <pre id="mission-control-events" class="mission-control-events-log"></pre>
+          </section>
+        </main>
+      </div>
+    </section>
+    <script type="module" src="/static/js/app.js?v=20260302e"></script>
   </body>
 </html>

@@ -45,6 +45,7 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js";
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
@@ -65,6 +66,16 @@ const physicsOverlayStatusNode = document.getElementById("physics-overlay-status
 const launchControlButton = document.getElementById("launch-control-button");
 const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
+const launchMissionControlButton = document.getElementById("launch-mission-control-button");
+const missionControlScreenNode = document.getElementById("mission-control-screen");
+const missionControlBackButton = document.getElementById("mission-control-back-button");
+const missionControlSubtitleNode = document.getElementById("mission-control-subtitle");
+const missionControlOverviewNode = document.getElementById("mission-control-overview");
+const missionControlSequenceNode = document.getElementById("mission-control-sequence");
+const missionControlEventsNode = document.getElementById("mission-control-events");
+const missionControlViewStatusNode = document.getElementById("mission-control-view-status");
+const missionControlViewStarshipButton = document.getElementById("mission-control-view-starship");
+const missionControlViewBoosterButton = document.getElementById("mission-control-view-booster");
 let launchStatusNode = document.getElementById("launch-status");
 let launchEventLogNode = document.getElementById("launch-event-log");
 let launchMissionControlPanelNode = document.getElementById("launch-mission-control");
@@ -76,6 +87,27 @@ const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
 const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
 let infoPanelCollapsed = false;
 let legendPanelCollapsed = false;
+
+const missionControlScreenController = createMissionControlScreenController({
+  documentRef: document,
+  launchMissionControlButton,
+  missionControlScreenNode,
+  missionControlBackButton,
+  missionControlSubtitleNode,
+  missionControlOverviewNode,
+  missionControlSequenceNode,
+  missionControlEventsNode,
+  missionControlViewStatusNode,
+  missionControlViewStarshipButton,
+  missionControlViewBoosterButton,
+  formatDurationSeconds,
+  formatNumber,
+  escapeHtml,
+  phaseLabelForLaunch,
+  onSelectVehicleView: (mode) => {
+    focusLegendVehicleView(mode);
+  },
+});
 
 const INCLUDE_MOONS = true;
 const PHYSICS_LOCK_MODE = true;
@@ -2258,6 +2290,46 @@ function updateLegendVehicleViewButtons() {
   updateLegendTrajectoryToggle();
 }
 
+function missionControlVehicleViewState() {
+  const inBodyLock = observation.mode === OBSERVATION_MODES.BODY_LOCK;
+  const starshipAvailable = hasVisibleBodyState(LAUNCH_BODY_ID);
+  const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
+  const starshipViewAvailable = starshipAvailable;
+  const boosterViewAvailable = boosterDetachedAvailable || starshipAvailable;
+
+  const starshipActive = inBodyLock
+    && selectedId === LAUNCH_BODY_ID
+    && launchVehicleViewPreference !== "booster";
+  const boosterActive = inBodyLock
+    && (
+      selectedId === LAUNCH_BOOSTER_BODY_ID
+      || (selectedId === LAUNCH_BODY_ID && launchVehicleViewPreference === "booster")
+    );
+  const activeView = boosterActive ? "booster" : (starshipActive ? "starship" : "none");
+
+  let statusLine = "View standby. Select a vehicle to track.";
+  if (!starshipViewAvailable && !boosterViewAvailable) {
+    statusLine = "Vehicle views unavailable in current scene.";
+  } else if (!inBodyLock) {
+    statusLine = "View unlocked. Select Starship or Booster to lock camera tracking.";
+  } else if (activeView === "booster") {
+    statusLine = boosterDetachedAvailable
+      ? "Booster tracking active. Scene camera locked to detached booster."
+      : "Booster view armed. Tracking stacked booster until separation.";
+  } else if (activeView === "starship") {
+    statusLine = "Starship tracking active. Scene camera locked to launch vehicle.";
+  } else {
+    statusLine = "Select Starship or Booster to lock camera tracking.";
+  }
+
+  return {
+    activeView,
+    boosterViewAvailable,
+    starshipViewAvailable,
+    statusLine,
+  };
+}
+
 function updateLegendBoosterFuelToggle() {
   if (!legendBoosterFuelToggleButton) {
     return;
@@ -2390,6 +2462,7 @@ function setupLaunchControls() {
     launchControlButton?.remove();
     launchReturnButton?.remove();
     launchResetButton?.remove();
+    missionControlScreenController.disableAndRemove();
     return;
   }
   setupLaunchMissionPicker();
@@ -2478,6 +2551,16 @@ function setupLaunchControls() {
       updateLaunchStatusPanel(true);
     });
   }
+  missionControlScreenController.bindControls((isVisible) => {
+    if (isVisible) {
+      const viewState = missionControlVehicleViewState();
+      const preferredView = viewState.activeView === "booster"
+        ? "booster"
+        : (launchVehicleViewPreference === "booster" ? "booster" : "starship");
+      focusLegendVehicleView(preferredView);
+    }
+    updateLaunchStatusPanel(true);
+  });
   updateLaunchControls();
   updateLaunchStatusPanel(true);
 }
@@ -2510,6 +2593,7 @@ function updateLaunchControls() {
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
   }
+  missionControlScreenController.syncButtonState();
   if (legendLaunchMissionSelect) {
     const selectedMissionId = launchController?.getMissionProfile?.()?.id || "";
     if (selectedMissionId && legendLaunchMissionSelect.value !== selectedMissionId) {
@@ -2530,6 +2614,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   updateLaunchControls();
   const nowMs = Date.now();
   const launchActive = Boolean(launchController?.isActive());
+  const viewState = missionControlVehicleViewState();
   const minIntervalMs = launchActive ? 120 : 1000;
   if (!force && nowMs - lastLaunchStatusRenderMs < minIntervalMs) {
     return;
@@ -2540,17 +2625,20 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
       ? `Launch module load error: ${launchModuleLoadError}`
       : "Launch controller unavailable.");
     updateLaunchMissionControlPanel(null, false);
+    missionControlScreenController.render(null, false, launchEventLogEntries, lastLaunchEventSummary, viewState);
     return;
   }
   const snapshot = launchController.statusSnapshot();
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
     updateLaunchMissionControlPanel(null, launchActive);
+    missionControlScreenController.render(null, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState);
     return;
   }
   if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(snapshot.speedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
     updateLaunchMissionControlPanel(snapshot, launchActive);
+    missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState);
     return;
   }
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
@@ -2592,6 +2680,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     : "";
   launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
   updateLaunchMissionControlPanel(snapshot, launchActive);
+  missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState);
 }
 
 function phaseLabelForLaunch(phase) {

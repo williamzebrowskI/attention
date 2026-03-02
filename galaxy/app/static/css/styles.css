@@ -59,11 +59,341 @@ body {
   font-size: 10px;
 }
 
+.launch-mission-control-button {
+  top: 120px;
+  min-width: 126px;
+  padding: 5px 10px;
+  font-size: 10px;
+}
+
 .launch-floating-button:disabled {
   opacity: 0.46;
   cursor: not-allowed;
   border-color: rgba(122, 146, 170, 0.28);
   color: rgba(198, 214, 228, 0.72);
+}
+
+.mission-control-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  background:
+    radial-gradient(circle at 14% 15%, rgba(39, 83, 124, 0.16), transparent 44%),
+    radial-gradient(circle at 85% 82%, rgba(52, 111, 158, 0.13), transparent 46%),
+    linear-gradient(180deg, rgba(3, 8, 15, 0.56), rgba(1, 4, 9, 0.62));
+  color: #d8ecff;
+}
+
+.mission-control-screen.visible {
+  display: block;
+}
+
+.mission-control-shell {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 14px;
+}
+
+.mission-control-header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 14px;
+  align-items: start;
+  margin: 0 0 14px;
+}
+
+.mission-control-back-button {
+  min-width: 150px;
+  margin: 0;
+  padding: 7px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(110, 194, 255, 0.38);
+  background: rgba(7, 17, 29, 0.88);
+  color: #d6ebff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.mission-control-back-button:hover {
+  border-color: rgba(150, 219, 255, 0.7);
+}
+
+.mission-control-header-copy {
+  min-width: 0;
+}
+
+.mission-control-kicker {
+  margin: 0;
+  color: #90c1e8;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.mission-control-title {
+  margin: 2px 0 0;
+  color: #e8f5ff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 23px;
+  line-height: 1.1;
+  font-weight: 680;
+}
+
+.mission-control-subtitle {
+  margin: 6px 0 0;
+  color: #acd3ef;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.mission-control-content {
+  display: grid;
+  grid-template-columns: 1.45fr 1fr;
+  grid-template-areas:
+    "view view"
+    "overview sequence"
+    "events events";
+  gap: 12px;
+}
+
+.mission-control-block {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 11px;
+  border: 1px solid rgba(99, 170, 225, 0.28);
+  background: linear-gradient(180deg, rgba(9, 19, 31, 0.93), rgba(6, 13, 23, 0.95));
+}
+
+.mission-control-view-block {
+  grid-area: view;
+  pointer-events: none;
+}
+
+.mission-control-overview-block {
+  grid-area: overview;
+}
+
+.mission-control-sequence-block {
+  grid-area: sequence;
+}
+
+.mission-control-events-block {
+  grid-area: events;
+}
+
+.mission-control-block h3 {
+  margin: 0 0 8px;
+  color: #d1e9ff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.mission-control-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 6px;
+  pointer-events: auto;
+}
+
+.mission-control-view-header h3 {
+  margin: 0;
+}
+
+.mission-control-view-buttons {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  pointer-events: auto;
+}
+
+.mission-control-view-button {
+  min-width: 90px;
+  margin: 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(102, 168, 216, 0.34);
+  background: rgba(7, 17, 30, 0.82);
+  color: #d2eaff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.mission-control-view-button.on {
+  border-color: rgba(247, 199, 115, 0.94);
+  background: rgba(66, 45, 14, 0.88);
+  color: #ffe7b8;
+}
+
+.mission-control-view-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mission-control-view-status {
+  margin: 0 0 8px;
+  color: #9ac5e5;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.mission-control-live-viewport {
+  position: relative;
+  min-height: 230px;
+  border-radius: 10px;
+  border: 1px solid rgba(92, 160, 208, 0.32);
+  background:
+    linear-gradient(180deg, rgba(5, 10, 16, 0.26), rgba(5, 11, 19, 0.32)),
+    radial-gradient(circle at 50% 50%, rgba(67, 133, 182, 0.1), rgba(5, 10, 16, 0.04) 60%);
+  box-shadow: inset 0 0 0 1px rgba(145, 206, 244, 0.08);
+  pointer-events: none;
+}
+
+.mission-control-live-viewport::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background-image:
+    linear-gradient(rgba(135, 196, 236, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(135, 196, 236, 0.07) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+}
+
+.mission-control-live-viewport-label {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 1;
+  margin: 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 196, 236, 0.45);
+  background: rgba(7, 16, 26, 0.76);
+  color: #bfe3fc;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mission-control-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.mission-overview-card {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(93, 151, 194, 0.22);
+  background: rgba(8, 17, 29, 0.75);
+}
+
+.mission-overview-label {
+  display: block;
+  margin: 0;
+  color: #7eafd3;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mission-overview-value {
+  display: block;
+  margin: 2px 0 0;
+  color: #e0f2ff;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.mission-control-sequence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.mission-sequence-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  padding: 6px 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(87, 146, 191, 0.2);
+  background: rgba(9, 18, 30, 0.74);
+}
+
+.mission-sequence-marker {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 4px;
+  background: #4f6a80;
+  box-shadow: 0 0 0 1px rgba(130, 166, 196, 0.28);
+}
+
+.mission-sequence-item.completed .mission-sequence-marker {
+  background: #4fd2ff;
+  box-shadow: 0 0 0 1px rgba(112, 225, 255, 0.72);
+}
+
+.mission-sequence-item.active .mission-sequence-marker {
+  background: #f9c86f;
+  box-shadow: 0 0 0 1px rgba(255, 220, 150, 0.74);
+}
+
+.mission-sequence-title {
+  margin: 0;
+  color: #d5ecff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.mission-sequence-note {
+  margin: 1px 0 0;
+  color: #95bedd;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.28;
+}
+
+.mission-control-events-log {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(93, 158, 210, 0.22);
+  background: rgba(6, 13, 22, 0.86);
+  color: #b0daf8;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 10px;
+  line-height: 1.34;
+  white-space: pre-wrap;
+  max-height: 280px;
+  overflow: auto;
 }
 
 .planet-info {
@@ -1028,5 +1358,65 @@ body {
 
   .legend-mission-bar {
     grid-template-columns: 56px 1fr auto;
+  }
+
+  .launch-mission-control-button {
+    top: 116px;
+    min-width: 114px;
+  }
+
+  .mission-control-shell {
+    padding: 10px;
+  }
+
+  .mission-control-header {
+    grid-template-columns: 1fr;
+    gap: 9px;
+    margin-bottom: 10px;
+  }
+
+  .mission-control-back-button {
+    width: 100%;
+  }
+
+  .mission-control-title {
+    font-size: 19px;
+  }
+
+  .mission-control-content {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "view"
+      "overview"
+      "sequence"
+      "events";
+    gap: 9px;
+  }
+
+  .mission-control-view-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+  }
+
+  .mission-control-view-buttons {
+    width: 100%;
+  }
+
+  .mission-control-view-button {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .mission-control-overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mission-control-events-log {
+    max-height: 220px;
+  }
+
+  .mission-control-live-viewport {
+    min-height: 170px;
   }
 }
