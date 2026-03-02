@@ -188,21 +188,6 @@ function createInlineCircularOffsets(count, radius, phaseRadians = 0) {
   return offsets;
 }
 
-function createInlineStarship6EngineOffsets(radius) {
-  const outerRingRadius = clamp(radius * 0.44, radius * 0.16, radius * 0.5);
-  const innerRingRadius = clamp(radius * 0.21, radius * 0.08, radius * 0.27);
-  const offsets = [];
-  for (let i = 0; i < 3; i += 1) {
-    const angle = (i / 3) * Math.PI * 2;
-    offsets.push({ x: Math.cos(angle) * outerRingRadius, z: Math.sin(angle) * outerRingRadius });
-  }
-  for (let i = 0; i < 3; i += 1) {
-    const angle = ((i / 3) * Math.PI * 2) + (Math.PI / 3);
-    offsets.push({ x: Math.cos(angle) * innerRingRadius, z: Math.sin(angle) * innerRingRadius });
-  }
-  return offsets;
-}
-
 function createInlineSuperHeavyEngineOffsets(radius) {
   const safeRadius = Math.max(1e-9, Number(radius) || 1e-9);
   const outerRingRadius = clamp(safeRadius * 0.69, safeRadius * 0.42, safeRadius * 0.74);
@@ -316,30 +301,88 @@ function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, r
   const engineOffsets = createInlineSuperHeavyEngineOffsets(radius);
   const bellRadius = clamp(radius * 0.102, radius * 0.054, radius * 0.13);
   const bellHeight = clamp(radius * 0.205, radius * 0.11, radius * 0.27);
-  const engineY = -0.5 * boosterHeight - (bellHeight * 0.46);
+  const engineExitY = (-0.5 * boosterHeight) + (bellHeight * 0.04);
+
+  const bellGeom = new THREE.ConeGeometry(bellRadius, bellHeight, 12, 1, true);
+  bellGeom.translate(0, bellHeight * 0.5, 0);
+
+  const innerH = bellHeight * 0.28;
+  const innerGeom = new THREE.CylinderGeometry(
+    bellRadius * 0.42,
+    bellRadius * 0.33,
+    innerH,
+    8,
+    1,
+    true,
+  );
+  innerGeom.translate(0, innerH * 0.5, 0);
+
   for (const offset of engineOffsets) {
-    const bell = new THREE.Mesh(
-      new THREE.ConeGeometry(bellRadius, bellHeight, 12, 1, true),
-      darkSteel,
-    );
-    bell.position.set(offset.x, engineY, offset.z);
+    const bell = new THREE.Mesh(bellGeom, darkSteel);
+    bell.material.side = THREE.DoubleSide;
+    bell.position.set(offset.x, engineExitY, offset.z);
     boosterGroup.add(bell);
 
-    const nozzleInterior = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        bellRadius * 0.42,
-        bellRadius * 0.33,
-        bellHeight * 0.28,
-        8,
-        1,
-        true,
-      ),
-      darkSteel,
-    );
-    nozzleInterior.rotation.x = Math.PI;
-    nozzleInterior.position.set(offset.x, engineY - (bellHeight * 0.22), offset.z);
+    const nozzleInterior = new THREE.Mesh(innerGeom, darkSteel);
+    nozzleInterior.material.side = THREE.DoubleSide;
+    nozzleInterior.position.set(offset.x, engineExitY + (bellHeight * 0.18), offset.z);
     boosterGroup.add(nozzleInterior);
   }
+
+  return {
+    engineOffsets,
+    engineExitY,
+    bellRadius,
+    bellHeight,
+  };
+}
+
+function addInlineStarshipEngines(THREE, shipGroup, material, radius, shipHeight) {
+  const outerRingRadius = clamp(radius * 0.44, radius * 0.16, radius * 0.5);
+  const innerRingRadius = clamp(radius * 0.21, radius * 0.08, radius * 0.27);
+
+  const vacR = clamp(radius * 0.165, radius * 0.078, radius * 0.2);
+  const vacH = clamp(radius * 0.26, radius * 0.12, radius * 0.31);
+
+  const seaR = clamp(vacR * 0.82, vacR * 0.7, vacR * 0.9);
+  const seaH = clamp(vacH * 0.82, vacH * 0.72, vacH * 0.9);
+
+  const engineBaseY = -0.5 * shipHeight;
+  const vacExitY = engineBaseY + (vacH * 0.12);
+  const seaExitY = engineBaseY + (seaH * 0.14);
+
+  const vacGeom = new THREE.ConeGeometry(vacR, vacH, 14, 1, true);
+  vacGeom.translate(0, vacH * 0.5, 0);
+
+  const seaGeom = new THREE.ConeGeometry(seaR, seaH, 14, 1, true);
+  seaGeom.translate(0, seaH * 0.5, 0);
+
+  const vacOffsets = [];
+  const seaOffsets = [];
+
+  for (let i = 0; i < 3; i += 1) {
+    const angle = (i / 3) * Math.PI * 2;
+    const x = Math.cos(angle) * outerRingRadius;
+    const z = Math.sin(angle) * outerRingRadius;
+    const bell = new THREE.Mesh(vacGeom, material);
+    bell.material.side = THREE.DoubleSide;
+    bell.position.set(x, vacExitY, z);
+    shipGroup.add(bell);
+    vacOffsets.push({ x, z });
+  }
+
+  for (let i = 0; i < 3; i += 1) {
+    const angle = ((i / 3) * Math.PI * 2) + (Math.PI / 3);
+    const x = Math.cos(angle) * innerRingRadius;
+    const z = Math.sin(angle) * innerRingRadius;
+    const bell = new THREE.Mesh(seaGeom, material);
+    bell.material.side = THREE.DoubleSide;
+    bell.position.set(x, seaExitY, z);
+    shipGroup.add(bell);
+    seaOffsets.push({ x, z });
+  }
+
+  return { vacExitY, seaExitY, vacOffsets, seaOffsets };
 }
 
 function createInlineEnginePlumeCluster(THREE, stageGroup, options = {}) {
@@ -354,10 +397,19 @@ function createInlineEnginePlumeCluster(THREE, stageGroup, options = {}) {
   const plumeRadius = Math.max(1e-12, Number(options.plumeRadius) || 1e-6);
   const glowRadius = Math.max(plumeRadius * 0.75, Number(options.glowRadius) || plumeRadius * 0.9);
   const color = new THREE.Color(options.colorHex || BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX);
+  const direction = options.direction instanceof THREE.Vector3
+    ? options.direction.clone().normalize()
+    : new THREE.Vector3(0, -1, 0);
 
   const cluster = new THREE.Group();
   cluster.visible = false;
   cluster.renderOrder = 24;
+
+  const plumeGeom = new THREE.ConeGeometry(plumeRadius, plumeLength, 10, 1, true);
+  plumeGeom.translate(0, -plumeLength * 0.5, 0);
+  const glowGeom = new THREE.SphereGeometry(glowRadius, 10, 10);
+  const negY = new THREE.Vector3(0, -1, 0);
+  const plumeQuat = new THREE.Quaternion().setFromUnitVectors(negY, direction);
 
   const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
     color,
@@ -378,25 +430,13 @@ function createInlineEnginePlumeCluster(THREE, stageGroup, options = {}) {
   const entries = [];
   for (const offset of offsets) {
     const anchor = new THREE.Vector3(Number(offset?.x) || 0, anchorY, Number(offset?.z) || 0);
-    const plume = makeExpandingCone(THREE, {
-      radius: plumeRadius,
-      length: plumeLength,
-      material: plumeTemplateMaterial.clone(),
-      anchor,
-      direction: new THREE.Vector3(0, -1, 0),
-      radialSegments: 10,
-      renderOrder: 24,
-    });
+    const plume = new THREE.Mesh(plumeGeom, plumeTemplateMaterial.clone());
+    plume.quaternion.copy(plumeQuat);
+    plume.position.copy(anchor);
+    plume.renderOrder = 24;
 
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(glowRadius, 10, 10),
-      glowTemplateMaterial.clone(),
-    );
-    glow.position.set(
-      Number(offset?.x) || 0,
-      anchorY,
-      Number(offset?.z) || 0,
-    );
+    const glow = new THREE.Mesh(glowGeom, glowTemplateMaterial.clone());
+    glow.position.copy(anchor);
     glow.renderOrder = 25;
 
     cluster.add(plume);
@@ -565,6 +605,12 @@ function boosterPhaseVisualProfile(phaseRaw) {
 }
 
 function setInlineEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, options = {}) {
+  if (Array.isArray(plumeState)) {
+    for (const state of plumeState) {
+      setInlineEnginePlumeVisual(state, firing, throttle, pulse, options);
+    }
+    return;
+  }
   if (!plumeState?.cluster || !Array.isArray(plumeState.entries)) {
     return;
   }
@@ -741,7 +787,14 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
   root.add(boosterGroup);
   root.add(shipGroup);
 
-  addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
+  const boosterVisual = addInlineSuperHeavyBooster(
+    THREE,
+    boosterGroup,
+    stainless,
+    darkSteel,
+    radius,
+    boosterHeight,
+  );
   const boosterFuelVisual = createInlineBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight);
 
   const shipBody = new THREE.Mesh(
@@ -785,21 +838,35 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
     }),
   );
 
-  const shipBellRadius = clamp(radius * 0.15, radius * 0.07, radius * 0.2);
-  const shipBellHeight = clamp(radius * 0.2, radius * 0.09, radius * 0.25);
-  const shipEngineOffsets = createInlineStarship6EngineOffsets(radius);
-  for (const offset of shipEngineOffsets) {
-    const bell = new THREE.Mesh(
-      new THREE.ConeGeometry(shipBellRadius, shipBellHeight, 12, 1, true),
-      darkSteel,
-    );
-    bell.position.set(
-      Number(offset?.x) || 0,
-      -0.5 * shipHeight - (shipBellHeight * 0.36),
-      Number(offset?.z) || 0,
-    );
-    shipGroup.add(bell);
-  }
+  const shipEngines = addInlineStarshipEngines(THREE, shipGroup, darkSteel, radius, shipHeight);
+
+  const boosterMainEnginePlume = createInlineEnginePlumeCluster(THREE, boosterGroup, {
+    offsets: boosterVisual?.engineOffsets || [],
+    anchorY: Number(boosterVisual?.engineExitY) || (-0.5 * boosterHeight),
+    plumeLength: clamp(boosterHeight * 0.058, radius * 0.2, boosterHeight * 0.12),
+    plumeRadius: clamp(radius * 0.056, radius * 0.022, radius * 0.088),
+    glowRadius: clamp(radius * 0.042, radius * 0.018, radius * 0.064),
+    colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
+  });
+
+  const shipMainEnginePlume = [
+    createInlineEnginePlumeCluster(THREE, shipGroup, {
+      offsets: shipEngines.vacOffsets,
+      anchorY: shipEngines.vacExitY,
+      plumeLength: clamp(shipHeight * 0.16, radius * 0.5, shipHeight * 0.28),
+      plumeRadius: clamp(radius * 0.13, radius * 0.06, radius * 0.18),
+      glowRadius: clamp(radius * 0.1, radius * 0.05, radius * 0.14),
+      colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
+    }),
+    createInlineEnginePlumeCluster(THREE, shipGroup, {
+      offsets: shipEngines.seaOffsets,
+      anchorY: shipEngines.seaExitY,
+      plumeLength: clamp(shipHeight * 0.12, radius * 0.38, shipHeight * 0.22),
+      plumeRadius: clamp(radius * 0.1, radius * 0.045, radius * 0.15),
+      glowRadius: clamp(radius * 0.085, radius * 0.04, radius * 0.12),
+      colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
+    }),
+  ];
 
   root.userData.starshipAssetSource = "inline_procedural_starship_stack";
   root.userData.starshipTextureResolution = "procedural";
@@ -814,6 +881,10 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
       detachedShipCenterY,
       boosterFuelVisual,
       rcsJets: null,
+      mainEnginePlumes: {
+        booster: boosterMainEnginePlume,
+        ship: shipMainEnginePlume,
+      },
     },
     physical: {
       radiusScene: inlineStarshipPhysicalRenderRadiusScene(distanceScale),
@@ -843,12 +914,17 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
   const boosterGroup = new THREE.Group();
   root.add(boosterGroup);
 
-  addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
-  const engineOffsets = createInlineSuperHeavyEngineOffsets(radius);
-  const engineBellHeight = clamp(radius * 0.205, radius * 0.11, radius * 0.27);
+  const boosterVisual = addInlineSuperHeavyBooster(
+    THREE,
+    boosterGroup,
+    stainless,
+    darkSteel,
+    radius,
+    boosterHeight,
+  );
   const mainEnginePlume = createInlineEnginePlumeCluster(THREE, boosterGroup, {
-    offsets: engineOffsets,
-    anchorY: -0.5 * boosterHeight - (engineBellHeight * 0.5),
+    offsets: boosterVisual?.engineOffsets || [],
+    anchorY: Number(boosterVisual?.engineExitY) || (-0.5 * boosterHeight),
     plumeLength: clamp(boosterHeight * 0.058, radius * 0.2, boosterHeight * 0.12),
     plumeRadius: clamp(radius * 0.056, radius * 0.022, radius * 0.088),
     glowRadius: clamp(radius * 0.042, radius * 0.018, radius * 0.064),
@@ -872,7 +948,7 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
   };
 }
 
-export function applyInlineStarshipVisualStage(stageState, stageIndex) {
+export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot = null) {
   if (!stageState?.shipGroup) {
     return;
   }
@@ -888,6 +964,26 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex) {
       ? stageState.detachedShipCenterY
       : stageState.fullShipCenterY;
   }
+
+  const plumes = stageState?.mainEnginePlumes;
+  if (!plumes) {
+    return;
+  }
+
+  if (!snapshot) {
+    setInlineEnginePlumeVisual(plumes.booster, false, 0, 1);
+    setInlineEnginePlumeVisual(plumes.ship, false, 0, 1);
+    return;
+  }
+
+  const phase = String(snapshot?.phase || "").toLowerCase();
+  const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
+  const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
+  const powered = phase === "powered" && thrustN > 0.01;
+  const pulse = 0.92 + (0.08 * Math.sin((Date.now() / 1000) * 44));
+
+  setInlineEnginePlumeVisual(plumes.booster, powered && !separated, throttle, pulse);
+  setInlineEnginePlumeVisual(plumes.ship, powered && separated, throttle, pulse);
 }
 
 export function inlineStarshipPhysicalRenderRadiusScene(distanceScale) {
