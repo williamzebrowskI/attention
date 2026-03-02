@@ -62,7 +62,7 @@ function enforceSolidOpaqueMaterial(THREE, material) {
   material.alphaTest = 0;
   material.depthWrite = true;
   material.depthTest = true;
-  material.side = THREE.DoubleSide;
+  material.side = THREE.FrontSide;
   material.needsUpdate = true;
   return material;
 }
@@ -269,7 +269,7 @@ function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, r
   // Hotstage band
   const hotstageH = clamp(boosterHeight * 0.045, radius * 0.28, boosterHeight * 0.08);
   const hotStageBand = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.03, radius * 1.03, hotstageH, 48, 1, true),
+    new THREE.CylinderGeometry(radius * 1.03, radius * 1.03, hotstageH, 48, 1, false),
     darkSteel,
   );
   hotStageBand.position.y = (0.5 * boosterHeight) + (hotstageH * 0.42);

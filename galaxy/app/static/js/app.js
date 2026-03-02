@@ -319,7 +319,7 @@ const BODY_ECLIPSE_MAX_OCCLUDERS = 32;
 const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
-const SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR = 1.003;
+const SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR = 1.01;
 const SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR = 2.8;
 const SPACECRAFT_WHEEL_ZOOM_MULTIPLIER = 1.9;
 const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
@@ -1076,17 +1076,11 @@ async function loadRuntimeConfig() {
 async function loadLaunchFeatureModules() {
   launchModuleLoadError = "";
   let controllerModule = null;
-  let visualsModule = null;
 
   try {
     controllerModule = await import(`./physics/launch/launchController.js?v=${FRONTEND_MODULE_VERSION}`);
   } catch (error) {
     throw new Error(`launchController import failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  try {
-    visualsModule = await import(`./physics/launch/launchVisuals.js?v=${FRONTEND_MODULE_VERSION}`);
-  } catch (error) {
-    console.warn("[launch] launchVisuals module unavailable, using basic launch visuals.", error);
   }
 
   if (typeof controllerModule?.LAUNCH_BODY_ID === "string" && controllerModule.LAUNCH_BODY_ID) {
@@ -1096,20 +1090,11 @@ async function loadLaunchFeatureModules() {
     LAUNCH_BOOSTER_BODY_ID = controllerModule.LAUNCH_BOOSTER_BODY_ID;
   }
   createLaunchControllerFn = controllerModule?.createLaunchController || null;
-  applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
-  createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
-  starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
-  if (!createStarshipStackVisualFn) {
-    createStarshipStackVisualFn = async (THREE, distanceScale) => (
-      createInlineStarshipStackVisual(THREE, distanceScale)
-    );
-  }
-  if (!applyStarshipVisualStageFn) {
-    applyStarshipVisualStageFn = applyInlineStarshipVisualStage;
-  }
-  if (!starshipPhysicalRenderRadiusSceneFn) {
-    starshipPhysicalRenderRadiusSceneFn = inlineStarshipPhysicalRenderRadiusScene;
-  }
+  createStarshipStackVisualFn = async (THREE, distanceScale) => (
+    createInlineStarshipStackVisual(THREE, distanceScale)
+  );
+  applyStarshipVisualStageFn = applyInlineStarshipVisualStage;
+  starshipPhysicalRenderRadiusSceneFn = inlineStarshipPhysicalRenderRadiusScene;
   if (!createLaunchControllerFn) {
     throw new Error("launchController export missing.");
   }
@@ -6844,7 +6829,7 @@ function updateCameraFromOrbit() {
   if (selectedId) {
     const selectedVisual = bodyVisuals.get(selectedId);
     if (selectedVisual?.body?.body_type === "spacecraft") {
-      nearFactor = 0.0006;
+      nearFactor = 0.0012;
     } else if ((selectedVisual?.renderRadius > 0) && orbit.radius < selectedVisual.renderRadius * 8) {
       nearFactor = 0.0024;
     }
