@@ -6499,6 +6499,28 @@ function clampCameraOutsideBody(cameraPosition, bodyVisual) {
   cameraPosition.copy(center).addScaledVector(offset, minDistance / dist);
 }
 
+function nearestSurfaceClearanceAtCamera(cameraPosition) {
+  if (!cameraPosition?.isVector3) {
+    return null;
+  }
+  let nearestClearance = Number.POSITIVE_INFINITY;
+  for (const bodyId of ["earth", "moon"]) {
+    const visual = bodyVisuals.get(bodyId);
+    if (!visual?.root?.position || !(visual.renderRadius > 0)) {
+      continue;
+    }
+    const clearance = cameraPosition.distanceTo(visual.root.position) - visual.renderRadius;
+    if (!Number.isFinite(clearance)) {
+      continue;
+    }
+    const safeClearance = Math.max(clearance, ORBIT_MIN_DISTANCE_ABSOLUTE);
+    if (safeClearance < nearestClearance) {
+      nearestClearance = safeClearance;
+    }
+  }
+  return Number.isFinite(nearestClearance) ? nearestClearance : null;
+}
+
 function preferredCameraDistanceForSelection(visual) {
   if (!visual?.body) {
     return orbit.radius;
@@ -6775,6 +6797,15 @@ function updateCameraFromOrbit() {
     }
   }
 
+  const sinPolar = Math.sin(orbit.polar);
+  camera.position.set(
+    orbit.target.x + orbit.radius * sinPolar * Math.sin(orbit.azimuth),
+    orbit.target.y + orbit.radius * Math.cos(orbit.polar),
+    orbit.target.z + orbit.radius * sinPolar * Math.cos(orbit.azimuth),
+  );
+  clampCameraOutsideBody(camera.position, bodyVisuals.get("earth"));
+  clampCameraOutsideBody(camera.position, bodyVisuals.get("moon"));
+
   let nearFactor = 0.008;
   if (selectedId) {
     const selectedVisual = bodyVisuals.get(selectedId);
@@ -6784,20 +6815,20 @@ function updateCameraFromOrbit() {
       nearFactor = 0.0024;
     }
   }
-  const desiredNear = clamp(orbit.radius * nearFactor, 0.000000001, 0.05);
+  const desiredNearFromOrbit = orbit.radius * nearFactor;
+  const nearestSurfaceClearance = nearestSurfaceClearanceAtCamera(camera.position);
+  const desiredNear = clamp(
+    nearestSurfaceClearance !== null
+      ? Math.min(desiredNearFromOrbit, nearestSurfaceClearance * 0.42)
+      : desiredNearFromOrbit,
+    0.0000000005,
+    0.05,
+  );
   if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
     camera.near = desiredNear;
     camera.updateProjectionMatrix();
   }
 
-  const sinPolar = Math.sin(orbit.polar);
-  camera.position.set(
-    orbit.target.x + orbit.radius * sinPolar * Math.sin(orbit.azimuth),
-    orbit.target.y + orbit.radius * Math.cos(orbit.polar),
-    orbit.target.z + orbit.radius * sinPolar * Math.cos(orbit.azimuth),
-  );
-  clampCameraOutsideBody(camera.position, bodyVisuals.get("earth"));
-  clampCameraOutsideBody(camera.position, bodyVisuals.get("moon"));
   camera.up.set(0, 1, 0);
   camera.lookAt(orbit.target);
 }
