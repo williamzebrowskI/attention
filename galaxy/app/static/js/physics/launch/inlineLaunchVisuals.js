@@ -101,19 +101,22 @@ function resolveThrusterDefinitions(THREE, layout, radius, bodyHeight) {
   if (!THREE || !layout || !(radius > 0) || !(bodyHeight > 0)) {
     return [];
   }
-  return Object.entries(layout).map(([id, spec]) => ({
-    id,
-    anchor: new THREE.Vector3(
-      (Number(spec?.anchor?.xR) || 0) * radius,
-      (Number(spec?.anchor?.yH) || 0) * bodyHeight,
-      (Number(spec?.anchor?.zR) || 0) * radius,
-    ),
-    direction: new THREE.Vector3(
+  return Object.entries(layout).map(([id, spec]) => {
+    const xR = Number(spec?.anchor?.xR) || 0;
+    const zR = Number(spec?.anchor?.zR) || 0;
+    const rawYH = Number(spec?.anchor?.yH) || 0;
+    const yNorm = rawYH >= 0 && rawYH <= 1 ? rawYH - 0.5 : rawYH;
+    const direction = new THREE.Vector3(
       Number(spec?.direction?.x) || 0,
       Number(spec?.direction?.y) || 0,
       Number(spec?.direction?.z) || 0,
-    ).normalize(),
-  }));
+    );
+    return {
+      id,
+      anchor: new THREE.Vector3(xR * radius, yNorm * bodyHeight, zR * radius),
+      direction: direction.lengthSq() > 0 ? direction.normalize() : new THREE.Vector3(0, 1, 0),
+    };
+  });
 }
 
 function addInlineStaticThrusterNozzles(THREE, hostGroup, definitions, radius, material) {
@@ -150,6 +153,27 @@ function addInlineStaticThrusterNozzles(THREE, hostGroup, definitions, radius, m
   return nozzles;
 }
 
+function makeExpandingCone(THREE, {
+  radius,
+  length,
+  material,
+  anchor,
+  direction,
+  radialSegments = 10,
+  renderOrder = 24,
+}) {
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const dir = direction.clone().normalize();
+  const mesh = new THREE.Mesh(
+    new THREE.ConeGeometry(radius, length, radialSegments, 1, true),
+    material,
+  );
+  mesh.quaternion.setFromUnitVectors(yAxis, dir.clone().negate());
+  mesh.position.copy(anchor).addScaledVector(dir, length * 0.5);
+  mesh.renderOrder = renderOrder;
+  return mesh;
+}
+
 function createInlineCircularOffsets(count, radius, phaseRadians = 0) {
   const samples = Math.max(1, Number(count) || 1);
   const ringRadius = Math.max(0, Number(radius) || 0);
@@ -160,6 +184,21 @@ function createInlineCircularOffsets(count, radius, phaseRadians = 0) {
       x: Math.cos(angle) * ringRadius,
       z: Math.sin(angle) * ringRadius,
     });
+  }
+  return offsets;
+}
+
+function createInlineStarship6EngineOffsets(radius) {
+  const outerRingRadius = clamp(radius * 0.44, radius * 0.16, radius * 0.5);
+  const innerRingRadius = clamp(radius * 0.21, radius * 0.08, radius * 0.27);
+  const offsets = [];
+  for (let i = 0; i < 3; i += 1) {
+    const angle = (i / 3) * Math.PI * 2;
+    offsets.push({ x: Math.cos(angle) * outerRingRadius, z: Math.sin(angle) * outerRingRadius });
+  }
+  for (let i = 0; i < 3; i += 1) {
+    const angle = ((i / 3) * Math.PI * 2) + (Math.PI / 3);
+    offsets.push({ x: Math.cos(angle) * innerRingRadius, z: Math.sin(angle) * innerRingRadius });
   }
   return offsets;
 }
@@ -283,7 +322,6 @@ function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, r
       new THREE.ConeGeometry(bellRadius, bellHeight, 12, 1, true),
       darkSteel,
     );
-    bell.rotation.x = Math.PI;
     bell.position.set(offset.x, engineY, offset.z);
     boosterGroup.add(bell);
 
@@ -339,17 +377,16 @@ function createInlineEnginePlumeCluster(THREE, stageGroup, options = {}) {
   });
   const entries = [];
   for (const offset of offsets) {
-    const plume = new THREE.Mesh(
-      new THREE.ConeGeometry(plumeRadius, plumeLength, 10, 1, true),
-      plumeTemplateMaterial.clone(),
-    );
-    plume.rotation.x = Math.PI;
-    plume.position.set(
-      Number(offset?.x) || 0,
-      anchorY - (plumeLength * 0.38),
-      Number(offset?.z) || 0,
-    );
-    plume.renderOrder = 24;
+    const anchor = new THREE.Vector3(Number(offset?.x) || 0, anchorY, Number(offset?.z) || 0);
+    const plume = makeExpandingCone(THREE, {
+      radius: plumeRadius,
+      length: plumeLength,
+      material: plumeTemplateMaterial.clone(),
+      anchor,
+      direction: new THREE.Vector3(0, -1, 0),
+      radialSegments: 10,
+      renderOrder: 24,
+    });
 
     const glow = new THREE.Mesh(
       new THREE.SphereGeometry(glowRadius, 10, 10),
@@ -380,7 +417,6 @@ function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHe
   const plumeLength = clamp(boosterHeight * 0.028, radius * 0.18, boosterHeight * 0.062);
   const plumeRadius = clamp(radius * 0.03, radius * 0.012, radius * 0.048);
   const glowRadius = clamp(radius * 0.02, radius * 0.009, radius * 0.036);
-  const yAxis = new THREE.Vector3(0, 1, 0);
 
   const plumeTemplateMaterial = new THREE.MeshBasicMaterial({
     color: new THREE.Color(BOOSTER_RCS_JET_COLOR_HEX),
@@ -422,13 +458,15 @@ function createInlineBoosterRcsJetVisuals(THREE, boosterGroup, radius, boosterHe
     const group = new THREE.Group();
     group.visible = false;
 
-    const plume = new THREE.Mesh(
-      new THREE.ConeGeometry(plumeRadius, plumeLength, 10, 1, true),
-      plumeTemplateMaterial.clone(),
-    );
-    plume.position.copy(definition.anchor).addScaledVector(definition.direction, plumeLength * 0.38);
-    plume.quaternion.setFromUnitVectors(yAxis, definition.direction.clone().normalize());
-    plume.renderOrder = 24;
+    const plume = makeExpandingCone(THREE, {
+      radius: plumeRadius,
+      length: plumeLength,
+      material: plumeTemplateMaterial.clone(),
+      anchor: definition.anchor,
+      direction: definition.direction,
+      radialSegments: 10,
+      renderOrder: 24,
+    });
 
     const glow = new THREE.Mesh(
       new THREE.SphereGeometry(glowRadius, 8, 8),
@@ -749,18 +787,16 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
 
   const shipBellRadius = clamp(radius * 0.15, radius * 0.07, radius * 0.2);
   const shipBellHeight = clamp(radius * 0.2, radius * 0.09, radius * 0.25);
-  const shipEngineRing = clamp(radius * 0.45, radius * 0.18, radius * 0.52);
-  for (let i = 0; i < 6; i += 1) {
-    const angle = (i / 6) * Math.PI * 2;
+  const shipEngineOffsets = createInlineStarship6EngineOffsets(radius);
+  for (const offset of shipEngineOffsets) {
     const bell = new THREE.Mesh(
       new THREE.ConeGeometry(shipBellRadius, shipBellHeight, 12, 1, true),
       darkSteel,
     );
-    bell.rotation.x = Math.PI;
     bell.position.set(
-      Math.cos(angle) * shipEngineRing,
+      Number(offset?.x) || 0,
       -0.5 * shipHeight - (shipBellHeight * 0.36),
-      Math.sin(angle) * shipEngineRing,
+      Number(offset?.z) || 0,
     );
     shipGroup.add(bell);
   }

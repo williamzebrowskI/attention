@@ -38,19 +38,22 @@ function resolveThrusterDefinitions(THREE, layout, radius, bodyHeight) {
   if (!THREE || !layout || !(radius > 0) || !(bodyHeight > 0)) {
     return [];
   }
-  return Object.entries(layout).map(([id, spec]) => ({
-    id,
-    anchor: new THREE.Vector3(
-      (Number(spec?.anchor?.xR) || 0) * radius,
-      (Number(spec?.anchor?.yH) || 0) * bodyHeight,
-      (Number(spec?.anchor?.zR) || 0) * radius,
-    ),
-    direction: new THREE.Vector3(
+  return Object.entries(layout).map(([id, spec]) => {
+    const xR = Number(spec?.anchor?.xR) || 0;
+    const zR = Number(spec?.anchor?.zR) || 0;
+    const rawYH = Number(spec?.anchor?.yH) || 0;
+    const yNorm = rawYH >= 0 && rawYH <= 1 ? rawYH - 0.5 : rawYH;
+    const direction = new THREE.Vector3(
       Number(spec?.direction?.x) || 0,
       Number(spec?.direction?.y) || 0,
       Number(spec?.direction?.z) || 0,
-    ).normalize(),
-  }));
+    );
+    return {
+      id,
+      anchor: new THREE.Vector3(xR * radius, yNorm * bodyHeight, zR * radius),
+      direction: direction.lengthSq() > 0 ? direction.normalize() : new THREE.Vector3(0, 1, 0),
+    };
+  });
 }
 
 function addStaticThrusterNozzles(THREE, hostGroup, definitions, radius, material) {
@@ -87,6 +90,27 @@ function addStaticThrusterNozzles(THREE, hostGroup, definitions, radius, materia
   return nozzles;
 }
 
+function makeExpandingCone(THREE, {
+  radius,
+  length,
+  material,
+  anchor,
+  direction,
+  radialSegments = 10,
+  renderOrder = 24,
+}) {
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const dir = direction.clone().normalize();
+  const mesh = new THREE.Mesh(
+    new THREE.ConeGeometry(radius, length, radialSegments, 1, true),
+    material,
+  );
+  mesh.quaternion.setFromUnitVectors(yAxis, dir.clone().negate());
+  mesh.position.copy(anchor).addScaledVector(dir, length * 0.5);
+  mesh.renderOrder = renderOrder;
+  return mesh;
+}
+
 function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   if (!THREE || !shipGroup || !(radius > 0) || !(shipHeight > 0)) {
     return null;
@@ -94,7 +118,6 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   const plumeLength = clamp(shipHeight * 0.018, radius * 0.14, shipHeight * 0.038);
   const plumeRadius = clamp(radius * 0.024, radius * 0.01, radius * 0.04);
   const nozzleGlowRadius = clamp(radius * 0.016, radius * 0.007, radius * 0.03);
-  const yAxis = new THREE.Vector3(0, 1, 0);
 
   const plumeMaterial = new THREE.MeshBasicMaterial({
     color: new THREE.Color(STARSHIP_RCS_JET_COLOR),
@@ -135,13 +158,15 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   for (const definition of definitions) {
     const group = new THREE.Group();
 
-    const plume = new THREE.Mesh(
-      new THREE.ConeGeometry(plumeRadius, plumeLength, 10, 1, true),
-      plumeMaterial.clone(),
-    );
-    plume.position.copy(definition.anchor).addScaledVector(definition.direction, plumeLength * 0.38);
-    plume.quaternion.setFromUnitVectors(yAxis, definition.direction.clone().normalize());
-    plume.renderOrder = 24;
+    const plume = makeExpandingCone(THREE, {
+      radius: plumeRadius,
+      length: plumeLength,
+      material: plumeMaterial.clone(),
+      anchor: definition.anchor,
+      direction: definition.direction,
+      radialSegments: 10,
+      renderOrder: 24,
+    });
 
     const glow = new THREE.Mesh(
       new THREE.SphereGeometry(nozzleGlowRadius, 8, 8),
@@ -219,13 +244,17 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
       offsetZ = engineCount > 1 ? Math.sin(angle) * ringRadius : 0;
     }
 
-    const plume = new THREE.Mesh(
-      new THREE.ConeGeometry(basePlumeRadius, basePlumeLength, 10, 1, true),
-      plumeTemplateMaterial.clone(),
-    );
-    plume.rotation.x = Math.PI;
-    plume.position.set(offsetX, anchorY - (basePlumeLength * 0.38), offsetZ);
-    plume.renderOrder = 24;
+    const anchor = new THREE.Vector3(offsetX, anchorY, offsetZ);
+    const direction = new THREE.Vector3(0, -1, 0);
+    const plume = makeExpandingCone(THREE, {
+      radius: basePlumeRadius,
+      length: basePlumeLength,
+      material: plumeTemplateMaterial.clone(),
+      anchor,
+      direction,
+      radialSegments: 10,
+      renderOrder: 24,
+    });
 
     const glow = new THREE.Mesh(
       new THREE.SphereGeometry(baseGlowRadius, 10, 10),
@@ -272,7 +301,6 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
       engineY - (outerBellHeight * 0.38),
       Math.sin(angle) * outerRingRadius,
     );
-    bell.rotation.x = Math.PI;
     shipGroup.add(bell);
     engineMeshes.push(bell);
   }
@@ -288,7 +316,6 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
       engineY - (innerBellHeight * 0.36),
       Math.sin(angle) * innerRingRadius,
     );
-    bell.rotation.x = Math.PI;
     shipGroup.add(bell);
     engineMeshes.push(bell);
   }
@@ -315,6 +342,24 @@ function createCircularOffsets(count, ringRadius, phaseRadians = 0) {
       z: Math.sin(angle) * radius,
     });
   }
+  return offsets;
+}
+
+function createStarship6EngineOffsets(radius) {
+  const outerRingRadius = clamp(radius * 0.44, radius * 0.16, radius * 0.5);
+  const innerRingRadius = clamp(radius * 0.21, radius * 0.08, radius * 0.27);
+  const offsets = [];
+
+  for (let i = 0; i < 3; i += 1) {
+    const angle = (i / 3) * Math.PI * 2;
+    offsets.push({ x: Math.cos(angle) * outerRingRadius, z: Math.sin(angle) * outerRingRadius });
+  }
+
+  for (let i = 0; i < 3; i += 1) {
+    const angle = ((i / 3) * Math.PI * 2) + (Math.PI / 3);
+    offsets.push({ x: Math.cos(angle) * innerRingRadius, z: Math.sin(angle) * innerRingRadius });
+  }
+
   return offsets;
 }
 
@@ -484,7 +529,6 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
       darkSteel,
     );
     bell.position.set(offset.x, engineY, offset.z);
-    bell.rotation.x = Math.PI;
     boosterGroup.add(bell);
 
     const nozzleInterior = new THREE.Mesh(
@@ -1047,9 +1091,8 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     glowRadius: clamp(radius * 0.046, radius * 0.02, radius * 0.07),
   });
   const shipMainEnginePlume = createMainEnginePlumeCluster(THREE, shipGroup, {
-    engineCount: 6,
-    anchorY: -0.5 * shipHeight - (shipHeight * 0.06),
-    ringRadius: clamp(radius * 0.45, radius * 0.14, radius * 0.52),
+    offsets: createStarship6EngineOffsets(radius),
+    anchorY: -0.5 * shipHeight - (clamp(radius * 0.26, radius * 0.12, radius * 0.31)),
     plumeLength: clamp(shipHeight * 0.14, radius * 0.42, shipHeight * 0.24),
     plumeRadius: clamp(radius * 0.11, radius * 0.05, radius * 0.16),
     glowRadius: clamp(radius * 0.09, radius * 0.04, radius * 0.13),
