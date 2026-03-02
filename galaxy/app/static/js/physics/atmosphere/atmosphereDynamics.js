@@ -239,6 +239,11 @@ export function createAtmosphereDynamicsController(options) {
     if (bodyId === "earth") {
       return { x: 0, y: 0, z: 0 };
     }
+    if (bodyId === "earth_launch_vehicle" || bodyId === "earth_launch_booster") {
+      // Launch-stack and booster aero loads are modeled in launchController to include
+      // wind shear, AoA effects, q-alpha limiting, and actuator lag.
+      return { x: 0, y: 0, z: 0 };
+    }
 
     const earthState =
       state?.dynamicBodies?.get("earth")

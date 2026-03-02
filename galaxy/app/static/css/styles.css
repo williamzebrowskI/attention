@@ -820,6 +820,183 @@ body {
   overflow: auto;
 }
 
+.legend-mission-control {
+  margin: 8px 0 0;
+  padding: 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(98, 177, 238, 0.35);
+  background:
+    linear-gradient(180deg, rgba(7, 18, 30, 0.94), rgba(5, 12, 21, 0.92)),
+    linear-gradient(90deg, rgba(31, 78, 118, 0.16), rgba(12, 26, 44, 0.16));
+}
+
+.legend-mission-control.active {
+  border-color: rgba(114, 212, 255, 0.58);
+  box-shadow: inset 0 0 0 1px rgba(102, 199, 255, 0.08);
+}
+
+.legend-mission-control-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.legend-mission-control-label {
+  color: #d4efff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.legend-mission-control-toggle {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(102, 185, 236, 0.45);
+  background: rgba(11, 24, 37, 0.88);
+  color: #cde7ff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.legend-mission-control-toggle:hover {
+  border-color: rgba(139, 216, 255, 0.72);
+}
+
+.legend-mission-control-status {
+  margin: 6px 0 0;
+  color: #b4dbf8;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.legend-mission-metrics {
+  display: block;
+  margin-top: 6px;
+  max-height: 330px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.legend-mission-empty {
+  margin: 0;
+  color: #9ec8e8;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.legend-mission-group {
+  margin: 0;
+  padding: 6px 0 0;
+  border-top: 1px dashed rgba(96, 162, 214, 0.22);
+}
+
+.legend-mission-group:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.legend-mission-group-title {
+  margin: 0 0 4px;
+  color: #8dc2e7;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.legend-mission-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 6px;
+}
+
+.legend-mission-metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 5px;
+  border-radius: 6px;
+  border: 1px solid rgba(84, 139, 184, 0.22);
+  background: rgba(6, 14, 23, 0.62);
+}
+
+.legend-mission-metric .k {
+  color: #81b3d9;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.legend-mission-metric .v {
+  color: #dbf0ff;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.legend-mission-bars {
+  display: grid;
+  gap: 4px;
+}
+
+.legend-mission-bar {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-mission-bar .label {
+  color: #92bee0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.legend-mission-bar .track {
+  height: 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(86, 156, 212, 0.26);
+  background: rgba(8, 16, 28, 0.86);
+  overflow: hidden;
+}
+
+.legend-mission-bar .fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #32b2ff 0%, #a4ddff 100%);
+}
+
+.legend-mission-bar .value {
+  color: #d8efff;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.legend-mission-control.collapsed .legend-mission-metrics,
+.legend-mission-control.collapsed .legend-mission-control-status {
+  display: none;
+}
+
 @media (max-width: 880px) {
   .body-legend {
     width: min(248px, 52vw);
@@ -843,5 +1020,13 @@ body {
 
   .legend-button-meta {
     font-size: 9px;
+  }
+
+  .legend-mission-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .legend-mission-bar {
+    grid-template-columns: 56px 1fr auto;
   }
 }

@@ -67,6 +67,11 @@ const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
 let launchStatusNode = document.getElementById("launch-status");
 let launchEventLogNode = document.getElementById("launch-event-log");
+let launchMissionControlPanelNode = document.getElementById("launch-mission-control");
+let launchMissionControlStatusNode = document.getElementById("launch-mission-control-status");
+let launchMissionControlMetricsNode = document.getElementById("launch-mission-metrics");
+let launchMissionControlToggleButton = document.getElementById("launch-mission-toggle");
+let launchMissionControlCollapsed = false;
 const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
 const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
 let infoPanelCollapsed = false;
@@ -944,6 +949,9 @@ function appendLaunchLogEntry(level, entry) {
   }
   lastLaunchEventSummary = name;
   lastLaunchEventTimestampUtc = logEntry.timestampUtc;
+  if (name === "launch_started") {
+    setLaunchMissionControlCollapsed(false);
+  }
   const highlightEvents = new Set([
     "launch_started",
     "starship_stage_changed",
@@ -1897,6 +1905,51 @@ function createLegendVehicleViewPanel() {
   panel.appendChild(status);
   launchStatusNode = status;
 
+  const missionControl = document.createElement("section");
+  missionControl.id = "launch-mission-control";
+  missionControl.className = "legend-mission-control";
+
+  const missionHeader = document.createElement("div");
+  missionHeader.className = "legend-mission-control-header";
+  const missionControlLabel = document.createElement("span");
+  missionControlLabel.className = "legend-mission-control-label";
+  missionControlLabel.textContent = "Mission Control";
+  missionHeader.appendChild(missionControlLabel);
+  const missionToggle = document.createElement("button");
+  missionToggle.type = "button";
+  missionToggle.id = "launch-mission-toggle";
+  missionToggle.className = "legend-mission-control-toggle";
+  missionToggle.textContent = "-";
+  missionToggle.setAttribute("aria-label", "Collapse mission control");
+  missionToggle.setAttribute("aria-expanded", "true");
+  missionToggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    setLaunchMissionControlCollapsed(!launchMissionControlCollapsed);
+  });
+  missionHeader.appendChild(missionToggle);
+  missionControl.appendChild(missionHeader);
+
+  const missionStatus = document.createElement("p");
+  missionStatus.id = "launch-mission-control-status";
+  missionStatus.className = "legend-mission-control-status";
+  missionStatus.textContent = "Standby. Press Launch to open live mission control telemetry.";
+  missionControl.appendChild(missionStatus);
+
+  const missionMetrics = document.createElement("div");
+  missionMetrics.id = "launch-mission-metrics";
+  missionMetrics.className = "legend-mission-metrics";
+  missionMetrics.innerHTML = "<p class=\"legend-mission-empty\">Awaiting mission data.</p>";
+  missionControl.appendChild(missionMetrics);
+
+  panel.appendChild(missionControl);
+  launchMissionControlPanelNode = missionControl;
+  launchMissionControlStatusNode = missionStatus;
+  launchMissionControlMetricsNode = missionMetrics;
+  launchMissionControlToggleButton = missionToggle;
+  setLaunchMissionControlCollapsed(false);
+
   const eventLog = document.createElement("pre");
   eventLog.id = "launch-event-log";
   eventLog.className = "legend-launch-event-log";
@@ -1908,6 +1961,172 @@ function createLegendVehicleViewPanel() {
   updateLegendTrajectoryToggle();
 
   return panel;
+}
+
+function setLaunchMissionControlCollapsed(collapsed) {
+  launchMissionControlCollapsed = Boolean(collapsed);
+  if (!launchMissionControlPanelNode) {
+    return;
+  }
+  launchMissionControlPanelNode.classList.toggle("collapsed", launchMissionControlCollapsed);
+  if (launchMissionControlToggleButton) {
+    launchMissionControlToggleButton.textContent = launchMissionControlCollapsed ? "+" : "-";
+    launchMissionControlToggleButton.setAttribute("aria-expanded", launchMissionControlCollapsed ? "false" : "true");
+    launchMissionControlToggleButton.setAttribute(
+      "aria-label",
+      launchMissionControlCollapsed ? "Expand mission control" : "Collapse mission control",
+    );
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function missionMetricCell(label, value) {
+  return `<div class="legend-mission-metric"><span class="k">${escapeHtml(label)}</span><span class="v">${escapeHtml(value)}</span></div>`;
+}
+
+function missionMetricGroup(title, metrics) {
+  const cells = (Array.isArray(metrics) ? metrics : [])
+    .map((metric) => missionMetricCell(metric.label, metric.value))
+    .join("");
+  return `<section class="legend-mission-group"><p class="legend-mission-group-title">${escapeHtml(title)}</p><div class="legend-mission-grid">${cells}</div></section>`;
+}
+
+function missionBar(label, percent, valueLabel) {
+  const safePercent = Number.isFinite(Number(percent))
+    ? Math.max(0, Math.min(100, Number(percent)))
+    : 0;
+  return `<div class="legend-mission-bar"><span class="label">${escapeHtml(label)}</span><div class="track"><span class="fill" style="width:${safePercent.toFixed(1)}%"></span></div><span class="value">${escapeHtml(valueLabel)}</span></div>`;
+}
+
+function updateLaunchMissionControlPanel(snapshot, launchActive) {
+  if (!launchMissionControlPanelNode || !launchMissionControlMetricsNode || !launchMissionControlStatusNode) {
+    return;
+  }
+  const active = Boolean(launchActive && snapshot);
+  launchMissionControlPanelNode.classList.toggle("active", active);
+
+  if (!snapshot) {
+    launchMissionControlStatusNode.textContent = "Standby. Press Launch to open live mission control telemetry.";
+    launchMissionControlMetricsNode.innerHTML = "<p class=\"legend-mission-empty\">Awaiting mission data.</p>";
+    return;
+  }
+
+  const phaseLabel = snapshot.phaseLabel || phaseLabelForLaunch(snapshot.phase);
+  const stageName = snapshot.stageName || "n/a";
+  const missionElapsed = formatDurationSeconds(snapshot.elapsedSeconds);
+  const guidance = snapshot.autopilotMode || snapshot.guidanceMode || "n/a";
+  const throttlePct = Number.isFinite(Number(snapshot.throttle))
+    ? Number(snapshot.throttle) * 100
+    : Number.NaN;
+  const thrustMN = Number.isFinite(Number(snapshot.thrustN))
+    ? Number(snapshot.thrustN) / 1_000_000
+    : Number.NaN;
+  const dynamicPressureKPa = Number.isFinite(Number(snapshot.dynamicPressurePa))
+    ? Number(snapshot.dynamicPressurePa) / 1000
+    : Number.NaN;
+  const targetEtaSeconds = Number.isFinite(Number(snapshot.targetDistanceKm))
+    && Number.isFinite(Number(snapshot.targetClosingSpeedKmS))
+    && Number(snapshot.targetClosingSpeedKmS) > 1e-6
+    ? (Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS))
+    : Number.NaN;
+  const boosterFuelPct = Number.isFinite(Number(snapshot.boosterFuelFraction))
+    ? Number(snapshot.boosterFuelFraction) * 100
+    : Number.NaN;
+  const qAlphaPct = Number.isFinite(Number(snapshot.qAlphaPaRad))
+    ? (Number(snapshot.qAlphaPaRad) / 1600) * 100
+    : Number.NaN;
+  const hotstageProgressPct = Boolean(snapshot.hotstageActive)
+    && Number.isFinite(Number(snapshot.hotstageTimeSinceIgnitionSec))
+    && Number.isFinite(Number(snapshot.hotstageOverlapSeconds))
+    && Number(snapshot.hotstageOverlapSeconds) > 0
+    ? (Number(snapshot.hotstageTimeSinceIgnitionSec) / Number(snapshot.hotstageOverlapSeconds)) * 100
+    : Number.NaN;
+
+  launchMissionControlStatusNode.textContent = active
+    ? `LIVE ${phaseLabel} | ${stageName} | MET ${missionElapsed}`
+    : `Standby | ${phaseLabel} | Last MET ${missionElapsed}`;
+
+  const vehicleMetrics = [
+    { label: "Mission", value: snapshot.missionName || "n/a" },
+    { label: "Phase", value: snapshot.missionPhase || "n/a" },
+    { label: "Guidance", value: guidance },
+    { label: "Target Orbit", value: Number.isFinite(Number(snapshot.targetOrbitAltitudeKm)) ? `${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km` : "n/a" },
+    { label: "Altitude", value: Number.isFinite(Number(snapshot.altitudeKm)) ? `${formatNumber(snapshot.altitudeKm, 3)} km` : "n/a" },
+    { label: "Altitude AGL", value: Number.isFinite(Number(snapshot.altitudeAboveTerrainKm)) ? `${formatNumber(snapshot.altitudeAboveTerrainKm, 3)} km` : "n/a" },
+    { label: "Speed", value: Number.isFinite(Number(snapshot.speedKmS)) ? `${formatNumber(snapshot.speedKmS, 4)} km/s` : "n/a" },
+    { label: "Mass", value: Number.isFinite(Number(snapshot.massKg)) ? `${formatNumber(snapshot.massKg, 0)} kg` : "n/a" },
+  ];
+
+  const navigationMetrics = [
+    { label: "Apo/Peri", value: `${Number.isFinite(Number(snapshot.apoapsisKm)) ? `${formatNumber(snapshot.apoapsisKm, 2)} km` : "n/a"} / ${Number.isFinite(Number(snapshot.periapsisKm)) ? `${formatNumber(snapshot.periapsisKm, 2)} km` : "n/a"}` },
+    { label: "Radial", value: Number.isFinite(Number(snapshot.radialSpeedKmS)) ? `${formatNumber(snapshot.radialSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Tangential", value: Number.isFinite(Number(snapshot.tangentialSpeedKmS)) ? `${formatNumber(snapshot.tangentialSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Circular", value: Number.isFinite(Number(snapshot.circularSpeedKmS)) ? `${formatNumber(snapshot.circularSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Target Body", value: snapshot.targetBodyName || "n/a" },
+    { label: "Target Dist", value: Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a" },
+    { label: "Closing", value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
+  ];
+
+  const aeroMetrics = [
+    { label: "Thrust", value: Number.isFinite(thrustMN) ? `${formatNumber(thrustMN, 3)} MN` : "n/a" },
+    { label: "Throttle", value: Number.isFinite(throttlePct) ? `${formatNumber(throttlePct, 1)}%` : "n/a" },
+    { label: "Burn Rate", value: Number.isFinite(Number(snapshot.burnRateKgS)) ? `${formatNumber(snapshot.burnRateKgS, 1)} kg/s` : "n/a" },
+    { label: "Dyn Pressure", value: Number.isFinite(dynamicPressureKPa) ? `${formatNumber(dynamicPressureKPa, 2)} kPa` : "n/a" },
+    { label: "Mach", value: Number.isFinite(Number(snapshot.machNumber)) ? formatNumber(snapshot.machNumber, 3) : "n/a" },
+    { label: "AoA", value: Number.isFinite(Number(snapshot.angleOfAttackDeg)) ? `${formatNumber(snapshot.angleOfAttackDeg, 2)}°` : "n/a" },
+    { label: "q-alpha", value: Number.isFinite(Number(snapshot.qAlphaPaRad)) ? `${formatNumber(snapshot.qAlphaPaRad, 1)} Pa·rad` : "n/a" },
+    { label: "Gimbal Err", value: Number.isFinite(Number(snapshot.gimbalErrorDeg)) ? `${formatNumber(snapshot.gimbalErrorDeg, 2)}°` : "n/a" },
+  ];
+
+  const boosterMetrics = [
+    { label: "Booster Phase", value: snapshot.boosterPhase || "n/a" },
+    { label: "Booster Guidance", value: snapshot.boosterGuidanceMode || "n/a" },
+    { label: "Booster Alt", value: Number.isFinite(Number(snapshot.boosterAltitudeKm)) ? `${formatNumber(snapshot.boosterAltitudeKm, 3)} km` : "n/a" },
+    { label: "Booster Speed", value: Number.isFinite(Number(snapshot.boosterSpeedKmS)) ? `${formatNumber(snapshot.boosterSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Booster Thrust", value: Number.isFinite(Number(snapshot.boosterThrustN)) ? `${formatNumber(Number(snapshot.boosterThrustN) / 1_000_000, 3)} MN` : "n/a" },
+    { label: "Booster Throttle", value: Number.isFinite(Number(snapshot.boosterThrottle)) ? `${formatNumber(Number(snapshot.boosterThrottle) * 100, 1)}%` : "n/a" },
+    { label: "Booster Fuel", value: Number.isFinite(Number(snapshot.boosterPropellantKg)) ? `${formatNumber(snapshot.boosterPropellantKg, 0)} kg` : "n/a" },
+    { label: "Site Range", value: Number.isFinite(Number(snapshot.boosterLaunchSiteRangeKm)) ? `${formatNumber(snapshot.boosterLaunchSiteRangeKm, 3)} km` : "n/a" },
+  ];
+
+  const hotstageStatus = Boolean(snapshot.hotstageActive)
+    ? `active${Number.isFinite(Number(snapshot.hotstageTimeSinceIgnitionSec)) ? ` (${formatNumber(snapshot.hotstageTimeSinceIgnitionSec, 2)}s)` : ""}`
+    : (snapshot.hotstageDetachReason ? `detached: ${snapshot.hotstageDetachReason}` : "inactive");
+  const hotstageMetrics = [
+    { label: "Hot-Stage", value: hotstageStatus },
+    { label: "Overlap Gate", value: Number.isFinite(Number(snapshot.hotstageOverlapSeconds)) ? `${formatNumber(snapshot.hotstageOverlapSeconds, 2)} s` : "n/a" },
+    { label: "Stable Ignition", value: Number.isFinite(Number(snapshot.hotstageIgnitionStableSec)) ? `${formatNumber(snapshot.hotstageIgnitionStableSec, 2)} s` : "n/a" },
+    { label: "Virtual Sep", value: Number.isFinite(Number(snapshot.hotstageVirtualSeparationKm)) ? `${formatNumber(snapshot.hotstageVirtualSeparationKm, 4)} km` : "n/a" },
+    { label: "Wind E/N", value: Number.isFinite(Number(snapshot.windEastMS)) && Number.isFinite(Number(snapshot.windNorthMS)) ? `${formatNumber(snapshot.windEastMS, 1)} / ${formatNumber(snapshot.windNorthMS, 1)} m/s` : "n/a" },
+    { label: "RCS", value: snapshot.rcsActive ? `active (${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 1)}%)` : "off" },
+    { label: "Last Event", value: lastLaunchEventSummary || "n/a" },
+    { label: "Event Age", value: lastLaunchEventTimestampUtc ? `${formatNumber(Math.max(0, (Date.now() - Date.parse(lastLaunchEventTimestampUtc)) / 1000), 1)} s` : "n/a" },
+  ];
+
+  const bars = [
+    missionBar("Throttle", throttlePct, Number.isFinite(throttlePct) ? `${formatNumber(throttlePct, 1)}%` : "n/a"),
+    missionBar("q-alpha Load", qAlphaPct, Number.isFinite(qAlphaPct) ? `${formatNumber(Math.max(0, Math.min(100, qAlphaPct)), 1)}%` : "n/a"),
+    missionBar("Booster Fuel", boosterFuelPct, Number.isFinite(boosterFuelPct) ? `${formatNumber(boosterFuelPct, 1)}%` : "n/a"),
+    missionBar("Hot-Stage Gate", hotstageProgressPct, Number.isFinite(hotstageProgressPct) ? `${formatNumber(Math.max(0, Math.min(100, hotstageProgressPct)), 1)}%` : "n/a"),
+  ].join("");
+
+  launchMissionControlMetricsNode.innerHTML = [
+    missionMetricGroup("Vehicle", vehicleMetrics),
+    missionMetricGroup("Navigation", navigationMetrics),
+    missionMetricGroup("Aero / Propulsion", aeroMetrics),
+    missionMetricGroup("Booster", boosterMetrics),
+    missionMetricGroup("Hot Stage / Ops", hotstageMetrics),
+    `<section class="legend-mission-group"><p class="legend-mission-group-title">Loads</p><div class="legend-mission-bars">${bars}</div></section>`,
+  ].join("");
 }
 
 function sortBySemimajorAxisThenName(a, b) {
@@ -2320,15 +2539,18 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     launchStatusNode.textContent = fallbackLine || (launchModuleLoadError
       ? `Launch module load error: ${launchModuleLoadError}`
       : "Launch controller unavailable.");
+    updateLaunchMissionControlPanel(null, false);
     return;
   }
   const snapshot = launchController.statusSnapshot();
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
+    updateLaunchMissionControlPanel(null, launchActive);
     return;
   }
   if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(snapshot.speedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
+    updateLaunchMissionControlPanel(snapshot, launchActive);
     return;
   }
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
@@ -2369,6 +2591,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     ? ` | Event ${lastLaunchEventSummary}${Number.isFinite(eventAgeSeconds) ? ` (${formatNumber(eventAgeSeconds, 1)}s ago)` : ""}`
     : "";
   launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
+  updateLaunchMissionControlPanel(snapshot, launchActive);
 }
 
 function phaseLabelForLaunch(phase) {
