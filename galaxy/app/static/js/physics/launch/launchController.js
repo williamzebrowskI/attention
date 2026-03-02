@@ -12,6 +12,7 @@ import {
   LAUNCH_SITE,
   LAUNCH_VEHICLE_CONFIG,
   SEA_LEVEL_PRESSURE_PA,
+  STARSHIP_STACK_DIMENSIONS_KM,
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
 } from "./launchConfig.js";
@@ -120,6 +121,16 @@ function stageReservePropellantKg(stageIndex) {
   const stage = stageAtIndex(0);
   const configuredReserve = Number(LAUNCH_VEHICLE_CONFIG.guidance?.boosterLandingReservePropellantKg) || 0;
   return clamp(configuredReserve, 0, Number(stage?.propellantMassKg) || configuredReserve);
+}
+
+function separationGapKm() {
+  return 0.0025;
+}
+
+function stage2HotStagingThrottleCap(timeSinceSeparationSec) {
+  const t = Math.max(0, Number(timeSinceSeparationSec) || 0);
+  const ramp = clamp(t / 4.5, 0, 1);
+  return 0.20 + (0.70 * ramp);
 }
 
 function bodyDirectionFromLatLon(axes, latitudeDeg, longitudeDeg) {
@@ -2442,17 +2453,17 @@ export function createLaunchController(options) {
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
     const up = normalize(relPos, currentEarthAxes.pole);
-    const retrograde = normalize(scale(relVel, -1), scale(up, -1));
-    const tangentialVector = subtract(relVel, scale(up, dot(relVel, up)));
-    const antiTangent = normalize(scale(tangentialVector, -1), retrograde);
-    const separationOffsetKm = STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM + 0.026;
-    const separationImpulseKmS = add(
-      add(
-        scale(retrograde, 0.022),
-        scale(antiTangent, 0.006),
-      ),
-      scale(up, -0.013),
-    );
+
+    // Align the dynamic reference from stacked center to Starship center at staging.
+    const shipCenterShiftKm = STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
+    rocketState.position = add(rocketState.position, scale(up, shipCenterShiftKm));
+
+    // Place booster directly below Starship with only a small physical gap; no hard impulse kick.
+    const separationOffsetKm =
+      (STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5)
+      + (STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5)
+      + separationGapKm();
+    const separationImpulseKmS = { x: 0, y: 0, z: 0 };
     const boosterState = {
       id: LAUNCH_BOOSTER_BODY_ID,
       massKg: boosterMassKg,
@@ -2462,13 +2473,13 @@ export function createLaunchController(options) {
     state.dynamicBodies.set(LAUNCH_BOOSTER_BODY_ID, boosterState);
 
     runtime.booster.active = true;
-    runtime.booster.phase = "separation-coast";
-    runtime.booster.guidanceMode = "booster-separation-coast";
+    runtime.booster.phase = "separation-flip";
+    runtime.booster.guidanceMode = "booster-separation-flip";
     runtime.booster.propellantKg = reservePropellantKg;
     runtime.booster.initialPropellantKg = reservePropellantKg;
     runtime.booster.separationTimeSec = runtime.elapsedSeconds;
     runtime.booster.landed = false;
-    runtime.booster.lastStep = zeroBoosterStep("booster-separation-coast");
+    runtime.booster.lastStep = zeroBoosterStep("booster-separation-flip");
     runtime.booster.lastSurfaceSample = null;
     runtime.booster.contactHoldSec = 0;
     runtime.booster.lastTrackedPositionKm = earthFixedRelativePositionKm(
@@ -2481,6 +2492,7 @@ export function createLaunchController(options) {
       stageIndex: runtime.stageIndex,
       boosterMassKg,
       reservePropellantKg,
+      shipCenterShiftKm,
       separationOffsetKm,
       separationImpulseKmS,
     });
@@ -3250,6 +3262,35 @@ export function createLaunchController(options) {
         direction: autopilotCommand.direction || guidance.direction,
         mode: autopilotCommand.mode || guidance.mode,
       };
+    }
+
+    // Gentle hot-staging ramp: avoid abrupt Stage 2 shove right after detach.
+    const timeSinceSeparationSec = runtime.booster.active
+      ? Math.max(0, runtime.elapsedSeconds - runtime.booster.separationTimeSec)
+      : Number.POSITIVE_INFINITY;
+    if (
+      runtime.stageIndex === 1
+      && Number.isFinite(timeSinceSeparationSec)
+      && timeSinceSeparationSec < 6
+    ) {
+      const cap = stage2HotStagingThrottleCap(timeSinceSeparationSec);
+      throttle = Math.min(throttle, cap);
+      const rampBlend = clamp(timeSinceSeparationSec / 4.5, 0, 1);
+      const upBias = 0.30 * (1 - rampBlend);
+      if (upBias > 1e-6) {
+        guidance = {
+          direction: normalize(
+            add(scale(guidance.direction, 1), scale(orbital.up, upBias)),
+            guidance.direction,
+          ),
+          mode: `${guidance.mode}+hotstage-ramp`,
+        };
+      } else {
+        guidance = {
+          direction: guidance.direction,
+          mode: `${guidance.mode}+hotstage-ramp`,
+        };
+      }
     }
 
     throttle = limitThrottleByThrustAccelerationG({
