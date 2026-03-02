@@ -446,6 +446,38 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
   thrustPuck.position.y = (-0.5 * boosterHeight) + (thrustPuckHeight * 0.5);
   boosterGroup.add(thrustPuck);
 
+  // V3/Raptor3-era cue: metallic thermal tiles around the aft section.
+  const aftTileRows = 2;
+  const aftTileCountPerRow = 42;
+  const aftTileRadius = radius * 1.028;
+  const aftTileArcWidth = ((Math.PI * 2 * aftTileRadius) / aftTileCountPerRow) * 0.72;
+  const aftTileHeight = clamp(engineSkirtHeight * 0.2, radius * 0.05, engineSkirtHeight * 0.3);
+  const aftTileDepth = clamp(radius * 0.014, radius * 0.006, radius * 0.022);
+  const aftTileMaterial = darkSteel.clone();
+  aftTileMaterial.color.multiplyScalar(0.9);
+  aftTileMaterial.roughness = clamp((aftTileMaterial.roughness || 0.5) + 0.14, 0, 1);
+  aftTileMaterial.metalness = clamp((aftTileMaterial.metalness || 0.5) + 0.18, 0, 1);
+  enforceSolidOpaqueMaterial(THREE, aftTileMaterial);
+  for (let row = 0; row < aftTileRows; row += 1) {
+    const y = (-0.5 * boosterHeight)
+      + (aftTileHeight * (0.7 + (row * 1.18)));
+    const phase = row === 0 ? 0 : Math.PI / aftTileCountPerRow;
+    for (let i = 0; i < aftTileCountPerRow; i += 1) {
+      const angle = ((i / aftTileCountPerRow) * Math.PI * 2) + phase;
+      const tile = new THREE.Mesh(
+        new THREE.BoxGeometry(aftTileArcWidth, aftTileHeight, aftTileDepth),
+        aftTileMaterial,
+      );
+      tile.position.set(
+        Math.cos(angle) * aftTileRadius,
+        y,
+        Math.sin(angle) * aftTileRadius,
+      );
+      tile.rotation.y = angle;
+      boosterGroup.add(tile);
+    }
+  }
+
   const boosterTopCap = new THREE.Mesh(
     new THREE.SphereGeometry(radius, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.5),
     stainless,
@@ -453,31 +485,81 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
   boosterTopCap.position.y = 0.5 * boosterHeight;
   boosterGroup.add(boosterTopCap);
 
-  const hotStageBandHeight = clamp(boosterHeight * 0.045, radius * 0.28, boosterHeight * 0.08);
-  const hotStageBand = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.06, radius * 1.06, hotStageBandHeight, 64, 1, false),
+  // V3-style integrated hot-stage section: dual rings + open truss rather than a closed vented ring.
+  const hotStageBandHeight = clamp(boosterHeight * 0.066, radius * 0.36, boosterHeight * 0.11);
+  const trussRingThickness = clamp(hotStageBandHeight * 0.15, radius * 0.035, hotStageBandHeight * 0.24);
+  const trussOuterRadius = radius * 1.07;
+  const trussInnerRadius = radius * 1.01;
+  const hotStageLowerY = (0.5 * boosterHeight) + (hotStageBandHeight * 0.16);
+  const hotStageUpperY = hotStageLowerY + (hotStageBandHeight * 0.84);
+
+  const lowerRing = new THREE.Mesh(
+    new THREE.CylinderGeometry(trussOuterRadius, trussOuterRadius, trussRingThickness, 72, 1, true),
     darkSteel,
   );
-  hotStageBand.position.y = (0.5 * boosterHeight) + (hotStageBandHeight * 0.42);
-  boosterGroup.add(hotStageBand);
+  lowerRing.position.y = hotStageLowerY;
+  boosterGroup.add(lowerRing);
 
-  const ventCount = 24;
-  const ventWidth = clamp(radius * 0.06, radius * 0.03, radius * 0.08);
-  const ventHeight = clamp(hotStageBandHeight * 0.42, hotStageBandHeight * 0.25, hotStageBandHeight * 0.58);
-  const ventDepth = clamp(radius * 0.025, radius * 0.012, radius * 0.035);
-  for (let i = 0; i < ventCount; i += 1) {
-    const angle = (i / ventCount) * Math.PI * 2;
-    const vent = new THREE.Mesh(
-      new THREE.BoxGeometry(ventWidth, ventHeight, ventDepth),
+  const upperRing = new THREE.Mesh(
+    new THREE.CylinderGeometry(trussOuterRadius * 1.01, trussOuterRadius * 1.01, trussRingThickness, 72, 1, true),
+    darkSteel,
+  );
+  upperRing.position.y = hotStageUpperY;
+  boosterGroup.add(upperRing);
+
+  const blastDeck = new THREE.Mesh(
+    new THREE.CylinderGeometry(trussInnerRadius, radius * 0.985, trussRingThickness * 1.3, 64, 1, false),
+    darkSteel,
+  );
+  blastDeck.position.y = hotStageLowerY - (trussRingThickness * 0.8);
+  boosterGroup.add(blastDeck);
+
+  const trussCount = 36;
+  const trussWidth = clamp(radius * 0.018, radius * 0.008, radius * 0.028);
+  const trussDepth = clamp(radius * 0.016, radius * 0.007, radius * 0.024);
+  const trussPhase = Math.PI / trussCount;
+  const trussRadiusA = trussOuterRadius * 0.995;
+  const trussRadiusB = trussOuterRadius * 1.015;
+
+  function addTrussStrut(start, end) {
+    const direction = end.clone().sub(start);
+    const length = direction.length();
+    if (!(length > 1e-12)) {
+      return;
+    }
+    const strut = new THREE.Mesh(
+      new THREE.BoxGeometry(trussWidth, length, trussDepth),
       darkSteel,
     );
-    vent.position.set(
-      Math.cos(angle) * (radius * 1.06),
-      hotStageBand.position.y,
-      Math.sin(angle) * (radius * 1.06),
+    strut.position.copy(start).add(end).multiplyScalar(0.5);
+    strut.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+    boosterGroup.add(strut);
+  }
+
+  for (let i = 0; i < trussCount; i += 1) {
+    const angleA = (i / trussCount) * Math.PI * 2;
+    const angleB = angleA + trussPhase;
+    const angleC = angleA - trussPhase;
+    const startA = new THREE.Vector3(
+      Math.cos(angleA) * trussRadiusA,
+      hotStageLowerY + (trussRingThickness * 0.46),
+      Math.sin(angleA) * trussRadiusA,
     );
-    vent.rotation.y = angle;
-    boosterGroup.add(vent);
+    const endB = new THREE.Vector3(
+      Math.cos(angleB) * trussRadiusB,
+      hotStageUpperY - (trussRingThickness * 0.46),
+      Math.sin(angleB) * trussRadiusB,
+    );
+    addTrussStrut(startA, endB);
+
+    if ((i % 2) === 0) {
+      const endC = new THREE.Vector3(
+        Math.cos(angleC) * trussRadiusB,
+        hotStageUpperY - (trussRingThickness * 0.46),
+        Math.sin(angleC) * trussRadiusB,
+      );
+      addTrussStrut(startA, endC);
+    }
   }
 
   const seamFractions = [0.11, 0.24, 0.36, 0.49, 0.61, 0.74, 0.86];
@@ -511,12 +593,15 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
     boosterGroup.add(rib);
   }
 
-  const gridFinWidth = clamp(radius * 1.02, radius * 0.65, radius * 1.24);
-  const gridFinHeight = clamp(radius * 0.78, radius * 0.34, radius * 1.02);
-  const gridFinDepth = clamp(radius * 0.15, radius * 0.07, radius * 0.24);
-  const gridFinY = (0.5 * boosterHeight) - (radius * 0.62);
-  for (let i = 0; i < 4; i += 1) {
-    const angle = (i / 4) * Math.PI * 2;
+  // V3-style grid fins: 3 fins, larger area, mounted lower with integrated catch hardpoints.
+  const gridFinWidth = clamp(radius * 1.24, radius * 0.76, radius * 1.5);
+  const gridFinHeight = clamp(radius * 0.96, radius * 0.46, radius * 1.22);
+  const gridFinDepth = clamp(radius * 0.19, radius * 0.09, radius * 0.28);
+  const gridFinY = (0.5 * boosterHeight) - (radius * 1.04);
+  const gridFinCount = 3;
+  const gridFinPhase = Math.PI * 0.5;
+  for (let i = 0; i < gridFinCount; i += 1) {
+    const angle = ((i / gridFinCount) * Math.PI * 2) + gridFinPhase;
     const finAssembly = new THREE.Group();
     const frame = new THREE.Mesh(
       new THREE.BoxGeometry(gridFinWidth, gridFinHeight, gridFinDepth),
@@ -532,35 +617,77 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
     enforceSolidOpaqueMaterial(THREE, panel.material);
     finAssembly.add(panel);
 
-    const latticeBarWidth = gridFinWidth * 0.03;
+    const latticeBarWidth = gridFinWidth * 0.026;
     const latticeBarHeight = gridFinHeight * 0.86;
     const latticeBarDepth = gridFinDepth * 0.68;
-    for (let barIndex = -2; barIndex <= 2; barIndex += 1) {
+    for (let barIndex = -3; barIndex <= 3; barIndex += 1) {
       const verticalBar = new THREE.Mesh(
         new THREE.BoxGeometry(latticeBarWidth, latticeBarHeight, latticeBarDepth),
         darkSteel,
       );
-      verticalBar.position.x = barIndex * (gridFinWidth * 0.14);
+      verticalBar.position.x = barIndex * (gridFinWidth * 0.11);
       finAssembly.add(verticalBar);
     }
     const crossBarWidth = gridFinWidth * 0.84;
     const crossBarHeight = gridFinHeight * 0.03;
-    for (let barIndex = -1; barIndex <= 1; barIndex += 1) {
+    for (let barIndex = -2; barIndex <= 2; barIndex += 1) {
       const horizontalBar = new THREE.Mesh(
         new THREE.BoxGeometry(crossBarWidth, crossBarHeight, latticeBarDepth),
         darkSteel,
       );
-      horizontalBar.position.y = barIndex * (gridFinHeight * 0.2);
+      horizontalBar.position.y = barIndex * (gridFinHeight * 0.16);
       finAssembly.add(horizontalBar);
     }
 
+    const finPod = new THREE.Mesh(
+      new THREE.BoxGeometry(gridFinWidth * 0.34, gridFinHeight * 0.3, gridFinDepth * 1.55),
+      darkSteel,
+    );
+    finPod.position.x = -(gridFinWidth * 0.4);
+    finAssembly.add(finPod);
+
     finAssembly.position.set(
-      Math.cos(angle) * (radius + (gridFinDepth * 0.45)),
+      Math.cos(angle) * (radius + (gridFinDepth * 0.42)),
       gridFinY,
-      Math.sin(angle) * (radius + (gridFinDepth * 0.45)),
+      Math.sin(angle) * (radius + (gridFinDepth * 0.42)),
     );
     finAssembly.rotation.y = angle;
     boosterGroup.add(finAssembly);
+
+    const catchPinRadius = clamp(radius * 0.026, radius * 0.013, radius * 0.039);
+    const catchPinLength = clamp(radius * 0.25, radius * 0.12, radius * 0.34);
+    const catchPin = new THREE.Mesh(
+      new THREE.CylinderGeometry(catchPinRadius, catchPinRadius, catchPinLength, 14, 1, false),
+      darkSteel,
+    );
+    catchPin.rotation.z = Math.PI * 0.5;
+    catchPin.rotation.y = angle;
+    catchPin.position.set(
+      Math.cos(angle) * (radius + (catchPinLength * 0.34)),
+      gridFinY + (gridFinHeight * 0.35),
+      Math.sin(angle) * (radius + (catchPinLength * 0.34)),
+    );
+    boosterGroup.add(catchPin);
+  }
+
+  const chineCount = 3;
+  const chineHeight = boosterHeight * 0.34;
+  const chineWidth = clamp(radius * 0.12, radius * 0.06, radius * 0.18);
+  const chineDepth = clamp(radius * 0.05, radius * 0.022, radius * 0.078);
+  const chineY = (0.5 * boosterHeight) - (chineHeight * 0.62);
+  for (let i = 0; i < chineCount; i += 1) {
+    const angle = ((i / chineCount) * Math.PI * 2) + (gridFinPhase + (Math.PI / 3));
+    const chine = new THREE.Mesh(
+      new THREE.BoxGeometry(chineWidth, chineHeight, chineDepth),
+      darkSteel,
+    );
+    chine.position.set(
+      Math.cos(angle) * (radius + (chineDepth * 0.66)),
+      chineY,
+      Math.sin(angle) * (radius + (chineDepth * 0.66)),
+    );
+    chine.rotation.y = angle;
+    boosterGroup.add(chine);
   }
 
   const engineLayout = createSuperHeavyEngineOffsets(radius);
