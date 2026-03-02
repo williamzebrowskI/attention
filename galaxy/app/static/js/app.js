@@ -319,6 +319,8 @@ const BODY_ECLIPSE_MAX_OCCLUDERS = 32;
 const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
+const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
+const EARTH_SURFACE_CAMERA_CLEARANCE_KM = 1.5;
 const TIDAL_TARGET_CONFIG = Object.freeze([
   Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
   Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
@@ -2932,6 +2934,7 @@ function setObservationMode(mode) {
     if (visual) {
       orbit.target.copy(visual.root.position);
       orbit.minDistance = minOrbitDistanceForVisual(visual);
+      orbit.radius = clamp(orbit.radius, orbit.minDistance, orbit.maxDistance);
     }
   }
   syncLiveLocationTrackingState();
@@ -6438,6 +6441,20 @@ function minOrbitDistanceForVisual(visual) {
   if (!visual || !(visual.renderRadius > 0)) {
     return ORBIT_MIN_DISTANCE_BASE;
   }
+  if (visual.body?.id === "moon") {
+    const moonClearanceScene = MOON_SURFACE_CAMERA_CLEARANCE_KM * DISTANCE_SCALE;
+    return Math.max(
+      ORBIT_MIN_DISTANCE_ABSOLUTE,
+      visual.renderRadius + moonClearanceScene,
+    );
+  }
+  if (visual.body?.id === "earth") {
+    const earthClearanceScene = EARTH_SURFACE_CAMERA_CLEARANCE_KM * DISTANCE_SCALE;
+    return Math.max(
+      ORBIT_MIN_DISTANCE_ABSOLUTE,
+      visual.renderRadius + earthClearanceScene,
+    );
+  }
   const bodyType = String(visual?.body?.body_type || "").toLowerCase();
   const radiusFactor = bodyType === "spacecraft"
     ? Math.max(ORBIT_MIN_DISTANCE_RADIUS_FACTOR, 1.08)
@@ -6446,6 +6463,40 @@ function minOrbitDistanceForVisual(visual) {
     ORBIT_MIN_DISTANCE_ABSOLUTE,
     visual.renderRadius * radiusFactor,
   );
+}
+
+function minCameraDistanceFromBodyCenter(visual) {
+  if (!visual || !(visual.renderRadius > 0)) {
+    return ORBIT_MIN_DISTANCE_ABSOLUTE;
+  }
+  if (visual.body?.id === "moon") {
+    return visual.renderRadius + (MOON_SURFACE_CAMERA_CLEARANCE_KM * DISTANCE_SCALE);
+  }
+  if (visual.body?.id === "earth") {
+    return visual.renderRadius + (EARTH_SURFACE_CAMERA_CLEARANCE_KM * DISTANCE_SCALE);
+  }
+  return Math.max(
+    ORBIT_MIN_DISTANCE_ABSOLUTE,
+    visual.renderRadius * ORBIT_MIN_DISTANCE_RADIUS_FACTOR,
+  );
+}
+
+function clampCameraOutsideBody(cameraPosition, bodyVisual) {
+  if (!cameraPosition?.isVector3 || !bodyVisual?.root?.position || !(bodyVisual.renderRadius > 0) || !THREE_NS) {
+    return;
+  }
+  const minDistance = minCameraDistanceFromBodyCenter(bodyVisual);
+  const center = bodyVisual.root.position;
+  const offset = cameraPosition.clone().sub(center);
+  const dist = offset.length();
+  if (dist >= minDistance) {
+    return;
+  }
+  if (dist <= 1e-12) {
+    cameraPosition.copy(center).add(new THREE_NS.Vector3(0, minDistance, 0));
+    return;
+  }
+  cameraPosition.copy(center).addScaledVector(offset, minDistance / dist);
 }
 
 function preferredCameraDistanceForSelection(visual) {
@@ -6549,13 +6600,16 @@ function setSelected(bodyId, moveCamera) {
 
   const liveCoords = runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
   const canReframe = observation.mode === OBSERVATION_MODES.BODY_LOCK;
-  if (canReframe && liveCoords) {
+  if (canReframe) {
     orbit.minDistance = minOrbitDistanceForVisual(visual);
-    const lockTarget = resolveBodyLockTargetPosition(bodyId);
-    if (lockTarget) {
-      orbit.target.copy(lockTarget);
-    } else {
-      orbit.target.copy(visual.root.position);
+    orbit.radius = clamp(orbit.radius, orbit.minDistance, orbit.maxDistance);
+    if (liveCoords) {
+      const lockTarget = resolveBodyLockTargetPosition(bodyId);
+      if (lockTarget) {
+        orbit.target.copy(lockTarget);
+      } else {
+        orbit.target.copy(visual.root.position);
+      }
     }
   }
   if (moveCamera && canReframe) {
@@ -6713,6 +6767,14 @@ function updateCameraFromOrbit() {
     }
   }
 
+  if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
+    const selectedVisual = bodyVisuals.get(selectedId);
+    if (selectedVisual?.renderRadius > 0) {
+      orbit.minDistance = minOrbitDistanceForVisual(selectedVisual);
+      orbit.radius = clamp(orbit.radius, orbit.minDistance, orbit.maxDistance);
+    }
+  }
+
   let nearFactor = 0.008;
   if (selectedId) {
     const selectedVisual = bodyVisuals.get(selectedId);
@@ -6734,6 +6796,8 @@ function updateCameraFromOrbit() {
     orbit.target.y + orbit.radius * Math.cos(orbit.polar),
     orbit.target.z + orbit.radius * sinPolar * Math.cos(orbit.azimuth),
   );
+  clampCameraOutsideBody(camera.position, bodyVisuals.get("earth"));
+  clampCameraOutsideBody(camera.position, bodyVisuals.get("moon"));
   camera.up.set(0, 1, 0);
   camera.lookAt(orbit.target);
 }
