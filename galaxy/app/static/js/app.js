@@ -319,6 +319,9 @@ const BODY_ECLIPSE_MAX_OCCLUDERS = 32;
 const ORBIT_MIN_DISTANCE_BASE = 0.000002;
 const ORBIT_MIN_DISTANCE_ABSOLUTE = 0.00000025;
 const ORBIT_MIN_DISTANCE_RADIUS_FACTOR = 1.012;
+const SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR = 1.003;
+const SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR = 2.8;
+const SPACECRAFT_WHEEL_ZOOM_MULTIPLIER = 1.9;
 const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
 const EARTH_SURFACE_CAMERA_CLEARANCE_KM = 1.5;
 const EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM = 0.005;
@@ -6418,7 +6421,13 @@ function onWheel(event) {
     return;
   }
   const zoomFactor = clamp(1 + Math.log10(orbit.radius + 1), 0.55, 3.2);
-  const adaptiveSpeed = orbit.wheelSpeed * zoomFactor;
+  let adaptiveSpeed = orbit.wheelSpeed * zoomFactor;
+  if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
+    const selectedVisual = bodyVisuals.get(selectedId);
+    if (String(selectedVisual?.body?.body_type || "").toLowerCase() === "spacecraft") {
+      adaptiveSpeed *= SPACECRAFT_WHEEL_ZOOM_MULTIPLIER;
+    }
+  }
   const next = orbit.radius * Math.exp(event.deltaY * adaptiveSpeed);
   orbit.radius = clamp(next, orbit.minDistance, orbit.maxDistance);
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId && orbit.radius >= OVERVIEW_SWITCH_RADIUS) {
@@ -6458,7 +6467,7 @@ function minOrbitDistanceForVisual(visual) {
   }
   const bodyType = String(visual?.body?.body_type || "").toLowerCase();
   const radiusFactor = bodyType === "spacecraft"
-    ? Math.max(ORBIT_MIN_DISTANCE_RADIUS_FACTOR, 1.08)
+    ? SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR
     : ORBIT_MIN_DISTANCE_RADIUS_FACTOR;
   return Math.max(
     ORBIT_MIN_DISTANCE_ABSOLUTE,
@@ -6571,7 +6580,7 @@ function preferredCameraDistanceForSelection(visual) {
 
   if (body.body_type === "spacecraft") {
     return clamp(
-      Math.max(visual.renderRadius * 40, 0.000001),
+      Math.max(visual.renderRadius * SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR, 0.000001),
       nearSurface,
       orbit.maxDistance,
     );
