@@ -134,7 +134,7 @@ const missionControlScreenController = createMissionControlScreenController({
     focusLegendVehicleView(mode);
   },
   onTrackBody: (bodyId) => {
-    focusManagedTelemetryVehicle(bodyId, true);
+    return focusManagedTelemetryVehicle(bodyId, true);
   },
 });
 

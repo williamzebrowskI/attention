@@ -596,10 +596,13 @@ export function createMissionControlScreenController(options = {}) {
       return;
     }
 
+    const trackedEntry = entries.find((entry) => entry.tracked && entry.selectable);
     const hasSelected = entries.some((entry) => entry.bodyId === selectedFleetBodyId);
-    if (!hasSelected) {
-      const trackedEntry = entries.find((entry) => entry.tracked && entry.selectable);
-      selectedFleetBodyId = trackedEntry?.bodyId || entries[0].bodyId;
+    if (trackedEntry?.bodyId) {
+      // Keep card selection aligned with actual tracked body to avoid visual desync.
+      selectedFleetBodyId = trackedEntry.bodyId;
+    } else if (!hasSelected) {
+      selectedFleetBodyId = entries[0].bodyId;
     }
     const selectedEntry = entries.find((entry) => entry.bodyId === selectedFleetBodyId) || entries[0];
     selectedFleetBodyId = selectedEntry.bodyId;
@@ -848,8 +851,10 @@ export function createMissionControlScreenController(options = {}) {
         if (selectedEntry && selectedEntry.selectable === false) {
           return;
         }
-        selectedFleetBodyId = bodyId;
-        onTrackBody?.(bodyId);
+        const previousBodyId = selectedFleetBodyId;
+        const trackResult = onTrackBody?.(bodyId);
+        const accepted = trackResult !== false;
+        selectedFleetBodyId = accepted ? bodyId : previousBodyId;
         lastFleetMarkupSignature = "";
         renderFleetOperations(cachedFleetEntries);
         onScreenStateChanged?.(visible);
