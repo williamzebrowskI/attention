@@ -104,23 +104,18 @@ import {
   NAVIGATION_DEFAULTS,
   NAVIGATION_SYSTEM_MODES,
 } from "../navigation_system/index.js";
-import { enforceMoonEarthAvoidanceDirection } from "./moonGuidanceSafety.js";
+import { enforceMoonEarthAvoidanceDirection } from "./lunar/guidanceSafety.js";
+import {
+  MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
+  MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
+  MOON_BURN_ATTITUDE_GATE_PHASES,
+} from "./lunar/constants.js";
 
 const MIN_ROCKET_MASS_KG = 500;
 const PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM = 145;
 const PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM = 150;
 const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
 const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
-const MOON_BURN_ATTITUDE_GATE_PHASES = new Set([
-  "tli_burn",
-  "coast_to_moon",
-  "lunar_insertion",
-  "tei_burn",
-  "earth_capture",
-]);
-const MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG = 5;
-const MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG = 2;
-
 function fallbackAxes() {
   return {
     xAxis: { x: 1, y: 0, z: 0 },

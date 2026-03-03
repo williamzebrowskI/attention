@@ -5,7 +5,7 @@ import {
   normalize,
   scale,
   subtract,
-} from "./launchMath.js";
+} from "../launchMath.js";
 
 function finiteVector(v) {
   return Boolean(
