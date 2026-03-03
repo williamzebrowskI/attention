@@ -279,14 +279,10 @@ body {
 .mission-control-live-viewport {
   position: relative;
   min-height: 460px;
-  border-radius: 12px;
-  border: 1px solid rgba(105, 183, 236, 0.44);
-  background:
-    radial-gradient(circle at 50% 50%, rgba(61, 131, 179, 0.1), rgba(5, 10, 16, 0.03) 63%),
-    linear-gradient(180deg, rgba(4, 9, 16, 0.09), rgba(4, 10, 18, 0.16));
-  box-shadow:
-    inset 0 0 0 1px rgba(145, 206, 244, 0.16),
-    inset 0 0 60px rgba(18, 53, 79, 0.14);
+  border-radius: 10px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
 }
 
