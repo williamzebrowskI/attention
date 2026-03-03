@@ -45,6 +45,13 @@ const FLEET_MOON_MIDCOURSE_MIN_BURN_SEC = 24;
 const FLEET_MOON_MIDCOURSE_EXIT_STABLE_SEC = 28;
 const FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM = 130;
 const FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM = 155;
+const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
+const FLEET_TLI_TARGET_APOAPSIS_KM = 382_000;
+const FLEET_TLI_TARGET_APOAPSIS_MARGIN_KM = 3_000;
+const FLEET_TEI_DEPARTURE_DISTANCE_KM = 140_000;
+const FLEET_EARTH_CAPTURE_DISTANCE_KM = 180_000;
+const FLEET_EARTH_CAPTURE_APOAPSIS_MAX_KM = 75_000;
+const FLEET_EARTH_CAPTURE_PERIAPSIS_MIN_KM = 120;
 const FLEET_MOONWARD_TARGET_PHASES = new Set([
   "launch_to_parking",
   "orbital_refuel",
@@ -87,6 +94,90 @@ function defaultPhaseLabel(phase) {
     return "Mission Complete";
   }
   return "Idle";
+}
+
+function formatFleetGateKm(value, digits = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} km`;
+}
+
+function formatFleetGateSpeed(value, digits = 4) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} km/s`;
+}
+
+function formatFleetGatePercent(value, digits = 1) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  return `${(numeric * 100).toFixed(Math.max(0, Number(digits) || 0))}%`;
+}
+
+function fleetMissionPhaseGateReason({
+  vehicle = null,
+  orbital = null,
+  moonDistanceKm = Number.POSITIVE_INFINITY,
+  moonClosingSpeedKmS = 0,
+  moonRelativeSpeedKmS = 0,
+  moonProjectedMissDistanceKm = Number.POSITIVE_INFINITY,
+  earthDistanceKm = Number.POSITIVE_INFINITY,
+  earthRadialSpeedKmS = 0,
+} = {}) {
+  if (!vehicle || vehicle.missionId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return "";
+  }
+  const phase = String(vehicle.missionPhase || "").trim();
+  if (phase === "launch_to_parking") {
+    return "Awaiting parking orbit gate: apo/peri >= 180 km / 150 km.";
+  }
+  if (phase === "orbital_refuel") {
+    const stageProfiles = Array.isArray(vehicle.stageProfiles) ? vehicle.stageProfiles : [];
+    const stageIndex = Math.max(
+      0,
+      Math.min(stageProfiles.length - 1, Number(vehicle.stageIndex) || 0),
+    );
+    const stageCapacityKg = Math.max(0, Number(stageProfiles[stageIndex]?.propellantMassKg) || 0);
+    const fillFraction = stageCapacityKg > 1e-6
+      ? Math.max(0, Math.min(1, (Number(vehicle.stagePropellantKg) || 0) / stageCapacityKg))
+      : 0;
+    return `Awaiting refuel target: fill ${formatFleetGatePercent(fillFraction)} / ${formatFleetGatePercent(FLEET_MOON_REFUEL_TARGET_FILL_FRACTION)}.`;
+  }
+  if (phase === "tli_burn") {
+    const targetApoKm = FLEET_TLI_TARGET_APOAPSIS_KM - FLEET_TLI_TARGET_APOAPSIS_MARGIN_KM;
+    return `Awaiting TLI gate: apo >= ${formatFleetGateKm(targetApoKm)} and miss <= ${formatFleetGateKm(FLEET_MOON_MIDCOURSE_MISS_DISTANCE_KM)}.`;
+  }
+  if (phase === "coast_to_moon") {
+    return `Awaiting lunar approach: distance ${formatFleetGateKm(moonDistanceKm)} <= ${formatFleetGateKm(FLEET_MOON_APPROACH_DISTANCE_KM)} (closing ${formatFleetGateSpeed(moonClosingSpeedKmS)}).`;
+  }
+  if (phase === "lunar_capture") {
+    return `Awaiting lunar capture orbit: rel speed ${formatFleetGateSpeed(moonRelativeSpeedKmS)} | miss ${formatFleetGateKm(moonProjectedMissDistanceKm)}.`;
+  }
+  if (phase === "lunar_orbit_hold") {
+    return "Holding lunar orbit objective.";
+  }
+  if (phase === "tei_burn") {
+    return `Awaiting TEI departure: moon distance ${formatFleetGateKm(moonDistanceKm)} >= ${formatFleetGateKm(FLEET_TEI_DEPARTURE_DISTANCE_KM)} and Earth radial < 0 (${formatFleetGateSpeed(earthRadialSpeedKmS)}).`;
+  }
+  if (phase === "coast_to_earth") {
+    return `Awaiting Earth capture approach: Earth distance ${formatFleetGateKm(earthDistanceKm)} <= ${formatFleetGateKm(FLEET_EARTH_CAPTURE_DISTANCE_KM)}.`;
+  }
+  if (phase === "earth_capture") {
+    return `Awaiting Earth capture orbit: apo/peri <= ${formatFleetGateKm(FLEET_EARTH_CAPTURE_APOAPSIS_MAX_KM)} / >= ${formatFleetGateKm(FLEET_EARTH_CAPTURE_PERIAPSIS_MIN_KM)}.`;
+  }
+  if (phase === "earth_orbit_hold") {
+    return "Mission phase gate complete: Earth orbit hold.";
+  }
+  if (Number(orbital?.specificEnergy) >= 0 && Number(orbital?.periapsisKm) < 0) {
+    return "Awaiting bounded Earth orbit energy.";
+  }
+  return "Awaiting next mission gate.";
 }
 
 function bodyDirectionFromLatLon(axes, latitudeDeg, longitudeDeg) {
@@ -1636,6 +1727,9 @@ export function createLaunchFleetController({
         vehicleKind,
         vehicleName: vehicle.vehicleName || "Starship",
         launchMode: String(vehicle.launchMode || "pad_launch"),
+        moonRelativeSpeedKmS: null,
+        moonProjectedMissDistanceKm: null,
+        missionPhaseGateReason: "",
         refuelTransferActive: false,
         refuelTransferTankerId: "",
         refuelTransferProgress: 0,
@@ -1672,6 +1766,12 @@ export function createLaunchFleetController({
     let targetBodyName = "Earth";
     let targetDistanceKm = Math.max(0, length(relPos) - earthRadiusKm);
     let targetClosingSpeedKmS = null;
+    let moonRelativeSpeedKmS = null;
+    let moonProjectedMissDistanceKm = null;
+    const earthDistanceKm = length(relPos);
+    const earthRadialSpeedKmS = earthDistanceKm > 1e-9
+      ? dot(relPos, relVel) / earthDistanceKm
+      : 0;
     const moonState = bodyStateFromNBody(state, "moon");
     if (
       vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
@@ -1691,8 +1791,11 @@ export function createLaunchFleetController({
       targetClosingSpeedKmS = moonDistanceKm > 1e-9
         ? -dot(moonRelVel, scale(moonRelPos, 1 / moonDistanceKm))
         : null;
+      const relativeSpeed = length(moonRelVel);
+      moonRelativeSpeedKmS = Number.isFinite(relativeSpeed) ? relativeSpeed : null;
+      const projectedMiss = projectedClosestApproachDistanceKm(moonRelPos, moonRelVel);
+      moonProjectedMissDistanceKm = Number.isFinite(projectedMiss) ? projectedMiss : null;
     } else {
-      const earthDistanceKm = length(relPos);
       targetClosingSpeedKmS = earthDistanceKm > 1e-9
         ? -dot(relVel, scale(relPos, 1 / earthDistanceKm))
         : null;
@@ -1774,6 +1877,16 @@ export function createLaunchFleetController({
     const rcsOrbitCorrectionForceN = (vehicleKind === "tanker" || stepRcsActive)
       ? Math.max(0, (Number(shipState.massKg) || 0) * rcsOrbitCorrectionAccelKmS2 * 1000)
       : 0;
+    const missionPhaseGateReason = fleetMissionPhaseGateReason({
+      vehicle,
+      orbital,
+      moonDistanceKm: Number(targetBodyId === "moon" ? targetDistanceKm : Number.POSITIVE_INFINITY),
+      moonClosingSpeedKmS: Number(targetBodyId === "moon" ? targetClosingSpeedKmS : 0),
+      moonRelativeSpeedKmS,
+      moonProjectedMissDistanceKm,
+      earthDistanceKm,
+      earthRadialSpeedKmS,
+    });
     return {
       ...safeBaseSnapshot,
       bodyId: vehicle.id,
@@ -1876,6 +1989,9 @@ export function createLaunchFleetController({
       targetBodyName,
       targetDistanceKm,
       targetClosingSpeedKmS,
+      moonRelativeSpeedKmS,
+      moonProjectedMissDistanceKm,
+      missionPhaseGateReason,
       rcsActive: flightRcsActive,
       rcsErrorDeg: 0,
       rcsAuthority,

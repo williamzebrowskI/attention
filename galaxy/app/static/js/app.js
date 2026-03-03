@@ -2810,6 +2810,9 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     && Number(snapshot.targetClosingSpeedKmS) > 1e-6
     ? (Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS))
     : Number.NaN;
+  const moonRelativeSpeedKmS = Number(snapshot.moonRelativeSpeedKmS);
+  const moonProjectedMissDistanceKm = Number(snapshot.moonProjectedMissDistanceKm);
+  const missionPhaseGateReason = String(snapshot.missionPhaseGateReason || "").trim();
   const targetBodyLabel = launchTargetLabel(snapshot?.targetBodyName, snapshot?.targetBodyId);
   const boosterFuelPct = Number.isFinite(Number(snapshot.boosterFuelFraction))
     ? Number(snapshot.boosterFuelFraction) * 100
@@ -2863,7 +2866,10 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Target Body", value: targetBodyLabel },
     { label: "Target Dist", value: Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a" },
     { label: "Closing", value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Moon Rel V", value: Number.isFinite(moonRelativeSpeedKmS) ? `${formatNumber(moonRelativeSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Proj Miss", value: Number.isFinite(moonProjectedMissDistanceKm) ? `${formatNumber(moonProjectedMissDistanceKm, 1)} km` : "n/a" },
     { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
+    { label: "Phase Gate", value: missionPhaseGateReason || "n/a" },
   ];
 
   const aeroMetrics = [
@@ -9817,6 +9823,13 @@ function updateInfoOverlay() {
     const targetEtaLine = Number.isFinite(targetEtaSeconds)
       ? formatDurationSeconds(targetEtaSeconds)
       : "n/a";
+    const moonRelativeSpeedLine = Number.isFinite(launchSnapshot?.moonRelativeSpeedKmS)
+      ? `${formatNumber(launchSnapshot.moonRelativeSpeedKmS, 4)} km/s`
+      : "n/a";
+    const moonProjectedMissLine = Number.isFinite(launchSnapshot?.moonProjectedMissDistanceKm)
+      ? `${formatNumber(launchSnapshot.moonProjectedMissDistanceKm, 1)} km`
+      : "n/a";
+    const phaseGateReasonLine = String(launchSnapshot?.missionPhaseGateReason || "").trim() || "n/a";
     const boosterAltitudeLine = Number.isFinite(launchSnapshot?.boosterAltitudeKm)
       ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km`
       : "n/a";
@@ -9873,6 +9886,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">RCS Orbit Correction: ${tankerRcsOrbitCorrectionLine} | Accel: ${tankerRcsOrbitAccelLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+        <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
+        <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
       `;
     } else {
       selectedVehicleLines = `
@@ -9881,6 +9896,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+        <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
+        <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>

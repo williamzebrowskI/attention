@@ -100,6 +100,8 @@ import {
 import { createLaunchFleetController } from "./launchFleetController.js";
 import {
   createNavigationSystem,
+  DEFAULT_MOON_MISSION_PROFILE,
+  NAVIGATION_DEFAULTS,
   NAVIGATION_SYSTEM_MODES,
 } from "../navigation_system/index.js";
 
@@ -837,6 +839,9 @@ export function createLaunchController(options) {
     earthClosingSpeedKmS: null,
     moonDistanceKm: null,
     moonClosingSpeedKmS: null,
+    moonRelativeSpeedKmS: null,
+    moonProjectedMissDistanceKm: null,
+    missionPhaseGateReason: "",
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
     windSeed: Date.now() % 1_000_000,
@@ -1091,6 +1096,108 @@ export function createLaunchController(options) {
     ));
   }
 
+  function gateReasonLabel(reasonCode = "") {
+    const code = String(reasonCode || "").trim().toLowerCase();
+    if (!code) {
+      return "";
+    }
+    const labels = {
+      parking_orbit_ready: "Parking orbit gate passed",
+      refuel_target_met: "Refuel target gate passed",
+      tli_escape_conditions_met: "TLI escape gate passed",
+      moon_approach_gate: "Moon approach gate passed",
+      lunar_capture_achieved: "Lunar capture gate passed",
+      lunar_hold_complete: "Lunar hold gate passed",
+      tei_departure_complete: "TEI departure gate passed",
+      earth_capture_gate: "Earth capture approach gate passed",
+      earth_capture_complete: "Earth orbit capture gate passed",
+    };
+    return labels[code] || code.replace(/[_-]+/g, " ");
+  }
+
+  function formatGateKm(value, digits = 0) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "n/a";
+    }
+    return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} km`;
+  }
+
+  function formatGateSpeed(value, digits = 4) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "n/a";
+    }
+    return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} km/s`;
+  }
+
+  function formatGatePercent(value, digits = 1) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "n/a";
+    }
+    return `${(numeric * 100).toFixed(Math.max(0, Number(digits) || 0))}%`;
+  }
+
+  function moonMissionPhaseGateReason({
+    phase = "",
+    orbital = null,
+    moonOrbit = null,
+    moonDistanceKm = Number.POSITIVE_INFINITY,
+    moonAltitudeKm = Number.POSITIVE_INFINITY,
+    moonClosingSpeedKmS = 0,
+    moonProjectedMissDistanceKm = Number.POSITIVE_INFINITY,
+    earthDistanceKm = Number.POSITIVE_INFINITY,
+    earthRadialSpeedKmS = 0,
+    refuelFillFraction = 0,
+    missionElapsedInPhaseSec = 0,
+    phaseDecisionReason = "",
+  } = {}) {
+    const profile = DEFAULT_MOON_MISSION_PROFILE;
+    if (phaseDecisionReason) {
+      return gateReasonLabel(phaseDecisionReason);
+    }
+    const missionPhase = String(phase || "").trim();
+    if (missionPhase === "launch_to_parking") {
+      return `Awaiting parking orbit gate: apo/peri >= ${formatGateKm(profile.parkingOrbitApoapsisMinKm)} / ${formatGateKm(profile.parkingOrbitPeriapsisMinKm)}.`;
+    }
+    if (missionPhase === "orbital_refuel") {
+      return `Awaiting refuel target: fill ${formatGatePercent(refuelFillFraction)} / ${formatGatePercent(profile.refuelTargetFillFraction)}.`;
+    }
+    if (missionPhase === "tli_burn") {
+      return `Awaiting TLI gate: apo >= ${formatGateKm(profile.tliTargetApoapsisKm - profile.tliApoapsisMarginKm)}, miss <= ${formatGateKm(profile.tliInterceptMissDistanceKm)}.`;
+    }
+    if (missionPhase === "coast_to_moon") {
+      return `Awaiting lunar approach: distance ${formatGateKm(moonDistanceKm)} <= ${formatGateKm(profile.moonApproachDistanceKm)} (closing ${formatGateSpeed(moonClosingSpeedKmS)}).`;
+    }
+    if (missionPhase === "lunar_insertion") {
+      return `Awaiting lunar capture: altitude ${formatGateKm(moonAltitudeKm)} | miss ${formatGateKm(moonProjectedMissDistanceKm)}.`;
+    }
+    if (missionPhase === "lunar_orbit_hold") {
+      const remainingSec = Math.max(0, Number(profile.lunarHoldDurationSec) - Math.max(0, Number(missionElapsedInPhaseSec) || 0));
+      return `Holding lunar orbit: TEI unlock in ${Math.round(remainingSec)}s.`;
+    }
+    if (missionPhase === "tei_burn") {
+      return `Awaiting TEI departure: moon distance ${formatGateKm(moonDistanceKm)} >= ${formatGateKm(profile.teiDepartureDistanceKm)} and Earth radial < 0 (${formatGateSpeed(earthRadialSpeedKmS)}).`;
+    }
+    if (missionPhase === "coast_to_earth") {
+      return `Awaiting Earth capture approach: Earth distance ${formatGateKm(earthDistanceKm)} <= ${formatGateKm(profile.earthCaptureDistanceKm)}.`;
+    }
+    if (missionPhase === "earth_capture") {
+      return `Awaiting Earth capture orbit: apo/peri <= ${formatGateKm(profile.earthCaptureApoapsisMaxKm)} / >= ${formatGateKm(profile.earthCapturePeriapsisMinKm)}.`;
+    }
+    if (missionPhase === "earth_orbit_hold") {
+      return "Mission phase gate complete: Earth orbit hold.";
+    }
+    if (Number(orbital?.specificEnergy) >= 0 && Number(orbital?.periapsisKm) < 0) {
+      return "Awaiting bounded Earth orbit energy.";
+    }
+    if (moonOrbit && Number(moonOrbit.specificEnergy) < 0) {
+      return "Moon-relative captured orbit detected.";
+    }
+    return "Awaiting next mission gate.";
+  }
+
   function computePrimaryNavigationAutopilotCommand({
     state,
     earthState,
@@ -1102,9 +1209,11 @@ export function createLaunchController(options) {
     activeRefuelTarget,
   }) {
     if (runtime.mission.selectedId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+      runtime.missionPhaseGateReason = "";
       return null;
     }
     if (!state || !earthState || !rocketState || !orbital) {
+      runtime.missionPhaseGateReason = "Awaiting valid navigation state.";
       return null;
     }
 
@@ -1147,6 +1256,12 @@ export function createLaunchController(options) {
       relativeVelocityKmS: moonMinusShipRelativeVelocityKmS,
       horizonSec: 36 * 3600,
     });
+    runtime.moonRelativeSpeedKmS = Number.isFinite(moonRelativeSpeedKmS)
+      ? moonRelativeSpeedKmS
+      : null;
+    runtime.moonProjectedMissDistanceKm = Number.isFinite(moonProjectedMissDistanceKm)
+      ? moonProjectedMissDistanceKm
+      : null;
     const nearestRefuelTarget = activeRefuelTarget || refuelController.activeRendezvousTarget?.(state) || null;
 
     const refuelTargetKg = resolveRefuelTargetKg(
@@ -1196,6 +1311,25 @@ export function createLaunchController(options) {
     });
 
     const navState = navResult?.state;
+    const navPhaseDecisionReason = String(navResult?.phaseDecision?.reason || "").trim();
+    const missionElapsedInPhaseSec = Math.max(
+      0,
+      Number(runtime.elapsedSeconds) - (Number(runtime.mission.phaseStartedElapsedSec) || 0),
+    );
+    runtime.missionPhaseGateReason = moonMissionPhaseGateReason({
+      phase: String(navState?.missionPhase || runtime.mission.phase || ""),
+      orbital,
+      moonOrbit,
+      moonDistanceKm,
+      moonAltitudeKm,
+      moonClosingSpeedKmS,
+      moonProjectedMissDistanceKm,
+      earthDistanceKm,
+      earthRadialSpeedKmS,
+      refuelFillFraction,
+      missionElapsedInPhaseSec,
+      phaseDecisionReason: navPhaseDecisionReason,
+    });
     const navPhase = String(navState?.missionPhase || "").trim();
     if (navPhase && runtime.mission.phase !== navPhase) {
       setMissionPhase(runtime, navPhase);
@@ -1389,6 +1523,9 @@ export function createLaunchController(options) {
     runtime.earthClosingSpeedKmS = null;
     runtime.moonDistanceKm = null;
     runtime.moonClosingSpeedKmS = null;
+    runtime.moonRelativeSpeedKmS = null;
+    runtime.moonProjectedMissDistanceKm = null;
+    runtime.missionPhaseGateReason = "";
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
     runtime.windSeed = Date.now() % 1_000_000;
@@ -1461,6 +1598,8 @@ export function createLaunchController(options) {
     ) {
       runtime.moonDistanceKm = null;
       runtime.moonClosingSpeedKmS = null;
+      runtime.moonRelativeSpeedKmS = null;
+      runtime.moonProjectedMissDistanceKm = null;
       return;
     }
     const moonRelPos = subtract(rocketState.position, moonState.position);
@@ -1472,6 +1611,18 @@ export function createLaunchController(options) {
     runtime.moonDistanceKm = Number.isFinite(moonDistanceKm) ? moonDistanceKm : null;
     runtime.moonClosingSpeedKmS = (runtime.moonDistanceKm && runtime.moonDistanceKm > 1e-9)
       ? -dot(moonRelVel, scale(moonRelPos, 1 / runtime.moonDistanceKm))
+      : null;
+    const moonRelativeSpeedKmS = length(moonRelVel);
+    runtime.moonRelativeSpeedKmS = Number.isFinite(moonRelativeSpeedKmS)
+      ? moonRelativeSpeedKmS
+      : null;
+    const projectedMissDistanceKm = projectedClosestApproachDistanceKm({
+      relativePositionKm: moonRelPos,
+      relativeVelocityKmS: moonRelVel,
+      horizonSec: Number(NAVIGATION_DEFAULTS?.planner?.moonMidcoursePredictHorizonSec) || (36 * 3600),
+    });
+    runtime.moonProjectedMissDistanceKm = Number.isFinite(projectedMissDistanceKm)
+      ? projectedMissDistanceKm
       : null;
   }
 
@@ -3638,6 +3789,9 @@ export function createLaunchController(options) {
         refuelUndockActive,
         moonDistanceKm: runtime.moonDistanceKm,
         moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
+        moonRelativeSpeedKmS: runtime.moonRelativeSpeedKmS,
+        moonProjectedMissDistanceKm: runtime.moonProjectedMissDistanceKm,
+        missionPhaseGateReason: runtime.missionPhaseGateReason || "",
         targetBodyId: targetDescriptor.bodyId,
         targetBodyName: targetDescriptor.bodyName,
         targetDistanceKm: targetDescriptor.distanceKm,
@@ -3773,6 +3927,9 @@ export function createLaunchController(options) {
       refuelUndockActive,
       moonDistanceKm: runtime.moonDistanceKm,
       moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
+      moonRelativeSpeedKmS: runtime.moonRelativeSpeedKmS,
+      moonProjectedMissDistanceKm: runtime.moonProjectedMissDistanceKm,
+      missionPhaseGateReason: runtime.missionPhaseGateReason || "",
       targetBodyId: targetDescriptor.bodyId,
       targetBodyName: targetDescriptor.bodyName,
       targetDistanceKm: targetDescriptor.distanceKm,
@@ -3893,6 +4050,7 @@ export function createLaunchController(options) {
     const normalized = normalizeMissionId(missionId);
     runtime.mission.selectedId = normalized;
     runtime.mission.completed = false;
+    runtime.missionPhaseGateReason = "";
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(normalized));
     refuelController.applyMissionProfile(normalized);
     primaryNavigationSystem.setMission(normalized, runtime.elapsedSeconds);
@@ -3994,6 +4152,9 @@ export function createLaunchController(options) {
       earthClosingSpeedKmS: finiteOrNull(runtime.earthClosingSpeedKmS),
       moonDistanceKm: finiteOrNull(runtime.moonDistanceKm),
       moonClosingSpeedKmS: finiteOrNull(runtime.moonClosingSpeedKmS),
+      moonRelativeSpeedKmS: finiteOrNull(runtime.moonRelativeSpeedKmS),
+      moonProjectedMissDistanceKm: finiteOrNull(runtime.moonProjectedMissDistanceKm),
+      missionPhaseGateReason: String(runtime.missionPhaseGateReason || ""),
       lastTrackedPositionKm: cloneVectorOrNull(runtime.lastTrackedPositionKm),
       lastSurfaceSample: cloneJson(runtime.lastSurfaceSample),
       windSeed: Math.max(0, Math.floor(finiteNumber(runtime.windSeed, Date.now() % 1_000_000))),
@@ -4085,6 +4246,9 @@ export function createLaunchController(options) {
     runtime.earthClosingSpeedKmS = finiteOrNull(snapshot.earthClosingSpeedKmS);
     runtime.moonDistanceKm = finiteOrNull(snapshot.moonDistanceKm);
     runtime.moonClosingSpeedKmS = finiteOrNull(snapshot.moonClosingSpeedKmS);
+    runtime.moonRelativeSpeedKmS = finiteOrNull(snapshot.moonRelativeSpeedKmS);
+    runtime.moonProjectedMissDistanceKm = finiteOrNull(snapshot.moonProjectedMissDistanceKm);
+    runtime.missionPhaseGateReason = String(snapshot.missionPhaseGateReason || "");
     runtime.lastTrackedPositionKm = cloneVectorOrNull(snapshot.lastTrackedPositionKm);
     runtime.lastSurfaceSample = cloneJson(snapshot.lastSurfaceSample);
     runtime.windSeed = Math.max(0, Math.floor(finiteNumber(snapshot.windSeed, runtime.windSeed)));
