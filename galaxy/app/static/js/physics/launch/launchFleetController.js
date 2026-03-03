@@ -53,8 +53,10 @@ const FLEET_MOON_MIDCOURSE_MIN_BURN_SEC = 24;
 const FLEET_MOON_MIDCOURSE_EXIT_STABLE_SEC = 28;
 const FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM = 130;
 const FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM = 155;
-const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_450_000;
+const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_650_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG = 90_000;
+const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_SOFT_DEFICIT_KG = -8_000;
+const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_HARD_HOLD_KG = -30_000;
 const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 2_600_000;
 const FLEET_MOON_MISSION_MARGIN_CONSERVE_KG = 220_000;
 const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
@@ -516,6 +518,13 @@ export function createLaunchFleetController({
     const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
     const earthVelocity = earthState.velocity || { x: 0, y: 0, z: 0 };
     const shipVelocity = shipState.velocity || { x: 0, y: 0, z: 0 };
+    const shipRelPosEarth = subtract(shipState.position, earthState.position);
+    const shipRelVelEarth = subtract(shipVelocity, earthVelocity);
+    const shipAltitudeKm = length(shipRelPosEarth) - earthRadiusKm;
+    const shipRadialSpeedKmS = dot(
+      shipRelVelEarth,
+      normalize(shipRelPosEarth, { x: 0, y: 0, z: 1 }),
+    );
     let best = null;
     for (const [bodyId, tankerState] of state.dynamicBodies.entries()) {
       const tankerId = String(bodyId || "").trim();
@@ -561,6 +570,22 @@ export function createLaunchFleetController({
         tankerRelVelEarth,
         normalize(relPosEarth, { x: 0, y: 0, z: 1 }),
       );
+      const safeClosingSpeedKmS = Number.isFinite(closingSpeedKmS)
+        ? closingSpeedKmS
+        : -1;
+      const altitudeErrorKm = Math.abs(altitudeKm - shipAltitudeKm);
+      const radialSpeedErrorKmS = Math.abs(radialSpeedKmS - shipRadialSpeedKmS);
+      const desiredClosingKmS = clamp(distanceKm / 80_000, 0.005, 0.12);
+      const weakClosingPenaltyKmS = Math.max(0, desiredClosingKmS - safeClosingSpeedKmS);
+      const separatingPenaltyKmS = Math.max(0, -safeClosingSpeedKmS);
+      const interceptScore = (
+        (distanceKm / 6000)
+        + (relativeSpeedKmS * 80)
+        + (weakClosingPenaltyKmS * 700)
+        + (separatingPenaltyKmS * 2500)
+        + (altitudeErrorKm / 150)
+        + (radialSpeedErrorKmS * 9000)
+      );
       const candidate = {
         tankerId,
         distanceKm,
@@ -570,8 +595,11 @@ export function createLaunchFleetController({
         relativeVelocityKmS,
         altitudeKm,
         radialSpeedKmS,
+        altitudeErrorKm,
+        radialSpeedErrorKmS,
+        interceptScore,
       };
-      if (!best || candidate.distanceKm < best.distanceKm) {
+      if (!best || candidate.interceptScore < best.interceptScore) {
         best = candidate;
       }
     }
@@ -1630,14 +1658,24 @@ export function createLaunchFleetController({
       ) {
         const budgetFeasible = Boolean(missionFuelBudget.feasible);
         const budgetMarginKg = Number(missionFuelBudget.marginKg);
-        if (!budgetFeasible && availablePropellantKg > 1e-6) {
+        if (
+          !budgetFeasible
+          && availablePropellantKg > 1e-6
+          && Number.isFinite(budgetMarginKg)
+          && budgetMarginKg <= FLEET_ORBITAL_REFUEL_DEMO_MARGIN_HARD_HOLD_KG
+        ) {
           requestedThrottle = 0;
           desiredDirection = prograde;
           guidanceMode = "navsys:orbital-refuel-budget-hold";
         } else if (Number.isFinite(budgetMarginKg) && budgetMarginKg < FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG) {
-          requestedThrottle = Math.min(requestedThrottle, 0.18);
+          const preserveThrottleCap = budgetMarginKg < FLEET_ORBITAL_REFUEL_DEMO_MARGIN_SOFT_DEFICIT_KG
+            ? 0.1
+            : 0.18;
+          requestedThrottle = Math.min(requestedThrottle, preserveThrottleCap);
           if (requestedThrottle > 1e-3 && guidanceMode.startsWith("navsys:orbital-refuel")) {
-            guidanceMode = `${guidanceMode}:fuel-conserve`;
+            guidanceMode = budgetMarginKg < 0
+              ? `${guidanceMode}:budget-soft-deficit`
+              : `${guidanceMode}:fuel-conserve`;
           }
         }
       }
