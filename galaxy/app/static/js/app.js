@@ -45,7 +45,7 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303b";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303c";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -173,7 +173,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260303ai";
+const FRONTEND_MODULE_VERSION = "20260303aq";
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: "earth_orbit_hold",
@@ -2090,7 +2090,10 @@ function rebuildBodyLegend() {
   }
 
   const spacecraftBodies = bodies
-    .filter((body) => body.body_type === "spacecraft")
+    .filter((body) => (
+      body.body_type === "spacecraft"
+      || isLaunchTelemetryVehicleId(body.id)
+    ))
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
   if (spacecraftBodies.length > 0) {
     const section = document.createElement("p");
@@ -2757,6 +2760,15 @@ function missionMetricGroup(title, metrics) {
   return `<section class="legend-mission-group"><p class="legend-mission-group-title">${escapeHtml(title)}</p><div class="legend-mission-grid">${cells}</div></section>`;
 }
 
+function launchTargetLabel(targetBodyName, targetBodyId) {
+  const name = String(targetBodyName || "").trim();
+  const id = String(targetBodyId || "").trim();
+  if (id.startsWith("earth_refuel_tanker_")) {
+    return id;
+  }
+  return name || "n/a";
+}
+
 function missionBar(label, percent, valueLabel) {
   const safePercent = Number.isFinite(Number(percent))
     ? Math.max(0, Math.min(100, Number(percent)))
@@ -2795,6 +2807,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     && Number(snapshot.targetClosingSpeedKmS) > 1e-6
     ? (Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS))
     : Number.NaN;
+  const targetBodyLabel = launchTargetLabel(snapshot?.targetBodyName, snapshot?.targetBodyId);
   const boosterFuelPct = Number.isFinite(Number(snapshot.boosterFuelFraction))
     ? Number(snapshot.boosterFuelFraction) * 100
     : Number.NaN;
@@ -2844,7 +2857,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Radial", value: Number.isFinite(Number(snapshot.radialSpeedKmS)) ? `${formatNumber(snapshot.radialSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Tangential", value: Number.isFinite(Number(snapshot.tangentialSpeedKmS)) ? `${formatNumber(snapshot.tangentialSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Circular", value: Number.isFinite(Number(snapshot.circularSpeedKmS)) ? `${formatNumber(snapshot.circularSpeedKmS, 4)} km/s` : "n/a" },
-    { label: "Target Body", value: snapshot.targetBodyName || "n/a" },
+    { label: "Target Body", value: targetBodyLabel },
     { label: "Target Dist", value: Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a" },
     { label: "Closing", value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
     { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
@@ -3845,13 +3858,15 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     ? ` | Refuel ${Number(snapshot.refuelCompletedFlights) || 0}/${Number(snapshot.refuelRequiredFlights) || 0}${Number.isFinite(Number(snapshot.refuelFillFraction)) ? ` (${formatNumber(Number(snapshot.refuelFillFraction) * 100, 1)}%)` : ""}${snapshot.refuelCanLaunchTanker ? " [launch window]" : ""} | Tankers available ${Math.max(0, Number(snapshot.refuelAvailableTankers) || Number(snapshot.refuelActiveFlights) || Number(snapshot.refuelAtSlotTankers) || 0)} (online ${Math.max(0, Number(snapshot.refuelOnlineTankers) || 0)})${transferLine}`
     : "";
   const targetBodyName = String(snapshot.targetBodyName || "").trim();
+  const targetBodyId = String(snapshot.targetBodyId || "").trim();
+  const targetBodyLabel = launchTargetLabel(targetBodyName, targetBodyId);
   const targetDistanceKm = Number(snapshot.targetDistanceKm);
   const targetClosingSpeedKmS = Number(snapshot.targetClosingSpeedKmS);
   const targetEtaSeconds = Number.isFinite(targetDistanceKm) && Number.isFinite(targetClosingSpeedKmS) && targetClosingSpeedKmS > 1e-6
     ? (targetDistanceKm / targetClosingSpeedKmS)
     : null;
   const targetLine = Number.isFinite(targetDistanceKm)
-    ? ` | Target ${targetBodyName || "Body"} ${formatNumber(targetDistanceKm, 1)} km${Number.isFinite(targetClosingSpeedKmS) ? ` (${formatNumber(targetClosingSpeedKmS, 4)} km/s)` : ""}${Number.isFinite(targetEtaSeconds) ? ` ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
+    ? ` | Target ${targetBodyLabel || "Body"} ${formatNumber(targetDistanceKm, 1)} km${Number.isFinite(targetClosingSpeedKmS) ? ` (${formatNumber(targetClosingSpeedKmS, 4)} km/s)` : ""}${Number.isFinite(targetEtaSeconds) ? ` ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
     : "";
   const eventAgeSeconds = lastLaunchEventTimestampUtc
     ? Math.max(0, (Date.now() - Date.parse(lastLaunchEventTimestampUtc)) / 1000)
@@ -9780,6 +9795,8 @@ function updateInfoOverlay() {
       : "n/a";
     const starshipOrbitLine = `${Number.isFinite(launchSnapshot?.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot?.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}`;
     const targetBodyName = String(launchSnapshot?.targetBodyName || "").trim() || "n/a";
+    const targetBodyId = String(launchSnapshot?.targetBodyId || "").trim();
+    const targetBodyLabel = launchTargetLabel(targetBodyName, targetBodyId);
     const targetDistanceRawKm = Number(launchSnapshot?.targetDistanceKm);
     const targetClosingRawKmS = Number(launchSnapshot?.targetClosingSpeedKmS);
     const targetDistanceLine = Number.isFinite(targetDistanceRawKm)
@@ -9849,7 +9866,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">RCS Orbit Correction: ${tankerRcsOrbitCorrectionLine} | Accel: ${tankerRcsOrbitAccelLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
-        <p class="line launch-line">Target: ${targetBodyName} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+        <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
       `;
     } else {
       selectedVehicleLines = `
@@ -9857,7 +9874,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
-        <p class="line launch-line">Target: ${targetBodyName} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+        <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
         <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>
@@ -9900,7 +9917,7 @@ function updateInfoOverlay() {
        <p class="line launch-line">Altitude Above Terrain: ${Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
        <p class="line launch-line">Local Terrain Elevation: ${Number.isFinite(launchSnapshot.terrainElevationKm) ? `${formatNumber(launchSnapshot.terrainElevationKm, 3)} km` : "n/a"} | Lat/Lon: ${Number.isFinite(launchSnapshot.latitudeDeg) && Number.isFinite(launchSnapshot.longitudeDeg) ? `${formatNumber(launchSnapshot.latitudeDeg, 4)}°, ${formatNumber(launchSnapshot.longitudeDeg, 4)}°` : "n/a"}</p>
        <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
-       <p class="line launch-line">Target Body: ${launchSnapshot.targetBodyName || "n/a"} | Distance: ${Number.isFinite(launchSnapshot.targetDistanceKm) ? `${formatNumber(launchSnapshot.targetDistanceKm, 1)} km` : "n/a"} | Closing: ${Number.isFinite(launchSnapshot.targetClosingSpeedKmS) ? `${formatNumber(launchSnapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Target Body: ${launchTargetLabel(launchSnapshot.targetBodyName, launchSnapshot.targetBodyId)} | Distance: ${Number.isFinite(launchSnapshot.targetDistanceKm) ? `${formatNumber(launchSnapshot.targetDistanceKm, 1)} km` : "n/a"} | Closing: ${Number.isFinite(launchSnapshot.targetClosingSpeedKmS) ? `${formatNumber(launchSnapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Phase: ${launchSnapshot.boosterPhase || "n/a"} | Guidance: ${launchSnapshot.boosterGuidanceMode || "n/a"} | Landed: ${launchSnapshot.boosterLanded ? "yes" : "no"}</p>
        <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed: ${Number.isFinite(launchSnapshot.boosterSpeedKmS) ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}${Number.isFinite(launchSnapshot.boosterFuelFraction) ? ` (${formatNumber(launchSnapshot.boosterFuelFraction * 100, 1)}% remaining)` : ""}</p>

@@ -1,226 +1,80 @@
-import {
-  clamp,
-  normalize,
-  scale,
-  add,
-  dot,
-  length,
-} from "./navigationMath.js";
-import {
-  NAVIGATION_MISSION_IDS,
-  NAVIGATION_MISSION_PHASES,
-} from "./navigationMissionProfiles.js";
+import { NAVIGATION_MISSION_IDS } from "./navigationMissionProfiles.js";
 import {
   NAVIGATION_DEFAULTS,
   NAVIGATION_SYSTEM_MODES,
   normalizeNavigationMode,
 } from "./navigationSystemConfig.js";
-import { REFUEL_TANKER_CONFIG } from "../launch/refuel/config.js";
-
-function moonMissionBaselineCommand({
-  phase,
-  targetVectors = {},
-  metrics = {},
-  plannerConfig = NAVIGATION_DEFAULTS.planner,
-} = {}) {
-  const tangent = normalize(targetVectors.tangent, { x: 0, y: 1, z: 0 });
-  const up = normalize(targetVectors.up, { x: 0, y: 0, z: 1 });
-  const moonDirection = normalize(targetVectors.toMoon, tangent);
-  const earthDirection = normalize(targetVectors.toEarth, scale(up, -1));
-  const moonAltitudeKm = Number(metrics.moonAltitudeKm);
-  const refuelDistanceKm = Number(metrics.refuelTargetDistanceKm);
-  const refuelRelativeSpeedKmS = Number(metrics.refuelRelativeSpeedKmS);
-  const refuelRelativeVelocityKmS = targetVectors.refuelTargetRelativeVelocityKmS;
-  const toRefuelTarget = targetVectors.toRefuelTarget;
-
-  if (phase === NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL) {
-    if (!Number.isFinite(refuelDistanceKm) || !toRefuelTarget) {
-      return {
-        phase: "coast",
-        throttle: 0,
-        direction: tangent,
-        mode: "navsys:orbital-refuel-await-target",
-      };
-    }
-    const dockDistanceKm = Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014;
-    const dockSpeedKmS = Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045;
-    const directionToTarget = normalize(toRefuelTarget, tangent);
-    const targetMinusShipRelVel = refuelRelativeVelocityKmS || { x: 0, y: 0, z: 0 };
-    const shipMinusTargetRelVel = scale(targetMinusShipRelVel, -1);
-    const relativeSpeedKmS = Number.isFinite(refuelRelativeSpeedKmS)
-      ? Math.max(0, refuelRelativeSpeedKmS)
-      : length(targetMinusShipRelVel);
-    const closingSpeedKmS = Number.isFinite(refuelDistanceKm) && refuelDistanceKm > 1e-9
-      ? dot(shipMinusTargetRelVel, directionToTarget)
-      : 0;
-    if (refuelDistanceKm <= dockDistanceKm && relativeSpeedKmS <= dockSpeedKmS) {
-      return {
-        phase: "coast",
-        throttle: 0,
-        direction: tangent,
-        mode: "navsys:orbital-refuel-docked-hold",
-      };
-    }
-
-    if (refuelDistanceKm > 15) {
-      const throttle = clamp(0.12 + (refuelDistanceKm / 220), 0.12, 0.34);
-      const direction = normalize(
-        add(
-          scale(directionToTarget, 0.92),
-          scale(tangent, 0.08),
-        ),
-        directionToTarget,
-      );
-      return {
-        phase: "powered",
-        throttle,
-        direction,
-        mode: "navsys:orbital-refuel-rendezvous-far",
-      };
-    }
-
-    if (refuelDistanceKm > 1.5) {
-      const velocityDampingDir = normalize(scale(shipMinusTargetRelVel, -1), directionToTarget);
-      const direction = normalize(
-        add(
-          scale(directionToTarget, 0.72),
-          scale(velocityDampingDir, 0.28),
-        ),
-        directionToTarget,
-      );
-      const throttle = clamp(
-        0.028 + (refuelDistanceKm / 120) + (relativeSpeedKmS * 28),
-        0.02,
-        0.12,
-      );
-      return {
-        phase: "powered",
-        throttle,
-        direction,
-        mode: "navsys:orbital-refuel-rendezvous-mid",
-      };
-    }
-
-    const desiredClosingKmS = clamp(refuelDistanceKm * 0.00009, 0.00001, 0.00008);
-    if (closingSpeedKmS > (desiredClosingKmS * 1.35) || relativeSpeedKmS > 0.00028) {
-      const brakeDirection = normalize(scale(shipMinusTargetRelVel, -1), scale(directionToTarget, -1));
-      return {
-        phase: "powered",
-        throttle: clamp(0.003 + (relativeSpeedKmS * 22), 0.003, 0.03),
-        direction: brakeDirection,
-        mode: "navsys:orbital-refuel-brake",
-      };
-    }
-
-    const closeApproachDirection = normalize(
-      add(
-        scale(directionToTarget, 0.58),
-        scale(normalize(scale(shipMinusTargetRelVel, -1), directionToTarget), 0.42),
-      ),
-      directionToTarget,
-    );
-    return {
-      phase: "powered",
-      throttle: clamp(0.002 + (refuelDistanceKm * 0.01), 0.002, 0.02),
-      direction: closeApproachDirection,
-      mode: "navsys:orbital-refuel-final-approach",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
-    return {
-      phase: "powered",
-      throttle: 0.65,
-      direction: normalize(add(scale(tangent, 0.7), scale(moonDirection, 0.3)), tangent),
-      mode: "navsys:tli-burn",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON) {
-    return {
-      phase: "coast",
-      throttle: 0,
-      direction: moonDirection,
-      mode: "navsys:coast-to-moon",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.LUNAR_INSERTION) {
-    const insertionThrottle = Number.isFinite(moonAltitudeKm) && moonAltitudeKm < plannerConfig.moonCaptureUpperAltitudeKm
-      ? 0.42
-      : 0.14;
-    return {
-      phase: "powered",
-      throttle: clamp(insertionThrottle, plannerConfig.minThrottle, plannerConfig.maxThrottle),
-      direction: normalize(add(scale(moonDirection, 0.8), scale(up, 0.2)), moonDirection),
-      mode: "navsys:lunar-insertion",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_HOLD) {
-    return {
-      phase: "coast",
-      throttle: 0,
-      direction: tangent,
-      mode: "navsys:lunar-orbit-hold",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.TEI_BURN) {
-    return {
-      phase: "powered",
-      throttle: 0.5,
-      direction: normalize(add(scale(earthDirection, 1), scale(tangent, 0.2)), earthDirection),
-      mode: "navsys:tei-burn",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.COAST_TO_EARTH) {
-    return {
-      phase: "coast",
-      throttle: 0,
-      direction: earthDirection,
-      mode: "navsys:coast-to-earth",
-    };
-  }
-
-  if (phase === NAVIGATION_MISSION_PHASES.EARTH_CAPTURE) {
-    return {
-      phase: "powered",
-      throttle: 0.38,
-      direction: normalize(add(scale(earthDirection, 1), scale(up, 0.1)), earthDirection),
-      mode: "navsys:earth-capture",
-    };
-  }
-
-  return {
-    phase: "coast",
-    throttle: 0,
-    direction: tangent,
-    mode: "navsys:standby",
-  };
-}
-
-function earthOrbitHoldBaselineCommand({
-  targetVectors = {},
-} = {}) {
-  return {
-    phase: "coast",
-    throttle: 0,
-    direction: normalize(targetVectors.tangent, { x: 0, y: 1, z: 0 }),
-    mode: "navsys:earth-orbit-hold",
-  };
-}
+import { planEarthOrbitHoldCommand } from "./planners/earthOrbitHoldPlanner.js";
+import {
+  createPlannerRuntime,
+  normalizePlannerRuntimeSnapshot,
+  syncPlannerRuntime,
+} from "./planners/moonGuidanceState.js";
+import { planMoonMissionCommand } from "./planners/moonMissionPlanner.js";
 
 export function createNavigationTrajectoryPlanner({
   mode = NAVIGATION_DEFAULTS.mode,
   plannerConfig = NAVIGATION_DEFAULTS.planner,
 } = {}) {
   let currentMode = normalizeNavigationMode(mode);
+  let plannerRuntime = createPlannerRuntime();
 
   function setMode(nextMode) {
     currentMode = normalizeNavigationMode(nextMode);
     return currentMode;
+  }
+
+  function snapshot() {
+    return {
+      missionId: plannerRuntime.missionId,
+      missionPhase: plannerRuntime.missionPhase,
+      moon: {
+        sensorEstimate: plannerRuntime.moon.sensorEstimate
+          ? {
+            distanceKm: Number(plannerRuntime.moon.sensorEstimate.distanceKm) || 0,
+            closingSpeedKmS: Number(plannerRuntime.moon.sensorEstimate.closingSpeedKmS) || 0,
+            projectedMissDistanceKm: Number(plannerRuntime.moon.sensorEstimate.projectedMissDistanceKm) || 0,
+            direction: {
+              x: Number(plannerRuntime.moon.sensorEstimate.direction?.x) || 0,
+              y: Number(plannerRuntime.moon.sensorEstimate.direction?.y) || 0,
+              z: Number(plannerRuntime.moon.sensorEstimate.direction?.z) || 0,
+            },
+          }
+          : null,
+        midcourse: {
+          active: Boolean(plannerRuntime.moon.midcourse.active),
+          burnSec: Math.max(0, Number(plannerRuntime.moon.midcourse.burnSec) || 0),
+          stableSec: Math.max(0, Number(plannerRuntime.moon.midcourse.stableSec) || 0),
+        },
+        lastTimestampSec: Number.isFinite(Number(plannerRuntime.moon.lastTimestampSec))
+          ? Number(plannerRuntime.moon.lastTimestampSec)
+          : null,
+      },
+    };
+  }
+
+  function restore(nextSnapshot = null, {
+    missionIdFallback = NAVIGATION_MISSION_IDS.EARTH_ORBIT_HOLD,
+    missionPhaseFallback = "",
+  } = {}) {
+    plannerRuntime = normalizePlannerRuntimeSnapshot(nextSnapshot);
+    if (!plannerRuntime.missionId) {
+      plannerRuntime.missionId = String(missionIdFallback || NAVIGATION_MISSION_IDS.EARTH_ORBIT_HOLD);
+    }
+    if (!plannerRuntime.missionPhase) {
+      plannerRuntime.missionPhase = String(missionPhaseFallback || "");
+    }
+    return snapshot();
+  }
+
+  function reset({
+    missionId = NAVIGATION_MISSION_IDS.EARTH_ORBIT_HOLD,
+    missionPhase = "",
+  } = {}) {
+    plannerRuntime = createPlannerRuntime();
+    plannerRuntime.missionId = String(missionId || NAVIGATION_MISSION_IDS.EARTH_ORBIT_HOLD);
+    plannerRuntime.missionPhase = String(missionPhase || "");
+    return snapshot();
   }
 
   function planCommand({
@@ -228,19 +82,24 @@ export function createNavigationTrajectoryPlanner({
     missionPhase,
     targetVectors = {},
     metrics = {},
+    timestampSec = Number.NaN,
   } = {}) {
     const normalizedMissionId = String(missionId || NAVIGATION_MISSION_IDS.EARTH_ORBIT_HOLD);
-    let baselineCommand = null;
-    if (normalizedMissionId === NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN) {
-      baselineCommand = moonMissionBaselineCommand({
+    syncPlannerRuntime({
+      plannerRuntime,
+      missionId: normalizedMissionId,
+      missionPhase,
+    });
+    const baselineCommand = normalizedMissionId === NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN
+      ? planMoonMissionCommand({
         phase: missionPhase,
         targetVectors,
         metrics,
         plannerConfig,
-      });
-    } else {
-      baselineCommand = earthOrbitHoldBaselineCommand({ targetVectors });
-    }
+        plannerRuntime,
+        timestampSec,
+      })
+      : planEarthOrbitHoldCommand({ targetVectors });
 
     if (currentMode === NAVIGATION_SYSTEM_MODES.PREDICTIVE_OPTIMIZER) {
       return {
@@ -250,6 +109,9 @@ export function createNavigationTrajectoryPlanner({
           optimizerReady: false,
           plannerMode: currentMode,
           note: "Predictive optimizer scaffold exists but is not yet active.",
+          moonPlanner: normalizedMissionId === NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN
+            ? snapshot().moon
+            : null,
         },
       };
     }
@@ -258,6 +120,9 @@ export function createNavigationTrajectoryPlanner({
       diagnostics: {
         optimizerReady: false,
         plannerMode: currentMode,
+        moonPlanner: normalizedMissionId === NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN
+          ? snapshot().moon
+          : null,
       },
     };
   }
@@ -267,6 +132,9 @@ export function createNavigationTrajectoryPlanner({
     mode() {
       return currentMode;
     },
+    reset,
+    restore,
+    snapshot,
     planCommand,
   };
 }

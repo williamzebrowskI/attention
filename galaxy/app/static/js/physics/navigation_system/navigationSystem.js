@@ -61,6 +61,10 @@ export function createNavigationSystem({
     runtime.lastUpdateSec = runtime.initializedAtSec;
     setMode(modeOverride);
     setMission(missionIdOverride, runtime.initializedAtSec);
+    planner.reset?.({
+      missionId: runtime.missionId,
+      missionPhase: runtime.missionPhase,
+    });
     return snapshot();
   }
 
@@ -104,6 +108,7 @@ export function createNavigationSystem({
       missionPhase: runtime.missionPhase,
       targetVectors,
       metrics,
+      timestampSec: nowSec,
     });
     runtime.lastCommand = command;
     runtime.missionCompleted = runtime.missionPhase === "earth_orbit_hold";
@@ -125,6 +130,7 @@ export function createNavigationSystem({
       phaseStartedAtSec: runtime.phaseStartedAtSec,
       lastUpdateSec: runtime.lastUpdateSec,
       phaseHistory: Array.isArray(runtime.phaseHistory) ? [...runtime.phaseHistory] : [],
+      plannerState: planner.snapshot?.() || null,
       estimate: estimate ? {
         position: { ...estimate.position },
         velocity: { ...estimate.velocity },
@@ -183,6 +189,10 @@ export function createNavigationSystem({
           : null,
       }
       : null;
+    planner.restore?.(nextSnapshot.plannerState || null, {
+      missionIdFallback: runtime.missionId,
+      missionPhaseFallback: runtime.missionPhase,
+    });
     estimator.restore(nextSnapshot.estimate || null);
     return snapshot();
   }

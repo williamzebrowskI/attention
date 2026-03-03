@@ -1,7 +1,4 @@
-# Navigation System Foundation
-
-This directory is a standalone scaffold for a future physics-aware mission navigation stack.
-It is intentionally not wired into launch or vehicle controllers yet.
+# Navigation System
 
 ## Directory layout
 
@@ -18,15 +15,21 @@ It is intentionally not wired into launch or vehicle controllers yet.
 - `navigationPhaseEvaluator.js`:
   - Mission phase gate evaluation logic.
 - `navigationTrajectoryPlanner.js`:
-  - Command planner scaffold with baseline commands and predictive optimizer placeholder.
+  - Thin planner dispatcher and runtime state wrapper.
+- `planners/`:
+  - `earthOrbitHoldPlanner.js`: Earth-hold command policy.
+  - `refuelRendezvousPlanner.js`: Orbital refuel rendezvous command policy.
+  - `moonMissionPlanner.js`: Moon mission command policy (TLI, coast, midcourse, capture).
+  - `moonGuidanceState.js`: Moon guidance sensor/midcourse runtime state helpers.
+  - `interceptMath.js`: Closest-approach/miss-distance math helpers.
 - `navigationSystem.js`:
   - High-level facade that composes estimator + evaluator + planner.
 - `index.js`:
-  - Re-exports for future integration.
+  - Re-exports used by launch controllers.
 
-## Integration intent (later)
+## Runtime integration
 
 1. Create one navigation system instance per controlled vehicle.
 2. Feed orbital metrics + state measurements each simulation step.
-3. Consume returned command (`phase`, `throttle`, `direction`, `mode`) inside the existing flight control pipeline.
-4. Replace fallback planner path with a predictive optimizer implementation.
+3. Consume returned command (`phase`, `throttle`, `direction`, `mode`) inside flight-control loops.
+4. Planner runtime state is persisted/restored through `navigationSystem` snapshots.

@@ -61,7 +61,16 @@ export function evaluateMoonMissionPhase({
   if (currentPhase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
     const apoReached = apoapsisKm >= (profile.tliTargetApoapsisKm - profile.tliApoapsisMarginKm);
     const energyReady = specificEnergy >= profile.tliMinSpecificEnergyKm2S2;
-    if (apoReached && energyReady) {
+    const periapsisSafe = periapsisKm >= Math.max(80, Number(profile.tliPeriapsisMinKm) || 130);
+    const moonClosingSpeedKmS = finiteOr(metrics.moonClosingSpeedKmS, 0);
+    const moonProjectedMissDistanceKm = finiteOr(
+      metrics.moonProjectedMissDistanceKm,
+      Number.POSITIVE_INFINITY,
+    );
+    const interceptTrending =
+      moonClosingSpeedKmS >= (profile.midcourseMinClosingSpeedKmS * 0.65)
+      || moonProjectedMissDistanceKm <= profile.tliInterceptMissDistanceKm;
+    if (apoReached && energyReady && interceptTrending && periapsisSafe) {
       return {
         nextPhase: NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
         reason: "tli_escape_conditions_met",

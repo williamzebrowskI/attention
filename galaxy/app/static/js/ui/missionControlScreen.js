@@ -57,6 +57,12 @@ function humanizeLaunchEventName(name) {
     refuel_tanker_pad_launch_completed: "Refuel Tanker Pad Launch Completed",
     refuel_transfer_completed: "Refuel Transfer Complete",
     refuel_transfer_skipped: "Refuel Transfer Skipped",
+    guidance_decision_changed: "Guidance Decision Change",
+    guidance_target_changed: "Guidance Target Change",
+    guidance_burn_state_changed: "Guidance Burn State Change",
+    fleet_guidance_decision_changed: "Fleet Guidance Decision Change",
+    fleet_guidance_target_changed: "Fleet Guidance Target Change",
+    fleet_guidance_burn_state_changed: "Fleet Guidance Burn State Change",
   };
   return map[key] || toLaunchTitle(key || "event");
 }
@@ -144,6 +150,19 @@ export function createMissionControlScreenController(options = {}) {
     }
     if (typeof entry.boosterPhase === "string" && entry.boosterPhase) {
       parts.push(toLaunchTitle(entry.boosterPhase));
+    }
+    if (typeof entry.fromGuidanceMode === "string" && typeof entry.toGuidanceMode === "string" && entry.toGuidanceMode) {
+      parts.push(`Guidance ${entry.fromGuidanceMode || "n/a"} -> ${entry.toGuidanceMode}`);
+    } else if (typeof entry.guidanceMode === "string" && entry.guidanceMode) {
+      parts.push(`Guidance ${entry.guidanceMode}`);
+    }
+    const toTargetBodyId = String(entry.toTargetBodyId || entry.targetBodyId || "").trim();
+    const toTargetBodyName = String(entry.toTargetBodyName || entry.targetBodyName || "").trim();
+    if (toTargetBodyId || toTargetBodyName) {
+      parts.push(`Target ${toTargetBodyName || toTargetBodyId}`);
+    }
+    if (typeof entry.burnActive === "boolean") {
+      parts.push(entry.burnActive ? "Burn start" : "Burn stop");
     }
     return parts.length > 0 ? ` | ${parts.join(" | ")}` : "";
   }

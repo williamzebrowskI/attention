@@ -1063,6 +1063,34 @@ export function createLaunchController(options) {
     emitLaunchEvent,
   });
 
+  function projectedClosestApproachDistanceKm({
+    relativePositionKm = null,
+    relativeVelocityKmS = null,
+    horizonSec = 36 * 3600,
+  } = {}) {
+    if (!finiteVector(relativePositionKm)) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const initialDistanceKm = length(relativePositionKm);
+    if (!finiteVector(relativeVelocityKmS)) {
+      return initialDistanceKm;
+    }
+    const relativeSpeedSq = dot(relativeVelocityKmS, relativeVelocityKmS);
+    if (!(relativeSpeedSq > 1e-12)) {
+      return initialDistanceKm;
+    }
+    const safeHorizonSec = Math.max(1, Number(horizonSec) || 1);
+    const timeToClosestSec = clamp(
+      -dot(relativePositionKm, relativeVelocityKmS) / relativeSpeedSq,
+      0,
+      safeHorizonSec,
+    );
+    return length(add(
+      relativePositionKm,
+      scale(relativeVelocityKmS, timeToClosestSec),
+    ));
+  }
+
   function computePrimaryNavigationAutopilotCommand({
     state,
     earthState,
@@ -1103,6 +1131,22 @@ export function createLaunchController(options) {
       : 0;
     const moonDistanceKm = moonRelPos ? length(moonRelPos) : Number.POSITIVE_INFINITY;
     const moonAltitudeKm = moonDistanceKm - moonRadiusKm;
+    const moonClosingSpeedKmS = moonRelPos && moonRelVel && moonDistanceKm > 1e-9
+      ? -dot(moonRelVel, scale(moonRelPos, 1 / moonDistanceKm))
+      : 0;
+    const moonRelativeSpeedKmS = moonRelVel ? length(moonRelVel) : 0;
+    const moonCircularSpeedKmS = moonMuKm3S2 > 0 && moonDistanceKm > 1
+      ? Math.sqrt(moonMuKm3S2 / moonDistanceKm)
+      : null;
+    const toMoonVectorKm = moonState?.position
+      ? subtract(moonState.position, rocketState.position)
+      : null;
+    const moonMinusShipRelativeVelocityKmS = moonRelVel ? scale(moonRelVel, -1) : null;
+    const moonProjectedMissDistanceKm = projectedClosestApproachDistanceKm({
+      relativePositionKm: toMoonVectorKm,
+      relativeVelocityKmS: moonMinusShipRelativeVelocityKmS,
+      horizonSec: 36 * 3600,
+    });
     const nearestRefuelTarget = activeRefuelTarget || refuelController.activeRendezvousTarget?.(state) || null;
 
     const refuelTargetKg = resolveRefuelTargetKg(
@@ -1122,10 +1166,17 @@ export function createLaunchController(options) {
       orbital,
       moonOrbit,
       metrics: {
+        altitudeKm: Number(orbital?.altitudeKm),
+        apoapsisKm: Number(orbital?.apoapsisKm),
+        periapsisKm: Number(orbital?.periapsisKm),
         earthDistanceKm,
         earthRadialSpeedKmS,
         moonDistanceKm,
         moonAltitudeKm,
+        moonClosingSpeedKmS,
+        moonRelativeSpeedKmS,
+        moonCircularSpeedKmS,
+        moonProjectedMissDistanceKm,
         refuelFillFraction,
         refuelTargetDistanceKm: Number(nearestRefuelTarget?.distanceKm),
         refuelRelativeSpeedKmS: Number(nearestRefuelTarget?.relativeSpeedKmS),
@@ -1134,10 +1185,10 @@ export function createLaunchController(options) {
       targetVectors: {
         tangent,
         up,
-        toMoon: moonState?.position
-          ? subtract(moonState.position, rocketState.position)
-          : tangent,
+        toMoon: toMoonVectorKm || tangent,
         toEarth: scale(relPos, -1),
+        shipMinusMoonRelativeVelocityKmS: moonRelVel || null,
+        moonMinusShipRelativeVelocityKmS,
         toRefuelTarget: nearestRefuelTarget?.relativePositionKm || null,
         refuelTargetRelativeVelocityKmS: nearestRefuelTarget?.relativeVelocityKmS || null,
       },
@@ -1179,6 +1230,22 @@ export function createLaunchController(options) {
   }
 
   function captureRuntimeLogState() {
+    const targetDescriptor = missionTargetDescriptor();
+    const activeRendezvousTankerId = String(runtime?.refuel?.activeRendezvousTankerId || "").trim();
+    const targetBodyId = activeRendezvousTankerId || String(targetDescriptor?.bodyId || "").trim();
+    const targetBodyName = targetBodyId.startsWith("earth_refuel_tanker_")
+      ? "Refuel Tanker"
+      : String(targetDescriptor?.bodyName || "");
+    const guidanceMode = String(
+      runtime.lastStep?.guidanceMode
+      || runtime.lastTelemetry?.guidanceMode
+      || runtime.autopilotMode
+      || "",
+    );
+    const burnActive = (
+      (Number(runtime.lastStep?.throttle) || 0) > 1e-3
+      || (Number(runtime.lastStep?.thrustN) || 0) > 1
+    );
     return {
       phase: runtime.phase,
       stageIndex: runtime.stageIndex,
@@ -1187,6 +1254,10 @@ export function createLaunchController(options) {
       boosterActive: Boolean(runtime.booster.active),
       boosterPhase: runtime.booster.phase,
       boosterLanded: Boolean(runtime.booster.landed),
+      guidanceMode,
+      targetBodyId,
+      targetBodyName,
+      burnActive,
       lastError: runtime.lastError || "",
     };
   }
@@ -1245,6 +1316,33 @@ export function createLaunchController(options) {
       emitLaunchEvent("booster_landed", {
         trigger,
         ...telemetryLogDetails(runtime.booster.telemetry),
+      });
+    }
+    if (current.guidanceMode !== previous.guidanceMode) {
+      emitLaunchEvent("guidance_decision_changed", {
+        trigger,
+        fromGuidanceMode: previous.guidanceMode || "",
+        toGuidanceMode: current.guidanceMode || "",
+        targetBodyId: current.targetBodyId || "",
+        targetBodyName: current.targetBodyName || "",
+        burnActive: Boolean(current.burnActive),
+      });
+    }
+    if (current.targetBodyId !== previous.targetBodyId) {
+      emitLaunchEvent("guidance_target_changed", {
+        trigger,
+        fromTargetBodyId: previous.targetBodyId || "",
+        toTargetBodyId: current.targetBodyId || "",
+        toTargetBodyName: current.targetBodyName || "",
+        guidanceMode: current.guidanceMode || runtime.autopilotMode || "",
+      });
+    }
+    if (Boolean(current.burnActive) !== Boolean(previous.burnActive)) {
+      emitLaunchEvent("guidance_burn_state_changed", {
+        trigger,
+        burnActive: Boolean(current.burnActive),
+        guidanceMode: current.guidanceMode || runtime.autopilotMode || "",
+        targetBodyId: current.targetBodyId || "",
       });
     }
     if (current.lastError !== previous.lastError && current.lastError) {
