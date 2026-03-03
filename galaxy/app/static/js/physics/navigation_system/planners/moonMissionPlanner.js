@@ -352,6 +352,11 @@ export function planMoonMissionCommand({
       const speedBrakeRisk = Number.isFinite(moonCircularSpeedKmS)
         ? clamp((moonRelativeSpeedKmS - (moonCircularSpeedKmS * 2.2)) / Math.max(0.1, moonCircularSpeedKmS), 0, 1)
         : 0;
+      const speedBrakeThresholdKmS = Math.max(
+        0.05,
+        Number(plannerConfig.moonMidcourseSpeedBrakeThresholdKmS) || 1.1,
+      );
+      const speedBrakeNeed = moonRelativeSpeedKmS > (desiredClosingKmS + speedBrakeThresholdKmS);
       const corridorDirection = corridorErrorKm >= 0
         ? estimatedDirection
         : scale(estimatedDirection, -1);
@@ -373,42 +378,105 @@ export function planMoonMissionCommand({
       const lateralGain = Math.max(0.01, Number(plannerConfig.moonMidcourseLateralGain) || 0.35);
       const tangentialGain = Math.max(0.01, Number(plannerConfig.moonMidcourseTangentialGain) || 0.22);
       const verticalGain = Math.max(0.01, Number(plannerConfig.moonMidcourseVerticalGain) || 0.12);
-      return {
-        phase: "powered",
-        throttle: clamp(
-          (Number(plannerConfig.moonMidcourseThrottleBase) || 0.22)
-            + (closingDeficit * 0.26)
-            + (closingSurplus * 0.08)
-            + (missRisk * 0.24)
-            + (corridorRiskNorm * 0.16)
-            + (bPlaneRiskNorm * 0.12)
-            + (speedBrakeRisk * 0.1)
-            + (earthFallbackRisk ? 0.16 : 0),
-          Number(plannerConfig.moonMidcourseThrottleBase) || 0.22,
-          Number(plannerConfig.moonMidcourseThrottleMax) || 0.78,
-        ),
-        direction: normalize(
+      const pulsePeriodSec = Math.max(
+        60,
+        Number(plannerConfig.moonMidcoursePulsePeriodSec) || 240,
+      );
+      const pulseBurnSec = clamp(
+        Number(plannerConfig.moonMidcoursePulseBurnSec) || 18,
+        4,
+        Math.max(8, pulsePeriodSec - 4),
+      );
+      const continuousRiskThreshold = clamp(
+        Number(plannerConfig.moonMidcourseContinuousRiskThreshold) || 0.86,
+        0.5,
+        1,
+      );
+      const compositeRisk = Math.max(
+        missRisk,
+        corridorRiskNorm,
+        bPlaneRiskNorm,
+        closingDeficit,
+        speedBrakeRisk,
+        earthFallbackRisk ? 1 : 0,
+      );
+      const pulseCycleSec = Math.max(0, Number(midcourse.burnSec) || 0) % pulsePeriodSec;
+      const pulseActive = compositeRisk >= continuousRiskThreshold || pulseCycleSec <= pulseBurnSec;
+      if (!pulseActive) {
+        const coastMode = shouldRetarget
+          ? "navsys:moon-retarget-solve"
+          : "navsys:moon-midcourse-coast-window";
+        moonRuntime.approach.lastDecision = coastMode;
+        return {
+          phase: "coast",
+          throttle: 0,
+          direction: normalize(
+            add(scale(estimatedDirection, 0.88), add(scale(tangentialDirection, 0.1), scale(up, 0.02))),
+            estimatedDirection,
+          ),
+          mode: coastMode,
+        };
+      }
+      const throttleBase = Number(plannerConfig.moonMidcourseThrottleBase) || 0.06;
+      const throttleMax = Number(plannerConfig.moonMidcourseThrottleMax) || 0.3;
+      let commandedThrottle = clamp(
+        throttleBase
+          + (closingDeficit * 0.08)
+          + (missRisk * 0.07)
+          + (corridorRiskNorm * 0.06)
+          + (bPlaneRiskNorm * 0.06)
+          + (speedBrakeRisk * 0.08)
+          + (earthFallbackRisk ? 0.06 : 0),
+        throttleBase,
+        throttleMax,
+      );
+      const nominalDirection = normalize(
+        add(
+          scale(estimatedDirection, 0.52 + (missRisk * 0.18) + (closingDeficit * 0.1)),
           add(
-            scale(estimatedDirection, 0.58 + (missRisk * 0.22) + (closingDeficit * 0.16)),
+            scale(corridorDirection, lateralGain * (0.22 + (corridorRiskNorm * 0.65))),
             add(
-              scale(corridorDirection, lateralGain * (0.22 + (corridorRiskNorm * 0.65))),
+              scale(bPlaneCorrectionDirection, lateralGain * (0.2 + (bPlaneRiskNorm * 0.62))),
               add(
-                scale(bPlaneCorrectionDirection, lateralGain * (0.18 + (bPlaneRiskNorm * 0.62))),
+                scale(tangentialDirection, tangentialGain * (0.2 + Math.abs(closingDeficit - closingSurplus))),
                 add(
-                  scale(tangentialDirection, tangentialGain * (0.2 + Math.abs(closingDeficit - closingSurplus))),
-                  add(
-                    scale(velocityDampingDirection, 0.08 + (speedBrakeRisk * 0.16)),
-                    scale(verticalDirection, verticalGain * (0.16 + bPlaneRiskNorm)),
-                  ),
+                  scale(velocityDampingDirection, 0.12 + (speedBrakeRisk * 0.2)),
+                  scale(verticalDirection, verticalGain * (0.16 + bPlaneRiskNorm)),
                 ),
               ),
             ),
           ),
-          estimatedDirection,
         ),
-        mode: shouldRetarget
-          ? "navsys:moon-midcourse-correction+retarget"
-          : "navsys:moon-midcourse-correction",
+        estimatedDirection,
+      );
+      let commandedDirection = nominalDirection;
+      let mode = shouldRetarget
+        ? "navsys:moon-midcourse-correction+retarget"
+        : "navsys:moon-midcourse-correction";
+      if (speedBrakeNeed) {
+        const speedBrakeThrottleMax = clamp(
+          Number(plannerConfig.moonMidcourseSpeedBrakeThrottleMax) || 0.22,
+          throttleBase,
+          throttleMax,
+        );
+        commandedThrottle = clamp(commandedThrottle + (speedBrakeRisk * 0.05), throttleBase, speedBrakeThrottleMax);
+        commandedDirection = normalize(
+          add(
+            scale(velocityDampingDirection, 0.72),
+            add(scale(bPlaneCorrectionDirection, 0.18), scale(corridorDirection, 0.1)),
+          ),
+          velocityDampingDirection,
+        );
+        mode = shouldRetarget
+          ? "navsys:moon-midcourse-correction+retarget+speed-brake"
+          : "navsys:moon-midcourse-correction+speed-brake";
+      }
+      moonRuntime.approach.lastDecision = mode;
+      return {
+        phase: "powered",
+        throttle: commandedThrottle,
+        direction: commandedDirection,
+        mode,
       };
     }
     if (shouldRetarget) {
