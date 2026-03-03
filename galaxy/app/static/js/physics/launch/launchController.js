@@ -1470,7 +1470,7 @@ export function createLaunchController(options) {
         && apoapsisKm >= 145
         && apoapsisKm <= 165;
       const refuelFlight = flightsById.get(tankerId) || null;
-      const inferredAltitudeKm = vectorMagnitude(relPos) - earthRadiusKm;
+      const inferredAltitudeKm = length(relPos) - earthRadiusKm;
       const dockingEligible = isFlightDockingEligible(
         refuelFlight
           ? {
@@ -2837,6 +2837,13 @@ export function createLaunchController(options) {
         updateTelemetry();
       };
 
+      const orbitalRefuelMissionActive =
+        runtime.stageIndex >= 1
+        && String(runtime?.mission?.phase || "") === "orbital_refuel";
+      if (runtime.phase === "orbit" && runtime.autopilotEnabled && orbitalRefuelMissionActive) {
+        runtime.phase = "coast";
+        runtime.autopilotMode = "navsys:orbital-refuel-await-target";
+      }
       if (runtime.phase === "orbit" && moonTransferMissionActive) {
         runtime.phase = "coast";
       }

@@ -178,18 +178,6 @@ export const LAUNCH_RCS_CONFIG = Object.freeze({
   minReferenceSpeedKmS: 0.05,
 });
 
-// Visual-only exhaust sizing in physical km (kept true-to-scale, not visibility-scaled).
-export const LAUNCH_EXHAUST_VISUAL_CONFIG = Object.freeze({
-  plumeSeaLevelLengthKm: 0.016,
-  plumeVacuumLengthKm: 0.064,
-  plumeSeaLevelRadiusScaleToVehicleRadius: 0.28,
-  plumeVacuumRadiusScaleToVehicleRadius: 0.62,
-  smokeMaxAltitudeKm: 35,
-  trailPointSpacingKm: 0.018,
-  smokePointRadiusScaleToVehicleRadius: 0.48,
-  smokeTrailPersistSeconds: 42,
-});
-
 export const LAUNCH_INITIAL_MASS_KG = LAUNCH_VEHICLE_CONFIG.stages.reduce(
   (mass, stage) => mass + stage.dryMassKg + stage.propellantMassKg,
   LAUNCH_VEHICLE_CONFIG.payloadMassKg,
