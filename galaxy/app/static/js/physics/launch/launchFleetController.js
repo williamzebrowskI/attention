@@ -125,6 +125,14 @@ function formatFleetGatePercent(value, digits = 1) {
   return `${(numeric * 100).toFixed(Math.max(0, Number(digits) || 0))}%`;
 }
 
+function formatFleetGateMassKg(value, digits = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} kg`;
+}
+
 function fleetMissionPhaseGateReason({
   vehicle = null,
   orbital = null,
@@ -155,8 +163,21 @@ function fleetMissionPhaseGateReason({
     return `Awaiting refuel target: fill ${formatFleetGatePercent(fillFraction)} / ${formatFleetGatePercent(FLEET_MOON_REFUEL_TARGET_FILL_FRACTION)}.`;
   }
   if (phase === "tli_burn") {
-    const targetApoKm = FLEET_TLI_TARGET_APOAPSIS_KM - FLEET_TLI_TARGET_APOAPSIS_MARGIN_KM;
-    return `Awaiting TLI gate: apo >= ${formatFleetGateKm(targetApoKm)} and miss <= ${formatFleetGateKm(FLEET_MOON_MIDCOURSE_MISS_DISTANCE_KM)}.`;
+    const tliDurationSec = Math.max(60, Number(vehicle.tliDurationSec) || FLEET_MOON_TLI_DURATION_SEC);
+    const phaseElapsedSec = Math.max(0, Number(vehicle.phaseElapsedSec) || 0);
+    const periapsisKm = Number(orbital?.periapsisKm);
+    const fuelBudget = vehicle.fuelBudget && typeof vehicle.fuelBudget === "object"
+      ? vehicle.fuelBudget
+      : null;
+    const fuelBudgetFeasible = fuelBudget ? Boolean(fuelBudget.feasible) : null;
+    const fuelMarginKg = Number(fuelBudget?.marginKg);
+    const fuelBudgetLabel = fuelBudgetFeasible === null
+      ? "pending"
+      : (fuelBudgetFeasible ? "feasible" : "deficit");
+    const fuelMarginLabel = Number.isFinite(fuelMarginKg)
+      ? ` (${formatFleetGateMassKg(fuelMarginKg)})`
+      : "";
+    return `Awaiting TLI gate: t=${Math.round(phaseElapsedSec)}s / ${Math.round(tliDurationSec)}s, periapsis >= ${formatFleetGateKm(FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM)}, fuel budget ${fuelBudgetLabel}${fuelMarginLabel}.`;
   }
   if (phase === "coast_to_moon") {
     return `Awaiting lunar approach: distance ${formatFleetGateKm(moonDistanceKm)} <= ${formatFleetGateKm(FLEET_MOON_APPROACH_DISTANCE_KM)} (closing ${formatFleetGateSpeed(moonClosingSpeedKmS)}).`;
@@ -1726,8 +1747,22 @@ export function createLaunchFleetController({
             ? periapsisKm >= FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM
             : false;
           const tliDurationComplete = vehicle.phaseElapsedSec >= tliDurationSec;
-          if ((tliDurationComplete && periapsisSafe) || (Number(vehicle.propellantKg) || 0) <= 1e-3) {
-            setFleetMissionPhase(vehicle, "coast_to_moon");
+          const fuelBudget = vehicle.fuelBudget && typeof vehicle.fuelBudget === "object"
+            ? vehicle.fuelBudget
+            : null;
+          const fuelBudgetFeasible = fuelBudget ? Boolean(fuelBudget.feasible) : true;
+          const fuelBudgetMarginKg = Number(fuelBudget?.marginKg);
+          const fuelBudgetGateSatisfied = fuelBudgetFeasible;
+          if (
+            (tliDurationComplete && periapsisSafe && fuelBudgetGateSatisfied)
+            || (Number(vehicle.propellantKg) || 0) <= 1e-3
+          ) {
+            setFleetMissionPhase(vehicle, "coast_to_moon", {
+              tliDurationSec,
+              periapsisKm: Number.isFinite(periapsisKm) ? periapsisKm : null,
+              fuelBudgetFeasible,
+              fuelBudgetMarginKg: Number.isFinite(fuelBudgetMarginKg) ? fuelBudgetMarginKg : null,
+            });
           }
         }
 
