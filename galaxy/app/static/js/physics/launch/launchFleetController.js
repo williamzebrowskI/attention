@@ -1,5 +1,6 @@
 import {
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+  LAUNCH_VEHICLE_CONFIG,
   LAUNCH_SITE,
   SEA_LEVEL_PRESSURE_PA,
   STARSHIP_STACK_DIMENSIONS_KM,
@@ -23,7 +24,14 @@ import {
   subtract,
 } from "./launchMath.js";
 import { orbitalStateFromRelative } from "./launchGuidance.js";
-import { dynamicPressurePaFromAtmosphere } from "./launchAeroModel.js";
+import {
+  applyQAlphaSteeringLimit,
+  atmosphereRelativeVelocityKmS,
+  computeAerodynamicResponse,
+  dynamicPressurePaFromAtmosphere,
+  limitThrottleByQAlpha,
+  sampleWindVectorKmS,
+} from "./launchAeroModel.js";
 import { enforceMoonEarthAvoidanceDirection } from "./lunar/guidanceSafety.js";
 import {
   moonWindowInjectPhaseAngleRad,
@@ -105,6 +113,10 @@ function finiteVector(v) {
 function finiteOrNull(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function stageBodyKindFromStageIndex(stageIndex = 0) {
+  return Number(stageIndex) <= 0 ? "stage1" : "stage2";
 }
 
 function bodyStateFromNBody(state, bodyId) {
@@ -1092,11 +1104,19 @@ export function createLaunchFleetController({
       );
       const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
       const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
+      const windSample = sampleWindVectorKmS({
+        altitudeKm,
+        relPos,
+        earthPole,
+        elapsedSeconds: Math.max(0, Number(vehicle.elapsedSeconds) || 0),
+        seed: (Number(runtime?.windSeed) || 0) + ((Number(vehicle.sequenceNumber) || 1) * 8191),
+      });
       const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
         atmosphereSample,
         relPos,
         relVel,
         earthPole,
+        windSample.vectorKmS,
       );
       const up = normalize(relPos, earthPole);
       const prograde = normalize(relVel, up);
@@ -1656,6 +1676,32 @@ export function createLaunchFleetController({
             : `${guidanceMode}:${earthAvoidance.reason}`;
         }
       }
+      const bodyKind = stageBodyKindFromStageIndex(activeStageIndex);
+      const relAirVelocityKmS = atmosphereRelativeVelocityKmS(
+        relPos,
+        relVel,
+        earthPole,
+        windSample.vectorKmS,
+      );
+      const qAlphaSteering = applyQAlphaSteeringLimit({
+        desiredDirection,
+        relAirVelocityKmS,
+        dynamicPressurePa,
+        bodyKind,
+      });
+      desiredDirection = qAlphaSteering.direction;
+      requestedThrottle = limitThrottleByQAlpha({
+        throttle: requestedThrottle,
+        qAlphaPaRad: qAlphaSteering.qAlphaPaRad,
+        bodyKind,
+      });
+      if (
+        qAlphaSteering.limited
+        && requestedThrottle > 1e-3
+        && !guidanceMode.includes("qalpha-limit")
+      ) {
+        guidanceMode = `${guidanceMode}+qalpha-limit`;
+      }
       const requestedThrottleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
       const guidanceBurnRequested = requestedThrottleCommand > 1e-3;
       const guidanceInertNoPropellant = guidanceBurnRequested && availablePropellantKg <= 1e-6;
@@ -1673,8 +1719,8 @@ export function createLaunchFleetController({
         stageThrustSeaLevelN,
         ambientPressurePa,
       );
-      const thrustN = requestedThrottle > 1e-6
-        ? thrustPerThrottleN * requestedThrottle
+      const thrustN = requestedThrottleCommand > 1e-6
+        ? thrustPerThrottleN * requestedThrottleCommand
         : 0;
       const stageIspVacuumS = Math.max(1, Number(activeStage?.ispVacuumS) || 360);
       const stageIspSeaLevelS = Math.max(1, Number(activeStage?.ispSeaLevelS) || stageIspVacuumS);
@@ -1694,14 +1740,38 @@ export function createLaunchFleetController({
         ? (thrustN / effectiveMassKg) / 1000
         : 0;
       const thrustAccelKmS2 = scale(desiredDirection, accelerationMagnitudeKmS2);
-      const totalAccelKmS2 = add(thrustAccelKmS2, rcsAssistAccelKmS2);
+      const referenceAreaM2 = Math.max(
+        1,
+        Number(LAUNCH_VEHICLE_CONFIG?.referenceAreaM2)
+          || (
+            Math.PI
+            * Math.pow(
+              Math.max(1, Number(STARSHIP_STACK_DIMENSIONS_KM?.diameterKm) || 9) * 500,
+              2,
+            )
+          ),
+      );
+      const aero = computeAerodynamicResponse({
+        bodyKind,
+        atmosphereSample,
+        relPos,
+        relVel,
+        earthPole,
+        windVectorKmS: windSample.vectorKmS,
+        bodyAxisDirection: desiredDirection,
+        referenceAreaM2,
+        massKg: effectiveMassKg,
+        minMassKg: minRocketMassKg,
+      });
+      const totalAccelKmS2 = add(add(thrustAccelKmS2, aero.accelerationKmS2), rcsAssistAccelKmS2);
       vehicle.pendingBurnKg = burnKg;
       vehicle.guidanceMode = guidanceMode;
       vehicle.decisionTargetBodyId = decisionTargetBodyId;
       vehicle.decisionTargetBodyName = decisionTargetBodyName;
       vehicle.lastStep = {
         accelerationKmS2: totalAccelKmS2,
-        throttle: requestedThrottle,
+        throttle: requestedThrottleCommand,
+        throttleCommand: requestedThrottleCommand,
         thrustN,
         burnRateKgS,
         burnKg,
@@ -1715,7 +1785,15 @@ export function createLaunchFleetController({
         rcsAuthority: rcsAssistAuthority,
         rcsJets: rcsAssistJets,
         rcsAccelKmS2: length(rcsAssistAccelKmS2),
-        dynamicPressurePa,
+        dynamicPressurePa: aero.dynamicPressurePa,
+        angleOfAttackDeg: aero.angleOfAttackDeg,
+        qAlphaPaRad: aero.qAlphaPaRad,
+        machNumber: aero.machNumber,
+        dragCoefficient: aero.dragCoefficient,
+        liftCoefficient: aero.liftCoefficient,
+        windSpeedKmS: windSample.speedKmS,
+        windEastMS: windSample.eastMS,
+        windNorthMS: windSample.northMS,
         stageIndex: activeStageIndex,
         stageName: activeStage?.name || `Stage ${activeStageIndex + 1}`,
       };
@@ -1726,7 +1804,7 @@ export function createLaunchFleetController({
           guidanceMode,
           targetBodyId: decisionTargetBodyId,
           targetBodyName: decisionTargetBodyName,
-          burnActive: requestedThrottle > 1e-3 && thrustN > 1,
+          burnActive: requestedThrottleCommand > 1e-3 && thrustN > 1,
         },
       );
     }

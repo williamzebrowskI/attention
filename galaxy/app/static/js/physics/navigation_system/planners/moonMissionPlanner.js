@@ -21,6 +21,7 @@ import {
 import { planRefuelRendezvousCommand } from "./refuelRendezvousPlanner.js";
 
 const DEFAULT_MOON_RADIUS_KM = 1737.4;
+const DEFAULT_MOON_MU_KM3_S2 = 4_902.800066;
 
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -51,6 +52,117 @@ function projectedBPlaneVectorKm({
     closestPositionKm,
     scale(alongTrackDirection, alongMagnitudeKm),
   );
+}
+
+function inferMoonMuKm3S2(metrics = {}, moonDistanceKm = Number.NaN) {
+  const circularSpeedKmS = Number(metrics.moonCircularSpeedKmS);
+  const distanceKm = Number.isFinite(Number(moonDistanceKm))
+    ? Number(moonDistanceKm)
+    : Number(metrics.moonDistanceKm);
+  if (Number.isFinite(circularSpeedKmS) && Number.isFinite(distanceKm) && distanceKm > 1) {
+    const muKm3S2 = circularSpeedKmS * circularSpeedKmS * distanceKm;
+    if (muKm3S2 > 1_000 && muKm3S2 < 20_000) {
+      return muKm3S2;
+    }
+  }
+  return DEFAULT_MOON_MU_KM3_S2;
+}
+
+function evaluatePredictiveMidcourseCandidate({
+  direction = null,
+  throttle = 0,
+  shipMinusMoonPosKm = null,
+  shipMinusMoonVelKmS = null,
+  moonMuKm3S2 = DEFAULT_MOON_MU_KM3_S2,
+  moonRadiusKm = DEFAULT_MOON_RADIUS_KM,
+  targetPeriluneAltitudeKm = 120,
+  captureGateKm = 55_000,
+  desiredClosingKmS = 0.02,
+  moonCircularSpeedKmS = Number.NaN,
+  accelAtThrottle1KmS2 = 0.0065,
+  burnDurationSec = 20,
+  horizonSec = 1_800,
+  steps = 32,
+} = {}) {
+  if (
+    !finiteVector(direction)
+    || !finiteVector(shipMinusMoonPosKm)
+    || !finiteVector(shipMinusMoonVelKmS)
+  ) {
+    return null;
+  }
+  const throttleClamped = clamp(Number(throttle) || 0, 0, 1);
+  const safeSteps = Math.max(8, Math.min(160, Math.round(Number(steps) || 32)));
+  const safeHorizonSec = Math.max(120, Number(horizonSec) || 1_800);
+  const dtSec = safeHorizonSec / safeSteps;
+  const safeBurnSec = clamp(Number(burnDurationSec) || 0, 0, safeHorizonSec);
+  const commandAccelKmS2 = scale(
+    normalize(direction, { x: 0, y: 1, z: 0 }),
+    Math.max(0, Number(accelAtThrottle1KmS2) || 0) * throttleClamped,
+  );
+
+  let relPos = {
+    x: Number(shipMinusMoonPosKm.x) || 0,
+    y: Number(shipMinusMoonPosKm.y) || 0,
+    z: Number(shipMinusMoonPosKm.z) || 0,
+  };
+  let relVel = {
+    x: Number(shipMinusMoonVelKmS.x) || 0,
+    y: Number(shipMinusMoonVelKmS.y) || 0,
+    z: Number(shipMinusMoonVelKmS.z) || 0,
+  };
+
+  let minRangeKm = length(relPos);
+  let relSpeedAtMinRangeKmS = length(relVel);
+  for (let stepIndex = 0; stepIndex < safeSteps; stepIndex += 1) {
+    const tSec = stepIndex * dtSec;
+    const radiusKm = Math.max(1, length(relPos));
+    const moonGravityAccelKmS2 = scale(
+      relPos,
+      -(Number(moonMuKm3S2) || DEFAULT_MOON_MU_KM3_S2) / Math.max(radiusKm * radiusKm * radiusKm, 1),
+    );
+    const burnActive = tSec < safeBurnSec;
+    const totalAccelKmS2 = burnActive
+      ? add(moonGravityAccelKmS2, commandAccelKmS2)
+      : moonGravityAccelKmS2;
+    relVel = add(relVel, scale(totalAccelKmS2, dtSec));
+    relPos = add(relPos, scale(relVel, dtSec));
+
+    const rangeKm = length(relPos);
+    if (rangeKm < minRangeKm) {
+      minRangeKm = rangeKm;
+      relSpeedAtMinRangeKmS = length(relVel);
+    }
+  }
+
+  const finalRangeKm = length(relPos);
+  const radialDirection = finalRangeKm > 1e-9
+    ? scale(relPos, 1 / finalRangeKm)
+    : { x: 1, y: 0, z: 0 };
+  const closingKmS = -dot(relVel, radialDirection);
+  const predictedPeriluneAltitudeKm = minRangeKm - moonRadiusKm;
+  const predictedMissErrorKm = Math.max(0, minRangeKm - captureGateKm);
+  const periluneErrorKm = Math.abs(predictedPeriluneAltitudeKm - targetPeriluneAltitudeKm);
+  const closingErrorKmS = Math.abs(closingKmS - desiredClosingKmS);
+  const circularRefKmS = Number.isFinite(Number(moonCircularSpeedKmS)) && Number(moonCircularSpeedKmS) > 0
+    ? Number(moonCircularSpeedKmS)
+    : 1.6;
+  const overspeedPenaltyKmS = Math.max(0, relSpeedAtMinRangeKmS - (circularRefKmS * 2.4));
+  const score = (
+    (predictedMissErrorKm * 1.05)
+    + (periluneErrorKm * 0.42)
+    + (closingErrorKmS * 2_600)
+    + (overspeedPenaltyKmS * 5_200)
+    + (throttleClamped * 620)
+  );
+  return {
+    score,
+    predictedMissErrorKm,
+    predictedPeriluneAltitudeKm,
+    closingKmS,
+    relSpeedAtMinRangeKmS,
+    direction: normalize(direction, { x: 0, y: 1, z: 0 }),
+  };
 }
 
 export function planMoonMissionCommand({
@@ -470,6 +582,93 @@ export function planMoonMissionCommand({
         mode = shouldRetarget
           ? "navsys:moon-midcourse-correction+retarget+speed-brake"
           : "navsys:moon-midcourse-correction+speed-brake";
+      }
+      const predictiveHorizonSec = Math.max(
+        300,
+        Number(plannerConfig.moonMidcoursePredictiveHorizonSec) || 1_800,
+      );
+      const predictiveBurnSec = clamp(
+        Number(plannerConfig.moonMidcoursePredictiveBurnSec) || pulseBurnSec,
+        4,
+        Math.max(10, pulseBurnSec),
+      );
+      const predictiveSteps = Math.max(
+        12,
+        Math.min(128, Math.round(Number(plannerConfig.moonMidcoursePredictiveSteps) || 36)),
+      );
+      const accelAtThrottle1KmS2 = Math.max(
+        0.0001,
+        Number(plannerConfig.moonMidcourseAccelAtThrottle1KmS2) || 0.0065,
+      );
+      const moonMuKm3S2 = inferMoonMuKm3S2(metrics, estimatedDistanceKm);
+      const shipMinusMoonPosKm = finiteVector(targetVectors.toMoon)
+        ? scale(targetVectors.toMoon, -1)
+        : null;
+      const predictiveCandidateDirections = [
+        commandedDirection,
+        nominalDirection,
+        normalize(add(scale(commandedDirection, 0.7), scale(velocityDampingDirection, 0.3)), commandedDirection),
+        normalize(add(scale(commandedDirection, 0.7), scale(bPlaneCorrectionDirection, 0.3)), commandedDirection),
+        normalize(add(scale(commandedDirection, 0.65), scale(corridorDirection, 0.35)), commandedDirection),
+        velocityDampingDirection,
+      ].filter((candidate) => finiteVector(candidate));
+      if (
+        finiteVector(shipMinusMoonPosKm)
+        && finiteVector(shipMinusMoonRelVel)
+        && predictiveCandidateDirections.length > 0
+      ) {
+        const baselineCandidate = evaluatePredictiveMidcourseCandidate({
+          direction: commandedDirection,
+          throttle: commandedThrottle,
+          shipMinusMoonPosKm,
+          shipMinusMoonVelKmS: shipMinusMoonRelVel,
+          moonMuKm3S2,
+          moonRadiusKm,
+          targetPeriluneAltitudeKm,
+          captureGateKm,
+          desiredClosingKmS,
+          moonCircularSpeedKmS,
+          accelAtThrottle1KmS2,
+          burnDurationSec: predictiveBurnSec,
+          horizonSec: predictiveHorizonSec,
+          steps: predictiveSteps,
+        });
+        let bestCandidate = baselineCandidate;
+        for (let i = 0; i < predictiveCandidateDirections.length; i += 1) {
+          const evaluated = evaluatePredictiveMidcourseCandidate({
+            direction: predictiveCandidateDirections[i],
+            throttle: commandedThrottle,
+            shipMinusMoonPosKm,
+            shipMinusMoonVelKmS: shipMinusMoonRelVel,
+            moonMuKm3S2,
+            moonRadiusKm,
+            targetPeriluneAltitudeKm,
+            captureGateKm,
+            desiredClosingKmS,
+            moonCircularSpeedKmS,
+            accelAtThrottle1KmS2,
+            burnDurationSec: predictiveBurnSec,
+            horizonSec: predictiveHorizonSec,
+            steps: predictiveSteps,
+          });
+          if (!evaluated) {
+            continue;
+          }
+          if (!bestCandidate || evaluated.score < bestCandidate.score) {
+            bestCandidate = evaluated;
+          }
+        }
+        const baselineScore = Number(baselineCandidate?.score);
+        const bestScore = Number(bestCandidate?.score);
+        if (
+          Number.isFinite(bestScore)
+          && Number.isFinite(baselineScore)
+          && bestCandidate?.direction
+          && bestScore < (baselineScore * 0.985)
+        ) {
+          commandedDirection = normalize(bestCandidate.direction, commandedDirection);
+          mode = `${mode}+predictive`;
+        }
       }
       moonRuntime.approach.lastDecision = mode;
       return {

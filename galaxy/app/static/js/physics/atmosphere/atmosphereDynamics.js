@@ -232,16 +232,23 @@ export function createAtmosphereDynamicsController(options) {
   } = options || {};
 
   function computeAtmosphericAccelerationKmS2(state, bodyId) {
+    const id = String(bodyId || "");
     const bodyState = state?.dynamicBodies?.get(bodyId);
     if (!bodyState?.position || !bodyState?.velocity) {
       return { x: 0, y: 0, z: 0 };
     }
-    if (bodyId === "earth") {
+    if (id === "earth") {
       return { x: 0, y: 0, z: 0 };
     }
-    if (bodyId === "earth_launch_vehicle" || bodyId === "earth_launch_booster") {
+    if (
+      id === "earth_launch_vehicle"
+      || id === "earth_launch_booster"
+      || id.startsWith("earth_mission_ship_")
+      || id.startsWith("earth_refuel_tanker_")
+    ) {
       // Launch-stack and booster aero loads are modeled in launchController to include
       // wind shear, AoA effects, q-alpha limiting, and actuator lag.
+      // Fleet mission/tanker vehicles are modeled in launchFleetController with the same aero path.
       return { x: 0, y: 0, z: 0 };
     }
 
