@@ -362,37 +362,65 @@ body {
   line-height: 1.3;
 }
 
-.mission-control-fleet-select {
+.mission-control-fleet-cards {
+  display: grid;
+  gap: 7px;
+  max-height: 460px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.mission-control-fleet-card {
   width: 100%;
   margin: 0;
-  padding: 7px 9px;
-  border-radius: 9px;
-  border: 1px solid rgba(102, 168, 216, 0.34);
-  background: rgba(7, 17, 30, 0.88);
-  color: #d2eaff;
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.mission-control-fleet-summary {
   padding: 8px 9px;
   border-radius: 9px;
-  border: 1px solid rgba(93, 151, 194, 0.24);
-  background: rgba(8, 17, 29, 0.84);
+  border: 1px solid rgba(96, 159, 206, 0.32);
+  background: rgba(7, 17, 30, 0.86);
+  color: #d2eaff;
+  text-align: left;
   display: grid;
   gap: 3px;
+  cursor: pointer;
 }
 
-.mission-control-fleet-summary-title {
+.mission-control-fleet-card:hover {
+  border-color: rgba(140, 208, 249, 0.72);
+}
+
+.mission-control-fleet-card:focus-visible {
+  outline: 1px solid rgba(153, 216, 255, 0.88);
+  outline-offset: 1px;
+}
+
+.mission-control-fleet-card.selected {
+  border-color: rgba(247, 199, 115, 0.94);
+  background: rgba(66, 45, 14, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(247, 199, 115, 0.22);
+}
+
+.mission-control-fleet-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mission-control-fleet-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.mission-control-fleet-card-title {
   margin: 0;
-  color: #e0f2ff;
+  color: #e3f3ff;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
   font-size: 12px;
+  font-weight: 620;
   line-height: 1.2;
 }
 
-.mission-control-fleet-summary-line {
+.mission-control-fleet-card-line {
   margin: 0;
   color: #9fc7e6;
   font-family: "IBM Plex Mono", "Menlo", monospace;
@@ -400,34 +428,28 @@ body {
   line-height: 1.3;
 }
 
-.mission-control-fleet-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.mission-control-fleet-track {
-  min-width: 120px;
-  margin: 0;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(102, 168, 216, 0.34);
-  background: rgba(7, 17, 30, 0.82);
-  color: #d2eaff;
+.mission-control-fleet-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 16px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(116, 164, 196, 0.36);
+  background: rgba(10, 21, 34, 0.82);
+  color: #d7ecff;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-  font-size: 10px;
-  line-height: 1.2;
-  cursor: pointer;
+  font-size: 8px;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1.1;
 }
 
-.mission-control-fleet-track.on {
-  border-color: rgba(247, 199, 115, 0.94);
-  background: rgba(66, 45, 14, 0.88);
-  color: #ffe7b8;
-}
-
-.mission-control-fleet-track:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.mission-control-fleet-chip.tracking {
+  border-color: rgba(96, 205, 136, 0.6);
+  background: rgba(17, 52, 34, 0.88);
+  color: #bcf8d2;
 }
 
 .mission-control-overview-grid {
@@ -1786,15 +1808,15 @@ body {
     gap: 4px;
   }
 
-  .mission-control-fleet-select {
-    font-size: 10px;
+  .mission-control-fleet-cards {
+    max-height: 320px;
   }
 
-  .mission-control-fleet-actions {
-    justify-content: stretch;
+  .mission-control-fleet-card-title {
+    font-size: 11px;
   }
 
-  .mission-control-fleet-track {
-    width: 100%;
+  .mission-control-fleet-card-line {
+    font-size: 9px;
   }
 }

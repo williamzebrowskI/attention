@@ -123,16 +123,8 @@ export function createMissionControlScreenController(options = {}) {
   let onScreenStateChanged = null;
   let selectedFleetBodyId = "";
   let cachedFleetEntries = [];
-  let fleetSelectInteracting = false;
-  let fleetSelectInteractionUntilMs = 0;
   let lastFleetMarkupSignature = "";
   let liveFeedDrawFailed = false;
-
-  function markFleetSelectInteracting(extraMs = 900) {
-    fleetSelectInteracting = true;
-    const holdMs = Math.max(120, Number(extraMs) || 0);
-    fleetSelectInteractionUntilMs = Date.now() + holdMs;
-  }
 
   function syncLiveViewportFeed() {
     if (!visible || !missionControlLiveFeedCanvasNode || !liveFeedSourceCanvas || liveFeedDrawFailed) {
@@ -536,12 +528,6 @@ export function createMissionControlScreenController(options = {}) {
     return entry?.phaseLabel || "n/a";
   }
 
-  function fleetOptionLabel(entry) {
-    const role = fleetRoleLabel(entry);
-    const phase = fleetPhaseLabel(entry);
-    return `${entry.vehicleName} | ${role} | ${phase}`;
-  }
-
   function renderFleetOperations(fleetEntries = []) {
     if (!missionControlFleetNode) {
       return;
@@ -577,73 +563,73 @@ export function createMissionControlScreenController(options = {}) {
         missionCount += 1;
       }
     }
-
-    const optionRows = entries
-      .map((entry) => {
-        const selected = entry.bodyId === selectedFleetBodyId ? " selected" : "";
-        return `<option value="${escapeHtml(entry.bodyId)}"${selected}>${escapeHtml(fleetOptionLabel(entry))}</option>`;
-      })
-      .join("");
-
-    const altitudeLine = Number.isFinite(selectedEntry.altitudeKm)
-      ? `${formatNumber(selectedEntry.altitudeKm, 2)} km`
-      : "n/a";
-    const speedLine = Number.isFinite(selectedEntry.speedKmS)
-      ? `${formatNumber(selectedEntry.speedKmS, 4)} km/s`
-      : "n/a";
-    const stageLine = selectedEntry.stageName || "n/a";
-    const phaseLine = fleetPhaseLabel(selectedEntry);
-    const roleLine = fleetRoleLabel(selectedEntry);
-    const trackLabel = selectedEntry.tracked ? "Tracking" : "Track In Main View";
-    const trackClass = selectedEntry.tracked
-      ? "mission-control-fleet-track on"
-      : "mission-control-fleet-track";
-    const trackDisabled = selectedEntry.selectable ? "" : " disabled";
     const markupSignature = entries
       .map((entry) => [
         entry.bodyId,
         entry.vehicleName,
         fleetRoleLabel(entry),
+        entry.missionName,
         fleetPhaseLabel(entry),
+        entry.stageName || "",
+        entry.guidanceMode || "",
+        Number.isFinite(entry.altitudeKm) ? Math.round(entry.altitudeKm * 10) : "na",
+        Number.isFinite(entry.speedKmS) ? Math.round(entry.speedKmS * 1000) : "na",
         entry.tracked ? "1" : "0",
         entry.selectable ? "1" : "0",
       ].join("|"))
       .join("||");
     const liveSignature = `${markupSignature}::selected=${selectedFleetBodyId}`;
-    const activeElement = documentRef?.activeElement || null;
-    const existingSelect = missionControlFleetNode.querySelector("[data-mc-fleet-select=\"true\"]");
-    const selectFocused = Boolean(
-      existingSelect
-      && (
-        activeElement === existingSelect
-        || existingSelect.matches?.(":focus")
-      ),
-    );
-    const interactionWindowActive = Date.now() < fleetSelectInteractionUntilMs;
-    if ((fleetSelectInteracting || selectFocused || interactionWindowActive) && missionControlFleetNode.childElementCount > 0) {
-      return;
-    }
     if (liveSignature === lastFleetMarkupSignature && missionControlFleetNode.childElementCount > 0) {
       return;
     }
 
+    const cardRows = entries
+      .map((entry) => {
+        const isSelected = entry.bodyId === selectedFleetBodyId;
+        const isTracked = Boolean(entry.tracked);
+        const role = fleetRoleLabel(entry);
+        const phase = fleetPhaseLabel(entry);
+        const stage = entry.stageName || "n/a";
+        const altitudeLine = Number.isFinite(entry.altitudeKm)
+          ? `${formatNumber(entry.altitudeKm, 2)} km`
+          : "n/a";
+        const speedLine = Number.isFinite(entry.speedKmS)
+          ? `${formatNumber(entry.speedKmS, 4)} km/s`
+          : "n/a";
+        const classes = [
+          "mission-control-fleet-card",
+          isSelected ? "selected" : "",
+          isTracked ? "tracked" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const disabledAttr = entry.selectable ? "" : " disabled";
+        const selectedAttr = isSelected ? " aria-pressed=\"true\"" : " aria-pressed=\"false\"";
+        const trackingBadge = isTracked
+          ? "<span class=\"mission-control-fleet-chip tracking\">Tracking</span>"
+          : "<span class=\"mission-control-fleet-chip\">Select</span>";
+        return [
+          `<button type="button" class="${classes}" data-mc-card-id="${escapeHtml(entry.bodyId)}"${selectedAttr}${disabledAttr}>`,
+          "<div class=\"mission-control-fleet-card-top\">",
+          `<p class="mission-control-fleet-card-title">${escapeHtml(entry.vehicleName)}</p>`,
+          trackingBadge,
+          "</div>",
+          `<p class="mission-control-fleet-card-line">${escapeHtml(role)} | ${escapeHtml(entry.missionName || "Mission")}</p>`,
+          `<p class="mission-control-fleet-card-line">${escapeHtml(phase)} | Stage ${escapeHtml(stage)}</p>`,
+          `<p class="mission-control-fleet-card-line">Alt ${escapeHtml(altitudeLine)} | V ${escapeHtml(speedLine)}</p>`,
+          `<p class="mission-control-fleet-card-line">Guidance ${escapeHtml(entry.guidanceMode || "n/a")}</p>`,
+          "</button>",
+        ].join("");
+      })
+      .join("");
+
     missionControlFleetNode.innerHTML = [
       "<div class=\"mission-control-fleet-head\">",
-      "<label class=\"mission-control-fleet-label\" for=\"mission-control-fleet-select\">Vehicle</label>",
+      "<p class=\"mission-control-fleet-label\">Missions</p>",
       `<p class="mission-control-fleet-counts">Primary ${primaryCount} | Mission ${missionCount} | Tanker ${tankerCount}</p>`,
       "</div>",
-      "<select id=\"mission-control-fleet-select\" class=\"mission-control-fleet-select\" data-mc-fleet-select=\"true\">",
-      optionRows,
-      "</select>",
-      "<div class=\"mission-control-fleet-summary\">",
-      `<p class="mission-control-fleet-summary-title">${escapeHtml(selectedEntry.vehicleName)}</p>`,
-      `<p class="mission-control-fleet-summary-line">${escapeHtml(roleLine)} | ${escapeHtml(selectedEntry.missionName || "Mission")}</p>`,
-      `<p class="mission-control-fleet-summary-line">${escapeHtml(phaseLine)} | Stage ${escapeHtml(stageLine)}</p>`,
-      `<p class="mission-control-fleet-summary-line">Alt ${escapeHtml(altitudeLine)} | V ${escapeHtml(speedLine)}</p>`,
-      `<p class="mission-control-fleet-summary-line">Guidance ${escapeHtml(selectedEntry.guidanceMode || "n/a")}</p>`,
-      "</div>",
-      "<div class=\"mission-control-fleet-actions\">",
-      `<button class="${trackClass}" type="button" data-mc-track-id="${escapeHtml(selectedEntry.bodyId)}"${trackDisabled}>${escapeHtml(trackLabel)}</button>`,
+      "<div class=\"mission-control-fleet-cards\">",
+      cardRows,
       "</div>",
     ].join("");
     lastFleetMarkupSignature = liveSignature;
@@ -779,80 +765,26 @@ export function createMissionControlScreenController(options = {}) {
       missionControlViewBoosterButton.dataset.bound = "true";
     }
     if (missionControlFleetNode && missionControlFleetNode.dataset.bound !== "true") {
-      missionControlFleetNode.addEventListener("mousedown", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLSelectElement)) {
-          return;
-        }
-        if (target.getAttribute("data-mc-fleet-select") !== "true") {
-          return;
-        }
-        markFleetSelectInteracting(1200);
-      });
-      missionControlFleetNode.addEventListener("keydown", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLSelectElement)) {
-          return;
-        }
-        if (target.getAttribute("data-mc-fleet-select") !== "true") {
-          return;
-        }
-        markFleetSelectInteracting(1200);
-      });
-      missionControlFleetNode.addEventListener("focusin", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLSelectElement)) {
-          return;
-        }
-        if (target.getAttribute("data-mc-fleet-select") !== "true") {
-          return;
-        }
-        markFleetSelectInteracting(1200);
-      });
-      missionControlFleetNode.addEventListener("focusout", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLSelectElement)) {
-          return;
-        }
-        if (target.getAttribute("data-mc-fleet-select") !== "true") {
-          return;
-        }
-        fleetSelectInteracting = false;
-        fleetSelectInteractionUntilMs = Date.now() + 180;
-      });
       missionControlFleetNode.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
           return;
         }
-        const button = target.closest("[data-mc-track-id]");
+        const button = target.closest("[data-mc-card-id]");
         if (!(button instanceof Element)) {
           return;
         }
         event.preventDefault();
-        const bodyId = String(button.getAttribute("data-mc-track-id") || "").trim();
+        const bodyId = String(button.getAttribute("data-mc-card-id") || "").trim();
         if (!bodyId) {
+          return;
+        }
+        const selectedEntry = cachedFleetEntries.find((entry) => entry.bodyId === bodyId) || null;
+        if (selectedEntry && selectedEntry.selectable === false) {
           return;
         }
         selectedFleetBodyId = bodyId;
         onTrackBody?.(bodyId);
-        onScreenStateChanged?.(visible);
-      });
-      missionControlFleetNode.addEventListener("change", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLSelectElement)) {
-          return;
-        }
-        if (target.getAttribute("data-mc-fleet-select") !== "true") {
-          return;
-        }
-        fleetSelectInteracting = false;
-        selectedFleetBodyId = String(target.value || "").trim();
-        if (!selectedFleetBodyId) {
-          return;
-        }
-        onTrackBody?.(selectedFleetBodyId);
-        fleetSelectInteractionUntilMs = 0;
         lastFleetMarkupSignature = "";
         renderFleetOperations(cachedFleetEntries);
         onScreenStateChanged?.(visible);
