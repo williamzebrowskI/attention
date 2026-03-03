@@ -24,6 +24,7 @@ import {
 } from "./launchMath.js";
 import { orbitalStateFromRelative } from "./launchGuidance.js";
 import { dynamicPressurePaFromAtmosphere } from "./launchAeroModel.js";
+import { enforceMoonEarthAvoidanceDirection } from "./moonGuidanceSafety.js";
 import { isFlightDockingEligible } from "./refuel/availability.js";
 import { REFUEL_TANKER_CONFIG } from "./refuel/config.js";
 import {
@@ -83,63 +84,6 @@ function finiteVector(v) {
     && Number.isFinite(Number(v.y))
     && Number.isFinite(Number(v.z)),
   );
-}
-
-function enforceFleetMoonEarthAvoidanceDirection({
-  missionPhase = "",
-  direction,
-  prograde,
-  up,
-  toMoonVectorKm = null,
-  earthDistanceKm = Number.POSITIVE_INFINITY,
-  earthRadiusKm = 6371,
-  periapsisKm = Number.NaN,
-} = {}) {
-  const baseDirection = normalize(direction, prograde);
-  const moonTransferBurn = missionPhase === "tli_burn" || missionPhase === "coast_to_moon";
-  if (!moonTransferBurn) {
-    return {
-      direction: baseDirection,
-      applied: false,
-      reason: "",
-    };
-  }
-  const altitudeKm = Number(earthDistanceKm) - Math.max(1000, Number(earthRadiusKm) || 6371);
-  const lowEarthRisk = Number.isFinite(altitudeKm) && altitudeKm < 120_000;
-  const periapsisRisk = Number.isFinite(Number(periapsisKm)) && Number(periapsisKm) < 150;
-  const moonDirection = finiteVector(toMoonVectorKm) ? normalize(toMoonVectorKm, prograde) : null;
-  const moonOccludedByEarth = Boolean(moonDirection && dot(moonDirection, up) < 0);
-  const radialComponent = dot(baseDirection, up);
-  const inwardBurn = radialComponent < 0;
-  if (!(lowEarthRisk && (inwardBurn || moonOccludedByEarth || periapsisRisk))) {
-    return {
-      direction: baseDirection,
-      applied: false,
-      reason: "",
-    };
-  }
-  const altitudeRisk = lowEarthRisk
-    ? clamp((120_000 - Math.max(0, altitudeKm)) / 120_000, 0, 1)
-    : 0;
-  const periRisk = periapsisRisk
-    ? clamp((150 - Number(periapsisKm)) / 150, 0, 1)
-    : 0;
-  const occlusionRisk = moonOccludedByEarth ? 0.75 : 0;
-  const risk = clamp(Math.max(altitudeRisk, periRisk, occlusionRisk), 0, 1);
-  const minOutwardRadial = clamp(0.06 + (0.28 * risk), 0.06, 0.42);
-  const tangentialVector = subtract(baseDirection, scale(up, radialComponent));
-  const tangentialDirection = normalize(tangentialVector, prograde);
-  const tangentialWeight = Math.sqrt(Math.max(0, 1 - (minOutwardRadial * minOutwardRadial)));
-  return {
-    direction: normalize(
-      add(scale(tangentialDirection, tangentialWeight), scale(up, minOutwardRadial)),
-      tangentialDirection,
-    ),
-    applied: true,
-    reason: moonOccludedByEarth
-      ? "earth-occlusion-guard"
-      : (periapsisRisk ? "periapsis-protect-guard" : "low-earth-clearance-guard"),
-  };
 }
 
 function bodyStateFromNBody(state, bodyId) {
@@ -1824,10 +1768,11 @@ export function createLaunchFleetController({
         && vehicle.vehicleRole !== "tanker"
         && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
       ) {
-        const earthAvoidance = enforceFleetMoonEarthAvoidanceDirection({
+        const earthAvoidance = enforceMoonEarthAvoidanceDirection({
           missionPhase: String(vehicle.missionPhase || ""),
+          commandPhase: "powered",
           direction: desiredDirection,
-          prograde,
+          tangent: prograde,
           up,
           toMoonVectorKm: finiteVector(moonState?.position)
             ? subtract(moonState.position, shipState.position)
