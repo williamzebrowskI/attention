@@ -81,6 +81,78 @@ function hasLaunchEvent(entries, eventName) {
   return false;
 }
 
+function isPrimaryLaunchStackBodyId(bodyId) {
+  const id = String(bodyId || "").trim();
+  return id === "earth_launch_vehicle" || id === "earth_launch_booster";
+}
+
+function collectLaunchEventActorIds(entry) {
+  const ids = new Set();
+  if (!entry || typeof entry !== "object") {
+    return ids;
+  }
+  const candidateKeys = [
+    "bodyId",
+    "shipId",
+    "tankerId",
+    "vehicleId",
+    "boosterBodyId",
+    "trackedBodyId",
+    "transferTankerId",
+  ];
+  for (let i = 0; i < candidateKeys.length; i += 1) {
+    const key = candidateKeys[i];
+    const id = String(entry[key] || "").trim();
+    if (id) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function eventRelevantToSnapshot(entry, snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return true;
+  }
+  const trackedBodyId = String(snapshot.bodyId || "").trim();
+  const trackedMissionId = String(snapshot.missionId || "").trim();
+  const actorIds = collectLaunchEventActorIds(entry);
+  if (trackedBodyId) {
+    if (actorIds.has(trackedBodyId)) {
+      return true;
+    }
+    if (isPrimaryLaunchStackBodyId(trackedBodyId)) {
+      if (actorIds.size <= 0) {
+        return true;
+      }
+      if (actorIds.has("earth_launch_vehicle") || actorIds.has("earth_launch_booster")) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (trackedMissionId) {
+    const eventMissionId = String(entry?.missionId || "").trim();
+    return Boolean(eventMissionId && eventMissionId === trackedMissionId);
+  }
+  return true;
+}
+
+function filterMissionControlEvents(entries, snapshot) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (!snapshot || typeof snapshot !== "object") {
+    return list;
+  }
+  const filtered = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const entry = list[i];
+    if (eventRelevantToSnapshot(entry, snapshot)) {
+      filtered.push(entry);
+    }
+  }
+  return filtered;
+}
+
 export function createMissionControlScreenController(options = {}) {
   const documentRef = options.documentRef || document;
   const launchMissionControlButton = options.launchMissionControlButton || null;
@@ -653,6 +725,12 @@ export function createMissionControlScreenController(options = {}) {
     const missionName = snapshot.missionName || "Mission";
     const missionPhase = humanizeMissionPhase(snapshot.missionPhase);
     const met = formatDurationSeconds(snapshot.elapsedSeconds);
+    const missionEvents = filterMissionControlEvents(launchEventLogEntries, snapshot);
+    const missionLastEventSummary = String(
+      missionEvents.length > 0
+        ? (missionEvents[missionEvents.length - 1]?.name || "")
+        : "",
+    );
     const refuelFillFraction = clamp(Number(snapshot?.refuelFillFraction) || 0, 0, 1);
     const refuelGoalReady = refuelFillFraction >= 0.88;
     missionControlSubtitleNode.textContent = active
@@ -683,18 +761,20 @@ export function createMissionControlScreenController(options = {}) {
       ["Tanker Window", snapshot.refuelCanLaunchTanker ? "Open" : "Closed"],
       ["Hot-Stage", snapshot.hotstageActive ? "Active" : (snapshot.hotstageDetachReason ? `Detached (${snapshot.hotstageDetachReason})` : "Inactive")],
       ["RCS", snapshot.rcsActive ? `On (${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 1)}%)` : "Off"],
-      ["Last Event", lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "n/a"],
+      ["Last Event", missionLastEventSummary
+        ? humanizeLaunchEventName(missionLastEventSummary)
+        : (lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "n/a")],
     ];
     missionControlOverviewNode.innerHTML = overviewCards
       .map(([label, value]) => missionControlCard(label, value))
       .join("");
 
-    const sequence = buildMissionSequence(snapshot, launchEventLogEntries);
+    const sequence = buildMissionSequence(snapshot, missionEvents);
     missionControlSequenceNode.innerHTML = sequence
       .map((step) => missionSequenceItem(step))
       .join("");
 
-    const recentEvents = launchEventLogEntries.slice(-32).reverse();
+    const recentEvents = missionEvents.slice(-32).reverse();
     if (recentEvents.length <= 0) {
       missionControlEventsNode.textContent = "No launch events yet.";
     } else {
