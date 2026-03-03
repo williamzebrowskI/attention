@@ -9927,10 +9927,25 @@ function updateInfoOverlay() {
     : "Mission Elapsed";
   const runtimeMassKg = nBodyState?.dynamicBodies?.get(meta.id)?.massKg;
   const displayedMassKg = Number.isFinite(runtimeMassKg) ? runtimeMassKg : Number(meta.mass_kg);
-  const masconModelLabel = LUNAR_MASCON_MODEL_ENABLED ? ", lunar mascon perturbations" : "";
-  const srpModelLabel = SOLAR_RADIATION_PRESSURE_ENABLED ? ", SRP (spacecraft) w/ eclipse shadowing" : "";
+  const isSpacecraftBody = String(meta?.body_type || "").toLowerCase() === "spacecraft";
+  const dynamicsDetailParts = [];
+  if (OBLATE_GRAVITY_ENABLED) {
+    dynamicsDetailParts.push("J2/J4 zonal terms");
+  }
+  if (LUNAR_MASCON_MODEL_ENABLED) {
+    dynamicsDetailParts.push("lunar mascon field (for lunar-trajectory targets)");
+  }
+  if (SOLAR_RADIATION_PRESSURE_ENABLED) {
+    dynamicsDetailParts.push(
+      isSpacecraftBody
+        ? "SRP + eclipse shadowing (active)"
+        : "SRP model active for spacecraft only",
+    );
+  }
   const orbitDynamicsLine = isNBodyDrivenBodyId(meta.id)
-    ? `N-body gravity (startup-seeded from Horizons${OBLATE_GRAVITY_ENABLED ? ", J2/J4 zonal terms" : ""}${masconModelLabel}${srpModelLabel})`
+    ? `N-body gravity (startup-seeded from Horizons${
+      dynamicsDetailParts.length > 0 ? `, ${dynamicsDetailParts.join(", ")}` : ""
+    })`
     : "Ephemeris / existing propagation";
   const configuredOrbitHours = Number(ORBIT_VISUAL_PERIOD_HOURS?.[meta.id]);
   const configuredSolarDayHours = Number(ROTATION_SOLAR_DAY_HOURS?.[meta.id]);
@@ -10202,7 +10217,7 @@ function updateInfoOverlay() {
     <p class="line">Dominant Gravity Source: ${dominantGravityBody ? `${dominantGravityBody}${dominantGravityMS2 !== null ? ` (${formatAcceleration(dominantGravityMS2)} m/s²)` : ""}` : "n/a"}</p>
     ${eclipseLine}
     <p class="line">Earthshine (Moon): ${earthshinePct !== null ? `${formatNumber(earthshinePct)}% of 1AU baseline` : "n/a"}</p>
-    <p class="line">Visual Spin Rate: ${formatNumber(visualSpinDegPerSec)} °/s</p>
+    <p class="line">Visual Spin Rate: ${formatAngularRateDegPerSec(visualSpinDegPerSec)} °/s</p>
     <p class="line">Current Rotation: ${formatNumber(currentRotationAngleDeg)}° (${formatNumber(currentSiderealCompletionPct)}% of sidereal cycle)</p>
     <p class="line">Camera Distance: ${formatNumber(cameraDistance)} scene units</p>
     ${orbitProgressLine}
@@ -10527,6 +10542,24 @@ function formatNumber(value, maxFractionDigits = 2) {
 }
 
 function formatAcceleration(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  const abs = Math.abs(numeric);
+  if (abs === 0) {
+    return "0";
+  }
+  if (abs >= 1) {
+    return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  if (abs >= 0.001) {
+    return numeric.toLocaleString(undefined, { maximumFractionDigits: 7 });
+  }
+  return numeric.toExponential(3);
+}
+
+function formatAngularRateDegPerSec(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return "n/a";
