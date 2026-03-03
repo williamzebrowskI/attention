@@ -27,6 +27,10 @@ import { dynamicPressurePaFromAtmosphere } from "./launchAeroModel.js";
 import { isFlightDockingEligible } from "./refuel/availability.js";
 import { REFUEL_TANKER_CONFIG } from "./refuel/config.js";
 import {
+  computePhaseCatchupCommand,
+  orbitalRelativeFrame,
+} from "./refuel/missionShipRendezvous.js";
+import {
   FLEET_MISSION_SHIP_ID_PREFIX,
   FLEET_MOON_CAPTURE_GATE_DISTANCE_KM,
   FLEET_MOON_TLI_DURATION_SEC,
@@ -1099,6 +1103,7 @@ export function createLaunchFleetController({
         } else {
           decisionTargetBodyId = String(target.tankerId || "refuel_tanker");
           decisionTargetBodyName = "Refuel Tanker";
+          const rendezvousFrame = orbitalRelativeFrame({ prograde, up });
           const directionToTarget = normalize(target.relativePositionKm, prograde);
           const directionHorizontal = normalize(
             subtract(directionToTarget, scale(up, dot(directionToTarget, up))),
@@ -1220,36 +1225,33 @@ export function createLaunchFleetController({
             const closureWeak = !Number.isFinite(refuelClosingSpeedKmS)
               || refuelClosingSpeedKmS < (desiredFarClosingKmS * 0.72);
             if (closureWeak) {
-              // Phasing/catch-up burn: choose raise/lower orbit from along-track geometry.
-              // If target is ahead, lower orbit (retrograde) to gain phase; if behind, raise orbit.
-              const alongTrackKm = dot(target.relativePositionKm || { x: 0, y: 0, z: 0 }, prograde);
-              const targetAhead = alongTrackKm >= 0;
-              const phaseSign = targetAhead ? -1 : 1;
-              const phaseDirection = phaseSign > 0 ? prograde : scale(prograde, -1);
-              const verticalBias = clamp(
-                (altitudeErrorKm / 140) + (radialSpeedErrorKmS / 0.07),
-                -0.18,
-                0.18,
-              );
-              let catchupThrottle = clamp(0.08 + (refuelDistanceKm / 140_000), 0.08, 0.20);
-              if (speedExcessKmS > 0.04) {
-                const excessPenalty = clamp(1 - (speedExcessKmS / 0.28), 0.2, 1);
-                catchupThrottle *= excessPenalty;
+              const catchupCommand = computePhaseCatchupCommand({
+                targetRelativePositionKm: target.relativePositionKm,
+                targetRelativeVelocityKmS: targetMinusShipRelVel,
+                refuelDistanceKm,
+                frame: rendezvousFrame,
+                altitudeErrorKm,
+                radialSpeedErrorKmS,
+                speedExcessKmS,
+              });
+              if (catchupCommand) {
+                requestedThrottle = catchupCommand.throttle;
+                desiredDirection = catchupCommand.desiredDirection;
+                guidanceMode = catchupCommand.phaseMode === "lower"
+                  ? "navsys:orbital-refuel-phase-catchup-lower"
+                  : "navsys:orbital-refuel-phase-catchup-raise";
+              } else {
+                // Fallback should not happen under nominal telemetry, but keeps guidance robust.
+                requestedThrottle = clamp(0.08 + (refuelDistanceKm / 140_000), 0.08, 0.20);
+                desiredDirection = normalize(
+                  add(
+                    scale(prograde, 0.72),
+                    scale(directionHorizontal, 0.20),
+                  ),
+                  prograde,
+                );
+                guidanceMode = "navsys:orbital-refuel-phase-catchup";
               }
-              if (targetAhead) {
-                // Lower-orbit phasing burns should be gentler to avoid large periapsis excursions.
-                catchupThrottle = Math.min(catchupThrottle, 0.16);
-              }
-              requestedThrottle = catchupThrottle;
-              desiredDirection = normalize(
-                add(
-                  scale(phaseDirection, 0.72),
-                  scale(directionHorizontal, 0.20),
-                  scale(up, verticalBias),
-                ),
-                phaseDirection,
-              );
-              guidanceMode = "navsys:orbital-refuel-phase-catchup";
             } else {
               requestedThrottle = clamp(0.12 + (refuelDistanceKm / 220), 0.12, 0.34);
               desiredDirection = normalize(

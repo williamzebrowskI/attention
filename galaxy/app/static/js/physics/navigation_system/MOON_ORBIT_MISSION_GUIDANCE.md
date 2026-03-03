@@ -30,7 +30,9 @@ This file now includes both:
 | `navsys:orbital-refuel-await-target` | Waiting for eligible tanker. | No target selected; holds orbit and keeps propulsion off except stabilization. |
 | `navsys:orbital-refuel-orbit-recovery` | Recover orbit before chase. | If orbital energy/periapsis is unsafe, prioritizes orbit repair instead of intercept. |
 | `navsys:orbital-refuel-speed-brake` | Bleed excess energy. | If speed/apoapsis is too high for safe rendezvous, commands braking-biased burn first. |
-| `navsys:orbital-refuel-phase-catchup` | Long-range phase correction. | At large range with weak closure, performs prograde-biased phasing burn to improve intercept timing. |
+| `navsys:orbital-refuel-phase-catchup-lower` | Long-range lower-orbit phase correction. | If tanker is ahead in-track, performs controlled retrograde-biased phasing burn to drop orbit period and catch up in phase. |
+| `navsys:orbital-refuel-phase-catchup-raise` | Long-range raise-orbit phase correction. | If tanker is behind in-track, performs prograde-biased phasing burn to increase period and align intercept timing. |
+| `navsys:orbital-refuel-phase-catchup` | Long-range phase correction (fallback). | Fallback guidance if detailed frame solution is unavailable; uses conservative phase/intercept blend. |
 | `navsys:orbital-refuel-rendezvous-far` | Far-range rendezvous. | Guides along horizontal/intercept direction with controlled throttle toward tanker. |
 | `navsys:orbital-refuel-rendezvous-mid` | Mid-range rendezvous. | Adds stronger relative-velocity damping while reducing approach corridor. |
 | `navsys:orbital-refuel-brake` | Near-range speed trim. | If near target but approach speed is high, burns to reduce relative velocity before final approach. |
