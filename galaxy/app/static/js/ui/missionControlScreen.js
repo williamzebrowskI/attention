@@ -736,6 +736,22 @@ export function createMissionControlScreenController(options = {}) {
     );
     const refuelFillFraction = clamp(Number(snapshot?.refuelFillFraction) || 0, 0, 1);
     const refuelGoalReady = refuelFillFraction >= 0.88;
+    const guidanceBurnRequested = Boolean(snapshot?.guidanceBurnRequested);
+    const guidanceRequestedThrottlePct = Number.isFinite(Number(snapshot?.guidanceRequestedThrottle))
+      ? Number(snapshot.guidanceRequestedThrottle) * 100
+      : Number.NaN;
+    const guidanceInertNoPropellant = Boolean(snapshot?.guidanceInertNoPropellant);
+    const guidanceInertReason = guidanceInertNoPropellant
+      ? (String(snapshot?.guidanceInertReason || "").trim() || "no-propellant-for-guidance-burn")
+      : "n/a";
+    const fuelBudgetRequiredDeltaVKmS = Number(snapshot?.fuelBudgetRequiredDeltaVKmS);
+    const fuelBudgetAvailableDeltaVKmS = Number(snapshot?.fuelBudgetAvailableDeltaVKmS);
+    const fuelBudgetMinimumPropellantKg = Number(snapshot?.fuelBudgetMinimumPropellantKg);
+    const fuelBudgetAvailablePropellantKg = Number(snapshot?.fuelBudgetAvailablePropellantKg);
+    const fuelBudgetMarginKg = Number(snapshot?.fuelBudgetMarginKg);
+    const fuelBudgetFeasible = snapshot?.fuelBudgetFeasible === null || snapshot?.fuelBudgetFeasible === undefined
+      ? null
+      : Boolean(snapshot.fuelBudgetFeasible);
     missionControlSubtitleNode.textContent = active
       ? `${missionName} | ${missionPhase} | ${phaseLabel} | ${stageName} | MET ${met}`
       : `${missionName} | Last known phase ${missionPhase} | MET ${met}`;
@@ -747,6 +763,11 @@ export function createMissionControlScreenController(options = {}) {
       ["Stage", stageName],
       ["MET", met],
       ["Guidance", snapshot.autopilotMode || snapshot.guidanceMode || "n/a"],
+      ["Guidance Burn Cmd", guidanceBurnRequested
+        ? `Yes (${Number.isFinite(guidanceRequestedThrottlePct) ? `${formatNumber(guidanceRequestedThrottlePct, 1)}%` : "n/a"})`
+        : "No"],
+      ["Guidance Inert", guidanceInertNoPropellant ? "YES (No Propellant)" : "No"],
+      ["Inert Reason", guidanceInertReason],
       ["Altitude", Number.isFinite(Number(snapshot.altitudeKm)) ? `${formatNumber(snapshot.altitudeKm, 3)} km` : "n/a"],
       ["Speed", Number.isFinite(Number(snapshot.speedKmS)) ? `${formatNumber(snapshot.speedKmS, 4)} km/s` : "n/a"],
       ["Apoapsis", Number.isFinite(Number(snapshot.apoapsisKm)) ? `${formatNumber(snapshot.apoapsisKm, 2)} km` : "n/a"],
@@ -764,6 +785,14 @@ export function createMissionControlScreenController(options = {}) {
       ["Refuel Flights", `${Math.max(0, Number(snapshot.refuelCompletedFlights) || 0)} / ${Math.max(0, Number(snapshot.refuelRequiredFlights) || 0)}`],
       ["Refuel Fill", Number.isFinite(Number(snapshot.refuelFillFraction)) ? `${formatNumber(Number(snapshot.refuelFillFraction) * 100, 1)}%` : "n/a"],
       ["Refuel Goal", refuelGoalReady ? "FULL" : "LOW"],
+      ["Fuel Budget", fuelBudgetFeasible === null ? "n/a" : (fuelBudgetFeasible ? "Feasible" : "Deficit")],
+      ["DV Req / Avail", Number.isFinite(fuelBudgetRequiredDeltaVKmS) && Number.isFinite(fuelBudgetAvailableDeltaVKmS)
+        ? `${formatNumber(fuelBudgetRequiredDeltaVKmS, 3)} / ${formatNumber(fuelBudgetAvailableDeltaVKmS, 3)} km/s`
+        : "n/a"],
+      ["Prop Req / Avail", Number.isFinite(fuelBudgetMinimumPropellantKg) && Number.isFinite(fuelBudgetAvailablePropellantKg)
+        ? `${formatNumber(fuelBudgetMinimumPropellantKg, 0)} / ${formatNumber(fuelBudgetAvailablePropellantKg, 0)} kg`
+        : "n/a"],
+      ["Fuel Margin", Number.isFinite(fuelBudgetMarginKg) ? `${formatNumber(fuelBudgetMarginKg, 0)} kg` : "n/a"],
       ["Tanker Window", snapshot.refuelCanLaunchTanker ? "Open" : "Closed"],
       ["Hot-Stage", snapshot.hotstageActive ? "Active" : (snapshot.hotstageDetachReason ? `Detached (${snapshot.hotstageDetachReason})` : "Inactive")],
       ["RCS", snapshot.rcsActive ? `On (${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 1)}%)` : "Off"],

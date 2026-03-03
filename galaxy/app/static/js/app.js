@@ -2820,6 +2820,33 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const qAlphaPct = Number.isFinite(Number(snapshot.qAlphaPaRad))
     ? (Number(snapshot.qAlphaPaRad) / 1600) * 100
     : Number.NaN;
+  const guidanceBurnRequested = Boolean(snapshot.guidanceBurnRequested);
+  const guidanceRequestedThrottlePct = Number.isFinite(Number(snapshot.guidanceRequestedThrottle))
+    ? Number(snapshot.guidanceRequestedThrottle) * 100
+    : Number.NaN;
+  const guidanceInertNoPropellant = Boolean(snapshot.guidanceInertNoPropellant);
+  const guidanceInertReason = String(snapshot.guidanceInertReason || "").trim();
+  const fuelBudgetRequiredDeltaVKmS = Number(snapshot.fuelBudgetRequiredDeltaVKmS);
+  const fuelBudgetAvailableDeltaVKmS = Number(snapshot.fuelBudgetAvailableDeltaVKmS);
+  const fuelBudgetMinimumPropellantKg = Number(snapshot.fuelBudgetMinimumPropellantKg);
+  const fuelBudgetAvailablePropellantKg = Number(snapshot.fuelBudgetAvailablePropellantKg);
+  const fuelBudgetMarginKg = Number(snapshot.fuelBudgetMarginKg);
+  const fuelBudgetFeasible = snapshot.fuelBudgetFeasible === null || snapshot.fuelBudgetFeasible === undefined
+    ? null
+    : Boolean(snapshot.fuelBudgetFeasible);
+  const guidanceStatusIndicator = guidanceInertNoPropellant
+    ? missionStatusBadge("INERT (NO PROP)", "red")
+    : (
+      guidanceBurnRequested
+        ? missionStatusBadge("BURN REQUESTED", "green")
+        : missionStatusBadge("GUIDANCE HOLD", "muted")
+    );
+  const fuelBudgetStatusIndicator = fuelBudgetFeasible === null
+    ? missionStatusBadge("n/a", "muted")
+    : missionStatusBadge(
+      fuelBudgetFeasible ? "FEASIBLE" : "DEFICIT",
+      fuelBudgetFeasible ? "green" : "red",
+    );
   const refuelOnlineTankers = Math.max(0, Number(snapshot.refuelOnlineTankers) || 0);
   const refuelAvailableTankers = Math.max(
     0,
@@ -2935,6 +2962,18 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Last Event", value: lastLaunchEventSummary || "n/a" },
     { label: "Event Age", value: lastLaunchEventTimestampUtc ? `${formatNumber(Math.max(0, (Date.now() - Date.parse(lastLaunchEventTimestampUtc)) / 1000), 1)} s` : "n/a" },
   ];
+  const guidanceFuelMetrics = [
+    { label: "Guidance Burn", value: guidanceStatusIndicator, allowHtml: true },
+    { label: "Burn Requested", value: guidanceBurnRequested ? "yes" : "no" },
+    { label: "Cmd Throttle", value: Number.isFinite(guidanceRequestedThrottlePct) ? `${formatNumber(guidanceRequestedThrottlePct, 1)}%` : "n/a" },
+    { label: "Inert Reason", value: guidanceInertNoPropellant ? (guidanceInertReason || "no-propellant-for-guidance-burn") : "n/a" },
+    { label: "Fuel Budget", value: fuelBudgetStatusIndicator, allowHtml: true },
+    { label: "DV Req/Avail", value: Number.isFinite(fuelBudgetRequiredDeltaVKmS) && Number.isFinite(fuelBudgetAvailableDeltaVKmS) ? `${formatNumber(fuelBudgetRequiredDeltaVKmS, 3)} / ${formatNumber(fuelBudgetAvailableDeltaVKmS, 3)} km/s` : "n/a" },
+    { label: "Prop Req", value: Number.isFinite(fuelBudgetMinimumPropellantKg) ? `${formatNumber(fuelBudgetMinimumPropellantKg, 0)} kg` : "n/a" },
+    { label: "Prop Avail", value: Number.isFinite(fuelBudgetAvailablePropellantKg) ? `${formatNumber(fuelBudgetAvailablePropellantKg, 0)} kg` : "n/a" },
+    { label: "Prop Margin", value: Number.isFinite(fuelBudgetMarginKg) ? `${formatNumber(fuelBudgetMarginKg, 0)} kg` : "n/a" },
+    { label: "Ship->Moon", value: Number.isFinite(Number(snapshot.fuelBudgetShipToMoonDistanceKm)) ? `${formatNumber(snapshot.fuelBudgetShipToMoonDistanceKm, 1)} km` : "n/a" },
+  ];
 
   const bars = [
     missionBar("Throttle", throttlePct, Number.isFinite(throttlePct) ? `${formatNumber(throttlePct, 1)}%` : "n/a"),
@@ -2948,6 +2987,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     missionMetricGroup("Vehicle", vehicleMetrics),
     missionMetricGroup("Navigation", navigationMetrics),
     missionMetricGroup("Aero / Propulsion", aeroMetrics),
+    missionMetricGroup("Guidance / Fuel", guidanceFuelMetrics),
     missionMetricGroup("Booster", boosterMetrics),
     missionMetricGroup("Hot Stage / Ops", hotstageMetrics),
     `<section class="legend-mission-group"><p class="legend-mission-group-title">Loads</p><div class="legend-mission-bars">${bars}</div></section>`,
@@ -9859,6 +9899,32 @@ function updateInfoOverlay() {
       ? `${formatNumber(launchSnapshot.moonProjectedMissDistanceKm, 1)} km`
       : "n/a";
     const phaseGateReasonLine = String(launchSnapshot?.missionPhaseGateReason || "").trim() || "n/a";
+    const guidanceBurnRequestedLine = Boolean(launchSnapshot?.guidanceBurnRequested) ? "yes" : "no";
+    const guidanceRequestedThrottleLine = Number.isFinite(Number(launchSnapshot?.guidanceRequestedThrottle))
+      ? `${formatNumber(Number(launchSnapshot.guidanceRequestedThrottle) * 100, 1)}%`
+      : "n/a";
+    const guidanceInertNoPropellant = Boolean(launchSnapshot?.guidanceInertNoPropellant);
+    const guidanceInertReasonLine = guidanceInertNoPropellant
+      ? (String(launchSnapshot?.guidanceInertReason || "").trim() || "no-propellant-for-guidance-burn")
+      : "n/a";
+    const fuelBudgetRequiredDeltaVLine = Number.isFinite(Number(launchSnapshot?.fuelBudgetRequiredDeltaVKmS))
+      ? `${formatNumber(launchSnapshot.fuelBudgetRequiredDeltaVKmS, 3)} km/s`
+      : "n/a";
+    const fuelBudgetAvailableDeltaVLine = Number.isFinite(Number(launchSnapshot?.fuelBudgetAvailableDeltaVKmS))
+      ? `${formatNumber(launchSnapshot.fuelBudgetAvailableDeltaVKmS, 3)} km/s`
+      : "n/a";
+    const fuelBudgetRequiredPropLine = Number.isFinite(Number(launchSnapshot?.fuelBudgetMinimumPropellantKg))
+      ? `${formatNumber(launchSnapshot.fuelBudgetMinimumPropellantKg, 0)} kg`
+      : "n/a";
+    const fuelBudgetAvailablePropLine = Number.isFinite(Number(launchSnapshot?.fuelBudgetAvailablePropellantKg))
+      ? `${formatNumber(launchSnapshot.fuelBudgetAvailablePropellantKg, 0)} kg`
+      : "n/a";
+    const fuelBudgetMarginLine = Number.isFinite(Number(launchSnapshot?.fuelBudgetMarginKg))
+      ? `${formatNumber(launchSnapshot.fuelBudgetMarginKg, 0)} kg`
+      : "n/a";
+    const fuelBudgetFeasibleLine = launchSnapshot?.fuelBudgetFeasible === null || launchSnapshot?.fuelBudgetFeasible === undefined
+      ? "n/a"
+      : (launchSnapshot.fuelBudgetFeasible ? "yes" : "no");
     const boosterAltitudeLine = Number.isFinite(launchSnapshot?.boosterAltitudeKm)
       ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km`
       : "n/a";
@@ -9918,6 +9984,10 @@ function updateInfoOverlay() {
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
+        <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
+        <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
+        <p class="line launch-line">Fuel Budget DV Req/Avail: ${fuelBudgetRequiredDeltaVLine} / ${fuelBudgetAvailableDeltaVLine}</p>
+        <p class="line launch-line">Fuel Budget Prop Req/Avail/Margin: ${fuelBudgetRequiredPropLine} / ${fuelBudgetAvailablePropLine} / ${fuelBudgetMarginLine} | Feasible: ${fuelBudgetFeasibleLine}</p>
       `;
     } else {
       selectedVehicleLines = `
@@ -9928,6 +9998,10 @@ function updateInfoOverlay() {
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
+        <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
+        <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
+        <p class="line launch-line">Fuel Budget DV Req/Avail: ${fuelBudgetRequiredDeltaVLine} / ${fuelBudgetAvailableDeltaVLine}</p>
+        <p class="line launch-line">Fuel Budget Prop Req/Avail/Margin: ${fuelBudgetRequiredPropLine} / ${fuelBudgetAvailablePropLine} / ${fuelBudgetMarginLine} | Feasible: ${fuelBudgetFeasibleLine}</p>
         <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>

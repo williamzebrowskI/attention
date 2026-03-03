@@ -30,6 +30,7 @@ import {
   computePhaseCatchupCommand,
   orbitalRelativeFrame,
 } from "./refuel/missionShipRendezvous.js";
+import { estimateMoonRoundTripFuelBudget } from "./missionFuelBudget.js";
 import {
   FLEET_MISSION_SHIP_ID_PREFIX,
   FLEET_MOON_CAPTURE_GATE_DISTANCE_KM,
@@ -793,8 +794,17 @@ export function createLaunchFleetController({
         burnKg: 0,
         guidanceMode: launchMode === "orbit_inject" ? "autopilot-ballistic-hold" : "autopilot-vertical-ascent",
         dynamicPressurePa: 0,
+        guidanceBurnRequested: false,
+        guidanceRequestedThrottle: 0,
+        guidanceInertNoPropellant: false,
+        guidanceInertReason: "",
       },
       pendingBurnKg: 0,
+      guidanceBurnRequested: false,
+      guidanceRequestedThrottle: 0,
+      guidanceInertNoPropellant: false,
+      guidanceInertReason: "",
+      fuelBudget: null,
       launchTimestampMs: nowMs,
     });
 
@@ -945,6 +955,9 @@ export function createLaunchFleetController({
     const earthMuKm3S2 = Number(gravitationalConstantKm3PerKgS2)
       * (Number(getEarthMassKg?.()) || Number(earthState.massKg) || 0);
     const moonState = bodyStateFromNBody(state, "moon");
+    const moonMassKg = Number(getBodyMassKg?.("moon")) || Number(moonState?.massKg) || 7.342e22;
+    const moonRadiusKm = Number(getBodyRadiusKm?.("moon")) || 1737.4;
+    const moonMuKm3S2 = Number(gravitationalConstantKm3PerKgS2) * moonMassKg;
     const removeIds = [];
     const safeDtSeconds = Math.max(0, Number(dtSeconds) || 0);
     const vehicles = fleetVehicles();
@@ -1480,9 +1493,38 @@ export function createLaunchFleetController({
         }
       }
 
+      const requestedThrottleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
+      const stageIspVacuumEstimateS = Math.max(1, Number(activeStage?.ispVacuumS) || 360);
+      const moonFuelBudget = (
+        vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      )
+        ? estimateMoonRoundTripFuelBudget({
+          missionPhase: vehicle.missionPhase,
+          shipState,
+          earthState,
+          moonState,
+          earthRadiusKm,
+          moonRadiusKm,
+          earthMuKm3S2,
+          moonMuKm3S2,
+          stageIspVacuumS: stageIspVacuumEstimateS,
+          stagePropellantKg: availablePropellantKg,
+        })
+        : null;
+      vehicle.fuelBudget = moonFuelBudget;
+
       if (availablePropellantKg <= 1e-6) {
         requestedThrottle = 0;
       }
+      const guidanceBurnRequested = requestedThrottleCommand > 1e-3;
+      const guidanceInertNoPropellant = guidanceBurnRequested && availablePropellantKg <= 1e-6;
+      vehicle.guidanceBurnRequested = guidanceBurnRequested;
+      vehicle.guidanceRequestedThrottle = requestedThrottleCommand;
+      vehicle.guidanceInertNoPropellant = guidanceInertNoPropellant;
+      vehicle.guidanceInertReason = guidanceInertNoPropellant
+        ? "no-propellant-for-guidance-burn"
+        : "";
       const ambientPressurePa = Number(atmosphereSample?.pressurePa) || 0;
       const stageThrustVacuumN = Math.max(0, Number(activeStage?.thrustVacuumN) || 0);
       const stageThrustSeaLevelN = Math.max(0, Number(activeStage?.thrustSeaLevelN) || stageThrustVacuumN);
@@ -1524,6 +1566,10 @@ export function createLaunchFleetController({
         burnRateKgS,
         burnKg,
         guidanceMode,
+        guidanceBurnRequested,
+        guidanceRequestedThrottle: requestedThrottleCommand,
+        guidanceInertNoPropellant,
+        guidanceInertReason: vehicle.guidanceInertReason,
         rcsActive: rcsAssistAuthority > 1e-4,
         rcsMode: rcsAssistMode,
         rcsAuthority: rcsAssistAuthority,
@@ -1771,6 +1817,18 @@ export function createLaunchFleetController({
         refuelTransferLocked: false,
         refuelUndockActive: false,
         refuelFuelingActive: false,
+        guidanceBurnRequested: false,
+        guidanceRequestedThrottle: 0,
+        guidanceInertNoPropellant: false,
+        guidanceInertReason: "",
+        fuelBudgetRequiredDeltaVKmS: null,
+        fuelBudgetAvailableDeltaVKmS: null,
+        fuelBudgetMinimumPropellantKg: null,
+        fuelBudgetAvailablePropellantKg: null,
+        fuelBudgetMarginKg: null,
+        fuelBudgetFeasible: null,
+        fuelBudgetShipToMoonDistanceKm: null,
+        fuelBudgetEarthToMoonDistanceKm: null,
         statusLine: `${vehicle.vehicleName || "Starship"} telemetry unavailable.`,
       };
     }
@@ -1933,6 +1991,27 @@ export function createLaunchFleetController({
         z: Number(refuelFlight.attitudeDesiredAxisKm.z) || 0,
       }
       : null;
+    const guidanceBurnRequested = Boolean(
+      vehicle.lastStep?.guidanceBurnRequested
+      ?? vehicle.guidanceBurnRequested,
+    );
+    const guidanceRequestedThrottle = clamp(
+      Number(vehicle.lastStep?.guidanceRequestedThrottle ?? vehicle.guidanceRequestedThrottle) || 0,
+      0,
+      1,
+    );
+    const guidanceInertNoPropellant = Boolean(
+      vehicle.lastStep?.guidanceInertNoPropellant
+      ?? vehicle.guidanceInertNoPropellant,
+    );
+    const guidanceInertReason = String(
+      vehicle.lastStep?.guidanceInertReason
+      || vehicle.guidanceInertReason
+      || "",
+    );
+    const fuelBudget = vehicle.fuelBudget && typeof vehicle.fuelBudget === "object"
+      ? vehicle.fuelBudget
+      : null;
     const missionPhaseGateReason = fleetMissionPhaseGateReason({
       vehicle,
       orbital,
@@ -2048,6 +2127,10 @@ export function createLaunchFleetController({
       moonRelativeSpeedKmS,
       moonProjectedMissDistanceKm,
       missionPhaseGateReason,
+      guidanceBurnRequested,
+      guidanceRequestedThrottle,
+      guidanceInertNoPropellant,
+      guidanceInertReason,
       rcsActive: flightRcsActive,
       rcsErrorDeg,
       rcsAuthority,
@@ -2058,6 +2141,28 @@ export function createLaunchFleetController({
       rcsDesiredAxisKm,
       rcsOrbitCorrectionAccelKmS2,
       rcsOrbitCorrectionForceN,
+      fuelBudgetRequiredDeltaVKmS: Number.isFinite(Number(fuelBudget?.requiredDeltaVKmS))
+        ? Number(fuelBudget.requiredDeltaVKmS)
+        : null,
+      fuelBudgetAvailableDeltaVKmS: Number.isFinite(Number(fuelBudget?.availableDeltaVKmS))
+        ? Number(fuelBudget.availableDeltaVKmS)
+        : null,
+      fuelBudgetMinimumPropellantKg: Number.isFinite(Number(fuelBudget?.minimumRequiredPropellantKg))
+        ? Number(fuelBudget.minimumRequiredPropellantKg)
+        : null,
+      fuelBudgetAvailablePropellantKg: Number.isFinite(Number(fuelBudget?.availablePropellantKg))
+        ? Number(fuelBudget.availablePropellantKg)
+        : null,
+      fuelBudgetMarginKg: Number.isFinite(Number(fuelBudget?.marginKg))
+        ? Number(fuelBudget.marginKg)
+        : null,
+      fuelBudgetFeasible: fuelBudget ? Boolean(fuelBudget.feasible) : null,
+      fuelBudgetShipToMoonDistanceKm: Number.isFinite(Number(fuelBudget?.shipToMoonDistanceKm))
+        ? Number(fuelBudget.shipToMoonDistanceKm)
+        : null,
+      fuelBudgetEarthToMoonDistanceKm: Number.isFinite(Number(fuelBudget?.earthToMoonDistanceKm))
+        ? Number(fuelBudget.earthToMoonDistanceKm)
+        : null,
       launchSiteName: LAUNCH_SITE.name || "Launch Site",
       statusLine: `${vehicle.vehicleName || "Starship"} | ${vehicle.missionPhase || "coast"}`,
     };
