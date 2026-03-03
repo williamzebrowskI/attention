@@ -55,6 +55,9 @@ const FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM = 130;
 const FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM = 155;
 const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_450_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG = 90_000;
+const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 2_600_000;
+const FLEET_MOON_MISSION_MARGIN_CONSERVE_KG = 220_000;
+const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
 const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
 const FLEET_TLI_TARGET_APOAPSIS_KM = 382_000;
 const FLEET_TLI_TARGET_APOAPSIS_MARGIN_KM = 3_000;
@@ -768,6 +771,16 @@ export function createLaunchFleetController({
       stageProfiles[1].propellantMassKg = Math.max(
         Number(stageProfiles[1].propellantMassKg) || 0,
         FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG,
+      );
+    }
+    if (
+      vehicleRole !== "tanker"
+      && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      && stageProfiles[1]
+    ) {
+      stageProfiles[1].propellantMassKg = Math.max(
+        Number(stageProfiles[1].propellantMassKg) || 0,
+        FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG,
       );
     }
     const injectedStageIndex = 1;
@@ -1551,7 +1564,6 @@ export function createLaunchFleetController({
         }
       }
 
-      const requestedThrottleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
       const stageIspVacuumEstimateS = Math.max(1, Number(activeStage?.ispVacuumS) || 360);
       let missionFuelBudget = null;
       if (vehicle.vehicleRole !== "tanker" && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
@@ -1585,6 +1597,33 @@ export function createLaunchFleetController({
 
       if (
         vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+        && missionFuelBudget
+      ) {
+        const budgetFeasible = Boolean(missionFuelBudget.feasible);
+        const budgetMarginKg = Number(missionFuelBudget.marginKg);
+        const moonBurnPhase = (
+          vehicle.missionPhase === "tli_burn"
+          || vehicle.missionPhase === "coast_to_moon"
+          || vehicle.missionPhase === "lunar_capture"
+        );
+        if (moonBurnPhase && !budgetFeasible && availablePropellantKg > 1e-6) {
+          requestedThrottle = 0;
+          desiredDirection = prograde;
+          guidanceMode = "autopilot-moon-fuel-budget-hold";
+        } else if (moonBurnPhase && Number.isFinite(budgetMarginKg) && budgetMarginKg < FLEET_MOON_MISSION_MARGIN_CONSERVE_KG) {
+          const conserveCap = budgetMarginKg < FLEET_MOON_MISSION_MARGIN_CRITICAL_KG
+            ? 0.16
+            : 0.24;
+          requestedThrottle = Math.min(requestedThrottle, conserveCap);
+          if (requestedThrottle > 1e-3 && guidanceMode.startsWith("autopilot-")) {
+            guidanceMode = `${guidanceMode}:fuel-conserve`;
+          }
+        }
+      }
+
+      if (
+        vehicle.vehicleRole !== "tanker"
         && vehicle.missionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO
         && vehicle.missionPhase === "orbital_refuel"
         && missionFuelBudget
@@ -1606,6 +1645,7 @@ export function createLaunchFleetController({
       if (availablePropellantKg <= 1e-6) {
         requestedThrottle = 0;
       }
+      const requestedThrottleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
       const guidanceBurnRequested = requestedThrottleCommand > 1e-3;
       const guidanceInertNoPropellant = guidanceBurnRequested && availablePropellantKg <= 1e-6;
       vehicle.guidanceBurnRequested = guidanceBurnRequested;
