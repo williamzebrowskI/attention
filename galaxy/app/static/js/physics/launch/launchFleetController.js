@@ -664,10 +664,60 @@ export function createLaunchFleetController({
     };
   }
 
+  function normalizeAngleZeroToTau(angleRad) {
+    if (!Number.isFinite(Number(angleRad))) {
+      return 0;
+    }
+    const tau = Math.PI * 2;
+    let value = Number(angleRad) % tau;
+    if (value < 0) {
+      value += tau;
+    }
+    return value;
+  }
+
+  function moonWindowInjectPhaseAngleRad({
+    earthState,
+    moonState,
+    inclinationDeg = 28.5,
+  } = {}) {
+    if (
+      !earthState
+      || !moonState
+      || !finiteVector(earthState.position)
+      || !finiteVector(moonState.position)
+    ) {
+      return Number.NaN;
+    }
+    const moonRel = subtract(moonState.position, earthState.position);
+    const moonRelMag = length(moonRel);
+    if (!(moonRelMag > 1e-9)) {
+      return Number.NaN;
+    }
+    const moonDir = normalize(moonRel, { x: 1, y: 0, z: 0 });
+    const incRad = rad(clamp(Number(inclinationDeg) || 28.5, 0, 89.5));
+    const e1 = { x: 1, y: 0, z: 0 };
+    const e2 = normalize(
+      { x: 0, y: Math.cos(incRad), z: Math.sin(incRad) },
+      { x: 0, y: 1, z: 0 },
+    );
+    const planeNormal = normalize(cross(e1, e2), { x: 0, y: 0, z: 1 });
+    const moonProj = subtract(moonDir, scale(planeNormal, dot(moonDir, planeNormal)));
+    const moonProjMag = length(moonProj);
+    if (!(moonProjMag > 1e-9)) {
+      return Number.NaN;
+    }
+    const moonProjDir = normalize(moonProj, e1);
+    const moonPhaseRad = Math.atan2(dot(moonProjDir, e2), dot(moonProjDir, e1));
+    // Place the injected vehicle 90 deg behind projected Moon direction so prograde points moonward.
+    return normalizeAngleZeroToTau(moonPhaseRad - (Math.PI * 0.5));
+  }
+
   function fleetOrbitInjectState({
     earthState,
     orbitAltitudeKm = 150,
     inclinationDeg = 28.5,
+    phaseAngleRad = Number.NaN,
   }) {
     const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
     const muKm3S2 = Number(gravitationalConstantKm3PerKgS2) * (Number(getEarthMassKg?.()) || 0);
@@ -678,7 +728,9 @@ export function createLaunchFleetController({
     const orbitRadiusKm = earthRadiusKm + targetAltitudeKm;
     const circularSpeedKmS = Math.sqrt(muKm3S2 / orbitRadiusKm);
     const incRad = rad(clamp(Number(inclinationDeg) || 28.5, 0, 89.5));
-    const phaseAngle = Math.random() * (Math.PI * 2);
+    const phaseAngle = Number.isFinite(Number(phaseAngleRad))
+      ? normalizeAngleZeroToTau(Number(phaseAngleRad))
+      : (Math.random() * (Math.PI * 2));
     const cTheta = Math.cos(phaseAngle);
     const sTheta = Math.sin(phaseAngle);
     const cInc = Math.cos(incRad);
@@ -751,15 +803,42 @@ export function createLaunchFleetController({
     const launchMode = String(options?.mode || "pad_launch").trim().toLowerCase() === "orbit_inject"
       ? "orbit_inject"
       : "pad_launch";
+    const moonWindowInjectPhaseRad = (
+      launchMode === "orbit_inject"
+      && vehicleRole !== "tanker"
+      && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+    )
+      ? moonWindowInjectPhaseAngleRad({
+        earthState,
+        moonState: bodyStateFromNBody(state, "moon"),
+        inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
+      })
+      : Number.NaN;
+    const orbitInjectPhaseAngleRad = (
+      launchMode === "orbit_inject"
+      && vehicleRole !== "tanker"
+      && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+    )
+      ? (
+        Number.isFinite(Number(moonWindowInjectPhaseRad))
+          ? Number(moonWindowInjectPhaseRad)
+          : 0
+      )
+      : Number.NaN;
+    const moonPadLaunchWindowLocked =
+      launchMode === "pad_launch"
+      && vehicleRole !== "tanker"
+      && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN;
     const spawnState = launchMode === "orbit_inject"
       ? fleetOrbitInjectState({
         earthState,
         orbitAltitudeKm: Number(options?.orbitInjectAltitudeKm) || 150,
         inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
+        phaseAngleRad: orbitInjectPhaseAngleRad,
       })
       : fleetPadSpawnState({
         earthState,
-        sequenceNumber: identity.sequenceNumber,
+        sequenceNumber: moonPadLaunchWindowLocked ? 1 : identity.sequenceNumber,
         nowMs,
       });
     if (!spawnState) {

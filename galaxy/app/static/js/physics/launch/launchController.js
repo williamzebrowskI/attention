@@ -2325,6 +2325,39 @@ export function createLaunchController(options) {
       return false;
     }
     runtime.mission.selectedId = missionIdForLaunch;
+    if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+      const earthState = earthStateFromNBody(state);
+      const rocketState = rocketStateFromNBody(state);
+      const moonState = bodyStateFromNBody(state, "moon");
+      const currentEarthAxes = earthAxes(nowMs);
+      if (
+        finiteVector(earthState?.position)
+        && finiteVector(rocketState?.position)
+        && finiteVector(moonState?.position)
+      ) {
+        const up = normalize(
+          subtract(rocketState.position, earthState.position),
+          currentEarthAxes.pole,
+        );
+        const toMoon = subtract(moonState.position, rocketState.position);
+        const toMoonDir = normalize(toMoon, up);
+        const moonHorizontal = subtract(toMoonDir, scale(up, dot(toMoonDir, up)));
+        let moonHeading = unitOrNull(moonHorizontal);
+        if (moonHeading) {
+          const east = normalize(
+            cross(currentEarthAxes.pole, up),
+            normalize(cross({ x: 0, y: 0, z: 1 }, up), { x: 1, y: 0, z: 0 }),
+          );
+          if (dot(moonHeading, east) < 0) {
+            moonHeading = scale(moonHeading, -1);
+          }
+          const moonWindowPlaneNormal = unitOrNull(cross(up, moonHeading));
+          if (moonWindowPlaneNormal) {
+            runtime.launchPlaneNormal = moonWindowPlaneNormal;
+          }
+        }
+      }
+    }
     refuelController.applyMissionProfile(runtime.mission.selectedId);
     runtime.phase = "powered";
     runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-vertical-ascent" : "manual-ascent";
@@ -2341,6 +2374,7 @@ export function createLaunchController(options) {
       missionId: runtime.mission.selectedId,
       missionPhase: runtime.mission.phase,
       launchKind: String(options?.launchKind || "primary"),
+      moonWindowLocked: runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,
     });
     emitRuntimeTransitionEvents("start_launch");
     return true;
