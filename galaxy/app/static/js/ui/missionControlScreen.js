@@ -94,6 +94,10 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlLiveViewportLabelNode = options.missionControlLiveViewportLabelNode
     || missionControlScreenNode?.querySelector?.(".mission-control-live-viewport-label")
     || null;
+  const missionControlLiveFeedCanvasNode = options.missionControlLiveFeedCanvasNode
+    || missionControlScreenNode?.querySelector?.(".mission-control-live-feed-canvas")
+    || null;
+  const liveFeedSourceCanvas = options.liveFeedSourceCanvas || null;
   const missionControlViewStarshipButton = options.missionControlViewStarshipButton || null;
   const missionControlViewBoosterButton = options.missionControlViewBoosterButton || null;
   const missionControlFleetNode = options.missionControlFleetNode || null;
@@ -120,7 +124,88 @@ export function createMissionControlScreenController(options = {}) {
   let selectedFleetBodyId = "";
   let cachedFleetEntries = [];
   let fleetSelectInteracting = false;
+  let fleetSelectInteractionUntilMs = 0;
   let lastFleetMarkupSignature = "";
+  let liveFeedDrawFailed = false;
+
+  function markFleetSelectInteracting(extraMs = 900) {
+    fleetSelectInteracting = true;
+    const holdMs = Math.max(120, Number(extraMs) || 0);
+    fleetSelectInteractionUntilMs = Date.now() + holdMs;
+  }
+
+  function syncLiveViewportFeed() {
+    if (!visible || !missionControlLiveFeedCanvasNode || !liveFeedSourceCanvas || liveFeedDrawFailed) {
+      return;
+    }
+    const sourceWidth = Math.max(0, Number(liveFeedSourceCanvas.width) || 0);
+    const sourceHeight = Math.max(0, Number(liveFeedSourceCanvas.height) || 0);
+    if (sourceWidth <= 0 || sourceHeight <= 0) {
+      return;
+    }
+    const viewportRect = missionControlLiveFeedCanvasNode.getBoundingClientRect();
+    const cssWidth = Math.max(
+      1,
+      Math.floor(
+        Number(viewportRect.width)
+        || Number(missionControlLiveFeedCanvasNode.clientWidth)
+        || 1,
+      ),
+    );
+    const cssHeight = Math.max(
+      1,
+      Math.floor(
+        Number(viewportRect.height)
+        || Number(missionControlLiveFeedCanvasNode.clientHeight)
+        || 1,
+      ),
+    );
+    const dpr = Math.max(1, Math.min(2, Number(window?.devicePixelRatio) || 1));
+    const targetWidth = Math.max(1, Math.floor(cssWidth * dpr));
+    const targetHeight = Math.max(1, Math.floor(cssHeight * dpr));
+    if (
+      missionControlLiveFeedCanvasNode.width !== targetWidth
+      || missionControlLiveFeedCanvasNode.height !== targetHeight
+    ) {
+      missionControlLiveFeedCanvasNode.width = targetWidth;
+      missionControlLiveFeedCanvasNode.height = targetHeight;
+    }
+    const ctx = missionControlLiveFeedCanvasNode.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    const sourceAspect = sourceWidth / sourceHeight;
+    const targetAspect = targetWidth / targetHeight;
+    let sx = 0;
+    let sy = 0;
+    let sw = sourceWidth;
+    let sh = sourceHeight;
+    if (sourceAspect > targetAspect) {
+      sw = sourceHeight * targetAspect;
+      sx = (sourceWidth - sw) * 0.5;
+    } else {
+      sh = sourceWidth / targetAspect;
+      sy = (sourceHeight - sh) * 0.5;
+    }
+    try {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, targetWidth, targetHeight);
+      ctx.drawImage(
+        liveFeedSourceCanvas,
+        sx,
+        sy,
+        sw,
+        sh,
+        0,
+        0,
+        targetWidth,
+        targetHeight,
+      );
+    } catch (_error) {
+      liveFeedDrawFailed = true;
+      missionControlLiveFeedCanvasNode.style.display = "none";
+    }
+  }
 
   function missionControlCard(label, value) {
     return `<article class="mission-overview-card"><span class="mission-overview-label">${escapeHtml(label)}</span><span class="mission-overview-value">${escapeHtml(value)}</span></article>`;
@@ -527,8 +612,15 @@ export function createMissionControlScreenController(options = {}) {
     const liveSignature = `${markupSignature}::selected=${selectedFleetBodyId}`;
     const activeElement = documentRef?.activeElement || null;
     const existingSelect = missionControlFleetNode.querySelector("[data-mc-fleet-select=\"true\"]");
-    const selectFocused = Boolean(existingSelect && activeElement === existingSelect);
-    if ((fleetSelectInteracting || selectFocused) && missionControlFleetNode.childElementCount > 0) {
+    const selectFocused = Boolean(
+      existingSelect
+      && (
+        activeElement === existingSelect
+        || existingSelect.matches?.(":focus")
+      ),
+    );
+    const interactionWindowActive = Date.now() < fleetSelectInteractionUntilMs;
+    if ((fleetSelectInteracting || selectFocused || interactionWindowActive) && missionControlFleetNode.childElementCount > 0) {
       return;
     }
     if (liveSignature === lastFleetMarkupSignature && missionControlFleetNode.childElementCount > 0) {
@@ -574,6 +666,7 @@ export function createMissionControlScreenController(options = {}) {
     syncVehicleViewState(vehicleViewState);
     renderFleetOperations(fleetEntries);
     syncLiveViewportLabel(vehicleViewState, fleetEntries);
+    syncLiveViewportFeed();
     const active = Boolean(launchActive && snapshot);
     if (!snapshot) {
       missionControlSubtitleNode.textContent = "Waiting for telemetry. You can launch when systems are ready.";
@@ -686,6 +779,26 @@ export function createMissionControlScreenController(options = {}) {
       missionControlViewBoosterButton.dataset.bound = "true";
     }
     if (missionControlFleetNode && missionControlFleetNode.dataset.bound !== "true") {
+      missionControlFleetNode.addEventListener("mousedown", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement)) {
+          return;
+        }
+        if (target.getAttribute("data-mc-fleet-select") !== "true") {
+          return;
+        }
+        markFleetSelectInteracting(1200);
+      });
+      missionControlFleetNode.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement)) {
+          return;
+        }
+        if (target.getAttribute("data-mc-fleet-select") !== "true") {
+          return;
+        }
+        markFleetSelectInteracting(1200);
+      });
       missionControlFleetNode.addEventListener("focusin", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLSelectElement)) {
@@ -694,7 +807,7 @@ export function createMissionControlScreenController(options = {}) {
         if (target.getAttribute("data-mc-fleet-select") !== "true") {
           return;
         }
-        fleetSelectInteracting = true;
+        markFleetSelectInteracting(1200);
       });
       missionControlFleetNode.addEventListener("focusout", (event) => {
         const target = event.target;
@@ -705,6 +818,7 @@ export function createMissionControlScreenController(options = {}) {
           return;
         }
         fleetSelectInteracting = false;
+        fleetSelectInteractionUntilMs = Date.now() + 180;
       });
       missionControlFleetNode.addEventListener("click", (event) => {
         const target = event.target;
@@ -720,6 +834,7 @@ export function createMissionControlScreenController(options = {}) {
         if (!bodyId) {
           return;
         }
+        selectedFleetBodyId = bodyId;
         onTrackBody?.(bodyId);
         onScreenStateChanged?.(visible);
       });
@@ -736,8 +851,11 @@ export function createMissionControlScreenController(options = {}) {
         if (!selectedFleetBodyId) {
           return;
         }
+        onTrackBody?.(selectedFleetBodyId);
+        fleetSelectInteractionUntilMs = 0;
         lastFleetMarkupSignature = "";
         renderFleetOperations(cachedFleetEntries);
+        onScreenStateChanged?.(visible);
       });
       missionControlFleetNode.dataset.bound = "true";
     }

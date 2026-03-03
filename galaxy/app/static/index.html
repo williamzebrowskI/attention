@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260303a" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260303b" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -98,6 +98,7 @@
             </div>
             <p id="mission-control-view-status" class="mission-control-view-status">View standby. Select a vehicle to track.</p>
             <div class="mission-control-live-viewport" aria-hidden="true">
+              <canvas id="mission-control-live-feed-canvas" class="mission-control-live-feed-canvas"></canvas>
               <p class="mission-control-live-viewport-label">Scene Camera Feed</p>
             </div>
           </section>
@@ -120,6 +121,6 @@
         </main>
       </div>
     </section>
-    <script type="module" src="/static/js/app.js?v=20260303aq"></script>
+    <script type="module" src="/static/js/app.js?v=20260303as"></script>
   </body>
 </html>

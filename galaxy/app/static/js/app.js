@@ -45,7 +45,7 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303c";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303d";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -88,6 +88,7 @@ const missionControlSequenceNode = document.getElementById("mission-control-sequ
 const missionControlEventsNode = document.getElementById("mission-control-events");
 const missionControlFleetNode = document.getElementById("mission-control-fleet");
 const missionControlViewStatusNode = document.getElementById("mission-control-view-status");
+const missionControlLiveFeedCanvasNode = document.getElementById("mission-control-live-feed-canvas");
 const missionControlViewStarshipButton = document.getElementById("mission-control-view-starship");
 const missionControlViewBoosterButton = document.getElementById("mission-control-view-booster");
 let launchStatusNode = document.getElementById("launch-status");
@@ -121,6 +122,8 @@ const missionControlScreenController = createMissionControlScreenController({
   missionControlEventsNode,
   missionControlFleetNode,
   missionControlViewStatusNode,
+  missionControlLiveFeedCanvasNode,
+  liveFeedSourceCanvas: canvas,
   missionControlViewStarshipButton,
   missionControlViewBoosterButton,
   formatDurationSeconds,
@@ -173,7 +176,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260303aq";
+const FRONTEND_MODULE_VERSION = "20260303as";
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: "earth_orbit_hold",
@@ -3708,8 +3711,11 @@ function setupLaunchControls() {
     });
     launchTankerButton.dataset.bound = "true";
   }
+  let missionControlLastVisible = false;
   missionControlScreenController.bindControls((isVisible) => {
-    if (isVisible) {
+    const becameVisible = Boolean(isVisible) && !missionControlLastVisible;
+    missionControlLastVisible = Boolean(isVisible);
+    if (becameVisible) {
       const viewState = missionControlVehicleViewState();
       if (viewState.starshipViewAvailable) {
         focusLegendVehicleView("starship");
