@@ -44,20 +44,23 @@ import {
   FLEET_MOON_CAPTURE_GATE_DISTANCE_KM,
   FLEET_MOON_TLI_DURATION_SEC,
 } from "./launchFleetConfig.js";
+import { NAVIGATION_DEFAULTS } from "../navigation_system/navigationSystemConfig.js";
+import {
+  NAVIGATION_MISSION_IDS,
+  NAVIGATION_MISSION_PHASES,
+} from "../navigation_system/navigationMissionProfiles.js";
+import { planMoonMissionCommand } from "../navigation_system/planners/moonMissionPlanner.js";
+import {
+  createPlannerRuntime,
+  syncPlannerRuntime,
+} from "../navigation_system/planners/moonGuidanceState.js";
 
 const FLEET_MOON_APPROACH_DISTANCE_KM = 120_000;
-const FLEET_MOON_MIDCOURSE_MIN_CLOSING_SPEED_KM_S = 0.02;
-const FLEET_MOON_MIDCOURSE_CLOSING_WINDOW_KM_S = 0.18;
-const FLEET_MOON_MIDCOURSE_THROTTLE_BASE = 0.22;
-const FLEET_MOON_MIDCOURSE_THROTTLE_MAX = 0.78;
-const FLEET_MOON_MIDCOURSE_MISS_DISTANCE_KM = 95_000;
-const FLEET_MOON_MIDCOURSE_PREDICT_HORIZON_SEC = 36 * 3600;
-const FLEET_MOON_EARTH_FALLBACK_RADIAL_SPEED_KM_S = -0.01;
-const FLEET_MOON_SENSOR_FILTER_TIME_CONSTANT_SEC = 24;
-const FLEET_MOON_MIDCOURSE_MIN_BURN_SEC = 24;
-const FLEET_MOON_MIDCOURSE_EXIT_STABLE_SEC = 28;
+const FLEET_MOON_MIDCOURSE_PREDICT_HORIZON_SEC = Math.max(
+  1,
+  Number(NAVIGATION_DEFAULTS?.planner?.moonMidcoursePredictHorizonSec) || (36 * 3600),
+);
 const FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM = 130;
-const FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM = 155;
 const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_650_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG = 90_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_SOFT_DEFICIT_KG = -8_000;
@@ -66,8 +69,6 @@ const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 2_600_000;
 const FLEET_MOON_MISSION_MARGIN_CONSERVE_KG = 220_000;
 const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
 const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
-const FLEET_TLI_TARGET_APOAPSIS_KM = 382_000;
-const FLEET_TLI_TARGET_APOAPSIS_MARGIN_KM = 3_000;
 const FLEET_TEI_DEPARTURE_DISTANCE_KM = 140_000;
 const FLEET_EARTH_CAPTURE_DISTANCE_KM = 180_000;
 const FLEET_EARTH_CAPTURE_APOAPSIS_MAX_KM = 75_000;
@@ -80,6 +81,17 @@ const FLEET_MOONWARD_TARGET_PHASES = new Set([
   "lunar_capture",
   "lunar_orbit_hold",
 ]);
+const FLEET_TO_NAV_MOON_PHASE = Object.freeze({
+  orbital_refuel: NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL,
+  tli_burn: NAVIGATION_MISSION_PHASES.TLI_BURN,
+  coast_to_moon: NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
+  lunar_capture: NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
+  lunar_orbit_hold: NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_HOLD,
+  tei_burn: NAVIGATION_MISSION_PHASES.TEI_BURN,
+  coast_to_earth: NAVIGATION_MISSION_PHASES.COAST_TO_EARTH,
+  earth_capture: NAVIGATION_MISSION_PHASES.EARTH_CAPTURE,
+  earth_orbit_hold: NAVIGATION_MISSION_PHASES.EARTH_ORBIT_HOLD,
+});
 
 function finiteVector(v) {
   return Boolean(
@@ -90,6 +102,11 @@ function finiteVector(v) {
   );
 }
 
+function finiteOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 function bodyStateFromNBody(state, bodyId) {
   return state?.dynamicBodies?.get(bodyId)
     || state?.staticSources?.get(bodyId)
@@ -98,6 +115,21 @@ function bodyStateFromNBody(state, bodyId) {
 
 function fleetMissionNameForId(missionId) {
   return missionProfileById(normalizeMissionId(missionId))?.name || "Earth Orbit Hold";
+}
+
+function moonNavPhaseForFleetPhase(phase = "") {
+  const key = String(phase || "").trim().toLowerCase();
+  return FLEET_TO_NAV_MOON_PHASE[key] || "";
+}
+
+function ensureVehiclePlannerRuntime(vehicle) {
+  if (!vehicle || typeof vehicle !== "object") {
+    return null;
+  }
+  if (!vehicle.navPlannerRuntime || typeof vehicle.navPlannerRuntime !== "object") {
+    vehicle.navPlannerRuntime = createPlannerRuntime();
+  }
+  return vehicle.navPlannerRuntime;
 }
 
 function defaultPhaseLabel(phase) {
@@ -155,6 +187,8 @@ function fleetMissionPhaseGateReason({
   moonClosingSpeedKmS = 0,
   moonRelativeSpeedKmS = 0,
   moonProjectedMissDistanceKm = Number.POSITIVE_INFINITY,
+  moonProjectedPeriluneAltitudeKm = Number.POSITIVE_INFINITY,
+  moonBPlaneErrorKm = Number.POSITIVE_INFINITY,
   earthDistanceKm = Number.POSITIVE_INFINITY,
   earthRadialSpeedKmS = 0,
 } = {}) {
@@ -218,7 +252,7 @@ function fleetMissionPhaseGateReason({
     return `Awaiting lunar approach: distance ${formatFleetGateKm(moonDistanceKm)} <= ${formatFleetGateKm(FLEET_MOON_APPROACH_DISTANCE_KM)} (closing ${formatFleetGateSpeed(moonClosingSpeedKmS)}).`;
   }
   if (phase === "lunar_capture") {
-    return `Awaiting lunar capture orbit: rel speed ${formatFleetGateSpeed(moonRelativeSpeedKmS)} | miss ${formatFleetGateKm(moonProjectedMissDistanceKm)}.`;
+    return `Awaiting lunar capture orbit: rel speed ${formatFleetGateSpeed(moonRelativeSpeedKmS)} | miss ${formatFleetGateKm(moonProjectedMissDistanceKm)} | periapsis est ${formatFleetGateKm(moonProjectedPeriluneAltitudeKm)} | B-plane ${formatFleetGateKm(moonBPlaneErrorKm)}.`;
   }
   if (phase === "lunar_orbit_hold") {
     return "Holding lunar orbit objective.";
@@ -342,69 +376,6 @@ function projectedClosestApproachDistanceKm(relativePositionKm, relativeVelocity
     relativePositionKm,
     scale(relativeVelocityKmS, timeToClosestSec),
   ));
-}
-
-function updateMoonSensorEstimate(vehicle, measurement = {}, dtSeconds = 0, nowMs = Date.now()) {
-  if (!vehicle || !measurement) {
-    return null;
-  }
-  const rawDistanceKm = Number(measurement.distanceKm);
-  const rawClosingSpeedKmS = Number(measurement.closingSpeedKmS);
-  const rawProjectedMissKm = Number(measurement.projectedMissKm);
-  const rawDirection = finiteVector(measurement.direction)
-    ? normalize(measurement.direction, { x: 1, y: 0, z: 0 })
-    : null;
-  if (!Number.isFinite(rawDistanceKm) || !Number.isFinite(rawClosingSpeedKmS) || !rawDirection) {
-    return null;
-  }
-  const safeProjectedMissKm = Number.isFinite(rawProjectedMissKm)
-    ? rawProjectedMissKm
-    : rawDistanceKm;
-  const safeDtSeconds = Math.max(0, Number(dtSeconds) || 0);
-  const tauSec = Math.max(1, Number(FLEET_MOON_SENSOR_FILTER_TIME_CONSTANT_SEC) || 24);
-  const alpha = clamp(safeDtSeconds / (tauSec + safeDtSeconds), 0.04, 0.82);
-  const previous = vehicle.moonSensorEstimate && typeof vehicle.moonSensorEstimate === "object"
-    ? vehicle.moonSensorEstimate
-    : null;
-  if (!previous) {
-    vehicle.moonSensorEstimate = {
-      distanceKm: rawDistanceKm,
-      closingSpeedKmS: rawClosingSpeedKmS,
-      projectedMissKm: safeProjectedMissKm,
-      direction: rawDirection,
-      updatedAtMs: nowMs,
-    };
-    return vehicle.moonSensorEstimate;
-  }
-  const previousDirection = finiteVector(previous.direction)
-    ? normalize(previous.direction, rawDirection)
-    : rawDirection;
-  const previousDistanceKm = Number.isFinite(Number(previous.distanceKm))
-    ? Number(previous.distanceKm)
-    : rawDistanceKm;
-  const previousClosingSpeedKmS = Number.isFinite(Number(previous.closingSpeedKmS))
-    ? Number(previous.closingSpeedKmS)
-    : rawClosingSpeedKmS;
-  const previousProjectedMissKm = Number.isFinite(Number(previous.projectedMissKm))
-    ? Number(previous.projectedMissKm)
-    : safeProjectedMissKm;
-  const blendedDirection = normalize(
-    add(
-      scale(previousDirection, 1 - alpha),
-      scale(rawDirection, alpha),
-    ),
-    rawDirection,
-  );
-  vehicle.moonSensorEstimate = {
-    distanceKm: previousDistanceKm + ((rawDistanceKm - previousDistanceKm) * alpha),
-    closingSpeedKmS: previousClosingSpeedKmS
-      + ((rawClosingSpeedKmS - previousClosingSpeedKmS) * alpha),
-    projectedMissKm: previousProjectedMissKm
-      + ((safeProjectedMissKm - previousProjectedMissKm) * alpha),
-    direction: blendedDirection,
-    updatedAtMs: nowMs,
-  };
-  return vehicle.moonSensorEstimate;
 }
 
 export function createLaunchFleetController({
@@ -937,6 +908,9 @@ export function createLaunchFleetController({
       guidanceInertNoPropellant: false,
       guidanceInertReason: "",
       moonEarthGuardActive: false,
+      moonProjectedPeriluneAltitudeKm: null,
+      moonBPlaneErrorKm: null,
+      navPlannerRuntime: createPlannerRuntime(),
       fuelBudget: null,
       launchTimestampMs: nowMs,
     });
@@ -1004,11 +978,17 @@ export function createLaunchFleetController({
     const previousPhase = vehicle.missionPhase;
     vehicle.missionPhase = phaseName;
     vehicle.phaseElapsedSec = 0;
-    if (phaseName !== "coast_to_moon") {
-      vehicle.moonMidcourseControl = null;
-    }
-    if (phaseName === "tli_burn") {
-      vehicle.moonSensorEstimate = null;
+    const navPhase = moonNavPhaseForFleetPhase(phaseName);
+    if (vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN && navPhase) {
+      const plannerRuntime = ensureVehiclePlannerRuntime(vehicle);
+      syncPlannerRuntime({
+        plannerRuntime,
+        missionId: NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN,
+        missionPhase: navPhase,
+      });
+    } else {
+      vehicle.moonProjectedPeriluneAltitudeKm = null;
+      vehicle.moonBPlaneErrorKm = null;
     }
     if (typeof emitLaunchEvent === "function") {
       emitLaunchEvent("fleet_mission_phase_changed", {
@@ -1187,6 +1167,10 @@ export function createLaunchFleetController({
       ) {
         decisionTargetBodyId = "moon";
         decisionTargetBodyName = "Moon";
+      }
+      if (vehicle.missionId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+        vehicle.moonProjectedPeriluneAltitudeKm = null;
+        vehicle.moonBPlaneErrorKm = null;
       }
       const targetApoapsisKm = Math.max(160, Number(vehicle.targetOrbitApoapsisKm) || 240);
       const targetPeriapsisKm = Math.max(120, Number(vehicle.targetOrbitPeriapsisKm) || 200);
@@ -1454,177 +1438,98 @@ export function createLaunchFleetController({
           }
         }
       } else if (vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN && !vehicle.missionCompleted) {
-        if (vehicle.missionPhase === "tli_burn") {
-          const periapsisKm = Number(orbital?.periapsisKm);
-          if (Number.isFinite(periapsisKm) && periapsisKm < FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM) {
-            const deficitNorm = clamp(
-              (FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM - periapsisKm)
-                / Math.max(1, FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM - FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM),
-              0,
-              1,
-            );
-            const upBias = clamp(0.2 + (deficitNorm * 0.08), 0.12, 0.36);
-            desiredDirection = normalize(
-              add(scale(prograde, 1), scale(up, upBias)),
-              prograde,
-            );
-            requestedThrottle = clamp(0.16 + (deficitNorm * 0.28), 0.16, 0.62);
-            guidanceMode = "autopilot-tli-periapsis-protect";
-          } else {
-            const toMoon = moonState?.position
-              ? normalize(subtract(moonState.position, shipState.position), prograde)
-              : prograde;
-            desiredDirection = normalize(
-              add(scale(prograde, 0.72), scale(toMoon, 0.28)),
-              prograde,
-            );
-            const phaseProgress = clamp(
-              (Number(vehicle.phaseElapsedSec) || 0) / Math.max(1, Number(vehicle.tliDurationSec) || FLEET_MOON_TLI_DURATION_SEC),
-              0,
-              1,
-            );
-            requestedThrottle = clamp(0.84 - (phaseProgress * 0.22), 0.56, 0.84);
-            guidanceMode = "autopilot-tli-burn";
-          }
-        } else if (vehicle.missionPhase === "coast_to_moon") {
-          const moonRelPos = moonState?.position
-            ? subtract(shipState.position, moonState.position)
-            : null;
-          const moonRelVel = moonState?.velocity
-            ? subtract(
-              shipState.velocity || { x: 0, y: 0, z: 0 },
-              moonState.velocity || { x: 0, y: 0, z: 0 },
-            )
-            : null;
-          if (moonRelPos && moonRelVel) {
-            const moonDistanceKm = Math.max(0, length(moonRelPos));
-            const moonDirection = normalize(scale(moonRelPos, -1), prograde);
-            const moonClosingSpeedKmS = moonDistanceKm > 1e-9
-              ? -dot(moonRelVel, scale(moonRelPos, 1 / moonDistanceKm))
-              : 0;
-            const shipToMoonPos = scale(moonRelPos, -1);
-            const moonMinusShipVel = scale(moonRelVel, -1);
-            const projectedMissDistanceKm = projectedClosestApproachDistanceKm(
-              shipToMoonPos,
-              moonMinusShipVel,
-            );
-            const sensorEstimate = updateMoonSensorEstimate(
-              vehicle,
-              {
-                distanceKm: moonDistanceKm,
-                closingSpeedKmS: moonClosingSpeedKmS,
-                projectedMissKm: projectedMissDistanceKm,
-                direction: moonDirection,
-              },
-              safeDtSeconds,
-              nowMs,
-            );
-            const estimatedDirection = finiteVector(sensorEstimate?.direction)
-              ? normalize(sensorEstimate.direction, moonDirection)
-              : moonDirection;
-            const estimatedClosingSpeedKmS = Number.isFinite(Number(sensorEstimate?.closingSpeedKmS))
-              ? Number(sensorEstimate.closingSpeedKmS)
-              : moonClosingSpeedKmS;
-            const estimatedMissDistanceKm = Number.isFinite(Number(sensorEstimate?.projectedMissKm))
-              ? Number(sensorEstimate.projectedMissKm)
-              : projectedMissDistanceKm;
-            const earthDistanceKm = Math.max(0, length(relPos));
-            const earthRadialSpeedKmS = earthDistanceKm > 1e-6
-              ? dot(relPos, relVel) / earthDistanceKm
-              : 0;
-            const farFromMoon = moonDistanceKm > FLEET_MOON_APPROACH_DISTANCE_KM;
-            const weakClosing = estimatedClosingSpeedKmS < FLEET_MOON_MIDCOURSE_MIN_CLOSING_SPEED_KM_S;
-            const projectedMissRisk = estimatedMissDistanceKm > FLEET_MOON_MIDCOURSE_MISS_DISTANCE_KM;
-            const earthFallbackRisk = earthRadialSpeedKmS < FLEET_MOON_EARTH_FALLBACK_RADIAL_SPEED_KM_S
-              && earthDistanceKm < (FLEET_MOON_APPROACH_DISTANCE_KM * 3.5);
-            const correctionNeeded = farFromMoon && (weakClosing || projectedMissRisk || earthFallbackRisk);
-            if (!vehicle.moonMidcourseControl || typeof vehicle.moonMidcourseControl !== "object") {
-              vehicle.moonMidcourseControl = {
-                active: false,
-                burnSec: 0,
-                stableSec: 0,
-              };
-            }
-            const controlState = vehicle.moonMidcourseControl;
-            if (correctionNeeded) {
-              controlState.active = true;
-              controlState.stableSec = 0;
-            } else if (controlState.active) {
-              controlState.stableSec = Math.max(0, Number(controlState.stableSec) || 0) + safeDtSeconds;
-            }
-            if (controlState.active) {
-              controlState.burnSec = Math.max(0, Number(controlState.burnSec) || 0) + safeDtSeconds;
-              const canExitCorrection = !correctionNeeded
-                && controlState.burnSec >= Math.max(0, Number(FLEET_MOON_MIDCOURSE_MIN_BURN_SEC) || 0)
-                && controlState.stableSec >= Math.max(0, Number(FLEET_MOON_MIDCOURSE_EXIT_STABLE_SEC) || 0);
-              if (canExitCorrection) {
-                controlState.active = false;
-                controlState.burnSec = 0;
-                controlState.stableSec = 0;
-              }
-            }
-            if (controlState.active) {
-              const closingDeficit = clamp(
-                (
-                  FLEET_MOON_MIDCOURSE_MIN_CLOSING_SPEED_KM_S
-                  - estimatedClosingSpeedKmS
-                ) / Math.max(FLEET_MOON_MIDCOURSE_CLOSING_WINDOW_KM_S, 1e-6),
-                0,
-                1,
-              );
-              const missRisk = clamp(
-                (
-                  estimatedMissDistanceKm
-                  - FLEET_MOON_CAPTURE_GATE_DISTANCE_KM
-                ) / Math.max(
-                  FLEET_MOON_MIDCOURSE_MISS_DISTANCE_KM - FLEET_MOON_CAPTURE_GATE_DISTANCE_KM,
-                  1,
-                ),
-                0,
-                1,
-              );
-              requestedThrottle = clamp(
-                FLEET_MOON_MIDCOURSE_THROTTLE_BASE
-                  + (closingDeficit * 0.34)
-                  + (missRisk * 0.24)
-                  + (earthFallbackRisk ? 0.16 : 0),
-                FLEET_MOON_MIDCOURSE_THROTTLE_BASE,
-                FLEET_MOON_MIDCOURSE_THROTTLE_MAX,
-              );
-              desiredDirection = normalize(
-                add(
-                  scale(estimatedDirection, 0.84),
-                  add(scale(prograde, 0.12), scale(up, 0.04)),
-                ),
-                estimatedDirection,
-              );
-              guidanceMode = "autopilot-midcourse-correction";
-            } else {
-              requestedThrottle = 0;
-              desiredDirection = estimatedDirection;
-              guidanceMode = "autopilot-coast-to-moon";
-            }
-          } else {
-            requestedThrottle = 0;
-            desiredDirection = prograde;
-            guidanceMode = "autopilot-coast-to-moon";
-          }
-        } else if (vehicle.missionPhase === "lunar_capture") {
-          if (moonState?.velocity && moonState?.position) {
-            const moonRelVel = subtract(
-              shipState.velocity || { x: 0, y: 0, z: 0 },
-              moonState.velocity || { x: 0, y: 0, z: 0 },
-            );
-            desiredDirection = normalize(scale(moonRelVel, -1), prograde);
-            requestedThrottle = 0.36;
-            guidanceMode = "autopilot-lunar-capture";
-          } else {
-            guidanceMode = "autopilot-coast-to-moon";
-          }
-        } else if (vehicle.missionPhase === "lunar_orbit_hold") {
-          guidanceMode = "autopilot-lunar-orbit-hold";
+        const moonRelPos = moonState?.position
+          ? subtract(shipState.position, moonState.position)
+          : null;
+        const moonRelVel = moonState?.velocity
+          ? subtract(
+            shipState.velocity || { x: 0, y: 0, z: 0 },
+            moonState.velocity || { x: 0, y: 0, z: 0 },
+          )
+          : null;
+        const toMoonVectorKm = moonRelPos ? scale(moonRelPos, -1) : null;
+        const moonMinusShipRelativeVelocityKmS = moonRelVel ? scale(moonRelVel, -1) : null;
+        const moonDistanceKm = moonRelPos ? Math.max(0, length(moonRelPos)) : Number.POSITIVE_INFINITY;
+        const moonAltitudeKm = Number.isFinite(moonDistanceKm)
+          ? (moonDistanceKm - moonRadiusKm)
+          : Number.POSITIVE_INFINITY;
+        const moonClosingSpeedKmS = moonRelPos && moonRelVel && moonDistanceKm > 1e-9
+          ? -dot(moonRelVel, scale(moonRelPos, 1 / moonDistanceKm))
+          : 0;
+        const moonRelativeSpeedKmS = moonRelVel ? length(moonRelVel) : 0;
+        const moonCircularSpeedKmS = moonMuKm3S2 > 0 && moonDistanceKm > 1
+          ? Math.sqrt(moonMuKm3S2 / moonDistanceKm)
+          : Number.NaN;
+        const moonProjectedMissDistanceKm = finiteVector(toMoonVectorKm)
+          && finiteVector(moonMinusShipRelativeVelocityKmS)
+          ? projectedClosestApproachDistanceKm(toMoonVectorKm, moonMinusShipRelativeVelocityKmS)
+          : Number.POSITIVE_INFINITY;
+        const earthDistanceKm = Math.max(0, length(relPos));
+        const earthRadialSpeedKmS = earthDistanceKm > 1e-6
+          ? dot(relPos, relVel) / earthDistanceKm
+          : 0;
+        const moonRefuelTarget = vehicle.missionPhase === "orbital_refuel"
+          ? nearestEligibleTankerTarget(state, shipState, earthState)
+          : null;
+        if (moonRefuelTarget && moonRefuelTarget.relativePositionKm) {
+          decisionTargetBodyId = String(moonRefuelTarget.tankerId || "refuel_tanker");
+          decisionTargetBodyName = "Refuel Tanker";
+        }
+        const navPhase = moonNavPhaseForFleetPhase(vehicle.missionPhase);
+        if (navPhase) {
+          const plannerRuntime = ensureVehiclePlannerRuntime(vehicle);
+          syncPlannerRuntime({
+            plannerRuntime,
+            missionId: NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN,
+            missionPhase: navPhase,
+          });
+          const plannerCommand = planMoonMissionCommand({
+            phase: navPhase,
+            targetVectors: {
+              tangent: prograde,
+              up,
+              toMoon: toMoonVectorKm || prograde,
+              toEarth: scale(relPos, -1),
+              shipMinusMoonRelativeVelocityKmS: moonRelVel || null,
+              moonMinusShipRelativeVelocityKmS,
+              toRefuelTarget: moonRefuelTarget?.relativePositionKm || null,
+              refuelTargetRelativeVelocityKmS: moonRefuelTarget?.relativeVelocityKmS || null,
+            },
+            metrics: {
+              apoapsisKm: Number(orbital?.apoapsisKm),
+              periapsisKm: Number(orbital?.periapsisKm),
+              earthDistanceKm,
+              earthRadialSpeedKmS,
+              moonDistanceKm,
+              moonAltitudeKm,
+              moonClosingSpeedKmS,
+              moonRelativeSpeedKmS,
+              moonCircularSpeedKmS,
+              moonProjectedMissDistanceKm,
+              refuelFillFraction: 0,
+              refuelTargetDistanceKm: Number(moonRefuelTarget?.distanceKm),
+              refuelRelativeSpeedKmS: Number(moonRefuelTarget?.relativeSpeedKmS),
+              refuelClosingSpeedKmS: Number(moonRefuelTarget?.closingSpeedKmS),
+            },
+            plannerConfig: NAVIGATION_DEFAULTS.planner,
+            plannerRuntime,
+            timestampSec: (Number(vehicle.elapsedSeconds) || 0) + safeDtSeconds,
+          });
+          requestedThrottle = plannerCommand?.phase === "powered"
+            ? clamp(Number(plannerCommand?.throttle) || 0, 0, 1)
+            : 0;
+          desiredDirection = normalize(plannerCommand?.direction || toMoonVectorKm || prograde, prograde);
+          guidanceMode = String(plannerCommand?.mode || "navsys:coast-to-moon");
+          vehicle.moonProjectedPeriluneAltitudeKm = finiteOrNull(
+            plannerRuntime?.moon?.approach?.projectedPeriluneAltitudeKm,
+          );
+          vehicle.moonBPlaneErrorKm = finiteOrNull(plannerRuntime?.moon?.approach?.bPlaneErrorKm);
         } else {
-          guidanceMode = "autopilot-coast-to-moon";
+          requestedThrottle = 0;
+          desiredDirection = toMoonVectorKm ? normalize(toMoonVectorKm, prograde) : prograde;
+          guidanceMode = "navsys:coast-to-moon";
+          vehicle.moonProjectedPeriluneAltitudeKm = null;
+          vehicle.moonBPlaneErrorKm = null;
         }
       }
 
@@ -1680,7 +1585,10 @@ export function createLaunchFleetController({
             ? 0.16
             : 0.24;
           requestedThrottle = Math.min(requestedThrottle, conserveCap);
-          if (requestedThrottle > 1e-3 && guidanceMode.startsWith("autopilot-")) {
+          if (
+            requestedThrottle > 1e-3
+            && (guidanceMode.startsWith("autopilot-") || guidanceMode.startsWith("navsys:"))
+          ) {
             guidanceMode = `${guidanceMode}:fuel-conserve`;
           }
         }
@@ -2054,6 +1962,8 @@ export function createLaunchFleetController({
         launchMode: String(vehicle.launchMode || "pad_launch"),
         moonRelativeSpeedKmS: null,
         moonProjectedMissDistanceKm: null,
+        moonProjectedPeriluneAltitudeKm: null,
+        moonBPlaneErrorKm: null,
         missionPhaseGateReason: "",
         refuelTransferActive: false,
         refuelTransferTankerId: "",
@@ -2105,6 +2015,8 @@ export function createLaunchFleetController({
     let targetClosingSpeedKmS = null;
     let moonRelativeSpeedKmS = null;
     let moonProjectedMissDistanceKm = null;
+    const moonProjectedPeriluneAltitudeKm = finiteOrNull(vehicle.moonProjectedPeriluneAltitudeKm);
+    const moonBPlaneErrorKm = finiteOrNull(vehicle.moonBPlaneErrorKm);
     const earthDistanceKm = length(relPos);
     const earthRadialSpeedKmS = earthDistanceKm > 1e-9
       ? dot(relPos, relVel) / earthDistanceKm
@@ -2265,6 +2177,8 @@ export function createLaunchFleetController({
       moonClosingSpeedKmS: Number(targetBodyId === "moon" ? targetClosingSpeedKmS : 0),
       moonRelativeSpeedKmS,
       moonProjectedMissDistanceKm,
+      moonProjectedPeriluneAltitudeKm,
+      moonBPlaneErrorKm,
       earthDistanceKm,
       earthRadialSpeedKmS,
     });
@@ -2372,6 +2286,8 @@ export function createLaunchFleetController({
       targetClosingSpeedKmS,
       moonRelativeSpeedKmS,
       moonProjectedMissDistanceKm,
+      moonProjectedPeriluneAltitudeKm,
+      moonBPlaneErrorKm,
       missionPhaseGateReason,
       guidanceBurnRequested,
       guidanceRequestedThrottle,
