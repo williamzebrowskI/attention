@@ -302,6 +302,7 @@ body {
 }
 
 .mission-control-live-viewport-label {
+  display: none !important;
   position: absolute;
   left: 50%;
   bottom: 12px;

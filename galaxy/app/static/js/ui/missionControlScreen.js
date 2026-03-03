@@ -94,6 +94,10 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlLiveFeedCanvasNode = options.missionControlLiveFeedCanvasNode
     || missionControlScreenNode?.querySelector?.(".mission-control-live-feed-canvas")
     || null;
+  const staleViewportLabelNode = missionControlScreenNode?.querySelector?.(".mission-control-live-viewport-label") || null;
+  if (staleViewportLabelNode && typeof staleViewportLabelNode.remove === "function") {
+    staleViewportLabelNode.remove();
+  }
   const liveFeedSourceCanvas = options.liveFeedSourceCanvas || null;
   const missionControlViewStarshipButton = options.missionControlViewStarshipButton || null;
   const missionControlViewBoosterButton = options.missionControlViewBoosterButton || null;

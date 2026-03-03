@@ -45,7 +45,7 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303f";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303g";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -176,7 +176,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260303au";
+const FRONTEND_MODULE_VERSION = "20260303av";
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: "earth_orbit_hold",
