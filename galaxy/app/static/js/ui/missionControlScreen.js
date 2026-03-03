@@ -91,9 +91,6 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlSequenceNode = options.missionControlSequenceNode || null;
   const missionControlEventsNode = options.missionControlEventsNode || null;
   const missionControlViewStatusNode = options.missionControlViewStatusNode || null;
-  const missionControlLiveViewportLabelNode = options.missionControlLiveViewportLabelNode
-    || missionControlScreenNode?.querySelector?.(".mission-control-live-viewport-label")
-    || null;
   const missionControlLiveFeedCanvasNode = options.missionControlLiveFeedCanvasNode
     || missionControlScreenNode?.querySelector?.(".mission-control-live-feed-canvas")
     || null;
@@ -458,24 +455,6 @@ export function createMissionControlScreenController(options = {}) {
     }
   }
 
-  function syncLiveViewportLabel(vehicleViewState, fleetEntries = []) {
-    if (!missionControlLiveViewportLabelNode) {
-      return;
-    }
-    const safeState = normalizeVehicleViewState(vehicleViewState);
-    const entries = normalizeFleetEntries(fleetEntries);
-    const trackedEntry = entries.find((entry) => entry.tracked) || null;
-    const trackedName = trackedEntry?.vehicleName || "";
-    const viewMode = safeState.activeView === "booster"
-      ? "Booster"
-      : (safeState.activeView === "starship" ? "Starship" : "Standby");
-    const lockState = safeState.activeView === "none" ? "UNLOCKED" : "LOCKED";
-    const trackedLabel = trackedName
-      ? `${viewMode} | ${trackedName}`
-      : (safeState.activeView === "none" ? "Scene Camera Feed" : viewMode);
-    missionControlLiveViewportLabelNode.textContent = `${lockState} | ${trackedLabel}`;
-  }
-
   function normalizeFleetEntries(fleetEntries) {
     const entries = Array.isArray(fleetEntries) ? fleetEntries : [];
     const normalized = [];
@@ -651,7 +630,6 @@ export function createMissionControlScreenController(options = {}) {
     }
     syncVehicleViewState(vehicleViewState);
     renderFleetOperations(fleetEntries);
-    syncLiveViewportLabel(vehicleViewState, fleetEntries);
     syncLiveViewportFeed();
     const active = Boolean(launchActive && snapshot);
     if (!snapshot) {
