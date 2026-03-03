@@ -1,5 +1,6 @@
 export const LAUNCH_MISSION_IDS = Object.freeze({
   EARTH_ORBIT_HOLD: "earth_orbit_hold",
+  ORBITAL_REFUEL_DEMO: "orbital_refuel_demo",
   MOON_ORBIT_RETURN: "moon_orbit_return",
 });
 
@@ -10,6 +11,11 @@ export const LAUNCH_MISSION_PROFILES = Object.freeze([
     id: LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
     name: "Earth Orbit Hold",
     description: "Launch to Earth orbit and hold station continuously until reset.",
+  }),
+  Object.freeze({
+    id: LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO,
+    name: "Orbital Refuel Demo",
+    description: "Launch to parking orbit, refuel in orbit, undock, then return to Earth orbit hold.",
   }),
   Object.freeze({
     id: LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,

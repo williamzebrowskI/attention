@@ -1,5 +1,6 @@
 import { LAUNCH_AUTOPILOT_CONFIG } from "./launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "./launchMissions.js";
+import { REFUEL_TANKER_CONFIG } from "./refuel/config.js";
 import {
   add,
   clamp,
@@ -19,6 +20,8 @@ import {
 const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   parkingOrbitPeriapsisMinKm: 150,
   parkingOrbitApoapsisMinKm: 180,
+  orbitalRefuelTargetFraction: 0.88,
+  orbitalRefuelMinFlights: 2,
   tliTargetApoapsisKm: 382_000,
   tliApoapsisMarginKm: 3_000,
   tliMinSpecificEnergyKm2S2: -0.28,
@@ -62,8 +65,25 @@ const EARTH_ORBIT_HOLD_MISSION_CONFIG = Object.freeze({
   sustainedOrbitReserveKg: 20_000,
 });
 
+const ORBITAL_REFUEL_DEMO_CONFIG = Object.freeze({
+  parkingOrbitPeriapsisMinKm: 150,
+  parkingOrbitApoapsisMinKm: 180,
+  refuelTargetFillFraction: 0.88,
+  minimumCompletedFlights: 1,
+  refuelFarDistanceKm: 15,
+  refuelMidDistanceKm: 1.5,
+  refuelDockDistanceKm: Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014,
+  refuelDockMaxRelativeSpeedKmS: Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045,
+});
+
+function isRefuelFlowMissionId(missionId) {
+  const id = String(missionId || "");
+  return id === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+    || id === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO;
+}
+
 export function defaultMissionPhaseForProfileId(missionId) {
-  if (missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+  if (isRefuelFlowMissionId(missionId)) {
     return "launch_to_parking";
   }
   return "earth_orbit_hold";
@@ -86,7 +106,7 @@ export function isMoonTransferMissionActive(runtime) {
   if (!runtime?.mission) {
     return false;
   }
-  if (runtime.mission.selectedId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+  if (!isRefuelFlowMissionId(runtime.mission.selectedId)) {
     return false;
   }
   return runtime.mission.phase !== "earth_orbit_hold";
@@ -274,6 +294,36 @@ function computeMoonOrbitReturnAutopilotCommand({
       && Number(orbital.apoapsisKm) >= config.parkingOrbitApoapsisMinKm
       && orbital.specificEnergy < 0;
     if (parkingReady) {
+      setMissionPhase(runtime, "orbital_refuel");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-moon-orbit-return:orbital-refuel-setup",
+      };
+    }
+    return null;
+  }
+
+  if (phase === "orbital_refuel") {
+    const targetPropellantKg = Math.max(
+      0,
+      Number(runtime?.refuel?.targetPropellantKg) || 0,
+    );
+    const stagePropellantKg = Math.max(0, Number(runtime?.stagePropellantKg) || 0);
+    const targetFraction = clamp(
+      Number(config.orbitalRefuelTargetFraction) || 0.88,
+      0.25,
+      1,
+    );
+    const enoughPropellant = targetPropellantKg > 0
+      ? stagePropellantKg >= (targetPropellantKg * targetFraction)
+      : false;
+    const transferBusy = Boolean(
+      runtime?.refuel?.transferActive
+      || runtime?.refuel?.undockActive,
+    );
+    if (enoughPropellant && !transferBusy) {
       setMissionPhase(runtime, "tli_burn");
       return {
         phase: "coast",
@@ -282,7 +332,14 @@ function computeMoonOrbitReturnAutopilotCommand({
         mode: "mission-moon-orbit-return:tli-setup",
       };
     }
-    return null;
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: transferBusy
+        ? "mission-moon-orbit-return:orbital-refuel-transfer"
+        : "mission-moon-orbit-return:orbital-refuel-hold",
+    };
   }
 
   if (phase === "tli_burn") {
@@ -557,6 +614,177 @@ function computeMoonOrbitReturnAutopilotCommand({
   };
 }
 
+function computeOrbitalRefuelDemoAutopilotCommand({
+  runtime,
+  orbital,
+  relVel,
+  up,
+  earthPole,
+  activeRefuelTarget,
+}) {
+  if (Number(runtime.stageIndex) < 1) {
+    setMissionPhase(runtime, "launch_to_parking");
+    runtime.mission.completed = false;
+    return null;
+  }
+
+  const tangent = missionOrbitTangent(relVel, up, runtime.launchPlaneNormal, earthPole);
+  const phase = runtime.mission.phase || "launch_to_parking";
+  const config = ORBITAL_REFUEL_DEMO_CONFIG;
+
+  if (phase === "launch_to_parking") {
+    const parkingReady = Number(orbital.periapsisKm) >= config.parkingOrbitPeriapsisMinKm
+      && Number(orbital.apoapsisKm) >= config.parkingOrbitApoapsisMinKm
+      && orbital.specificEnergy < 0;
+    if (parkingReady) {
+      setMissionPhase(runtime, "orbital_refuel");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-orbital-refuel-demo:orbital-refuel-setup",
+      };
+    }
+    runtime.mission.completed = false;
+    return null;
+  }
+
+  if (phase === "orbital_refuel") {
+    const targetPropellantKg = Math.max(0, Number(runtime?.refuel?.targetPropellantKg) || 0);
+    const stagePropellantKg = Math.max(0, Number(runtime?.stagePropellantKg) || 0);
+    const targetFraction = clamp(
+      Number(config.refuelTargetFillFraction) || 0.88,
+      0.25,
+      1,
+    );
+    const completedFlights = Math.max(0, Number(runtime?.refuel?.completedFlights) || 0);
+    const enoughPropellant = targetPropellantKg > 0
+      ? stagePropellantKg >= (targetPropellantKg * targetFraction)
+      : completedFlights >= Math.max(1, Number(config.minimumCompletedFlights) || 1);
+    const transferBusy = Boolean(
+      runtime?.refuel?.transferActive
+      || runtime?.refuel?.undockActive,
+    );
+    if (enoughPropellant && !transferBusy) {
+      setMissionPhase(runtime, "earth_orbit_hold");
+      runtime.mission.completed = true;
+      return {
+        phase: "orbit",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-orbital-refuel-demo:earth-orbit-hold",
+      };
+    }
+    const refuelDistanceKm = Number(activeRefuelTarget?.distanceKm);
+    const refuelRelativeSpeedKmS = Math.max(0, Number(activeRefuelTarget?.relativeSpeedKmS) || 0);
+    const refuelClosingSpeedKmS = Number(activeRefuelTarget?.closingSpeedKmS);
+    const toRefuelTarget = activeRefuelTarget?.relativePositionKm || null;
+    if (
+      !transferBusy
+      && Number.isFinite(refuelDistanceKm)
+      && refuelDistanceKm > 0
+      && toRefuelTarget
+    ) {
+      const directionToTarget = normalize(toRefuelTarget, tangent);
+      const relativeVelocityToTarget = activeRefuelTarget?.relativeVelocityKmS || { x: 0, y: 0, z: 0 };
+      const targetMinusShipRelVel = relativeVelocityToTarget;
+      const shipMinusTargetRelVel = scale(targetMinusShipRelVel, -1);
+      if (
+        refuelDistanceKm <= config.refuelDockDistanceKm
+        && refuelRelativeSpeedKmS <= (config.refuelDockMaxRelativeSpeedKmS * 1.1)
+      ) {
+        return {
+          phase: "coast",
+          throttle: 0,
+          direction: tangent,
+          mode: "mission-orbital-refuel-demo:orbital-refuel-lock",
+        };
+      }
+      if (refuelDistanceKm > config.refuelFarDistanceKm) {
+        const throttle = clamp(0.12 + (refuelDistanceKm / 220), 0.12, 0.34);
+        const direction = normalize(
+          add(
+            scale(directionToTarget, 0.92),
+            scale(tangent, 0.08),
+          ),
+          directionToTarget,
+        );
+        return {
+          phase: "powered",
+          throttle,
+          direction,
+          mode: "mission-orbital-refuel-demo:orbital-refuel-rendezvous-far",
+        };
+      }
+      if (refuelDistanceKm > config.refuelMidDistanceKm) {
+        const velocityDampingDirection = normalize(scale(shipMinusTargetRelVel, -1), directionToTarget);
+        const direction = normalize(
+          add(
+            scale(directionToTarget, 0.72),
+            scale(velocityDampingDirection, 0.28),
+          ),
+          directionToTarget,
+        );
+        const throttle = clamp(
+          0.028 + (refuelDistanceKm / 120) + (refuelRelativeSpeedKmS * 28),
+          0.02,
+          0.12,
+        );
+        return {
+          phase: "powered",
+          throttle,
+          direction,
+          mode: "mission-orbital-refuel-demo:orbital-refuel-rendezvous-mid",
+        };
+      }
+      const desiredClosingSpeedKmS = clamp(refuelDistanceKm * 0.00009, 0.00001, 0.00008);
+      if (
+        Number.isFinite(refuelClosingSpeedKmS)
+        && (refuelClosingSpeedKmS > (desiredClosingSpeedKmS * 1.35) || refuelRelativeSpeedKmS > 0.00028)
+      ) {
+        const brakeDirection = normalize(scale(shipMinusTargetRelVel, -1), scale(directionToTarget, -1));
+        return {
+          phase: "powered",
+          throttle: clamp(0.003 + (refuelRelativeSpeedKmS * 22), 0.003, 0.03),
+          direction: brakeDirection,
+          mode: "mission-orbital-refuel-demo:orbital-refuel-brake",
+        };
+      }
+      const closeApproachDirection = normalize(
+        add(
+          scale(directionToTarget, 0.58),
+          scale(normalize(scale(shipMinusTargetRelVel, -1), directionToTarget), 0.42),
+        ),
+        directionToTarget,
+      );
+      return {
+        phase: "powered",
+        throttle: clamp(0.002 + (refuelDistanceKm * 0.01), 0.002, 0.02),
+        direction: closeApproachDirection,
+        mode: "mission-orbital-refuel-demo:orbital-refuel-final-approach",
+      };
+    }
+    runtime.mission.completed = false;
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: transferBusy
+        ? "mission-orbital-refuel-demo:orbital-refuel-transfer"
+        : "mission-orbital-refuel-demo:orbital-refuel-hold",
+    };
+  }
+
+  setMissionPhase(runtime, "earth_orbit_hold");
+  runtime.mission.completed = true;
+  return {
+    phase: "orbit",
+    throttle: 0,
+    direction: tangent,
+    mode: "mission-orbital-refuel-demo:earth-orbit-hold",
+  };
+}
+
 export function computeMissionAutopilotCommand({
   runtime,
   state,
@@ -571,6 +799,7 @@ export function computeMissionAutopilotCommand({
   earthRadiusKm,
   getBodyRadiusKm,
   getBodyMassKg,
+  activeRefuelTarget,
 }) {
   if (runtime?.mission?.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
     return computeMoonOrbitReturnAutopilotCommand({
@@ -587,6 +816,16 @@ export function computeMissionAutopilotCommand({
       earthRadiusKm,
       getBodyRadiusKm,
       getBodyMassKg,
+    });
+  }
+  if (runtime?.mission?.selectedId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO) {
+    return computeOrbitalRefuelDemoAutopilotCommand({
+      runtime,
+      orbital,
+      relVel,
+      up,
+      earthPole,
+      activeRefuelTarget,
     });
   }
   if (runtime?.mission?.selectedId === LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD) {

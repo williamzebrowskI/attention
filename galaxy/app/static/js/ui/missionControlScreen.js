@@ -7,6 +7,10 @@ function fallbackEscapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function toLaunchTitle(value) {
   return String(value || "")
     .replace(/[_-]+/g, " ")
@@ -19,6 +23,7 @@ function humanizeMissionPhase(phase) {
   const key = String(phase || "").trim().toLowerCase();
   const map = {
     launch_to_parking: "Launch To Parking Orbit",
+    orbital_refuel: "Orbital Refueling",
     tli_burn: "Trans-Lunar Injection Burn",
     coast_to_moon: "Coast To Moon",
     lunar_insertion: "Lunar Insertion Burn",
@@ -45,6 +50,13 @@ function humanizeLaunchEventName(name) {
     booster_phase_changed: "Booster Phase Change",
     booster_landed: "Booster Landed",
     mission_profile_selected: "Mission Profile Selected",
+    fleet_mission_ship_launched: "Fleet Mission Ship Launched",
+    fleet_mission_phase_changed: "Fleet Mission Phase Change",
+    refuel_tanker_launched: "Refuel Tanker Launched",
+    refuel_tanker_pad_launch_started: "Refuel Tanker Pad Launch Started",
+    refuel_tanker_pad_launch_completed: "Refuel Tanker Pad Launch Completed",
+    refuel_transfer_completed: "Refuel Transfer Complete",
+    refuel_transfer_skipped: "Refuel Transfer Skipped",
   };
   return map[key] || toLaunchTitle(key || "event");
 }
@@ -73,8 +85,12 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlSequenceNode = options.missionControlSequenceNode || null;
   const missionControlEventsNode = options.missionControlEventsNode || null;
   const missionControlViewStatusNode = options.missionControlViewStatusNode || null;
+  const missionControlLiveViewportLabelNode = options.missionControlLiveViewportLabelNode
+    || missionControlScreenNode?.querySelector?.(".mission-control-live-viewport-label")
+    || null;
   const missionControlViewStarshipButton = options.missionControlViewStarshipButton || null;
   const missionControlViewBoosterButton = options.missionControlViewBoosterButton || null;
+  const missionControlFleetNode = options.missionControlFleetNode || null;
   const formatDurationSeconds = typeof options.formatDurationSeconds === "function"
     ? options.formatDurationSeconds
     : ((value) => String(value ?? "n/a"));
@@ -88,10 +104,17 @@ export function createMissionControlScreenController(options = {}) {
   const onSelectVehicleView = typeof options.onSelectVehicleView === "function"
     ? options.onSelectVehicleView
     : null;
+  const onTrackBody = typeof options.onTrackBody === "function"
+    ? options.onTrackBody
+    : null;
 
   let visible = false;
   let escBound = false;
   let onScreenStateChanged = null;
+  let selectedFleetBodyId = "";
+  let cachedFleetEntries = [];
+  let fleetSelectInteracting = false;
+  let lastFleetMarkupSignature = "";
 
   function missionControlCard(label, value) {
     return `<article class="mission-overview-card"><span class="mission-overview-label">${escapeHtml(label)}</span><span class="mission-overview-value">${escapeHtml(value)}</span></article>`;
@@ -140,11 +163,20 @@ export function createMissionControlScreenController(options = {}) {
       || hasLaunchEvent(launchEventLogEntries, "stage_separation_booster_detached")
       || Boolean(snapshot?.hotstageDetachReason)
       || Boolean(snapshot?.boosterActive);
+    const refuelRequiredFlights = Math.max(0, Number(snapshot?.refuelRequiredFlights) || 0);
+    const refuelCompletedFlights = Math.max(0, Number(snapshot?.refuelCompletedFlights) || 0);
+    const refuelFillFraction = clamp(Number(snapshot?.refuelFillFraction) || 0, 0, 1);
+    const refuelReady = refuelFillFraction >= 0.88;
+    const parkingThresholds = (
+      missionId === "moon_orbit_return" || missionId === "orbital_refuel_demo"
+    )
+      ? { apoapsisKm: 180, periapsisKm: 150 }
+      : { apoapsisKm: 120, periapsisKm: 80 };
     const parkingReady =
       Number.isFinite(Number(snapshot?.apoapsisKm))
       && Number.isFinite(Number(snapshot?.periapsisKm))
-      && Number(snapshot?.apoapsisKm) >= 170
-      && Number(snapshot?.periapsisKm) >= 110;
+      && Number(snapshot?.apoapsisKm) >= parkingThresholds.apoapsisKm
+      && Number(snapshot?.periapsisKm) >= parkingThresholds.periapsisKm;
     const maxQComplete =
       stageSeparated
       || hotstageDone
@@ -176,13 +208,14 @@ export function createMissionControlScreenController(options = {}) {
         title: "Earth Parking Orbit",
         note: parkingReady
           ? `Apo/Peri ${formatNumber(snapshot?.apoapsisKm, 1)} / ${formatNumber(snapshot?.periapsisKm, 1)} km`
-          : "Building stable insertion conditions.",
+          : `Building stable insertion conditions (target: ${formatNumber(parkingThresholds.apoapsisKm, 0)} / ${formatNumber(parkingThresholds.periapsisKm, 0)} km).`,
         status: !stageSeparated ? "pending" : (parkingReady ? "completed" : "active"),
       },
     ];
 
     if (missionId === "moon_orbit_return") {
       const phaseOrder = [
+        "orbital_refuel",
         "tli_burn",
         "coast_to_moon",
         "lunar_insertion",
@@ -194,6 +227,11 @@ export function createMissionControlScreenController(options = {}) {
       ];
       const currentRank = phaseOrder.indexOf(missionPhase);
       const moonStages = [
+        {
+          key: "orbital_refuel",
+          title: "Orbital Refueling Campaign",
+          note: `Flights ${refuelCompletedFlights}/${refuelRequiredFlights} | Fill ${(refuelFillFraction * 100).toFixed(1)}%`,
+        },
         { key: "tli_burn", title: "Trans-Lunar Injection Burn", note: "Raise Earth apogee to lunar transfer corridor." },
         { key: "coast_to_moon", title: "Coast To Moon", note: "Guided cruise and trajectory maintenance." },
         { key: "lunar_insertion", title: "Lunar Orbit Insertion", note: "Capture into lunar gravity well." },
@@ -206,7 +244,42 @@ export function createMissionControlScreenController(options = {}) {
       for (let i = 0; i < moonStages.length; i += 1) {
         const stage = moonStages[i];
         const isCurrent = currentRank === i;
-        const isComplete = currentRank > i || (i === moonStages.length - 1 && Boolean(snapshot?.missionCompleted));
+        const isComplete = (
+          i === 0
+            ? refuelReady
+            : (currentRank > i || (i === moonStages.length - 1 && Boolean(snapshot?.missionCompleted)))
+        );
+        const isActive = isCurrent || (i === 0 && parkingReady && currentRank < 0);
+        steps.push({
+          title: stage.title,
+          note: isCurrent ? `Current phase: ${humanizeMissionPhase(missionPhase)}` : stage.note,
+          status: !parkingReady ? "pending" : (isComplete ? "completed" : (isActive ? "active" : "pending")),
+        });
+      }
+    } else if (missionId === "orbital_refuel_demo") {
+      const phaseOrder = [
+        "orbital_refuel",
+        "earth_orbit_hold",
+      ];
+      const currentRank = phaseOrder.indexOf(missionPhase);
+      const demoStages = [
+        {
+          key: "orbital_refuel",
+          title: "Orbital Refuel Operation",
+          note: `Flights ${refuelCompletedFlights}/${refuelRequiredFlights} | Fill ${(refuelFillFraction * 100).toFixed(1)}%`,
+        },
+        {
+          key: "earth_orbit_hold",
+          title: "Undock And Earth Orbit Hold",
+          note: "Transfer complete, separation confirmed, and orbit stabilized.",
+        },
+      ];
+      for (let i = 0; i < demoStages.length; i += 1) {
+        const stage = demoStages[i];
+        const isCurrent = currentRank === i;
+        const isComplete = i === 0
+          ? refuelReady
+          : (currentRank > i || Boolean(snapshot?.missionCompleted));
         const isActive = isCurrent || (i === 0 && parkingReady && currentRank < 0);
         steps.push({
           title: stage.title,
@@ -289,6 +362,182 @@ export function createMissionControlScreenController(options = {}) {
     }
   }
 
+  function syncLiveViewportLabel(vehicleViewState, fleetEntries = []) {
+    if (!missionControlLiveViewportLabelNode) {
+      return;
+    }
+    const safeState = normalizeVehicleViewState(vehicleViewState);
+    const entries = normalizeFleetEntries(fleetEntries);
+    const trackedEntry = entries.find((entry) => entry.tracked) || null;
+    const trackedName = trackedEntry?.vehicleName || "";
+    const viewMode = safeState.activeView === "booster"
+      ? "Booster"
+      : (safeState.activeView === "starship" ? "Starship" : "Standby");
+    const lockState = safeState.activeView === "none" ? "UNLOCKED" : "LOCKED";
+    const trackedLabel = trackedName
+      ? `${viewMode} | ${trackedName}`
+      : (safeState.activeView === "none" ? "Scene Camera Feed" : viewMode);
+    missionControlLiveViewportLabelNode.textContent = `${lockState} | ${trackedLabel}`;
+  }
+
+  function normalizeFleetEntries(fleetEntries) {
+    const entries = Array.isArray(fleetEntries) ? fleetEntries : [];
+    const normalized = [];
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      const bodyId = String(entry.bodyId || "").trim();
+      if (!bodyId) {
+        continue;
+      }
+      normalized.push({
+        bodyId,
+        vehicleName: String(entry.vehicleName || bodyId),
+        vehicleKind: String(entry.vehicleKind || "starship"),
+        missionName: String(entry.missionName || "Mission"),
+        missionPhase: String(entry.missionPhase || ""),
+        phaseLabel: String(entry.phaseLabel || ""),
+        stageName: String(entry.stageName || ""),
+        guidanceMode: String(entry.guidanceMode || entry.autopilotMode || "n/a"),
+        altitudeKm: Number(entry.altitudeKm),
+        speedKmS: Number(entry.speedKmS),
+        tracked: Boolean(entry.tracked),
+        selectable: entry.selectable !== false,
+      });
+    }
+    return normalized;
+  }
+
+  function fleetRoleLabel(entry) {
+    const kind = String(entry?.vehicleKind || "").toLowerCase();
+    const bodyId = String(entry?.bodyId || "");
+    if (kind === "booster" || bodyId === "earth_launch_booster") {
+      return "Booster";
+    }
+    if (kind === "tanker" || bodyId.startsWith("earth_refuel_tanker_")) {
+      return "Tanker";
+    }
+    if (bodyId === "earth_launch_vehicle") {
+      return "Primary Starship";
+    }
+    return "Mission Starship";
+  }
+
+  function fleetPhaseLabel(entry) {
+    if (entry?.missionPhase) {
+      return humanizeMissionPhase(entry.missionPhase);
+    }
+    return entry?.phaseLabel || "n/a";
+  }
+
+  function fleetOptionLabel(entry) {
+    const role = fleetRoleLabel(entry);
+    const phase = fleetPhaseLabel(entry);
+    return `${entry.vehicleName} | ${role} | ${phase}`;
+  }
+
+  function renderFleetOperations(fleetEntries = []) {
+    if (!missionControlFleetNode) {
+      return;
+    }
+    const entries = normalizeFleetEntries(fleetEntries);
+    cachedFleetEntries = entries;
+    if (entries.length <= 0) {
+      selectedFleetBodyId = "";
+      lastFleetMarkupSignature = "";
+      missionControlFleetNode.innerHTML = "<p class=\"mission-control-fleet-empty\">No active spacecraft in simulation.</p>";
+      return;
+    }
+
+    const hasSelected = entries.some((entry) => entry.bodyId === selectedFleetBodyId);
+    if (!hasSelected) {
+      const trackedEntry = entries.find((entry) => entry.tracked && entry.selectable);
+      selectedFleetBodyId = trackedEntry?.bodyId || entries[0].bodyId;
+    }
+    const selectedEntry = entries.find((entry) => entry.bodyId === selectedFleetBodyId) || entries[0];
+    selectedFleetBodyId = selectedEntry.bodyId;
+
+    let primaryCount = 0;
+    let missionCount = 0;
+    let tankerCount = 0;
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      const role = fleetRoleLabel(entry);
+      if (role === "Booster" || role === "Primary Starship") {
+        primaryCount += 1;
+      } else if (role === "Tanker") {
+        tankerCount += 1;
+      } else {
+        missionCount += 1;
+      }
+    }
+
+    const optionRows = entries
+      .map((entry) => {
+        const selected = entry.bodyId === selectedFleetBodyId ? " selected" : "";
+        return `<option value="${escapeHtml(entry.bodyId)}"${selected}>${escapeHtml(fleetOptionLabel(entry))}</option>`;
+      })
+      .join("");
+
+    const altitudeLine = Number.isFinite(selectedEntry.altitudeKm)
+      ? `${formatNumber(selectedEntry.altitudeKm, 2)} km`
+      : "n/a";
+    const speedLine = Number.isFinite(selectedEntry.speedKmS)
+      ? `${formatNumber(selectedEntry.speedKmS, 4)} km/s`
+      : "n/a";
+    const stageLine = selectedEntry.stageName || "n/a";
+    const phaseLine = fleetPhaseLabel(selectedEntry);
+    const roleLine = fleetRoleLabel(selectedEntry);
+    const trackLabel = selectedEntry.tracked ? "Tracking" : "Track In Main View";
+    const trackClass = selectedEntry.tracked
+      ? "mission-control-fleet-track on"
+      : "mission-control-fleet-track";
+    const trackDisabled = selectedEntry.selectable ? "" : " disabled";
+    const markupSignature = entries
+      .map((entry) => [
+        entry.bodyId,
+        entry.vehicleName,
+        fleetRoleLabel(entry),
+        fleetPhaseLabel(entry),
+        entry.tracked ? "1" : "0",
+        entry.selectable ? "1" : "0",
+      ].join("|"))
+      .join("||");
+    const liveSignature = `${markupSignature}::selected=${selectedFleetBodyId}`;
+    const activeElement = documentRef?.activeElement || null;
+    const existingSelect = missionControlFleetNode.querySelector("[data-mc-fleet-select=\"true\"]");
+    const selectFocused = Boolean(existingSelect && activeElement === existingSelect);
+    if ((fleetSelectInteracting || selectFocused) && missionControlFleetNode.childElementCount > 0) {
+      return;
+    }
+    if (liveSignature === lastFleetMarkupSignature && missionControlFleetNode.childElementCount > 0) {
+      return;
+    }
+
+    missionControlFleetNode.innerHTML = [
+      "<div class=\"mission-control-fleet-head\">",
+      "<label class=\"mission-control-fleet-label\" for=\"mission-control-fleet-select\">Vehicle</label>",
+      `<p class="mission-control-fleet-counts">Primary ${primaryCount} | Mission ${missionCount} | Tanker ${tankerCount}</p>`,
+      "</div>",
+      "<select id=\"mission-control-fleet-select\" class=\"mission-control-fleet-select\" data-mc-fleet-select=\"true\">",
+      optionRows,
+      "</select>",
+      "<div class=\"mission-control-fleet-summary\">",
+      `<p class="mission-control-fleet-summary-title">${escapeHtml(selectedEntry.vehicleName)}</p>`,
+      `<p class="mission-control-fleet-summary-line">${escapeHtml(roleLine)} | ${escapeHtml(selectedEntry.missionName || "Mission")}</p>`,
+      `<p class="mission-control-fleet-summary-line">${escapeHtml(phaseLine)} | Stage ${escapeHtml(stageLine)}</p>`,
+      `<p class="mission-control-fleet-summary-line">Alt ${escapeHtml(altitudeLine)} | V ${escapeHtml(speedLine)}</p>`,
+      `<p class="mission-control-fleet-summary-line">Guidance ${escapeHtml(selectedEntry.guidanceMode || "n/a")}</p>`,
+      "</div>",
+      "<div class=\"mission-control-fleet-actions\">",
+      `<button class="${trackClass}" type="button" data-mc-track-id="${escapeHtml(selectedEntry.bodyId)}"${trackDisabled}>${escapeHtml(trackLabel)}</button>`,
+      "</div>",
+    ].join("");
+    lastFleetMarkupSignature = liveSignature;
+  }
+
   function setVisible(nextVisible) {
     visible = Boolean(nextVisible);
     if (missionControlScreenNode) {
@@ -299,11 +548,13 @@ export function createMissionControlScreenController(options = {}) {
     syncButtonState();
   }
 
-  function render(snapshot, launchActive, launchEventLogEntries = [], lastLaunchEventSummary = "", vehicleViewState = null) {
+  function render(snapshot, launchActive, launchEventLogEntries = [], lastLaunchEventSummary = "", vehicleViewState = null, fleetEntries = []) {
     if (!missionControlScreenNode || !missionControlOverviewNode || !missionControlSequenceNode || !missionControlEventsNode || !missionControlSubtitleNode) {
       return;
     }
     syncVehicleViewState(vehicleViewState);
+    renderFleetOperations(fleetEntries);
+    syncLiveViewportLabel(vehicleViewState, fleetEntries);
     const active = Boolean(launchActive && snapshot);
     if (!snapshot) {
       missionControlSubtitleNode.textContent = "Waiting for telemetry. You can launch when systems are ready.";
@@ -322,6 +573,8 @@ export function createMissionControlScreenController(options = {}) {
     const missionName = snapshot.missionName || "Mission";
     const missionPhase = humanizeMissionPhase(snapshot.missionPhase);
     const met = formatDurationSeconds(snapshot.elapsedSeconds);
+    const refuelFillFraction = clamp(Number(snapshot?.refuelFillFraction) || 0, 0, 1);
+    const refuelGoalReady = refuelFillFraction >= 0.88;
     missionControlSubtitleNode.textContent = active
       ? `${missionName} | ${missionPhase} | ${phaseLabel} | ${stageName} | MET ${met}`
       : `${missionName} | Last known phase ${missionPhase} | MET ${met}`;
@@ -344,6 +597,10 @@ export function createMissionControlScreenController(options = {}) {
       ["Target Distance", Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a"],
       ["Booster", snapshot.boosterPhase || "n/a"],
       ["Booster Fuel", Number.isFinite(Number(snapshot.boosterFuelFraction)) ? `${formatNumber(Number(snapshot.boosterFuelFraction) * 100, 1)}%` : "n/a"],
+      ["Refuel Flights", `${Math.max(0, Number(snapshot.refuelCompletedFlights) || 0)} / ${Math.max(0, Number(snapshot.refuelRequiredFlights) || 0)}`],
+      ["Refuel Fill", Number.isFinite(Number(snapshot.refuelFillFraction)) ? `${formatNumber(Number(snapshot.refuelFillFraction) * 100, 1)}%` : "n/a"],
+      ["Refuel Goal", refuelGoalReady ? "FULL" : "LOW"],
+      ["Tanker Window", snapshot.refuelCanLaunchTanker ? "Open" : "Closed"],
       ["Hot-Stage", snapshot.hotstageActive ? "Active" : (snapshot.hotstageDetachReason ? `Detached (${snapshot.hotstageDetachReason})` : "Inactive")],
       ["RCS", snapshot.rcsActive ? `On (${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 1)}%)` : "Off"],
       ["Last Event", lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "n/a"],
@@ -408,6 +665,62 @@ export function createMissionControlScreenController(options = {}) {
         onScreenStateChanged?.(visible);
       });
       missionControlViewBoosterButton.dataset.bound = "true";
+    }
+    if (missionControlFleetNode && missionControlFleetNode.dataset.bound !== "true") {
+      missionControlFleetNode.addEventListener("focusin", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement)) {
+          return;
+        }
+        if (target.getAttribute("data-mc-fleet-select") !== "true") {
+          return;
+        }
+        fleetSelectInteracting = true;
+      });
+      missionControlFleetNode.addEventListener("focusout", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement)) {
+          return;
+        }
+        if (target.getAttribute("data-mc-fleet-select") !== "true") {
+          return;
+        }
+        fleetSelectInteracting = false;
+      });
+      missionControlFleetNode.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) {
+          return;
+        }
+        const button = target.closest("[data-mc-track-id]");
+        if (!(button instanceof Element)) {
+          return;
+        }
+        event.preventDefault();
+        const bodyId = String(button.getAttribute("data-mc-track-id") || "").trim();
+        if (!bodyId) {
+          return;
+        }
+        onTrackBody?.(bodyId);
+        onScreenStateChanged?.(visible);
+      });
+      missionControlFleetNode.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLSelectElement)) {
+          return;
+        }
+        if (target.getAttribute("data-mc-fleet-select") !== "true") {
+          return;
+        }
+        fleetSelectInteracting = false;
+        selectedFleetBodyId = String(target.value || "").trim();
+        if (!selectedFleetBodyId) {
+          return;
+        }
+        lastFleetMarkupSignature = "";
+        renderFleetOperations(cachedFleetEntries);
+      });
+      missionControlFleetNode.dataset.bound = "true";
     }
     if (!escBound && documentRef?.addEventListener) {
       documentRef.addEventListener("keydown", (event) => {

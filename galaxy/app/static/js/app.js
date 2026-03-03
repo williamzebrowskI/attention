@@ -45,18 +45,29 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303b";
+import {
+  activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
+  isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
+} from "./ui/launchVehicleTelemetryView.js";
+import { ensureRuntimeCatalogBody as ensureRuntimeCatalogBodyView } from "./ui/runtimeVehicleRegistry.js";
+import { computeLaunchVehicleViewState } from "./ui/launchVehicleViewState.js";
+import { createLegendVehicleStatusController } from "./ui/legendVehicleStatus.js";
+import { createRefuelTransferVisualController } from "./ui/refuelTransferVisual.js";
+import { createLaunchVehicleDeleteController } from "./ui/launchVehicleDeleteController.js";
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
 const bodyLegend = document.getElementById("body-legend");
 const bodyLegendToggleButton = document.getElementById("body-legend-toggle");
 const bodyLegendList = document.getElementById("body-legend-list");
+const legendBodyHeaderNode = document.querySelector(".legend-body-header");
 const legendBodyCountNode = document.getElementById("legend-body-count");
 const observationModeSelect = document.getElementById("observation-mode");
 const surfaceObserverRow = document.getElementById("surface-observer-row");
 const surfaceObserverTargetSelect = document.getElementById("surface-observer-target");
 const observationStatusNode = document.getElementById("observation-status");
+const observationPanel = document.querySelector(".observation-panel");
 const physicsPanel = document.getElementById("physics-panel");
 const physicsPanelTitleNode = document.getElementById("physics-panel-title");
 const physicsTidalToggleButton = document.getElementById("physics-toggle-tidal");
@@ -66,6 +77,8 @@ const physicsOverlayStatusNode = document.getElementById("physics-overlay-status
 const launchControlButton = document.getElementById("launch-control-button");
 const launchReturnButton = document.getElementById("launch-return-button");
 const launchResetButton = document.getElementById("launch-reset-button");
+const launchDeleteButton = document.getElementById("launch-delete-button");
+const launchTankerButton = document.getElementById("launch-tanker-button");
 const launchMissionControlButton = document.getElementById("launch-mission-control-button");
 const missionControlScreenNode = document.getElementById("mission-control-screen");
 const missionControlBackButton = document.getElementById("mission-control-back-button");
@@ -73,6 +86,7 @@ const missionControlSubtitleNode = document.getElementById("mission-control-subt
 const missionControlOverviewNode = document.getElementById("mission-control-overview");
 const missionControlSequenceNode = document.getElementById("mission-control-sequence");
 const missionControlEventsNode = document.getElementById("mission-control-events");
+const missionControlFleetNode = document.getElementById("mission-control-fleet");
 const missionControlViewStatusNode = document.getElementById("mission-control-view-status");
 const missionControlViewStarshipButton = document.getElementById("mission-control-view-starship");
 const missionControlViewBoosterButton = document.getElementById("mission-control-view-booster");
@@ -85,8 +99,16 @@ let launchMissionControlToggleButton = document.getElementById("launch-mission-t
 let launchMissionControlCollapsed = false;
 const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
 const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
+const LEGEND_SECTION_COLLAPSED_STORAGE_KEY_PREFIX = "galaxy_legend_section_collapsed_";
+const LEGEND_OBSERVATION_SECTION_ID = "observation";
+const LEGEND_PHYSICS_SECTION_ID = "physics";
+const LEGEND_BODY_LIST_SECTION_ID = "body_list";
+const LEGEND_LAUNCH_PANEL_SECTION_ID = "launch_panel";
+const LEGEND_LAUNCH_EVENT_LOG_SECTION_ID = "launch_event_log";
 let infoPanelCollapsed = false;
 let legendPanelCollapsed = false;
+let legendBodyListCollapsed = false;
+let legendBodyListToggleButton = null;
 
 const missionControlScreenController = createMissionControlScreenController({
   documentRef: document,
@@ -97,6 +119,7 @@ const missionControlScreenController = createMissionControlScreenController({
   missionControlOverviewNode,
   missionControlSequenceNode,
   missionControlEventsNode,
+  missionControlFleetNode,
   missionControlViewStatusNode,
   missionControlViewStarshipButton,
   missionControlViewBoosterButton,
@@ -106,6 +129,9 @@ const missionControlScreenController = createMissionControlScreenController({
   phaseLabelForLaunch,
   onSelectVehicleView: (mode) => {
     focusLegendVehicleView(mode);
+  },
+  onTrackBody: (bodyId) => {
+    focusManagedTelemetryVehicle(bodyId, true);
   },
 });
 
@@ -147,7 +173,28 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260302c";
+const FRONTEND_MODULE_VERSION = "20260303ac";
+const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
+  Object.freeze({
+    id: "earth_orbit_hold",
+    name: "Earth Orbit Hold",
+    description: "Launch to Earth orbit and hold station continuously until reset.",
+  }),
+  Object.freeze({
+    id: "orbital_refuel_demo",
+    name: "Orbital Refuel Demo",
+    description: "Launch to parking orbit, refuel in orbit, undock, then return to Earth orbit hold.",
+  }),
+  Object.freeze({
+    id: "moon_orbit_return",
+    name: "Moon Orbit + Return",
+    description: "Launch, transfer to Moon, enter lunar orbit, then return to Earth orbit.",
+  }),
+]);
+const LAUNCH_PERSISTENCE_STORAGE_KEY = "galaxy_launch_runtime_v1";
+const LAUNCH_PERSISTENCE_SCHEMA_VERSION = 1;
+const LAUNCH_PERSISTENCE_MAX_AGE_MS = 1000 * 60 * 60 * 72;
+const LAUNCH_PERSISTENCE_SAVE_INTERVAL_MS = 1500;
 const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
 const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -466,6 +513,54 @@ function safeQuaternionFromUpAxis(defaultAxis, targetDirection) {
     quaternion.identity();
   }
   return quaternion;
+}
+
+function refuelDockingVisualLockForBody(bodyId, snapshot = null) {
+  if (!THREE_NS || !bodyId) {
+    return null;
+  }
+  const guidanceMode = String(snapshot?.guidanceMode || snapshot?.autopilotMode || "").toLowerCase();
+  const transferTankerId = String(snapshot?.refuelTransferTankerId || "").trim();
+  const transferActive = Boolean(snapshot?.refuelTransferActive);
+  const undockActive = Boolean(snapshot?.refuelUndockActive);
+  const transferLocked = Boolean(snapshot?.refuelTransferLocked);
+  const rcsDockingGuidance = guidanceMode.includes("rcs-dock")
+    || guidanceMode.includes("rcs-fuel-lock")
+    || guidanceMode.includes("rcs-docked-lock")
+    || guidanceMode.includes("rcs-undock");
+  if (!transferTankerId || !(transferActive || undockActive || transferLocked || rcsDockingGuidance)) {
+    return null;
+  }
+  const targetBodyId = String(bodyId);
+  if (targetBodyId !== LAUNCH_BODY_ID && targetBodyId !== transferTankerId) {
+    return null;
+  }
+  const pairBodyId = targetBodyId === LAUNCH_BODY_ID
+    ? transferTankerId
+    : LAUNCH_BODY_ID;
+  const bodyCoordsKm = runtimeCoordsOrLiveById(targetBodyId);
+  const pairCoordsKm = runtimeCoordsOrLiveById(pairBodyId);
+  const earthCoordsKm = runtimeCoordsOrLiveById("earth");
+  if (!finiteVectorKm(bodyCoordsKm) || !finiteVectorKm(pairCoordsKm) || !finiteVectorKm(earthCoordsKm)) {
+    return {
+      pairBodyId,
+      directionScene: null,
+      hardLock: transferActive || transferLocked,
+    };
+  }
+  const sharedUpScene = safeNormalizeSceneDirection(
+    new THREE_NS.Vector3(
+      (((Number(bodyCoordsKm.x) || 0) + (Number(pairCoordsKm.x) || 0)) * 0.5) - (Number(earthCoordsKm.x) || 0),
+      (((Number(bodyCoordsKm.z) || 0) + (Number(pairCoordsKm.z) || 0)) * 0.5) - (Number(earthCoordsKm.z) || 0),
+      (((Number(bodyCoordsKm.y) || 0) + (Number(pairCoordsKm.y) || 0)) * 0.5) - (Number(earthCoordsKm.y) || 0),
+    ),
+    new THREE_NS.Vector3(0, 1, 0),
+  );
+  return {
+    pairBodyId,
+    directionScene: sharedUpScene,
+    hardLock: transferActive || transferLocked || guidanceMode.includes("rcs-fuel-lock"),
+  };
 }
 
 function runFrameTaskSafely(taskKey, taskFn) {
@@ -898,6 +993,13 @@ let legendVehicleViewButtonsByKey = {
   booster: null,
 };
 let legendLaunchMissionSelect = null;
+let legendMissionLaunchModeSelect = null;
+let legendTankerLaunchModeSelect = null;
+let legendFleetVehicleSelect = null;
+let legendFleetPreviousButton = null;
+let legendFleetNextButton = null;
+let legendFleetTrackButton = null;
+let legendFleetStatusNode = null;
 let legendBoosterFuelToggleButton = null;
 let legendTrajectoryPathToggleButton = null;
 let boosterFuelViewEnabled = false;
@@ -943,11 +1045,72 @@ let lastNBodyBacklogWarnMs = 0;
 let lastNBodyNumericWarnMs = 0;
 let lastAnimationLoopErrorMs = 0;
 let latestSolarTimestampMs = Date.now();
+let lastLaunchPersistenceSaveMs = 0;
+let launchPersistenceRestoredFromStorage = false;
+let launchPersistenceRestoreAttempted = false;
 const lastFrameTaskErrorMsByKey = new Map();
 const LAUNCH_EVENT_LOG_MAX_ENTRIES = 500;
 const launchEventLogEntries = [];
 let lastLaunchEventSummary = "";
 let lastLaunchEventTimestampUtc = "";
+const legendVehicleStatusController = createLegendVehicleStatusController({
+  getLegendButtonsById: () => legendButtonsById,
+  getNBodyAllBodiesMode: () => N_BODY_ALL_BODIES_MODE,
+  getNBodyStartupSnapshotLoaded: () => nBodyStartupSnapshotLoaded,
+  isNBodyDrivenBodyId,
+  getLaunchFeatureEnabled: () => launchFeatureEnabled,
+  getLaunchController: () => launchController,
+  getNBodyState: () => nBodyState,
+  getLaunchBodyId: () => LAUNCH_BODY_ID,
+});
+const refuelTransferVisualController = createRefuelTransferVisualController({
+  getThree: () => THREE_NS,
+  getScene: () => scene,
+  getLaunchFeatureEnabled: () => launchFeatureEnabled,
+  getLaunchController: () => launchController,
+  getNBodyState: () => nBodyState,
+  getBodyVisuals: () => bodyVisuals,
+  getLaunchBodyId: () => LAUNCH_BODY_ID,
+  clampValue: clamp,
+});
+const launchVehicleDeleteController = createLaunchVehicleDeleteController({
+  launchDeleteButton,
+  getLaunchController: () => launchController,
+  getNBodyState: () => nBodyState,
+  getLaunchModuleLoadError: () => launchModuleLoadError,
+  getSelectedId: () => selectedId,
+  getLaunchBodyId: () => LAUNCH_BODY_ID,
+  getBodies: () => bodies,
+  setBodies: (nextBodies) => {
+    bodies = Array.isArray(nextBodies) ? nextBodies : [];
+  },
+  getMetaById: () => metaById,
+  getPositionsById: () => positionsById,
+  getRuntimeCoordsKmById: () => runtimeCoordsKmById,
+  getBodyVisuals: () => bodyVisuals,
+  getOrbitVisuals: () => orbitVisuals,
+  getOrbitalStateById: () => orbitalStateById,
+  getIlluminationById: () => illuminationById,
+  getGravityById: () => gravityById,
+  getPrimeMeridianSpinOffsetRadById: () => primeMeridianSpinOffsetRadById,
+  getDetailBodyId: () => detailBodyId,
+  setDetailBodyId: (nextId) => {
+    detailBodyId = nextId;
+  },
+  setSelectedId: (nextId) => {
+    selectedId = nextId;
+  },
+  disposeBodyVisual,
+  disposeOrbitVisual,
+  rebuildBodyLegend,
+  setSelected,
+  updateLegendSelection,
+  updateLegendGravityArrowIndicators,
+  appendLaunchLogEntry,
+  updateLaunchStatusPanel,
+  updateLaunchControls,
+  isDeletableVehicleId: isFleetSpacecraftVisualId,
+});
 
 function updateLaunchEventFeed() {
   if (!launchEventLogNode) {
@@ -1013,6 +1176,187 @@ function registerLaunchLogDebugHandles() {
   };
 }
 
+function launchPersistenceManagedBodyId(bodyId) {
+  const id = String(bodyId || "");
+  return id === String(LAUNCH_BODY_ID || "")
+    || id === String(LAUNCH_BOOSTER_BODY_ID || "")
+    || id.startsWith("earth_refuel_tanker_")
+    || id.startsWith("earth_mission_ship_");
+}
+
+function sanitizeLaunchEventLogEntry(entry, fallbackLevel = "info") {
+  const safeEntry = (entry && typeof entry === "object") ? { ...entry } : {};
+  const level = String(safeEntry.level || fallbackLevel).toLowerCase() === "error" ? "error" : "info";
+  const name = String(safeEntry.name || "launch_event");
+  const timestampUtc = String(safeEntry.timestampUtc || new Date().toISOString());
+  const payload = {
+    ...safeEntry,
+    level,
+    name,
+    timestampUtc,
+  };
+  return payload;
+}
+
+function restoreLaunchEventLogFromPersistence(entries, summary = "", summaryTimestampUtc = "") {
+  launchEventLogEntries.length = 0;
+  const list = Array.isArray(entries) ? entries : [];
+  const maxEntries = Math.min(LAUNCH_EVENT_LOG_MAX_ENTRIES, 300);
+  const tail = list.slice(-maxEntries);
+  for (let i = 0; i < tail.length; i += 1) {
+    launchEventLogEntries.push(sanitizeLaunchEventLogEntry(tail[i]));
+  }
+  lastLaunchEventSummary = String(summary || "");
+  lastLaunchEventTimestampUtc = String(summaryTimestampUtc || "");
+  if (!lastLaunchEventSummary && launchEventLogEntries.length > 0) {
+    const last = launchEventLogEntries[launchEventLogEntries.length - 1];
+    lastLaunchEventSummary = String(last?.name || "");
+    lastLaunchEventTimestampUtc = String(last?.timestampUtc || "");
+  }
+  updateLaunchEventFeed();
+}
+
+function clearLaunchPersistenceSnapshot() {
+  try {
+    window.localStorage?.removeItem(LAUNCH_PERSISTENCE_STORAGE_KEY);
+  } catch (_error) {
+    // Ignore local storage removal failures.
+  }
+}
+
+function readLaunchPersistenceSnapshot() {
+  try {
+    const raw = window.localStorage?.getItem(LAUNCH_PERSISTENCE_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const payload = JSON.parse(raw);
+    if (!payload || typeof payload !== "object") {
+      clearLaunchPersistenceSnapshot();
+      return null;
+    }
+    const schemaVersion = Number(payload.schemaVersion);
+    if (schemaVersion !== LAUNCH_PERSISTENCE_SCHEMA_VERSION) {
+      clearLaunchPersistenceSnapshot();
+      return null;
+    }
+    const savedAtMs = Number(payload.savedAtMs);
+    if (
+      Number.isFinite(savedAtMs)
+      && savedAtMs > 0
+      && (Date.now() - savedAtMs) > LAUNCH_PERSISTENCE_MAX_AGE_MS
+    ) {
+      clearLaunchPersistenceSnapshot();
+      return null;
+    }
+    return payload;
+  } catch (_error) {
+    clearLaunchPersistenceSnapshot();
+    return null;
+  }
+}
+
+function buildLaunchPersistencePayload(nowMs = Date.now()) {
+  if (!launchFeatureEnabled || !launchController || !nBodyState?.initialized) {
+    return null;
+  }
+  const controllerSnapshot = launchController.exportPersistentSnapshot?.(nBodyState, nowMs);
+  if (!controllerSnapshot) {
+    return null;
+  }
+  const safeSelectedBodyId = launchPersistenceManagedBodyId(selectedId) ? String(selectedId || "") : "";
+  const eventLogTail = launchEventLogEntries.slice(-220).map((entry) => sanitizeLaunchEventLogEntry(entry));
+  return {
+    schemaVersion: LAUNCH_PERSISTENCE_SCHEMA_VERSION,
+    savedAtMs: Math.max(0, Number(nowMs) || Date.now()),
+    selectedBodyId: safeSelectedBodyId,
+    launchVehicleViewPreference: launchVehicleViewPreference === "booster" ? "booster" : "starship",
+    launchEventLogEntries: eventLogTail,
+    lastLaunchEventSummary: String(lastLaunchEventSummary || ""),
+    lastLaunchEventTimestampUtc: String(lastLaunchEventTimestampUtc || ""),
+    controller: controllerSnapshot,
+  };
+}
+
+function persistLaunchRuntimeState(nowMs = Date.now(), options = {}) {
+  if (!launchFeatureEnabled || !launchController || !nBodyState?.initialized) {
+    return false;
+  }
+  const force = options?.force === true;
+  if (!force && (nowMs - lastLaunchPersistenceSaveMs) < LAUNCH_PERSISTENCE_SAVE_INTERVAL_MS) {
+    return false;
+  }
+  const payload = buildLaunchPersistencePayload(nowMs);
+  if (!payload) {
+    return false;
+  }
+  try {
+    window.localStorage?.setItem(LAUNCH_PERSISTENCE_STORAGE_KEY, JSON.stringify(payload));
+    lastLaunchPersistenceSaveMs = nowMs;
+    return true;
+  } catch (error) {
+    console.warn("[launch] Failed to persist launch runtime snapshot.", error);
+    return false;
+  }
+}
+
+async function restoreLaunchRuntimeState(nowMs = Date.now()) {
+  if (launchPersistenceRestoreAttempted) {
+    return launchPersistenceRestoredFromStorage;
+  }
+  launchPersistenceRestoreAttempted = true;
+  if (!launchFeatureEnabled || !launchController || !nBodyState?.initialized) {
+    return false;
+  }
+
+  const persisted = readLaunchPersistenceSnapshot();
+  if (!persisted || !persisted.controller || typeof persisted.controller !== "object") {
+    return false;
+  }
+
+  const persistedCatalog = Array.isArray(persisted.controller.catalogBodies)
+    ? persisted.controller.catalogBodies
+    : [];
+  for (let i = 0; i < persistedCatalog.length; i += 1) {
+    await ensureRuntimeCatalogBody(persistedCatalog[i]);
+  }
+
+  const restoreResult = launchController.importPersistentSnapshot?.(nBodyState, persisted.controller, nowMs);
+  if (!restoreResult?.applied) {
+    clearLaunchPersistenceSnapshot();
+    return false;
+  }
+
+  const runtimeCatalog = Array.isArray(restoreResult.catalogBodies)
+    ? restoreResult.catalogBodies
+    : [];
+  for (let i = 0; i < runtimeCatalog.length; i += 1) {
+    await ensureRuntimeCatalogBody(runtimeCatalog[i]);
+  }
+
+  launchVehicleViewPreference = persisted.launchVehicleViewPreference === "booster"
+    ? "booster"
+    : "starship";
+  restoreLaunchEventLogFromPersistence(
+    persisted.launchEventLogEntries,
+    persisted.lastLaunchEventSummary,
+    persisted.lastLaunchEventTimestampUtc,
+  );
+
+  const restoredBodyId = String(persisted.selectedBodyId || "").trim();
+  if (restoredBodyId && metaById.has(restoredBodyId)) {
+    setSelected(restoredBodyId, true);
+  } else if (!selectedId || !metaById.has(selectedId)) {
+    setSelected(LAUNCH_BODY_ID, false);
+  }
+
+  launchPersistenceRestoredFromStorage = true;
+  lastLaunchPersistenceSaveMs = nowMs;
+  updateLaunchControls();
+  updateLaunchStatusPanel(true);
+  return true;
+}
+
 const orbit = {
   target: null,
   radius: 2200,
@@ -1052,6 +1396,7 @@ let geolocationTrackingActive = false;
 
 window.addEventListener("resize", onResize);
 window.addEventListener("beforeunload", () => {
+  persistLaunchRuntimeState(Date.now(), { force: true });
   stopLiveLocationTracking(false);
 });
 
@@ -1085,6 +1430,7 @@ async function init() {
   setupLaunchControls();
   setupLegendInputGuards();
   await loadSnapshot();
+  await restoreLaunchRuntimeState(Date.now());
   setupRigidBodyAttitudeModel();
   if (!HORIZONS_STARTUP_FETCH_ONLY) {
     connectWebSocket();
@@ -1486,6 +1832,191 @@ function rebuildOrbitVisuals() {
   }
 }
 
+function normalizeLegendSectionId(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "section";
+}
+
+function readLegendSectionCollapsedPreference(sectionId, fallback = false) {
+  try {
+    const storageKey = `${LEGEND_SECTION_COLLAPSED_STORAGE_KEY_PREFIX}${normalizeLegendSectionId(sectionId)}`;
+    const value = window.localStorage?.getItem(storageKey);
+    if (value === "1") {
+      return true;
+    }
+    if (value === "0") {
+      return false;
+    }
+  } catch (_error) {
+    // Ignore preference read failures.
+  }
+  return Boolean(fallback);
+}
+
+function persistLegendSectionCollapsedPreference(sectionId, collapsed) {
+  try {
+    const storageKey = `${LEGEND_SECTION_COLLAPSED_STORAGE_KEY_PREFIX}${normalizeLegendSectionId(sectionId)}`;
+    window.localStorage?.setItem(storageKey, collapsed ? "1" : "0");
+  } catch (_error) {
+    // Ignore preference persistence failures.
+  }
+}
+
+function applyLegendCollapsibleState(rootNode, collapsed, options = {}) {
+  if (!rootNode) {
+    return;
+  }
+  const isCollapsed = Boolean(collapsed);
+  rootNode.classList.toggle("collapsed", isCollapsed);
+  const toggleButton = rootNode.querySelector(":scope > .legend-collapsible-header > .legend-collapsible-toggle");
+  if (!toggleButton) {
+    return;
+  }
+  const title = options.title || rootNode.dataset.legendSectionTitle || "section";
+  const collapseLabel = options.collapseLabel || `Collapse ${title}`;
+  const expandLabel = options.expandLabel || `Expand ${title}`;
+  toggleButton.textContent = isCollapsed ? "+" : "-";
+  toggleButton.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+  toggleButton.setAttribute("aria-label", isCollapsed ? expandLabel : collapseLabel);
+}
+
+function wireLegendCollapsibleSection(rootNode, options = {}) {
+  if (!rootNode) {
+    return;
+  }
+  const titleSelector = options.titleSelector || ".body-legend-title";
+  const titleNode = rootNode.querySelector(titleSelector);
+  if (!titleNode) {
+    return;
+  }
+  const sectionTitle = options.title || titleNode.textContent || "Section";
+  const sectionId = normalizeLegendSectionId(options.sectionId || rootNode.id || sectionTitle);
+  const rememberState = options.rememberState !== false;
+  const defaultCollapsed = Boolean(options.defaultCollapsed);
+
+  rootNode.classList.add("legend-collapsible");
+  rootNode.dataset.legendSectionId = sectionId;
+  rootNode.dataset.legendSectionTitle = sectionTitle;
+
+  let headerNode = rootNode.querySelector(":scope > .legend-collapsible-header");
+  if (!headerNode) {
+    headerNode = document.createElement("div");
+    headerNode.className = "legend-collapsible-header";
+    rootNode.insertBefore(headerNode, rootNode.firstChild || null);
+  }
+  if (titleNode.parentElement !== headerNode) {
+    titleNode.remove();
+    headerNode.prepend(titleNode);
+  }
+
+  let bodyNode = rootNode.querySelector(":scope > .legend-collapsible-body");
+  if (!bodyNode) {
+    bodyNode = document.createElement("div");
+    bodyNode.className = "legend-collapsible-body";
+    while (headerNode.nextSibling) {
+      bodyNode.appendChild(headerNode.nextSibling);
+    }
+    rootNode.appendChild(bodyNode);
+  }
+
+  let toggleButton = headerNode.querySelector(".legend-collapsible-toggle");
+  if (!toggleButton) {
+    toggleButton = document.createElement("button");
+    toggleButton.type = "button";
+    toggleButton.className = "legend-collapsible-toggle";
+    headerNode.appendChild(toggleButton);
+  }
+
+  if (toggleButton.dataset.bound !== "true") {
+    toggleButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      markLegendInteractionGuard();
+      const nextCollapsed = !rootNode.classList.contains("collapsed");
+      applyLegendCollapsibleState(rootNode, nextCollapsed, options);
+      if (rememberState) {
+        persistLegendSectionCollapsedPreference(sectionId, nextCollapsed);
+      }
+      if (typeof options.onToggle === "function") {
+        options.onToggle(nextCollapsed);
+      }
+      refreshLegendAccordionHeights();
+    });
+    toggleButton.dataset.bound = "true";
+  }
+
+  const initialCollapsed = rememberState
+    ? readLegendSectionCollapsedPreference(sectionId, defaultCollapsed)
+    : defaultCollapsed;
+  applyLegendCollapsibleState(rootNode, initialCollapsed, options);
+}
+
+function applyLegendBodyListCollapsedState() {
+  if (bodyLegendList) {
+    bodyLegendList.classList.toggle("collapsed", legendBodyListCollapsed);
+  }
+  if (legendBodyListToggleButton) {
+    legendBodyListToggleButton.textContent = legendBodyListCollapsed ? "+" : "-";
+    legendBodyListToggleButton.setAttribute("aria-expanded", legendBodyListCollapsed ? "false" : "true");
+    legendBodyListToggleButton.setAttribute(
+      "aria-label",
+      legendBodyListCollapsed ? "Expand bodies list" : "Collapse bodies list",
+    );
+  }
+}
+
+function toggleLegendBodyListCollapsed() {
+  legendBodyListCollapsed = !legendBodyListCollapsed;
+  persistLegendSectionCollapsedPreference(LEGEND_BODY_LIST_SECTION_ID, legendBodyListCollapsed);
+  applyLegendBodyListCollapsedState();
+  refreshLegendAccordionHeights();
+}
+
+function initializeLegendBodyListControls() {
+  if (!legendBodyHeaderNode || !bodyLegendList) {
+    return;
+  }
+  if (!legendBodyListToggleButton) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "legend-body-toggle";
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      markLegendInteractionGuard();
+      toggleLegendBodyListCollapsed();
+    });
+    legendBodyHeaderNode.appendChild(toggle);
+    legendBodyListToggleButton = toggle;
+  }
+  legendBodyListCollapsed = readLegendSectionCollapsedPreference(LEGEND_BODY_LIST_SECTION_ID, false);
+  applyLegendBodyListCollapsedState();
+}
+
+function initializeLegendSectionControls() {
+  wireLegendCollapsibleSection(observationPanel, {
+    sectionId: LEGEND_OBSERVATION_SECTION_ID,
+    titleSelector: ".body-legend-title",
+    title: "Observation",
+    defaultCollapsed: false,
+    collapseLabel: "Collapse observation controls",
+    expandLabel: "Expand observation controls",
+  });
+  wireLegendCollapsibleSection(physicsPanel, {
+    sectionId: LEGEND_PHYSICS_SECTION_ID,
+    titleSelector: ".body-legend-title",
+    title: "Physics overlays",
+    defaultCollapsed: false,
+    collapseLabel: "Collapse physics overlays",
+    expandLabel: "Expand physics overlays",
+  });
+  initializeLegendBodyListControls();
+}
+
 function rebuildBodyLegend() {
   if (!bodyLegendList) {
     return;
@@ -1502,6 +2033,13 @@ function rebuildBodyLegend() {
     booster: null,
   };
   legendLaunchMissionSelect = null;
+  legendMissionLaunchModeSelect = null;
+  legendTankerLaunchModeSelect = null;
+  legendFleetVehicleSelect = null;
+  legendFleetPreviousButton = null;
+  legendFleetNextButton = null;
+  legendFleetTrackButton = null;
+  legendFleetStatusNode = null;
   const fragment = document.createDocumentFragment();
   if (legendBodyCountNode) {
     legendBodyCountNode.textContent = `${bodies.length} tracked`;
@@ -1509,9 +2047,9 @@ function rebuildBodyLegend() {
 
   const sun = bodies.find((body) => body.id === "sun");
   if (sun) {
-    const group = createLegendGroup("Sun");
-    group.appendChild(createLegendEntry(sun, false));
-    fragment.appendChild(group);
+    const sunGroup = createLegendGroup("Sun", { sectionId: "sun" });
+    sunGroup.content.appendChild(createLegendEntry(sun, false));
+    fragment.appendChild(sunGroup.root);
   }
 
   const planetarySystemsSection = document.createElement("p");
@@ -1522,7 +2060,7 @@ function rebuildBodyLegend() {
   const planets = bodies
     .filter((body) => body.body_type === "planet" && body.id !== "sun")
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
-  const planetaryGroup = createLegendGroup("Planets");
+  const planetaryGroup = createLegendGroup("Planets", { sectionId: "planets" });
 
   for (const planet of planets) {
     const moons = bodies
@@ -1530,12 +2068,12 @@ function rebuildBodyLegend() {
       .sort((a, b) => sortBySemimajorAxisThenName(a, b));
 
     if (moons.length > 0) {
-      planetaryGroup.appendChild(createPlanetAccordionEntry(planet, moons));
+      planetaryGroup.content.appendChild(createPlanetAccordionEntry(planet, moons));
       continue;
     }
-    planetaryGroup.appendChild(createLegendEntry(planet, false));
+    planetaryGroup.content.appendChild(createLegendEntry(planet, false));
   }
-  fragment.appendChild(planetaryGroup);
+  fragment.appendChild(planetaryGroup.root);
 
   const orphanMoons = bodies
     .filter((body) => (
@@ -1544,11 +2082,11 @@ function rebuildBodyLegend() {
     ))
     .sort((a, b) => sortBySemimajorAxisThenName(a, b));
   if (orphanMoons.length > 0) {
-    const group = createLegendGroup("Unassigned Moons");
+    const orphanGroup = createLegendGroup("Unassigned Moons", { sectionId: "unassigned_moons" });
     for (const moon of orphanMoons) {
-      group.appendChild(createLegendEntry(moon, true));
+      orphanGroup.content.appendChild(createLegendEntry(moon, true));
     }
-    fragment.appendChild(group);
+    fragment.appendChild(orphanGroup.root);
   }
 
   const spacecraftBodies = bodies
@@ -1559,14 +2097,15 @@ function rebuildBodyLegend() {
     section.className = "legend-section-title";
     section.textContent = "Spacecraft";
     fragment.appendChild(section);
-    const group = createLegendGroup("Active Vehicles");
+    const spacecraftGroup = createLegendGroup("Active Vehicles", { sectionId: "active_vehicles" });
     for (const spacecraft of spacecraftBodies) {
-      group.appendChild(createLegendEntry(spacecraft, false));
+      spacecraftGroup.content.appendChild(createLegendEntry(spacecraft, false));
     }
-    fragment.appendChild(group);
+    fragment.appendChild(spacecraftGroup.root);
   }
 
   bodyLegendList.appendChild(fragment);
+  applyLegendBodyListCollapsedState();
   updateLegendSelection();
   updateLegendFallbackIndicators();
   updateLegendGravityArrowIndicators();
@@ -1574,16 +2113,29 @@ function rebuildBodyLegend() {
   updateLaunchControls();
 }
 
-function createLegendGroup(title) {
+function createLegendGroup(title, options = {}) {
   const group = document.createElement("div");
   group.className = "legend-group";
-  if (title) {
-    const heading = document.createElement("p");
-    heading.className = "legend-group-title";
-    heading.textContent = title;
-    group.appendChild(heading);
-  }
-  return group;
+  const heading = document.createElement("p");
+  heading.className = "legend-group-title";
+  heading.textContent = title || "Group";
+  group.appendChild(heading);
+
+  const content = document.createElement("div");
+  group.appendChild(content);
+
+  wireLegendCollapsibleSection(group, {
+    sectionId: options.sectionId || title || "group",
+    titleSelector: ".legend-group-title",
+    title: title || "Group",
+    defaultCollapsed: Boolean(options.defaultCollapsed),
+  });
+
+  const collapsibleBody = group.querySelector(":scope > .legend-collapsible-body");
+  return {
+    root: group,
+    content: collapsibleBody || content,
+  };
 }
 
 function isLegendPlanetAccordionExpanded(planetId) {
@@ -1804,6 +2356,18 @@ function hasVisibleBodyState(bodyId) {
   return Boolean(metaById.has(bodyId) && visual?.root?.visible && hasCoords);
 }
 
+function launchVehicleViewState() {
+  return computeLaunchVehicleViewState({
+    inBodyLock: observation.mode === OBSERVATION_MODES.BODY_LOCK,
+    selectedId,
+    launchBodyId: LAUNCH_BODY_ID,
+    launchBoosterBodyId: LAUNCH_BOOSTER_BODY_ID,
+    launchVehicleViewPreference,
+    starshipAvailable: hasVisibleBodyState(LAUNCH_BODY_ID),
+    boosterDetachedAvailable: hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID),
+  });
+}
+
 function focusLegendVehicleView(viewMode = "starship") {
   const wantsBooster = viewMode === "booster";
   launchVehicleViewPreference = wantsBooster ? "booster" : "starship";
@@ -1887,6 +2451,52 @@ function createLegendVehicleViewPanel() {
   legendLaunchMissionSelect = missionSelect;
   setupLaunchMissionPicker();
 
+  const missionModeLabel = document.createElement("label");
+  missionModeLabel.className = "legend-vehicle-mission-label";
+  missionModeLabel.textContent = "Mission Launch Mode";
+  panel.appendChild(missionModeLabel);
+
+  const missionModeSelect = document.createElement("select");
+  missionModeSelect.id = "legend-mission-launch-mode-select";
+  missionModeSelect.className = "legend-vehicle-mission-select";
+  missionModeSelect.title = "Select how additional mission ships are deployed";
+  missionModeLabel.htmlFor = missionModeSelect.id;
+  missionModeSelect.innerHTML = [
+    '<option value="pad_launch">Earth Pad Launch (Booster)</option>',
+    '<option value="orbit_inject">Direct Orbit Inject (~150 km)</option>',
+  ].join("");
+  missionModeSelect.value = "pad_launch";
+  missionModeSelect.addEventListener("change", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+  });
+  panel.appendChild(missionModeSelect);
+  legendMissionLaunchModeSelect = missionModeSelect;
+
+  const tankerModeLabel = document.createElement("label");
+  tankerModeLabel.className = "legend-vehicle-mission-label";
+  tankerModeLabel.textContent = "Tanker Launch Mode";
+  panel.appendChild(tankerModeLabel);
+
+  const tankerModeSelect = document.createElement("select");
+  tankerModeSelect.id = "legend-tanker-launch-mode-select";
+  tankerModeSelect.className = "legend-vehicle-mission-select";
+  tankerModeSelect.title = "Select how tankers are deployed";
+  tankerModeLabel.htmlFor = tankerModeSelect.id;
+  tankerModeSelect.innerHTML = [
+    '<option value="pad_launch">Earth Pad Launch (Realistic)</option>',
+    '<option value="orbit_inject">Direct Orbit Inject (Instant)</option>',
+  ].join("");
+  tankerModeSelect.value = "pad_launch";
+  tankerModeSelect.addEventListener("change", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+  });
+  panel.appendChild(tankerModeSelect);
+  legendTankerLaunchModeSelect = tankerModeSelect;
+
   const fuelRow = document.createElement("div");
   fuelRow.className = "legend-vehicle-fuel-row";
   const fuelLabel = document.createElement("span");
@@ -1929,6 +2539,82 @@ function createLegendVehicleViewPanel() {
   trajectoryRow.appendChild(trajectoryToggle);
   panel.appendChild(trajectoryRow);
   legendTrajectoryPathToggleButton = trajectoryToggle;
+
+  const fleetLabel = document.createElement("label");
+  fleetLabel.className = "legend-vehicle-mission-label";
+  fleetLabel.textContent = "Fleet Manager";
+  panel.appendChild(fleetLabel);
+
+  const fleetSelect = document.createElement("select");
+  fleetSelect.id = "legend-fleet-vehicle-select";
+  fleetSelect.className = "legend-vehicle-mission-select";
+  fleetSelect.title = "Select active spacecraft";
+  fleetLabel.htmlFor = fleetSelect.id;
+  fleetSelect.addEventListener("change", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    const targetId = String(fleetSelect.value || "");
+    if (targetId) {
+      focusManagedTelemetryVehicle(targetId, true);
+    }
+  });
+  panel.appendChild(fleetSelect);
+  legendFleetVehicleSelect = fleetSelect;
+
+  const fleetNavRow = document.createElement("div");
+  fleetNavRow.className = "legend-vehicle-fleet-nav-row";
+
+  const fleetPrevButton = document.createElement("button");
+  fleetPrevButton.type = "button";
+  fleetPrevButton.className = "legend-vehicle-view-button";
+  fleetPrevButton.textContent = "Prev";
+  fleetPrevButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    cycleManagedTelemetryVehicle(-1);
+  });
+  fleetNavRow.appendChild(fleetPrevButton);
+  legendFleetPreviousButton = fleetPrevButton;
+
+  const fleetTrackButton = document.createElement("button");
+  fleetTrackButton.type = "button";
+  fleetTrackButton.className = "legend-vehicle-view-button";
+  fleetTrackButton.textContent = "Track";
+  fleetTrackButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    const targetId = String(legendFleetVehicleSelect?.value || "");
+    if (targetId) {
+      focusManagedTelemetryVehicle(targetId, true);
+    }
+  });
+  fleetNavRow.appendChild(fleetTrackButton);
+  legendFleetTrackButton = fleetTrackButton;
+
+  const fleetNextButton = document.createElement("button");
+  fleetNextButton.type = "button";
+  fleetNextButton.className = "legend-vehicle-view-button";
+  fleetNextButton.textContent = "Next";
+  fleetNextButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    cycleManagedTelemetryVehicle(1);
+  });
+  fleetNavRow.appendChild(fleetNextButton);
+  legendFleetNextButton = fleetNextButton;
+
+  panel.appendChild(fleetNavRow);
+
+  const fleetStatus = document.createElement("p");
+  fleetStatus.className = "legend-launch-status legend-fleet-status";
+  fleetStatus.textContent = "No active spacecraft in the scene.";
+  panel.appendChild(fleetStatus);
+  legendFleetStatusNode = fleetStatus;
+  updateLegendFleetManager();
 
   const status = document.createElement("p");
   status.id = "launch-status";
@@ -1986,8 +2672,32 @@ function createLegendVehicleViewPanel() {
   eventLog.id = "launch-event-log";
   eventLog.className = "legend-launch-event-log";
   eventLog.textContent = "No launch events yet.";
-  panel.appendChild(eventLog);
+  const eventLogSection = document.createElement("section");
+  eventLogSection.className = "legend-inline-section";
+  const eventLogLabel = document.createElement("p");
+  eventLogLabel.className = "legend-inline-section-title";
+  eventLogLabel.textContent = "Event Log";
+  eventLogSection.appendChild(eventLogLabel);
+  eventLogSection.appendChild(eventLog);
+  panel.appendChild(eventLogSection);
   launchEventLogNode = eventLog;
+
+  wireLegendCollapsibleSection(eventLogSection, {
+    sectionId: LEGEND_LAUNCH_EVENT_LOG_SECTION_ID,
+    titleSelector: ".legend-inline-section-title",
+    title: "Event log",
+    defaultCollapsed: true,
+    collapseLabel: "Collapse event log",
+    expandLabel: "Expand event log",
+  });
+  wireLegendCollapsibleSection(panel, {
+    sectionId: LEGEND_LAUNCH_PANEL_SECTION_ID,
+    titleSelector: ".legend-vehicle-label",
+    title: "Tracking views",
+    defaultCollapsed: false,
+    collapseLabel: "Collapse launch controls",
+    expandLabel: "Expand launch controls",
+  });
   updateLaunchEventFeed();
   updateLegendBoosterFuelToggle();
   updateLegendTrajectoryToggle();
@@ -2020,13 +2730,29 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function missionMetricCell(label, value) {
-  return `<div class="legend-mission-metric"><span class="k">${escapeHtml(label)}</span><span class="v">${escapeHtml(value)}</span></div>`;
+function missionStatusBadge(label, tone = "neutral") {
+  const safeTone = String(tone || "neutral").trim().toLowerCase();
+  const allowedTone = (
+    safeTone === "green"
+    || safeTone === "red"
+    || safeTone === "muted"
+    || safeTone === "neutral"
+  )
+    ? safeTone
+    : "neutral";
+  return `<span class="legend-status-badge ${allowedTone}">${escapeHtml(label)}</span>`;
+}
+
+function missionMetricCell(label, value, options = {}) {
+  const allowHtml = Boolean(options?.allowHtml);
+  const renderedValue = allowHtml ? String(value ?? "") : escapeHtml(value);
+  const valueClass = allowHtml ? "v html-value" : "v";
+  return `<div class="legend-mission-metric"><span class="k">${escapeHtml(label)}</span><span class="${valueClass}">${renderedValue}</span></div>`;
 }
 
 function missionMetricGroup(title, metrics) {
   const cells = (Array.isArray(metrics) ? metrics : [])
-    .map((metric) => missionMetricCell(metric.label, metric.value))
+    .map((metric) => missionMetricCell(metric.label, metric.value, metric))
     .join("");
   return `<section class="legend-mission-group"><p class="legend-mission-group-title">${escapeHtml(title)}</p><div class="legend-mission-grid">${cells}</div></section>`;
 }
@@ -2075,6 +2801,22 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const qAlphaPct = Number.isFinite(Number(snapshot.qAlphaPaRad))
     ? (Number(snapshot.qAlphaPaRad) / 1600) * 100
     : Number.NaN;
+  const refuelOnlineTankers = Math.max(0, Number(snapshot.refuelOnlineTankers) || 0);
+  const refuelAvailableTankers = Math.max(
+    0,
+    Number(snapshot.refuelAvailableTankers) || Number(snapshot.refuelActiveFlights) || Number(snapshot.refuelAtSlotTankers) || 0,
+  );
+  const tankerStatusIndicator = `<span class="legend-status-badges">${
+    missionStatusBadge(
+      `AVAILABLE ${refuelAvailableTankers}`,
+      refuelAvailableTankers > 0 ? "green" : "muted",
+    )
+  }${
+    missionStatusBadge(
+      `ONLINE ${refuelOnlineTankers}`,
+      refuelOnlineTankers > 0 ? "green" : "muted",
+    )
+  }</span>`;
   const hotstageProgressPct = Boolean(snapshot.hotstageActive)
     && Number.isFinite(Number(snapshot.hotstageTimeSinceIgnitionSec))
     && Number.isFinite(Number(snapshot.hotstageOverlapSeconds))
@@ -2133,8 +2875,34 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const hotstageStatus = Boolean(snapshot.hotstageActive)
     ? `active${Number.isFinite(Number(snapshot.hotstageTimeSinceIgnitionSec)) ? ` (${formatNumber(snapshot.hotstageTimeSinceIgnitionSec, 2)}s)` : ""}`
     : (snapshot.hotstageDetachReason ? `detached: ${snapshot.hotstageDetachReason}` : "inactive");
+  const transferProgressPct = Number.isFinite(Number(snapshot.refuelTransferProgress))
+    ? Number(snapshot.refuelTransferProgress) * 100
+    : Number.NaN;
+  const transferRateKgS = Number(snapshot.refuelTransferRateKgS);
+  const transferRemainingKg = Number(snapshot.refuelTransferRemainingKg);
+  const transferTankerId = String(snapshot.refuelTransferTankerId || "");
+  const refuelFillFraction = clamp(Number(snapshot.refuelFillFraction) || 0, 0, 1);
+  const refuelTargetReady = refuelFillFraction >= 0.88;
+  const fuelStatusIndicator = `<span class="legend-status-badges">${
+    missionStatusBadge(
+      refuelTargetReady ? "FUEL FULL" : "FUEL LOW",
+      refuelTargetReady ? "green" : "red",
+    )
+  }</span>`;
+  const transferStateLabel = Boolean(snapshot.refuelTransferActive)
+    ? `fueling${Number.isFinite(transferProgressPct) ? ` ${formatNumber(transferProgressPct, 1)}%` : ""}`
+    : (snapshot.refuelUndockActive ? "undocking" : "idle");
   const hotstageMetrics = [
     { label: "Hot-Stage", value: hotstageStatus },
+    { label: "Tanker Status", value: tankerStatusIndicator, allowHtml: true },
+    { label: "Fuel Status", value: fuelStatusIndicator, allowHtml: true },
+    { label: "Refuel Flights", value: `${Math.max(0, Number(snapshot.refuelCompletedFlights) || 0)} / ${Math.max(0, Number(snapshot.refuelRequiredFlights) || 0)}` },
+    { label: "Refuel Fill", value: Number.isFinite(Number(snapshot.refuelFillFraction)) ? `${formatNumber(Number(snapshot.refuelFillFraction) * 100, 1)}%` : "n/a" },
+    { label: "Refuel State", value: transferStateLabel },
+    { label: "Transfer Tanker", value: transferTankerId || "n/a" },
+    { label: "Transfer Rate", value: Number.isFinite(transferRateKgS) && transferRateKgS > 0 ? `${formatNumber(transferRateKgS, 1)} kg/s` : "n/a" },
+    { label: "Transfer Rem", value: Number.isFinite(transferRemainingKg) && transferRemainingKg > 0 ? `${formatNumber(transferRemainingKg, 0)} kg` : "n/a" },
+    { label: "Tanker Window", value: snapshot.refuelCanLaunchTanker ? "open" : "closed" },
     { label: "Overlap Gate", value: Number.isFinite(Number(snapshot.hotstageOverlapSeconds)) ? `${formatNumber(snapshot.hotstageOverlapSeconds, 2)} s` : "n/a" },
     { label: "Stable Ignition", value: Number.isFinite(Number(snapshot.hotstageIgnitionStableSec)) ? `${formatNumber(snapshot.hotstageIgnitionStableSec, 2)} s` : "n/a" },
     { label: "Virtual Sep", value: Number.isFinite(Number(snapshot.hotstageVirtualSeparationKm)) ? `${formatNumber(snapshot.hotstageVirtualSeparationKm, 4)} km` : "n/a" },
@@ -2148,6 +2916,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     missionBar("Throttle", throttlePct, Number.isFinite(throttlePct) ? `${formatNumber(throttlePct, 1)}%` : "n/a"),
     missionBar("q-alpha Load", qAlphaPct, Number.isFinite(qAlphaPct) ? `${formatNumber(Math.max(0, Math.min(100, qAlphaPct)), 1)}%` : "n/a"),
     missionBar("Booster Fuel", boosterFuelPct, Number.isFinite(boosterFuelPct) ? `${formatNumber(boosterFuelPct, 1)}%` : "n/a"),
+    missionBar("Fuel Transfer", transferProgressPct, Number.isFinite(transferProgressPct) ? `${formatNumber(Math.max(0, Math.min(100, transferProgressPct)), 1)}%` : "n/a"),
     missionBar("Hot-Stage Gate", hotstageProgressPct, Number.isFinite(hotstageProgressPct) ? `${formatNumber(Math.max(0, Math.min(100, hotstageProgressPct)), 1)}%` : "n/a"),
   ].join("");
 
@@ -2203,17 +2972,23 @@ function updateLegendSelection() {
 }
 
 function isBodyNBodyFallback(bodyId) {
-  if (!N_BODY_ALL_BODIES_MODE || !nBodyStartupSnapshotLoaded) {
-    return false;
-  }
-  return !isNBodyDrivenBodyId(bodyId);
+  return legendVehicleStatusController.isBodyNBodyFallback(bodyId);
+}
+
+function isRefuelTankerBodyId(bodyId) {
+  return legendVehicleStatusController.isRefuelTankerBodyId(bodyId);
+}
+
+function tankerLegendReadyState(bodyId, nowMs = Date.now()) {
+  return legendVehicleStatusController.tankerLegendReadyState(bodyId, nowMs);
+}
+
+function fuelingLegendState(bodyId, nowMs = Date.now()) {
+  return legendVehicleStatusController.fuelingLegendState(bodyId, nowMs);
 }
 
 function updateLegendFallbackIndicators() {
-  for (const [bodyId, button] of legendButtonsById.entries()) {
-    const fallback = isBodyNBodyFallback(bodyId);
-    button.classList.toggle("fallback", fallback);
-  }
+  legendVehicleStatusController.updateLegendFallbackIndicators(Date.now());
 }
 
 function updateLegendGravityArrowIndicators() {
@@ -2260,74 +3035,70 @@ function updateLegendGravityArrowIndicators() {
 }
 
 function updateLegendVehicleViewButtons() {
-  const inBodyLock = observation.mode === OBSERVATION_MODES.BODY_LOCK;
-  const starshipAvailable = hasVisibleBodyState(LAUNCH_BODY_ID);
-  const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
+  const viewState = launchVehicleViewState();
 
   const starshipButton = legendVehicleViewButtonsByKey.starship;
   if (starshipButton) {
-    const active = inBodyLock
-      && selectedId === LAUNCH_BODY_ID
-      && launchVehicleViewPreference !== "booster";
-    starshipButton.disabled = !starshipAvailable;
-    starshipButton.classList.toggle("on", active);
-    starshipButton.setAttribute("aria-pressed", active ? "true" : "false");
+    starshipButton.disabled = !viewState.starshipViewAvailable;
+    starshipButton.classList.toggle("on", viewState.starshipActive);
+    starshipButton.setAttribute("aria-pressed", viewState.starshipActive ? "true" : "false");
   }
 
   const boosterButton = legendVehicleViewButtonsByKey.booster;
   if (boosterButton) {
-    const boosterViewAvailable = boosterDetachedAvailable || starshipAvailable;
-    const active = inBodyLock
-      && (
-        selectedId === LAUNCH_BOOSTER_BODY_ID
-        || (selectedId === LAUNCH_BODY_ID && launchVehicleViewPreference === "booster")
-      );
-    boosterButton.disabled = !boosterViewAvailable;
-    boosterButton.classList.toggle("on", active);
-    boosterButton.setAttribute("aria-pressed", active ? "true" : "false");
+    boosterButton.disabled = !viewState.boosterViewAvailable;
+    boosterButton.classList.toggle("on", viewState.boosterActive);
+    boosterButton.setAttribute("aria-pressed", viewState.boosterActive ? "true" : "false");
   }
   updateLegendBoosterFuelToggle();
   updateLegendTrajectoryToggle();
+  updateLegendFleetManager();
 }
 
 function missionControlVehicleViewState() {
-  const inBodyLock = observation.mode === OBSERVATION_MODES.BODY_LOCK;
-  const starshipAvailable = hasVisibleBodyState(LAUNCH_BODY_ID);
-  const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
-  const starshipViewAvailable = starshipAvailable;
-  const boosterViewAvailable = boosterDetachedAvailable || starshipAvailable;
-
-  const starshipActive = inBodyLock
-    && selectedId === LAUNCH_BODY_ID
-    && launchVehicleViewPreference !== "booster";
-  const boosterActive = inBodyLock
-    && (
-      selectedId === LAUNCH_BOOSTER_BODY_ID
-      || (selectedId === LAUNCH_BODY_ID && launchVehicleViewPreference === "booster")
-    );
-  const activeView = boosterActive ? "booster" : (starshipActive ? "starship" : "none");
-
-  let statusLine = "View standby. Select a vehicle to track.";
-  if (!starshipViewAvailable && !boosterViewAvailable) {
-    statusLine = "Vehicle views unavailable in current scene.";
-  } else if (!inBodyLock) {
-    statusLine = "View unlocked. Select Starship or Booster to lock camera tracking.";
-  } else if (activeView === "booster") {
-    statusLine = boosterDetachedAvailable
-      ? "Booster tracking active. Scene camera locked to detached booster."
-      : "Booster view armed. Tracking stacked booster until separation.";
-  } else if (activeView === "starship") {
-    statusLine = "Starship tracking active. Scene camera locked to launch vehicle.";
-  } else {
-    statusLine = "Select Starship or Booster to lock camera tracking.";
-  }
-
+  const viewState = launchVehicleViewState();
   return {
-    activeView,
-    boosterViewAvailable,
-    starshipViewAvailable,
-    statusLine,
+    activeView: viewState.activeView,
+    boosterViewAvailable: viewState.boosterViewAvailable,
+    starshipViewAvailable: viewState.starshipViewAvailable,
+    statusLine: viewState.statusLine,
   };
+}
+
+function missionControlFleetEntries(nowMs = Date.now()) {
+  const vehicleIds = listManageableTelemetryVehicleIds();
+  const entries = [];
+  for (let i = 0; i < vehicleIds.length; i += 1) {
+    const bodyId = vehicleIds[i];
+    const snapshot = launchFeatureEnabled
+      && launchController
+      && nBodyState?.initialized
+      && typeof launchController?.statusSnapshotForBody === "function"
+      ? (launchController.statusSnapshotForBody(nBodyState, bodyId, nowMs) || null)
+      : null;
+    const inferredKind = bodyId === LAUNCH_BOOSTER_BODY_ID
+      ? "booster"
+      : (
+        bodyId.startsWith("earth_refuel_tanker_")
+          ? "tanker"
+          : "starship"
+      );
+    entries.push({
+      bodyId,
+      vehicleName: String(snapshot?.vehicleName || metaById.get(bodyId)?.name || bodyId),
+      vehicleKind: String(snapshot?.vehicleKind || inferredKind),
+      missionName: String(snapshot?.missionName || "Mission"),
+      missionPhase: String(snapshot?.missionPhase || ""),
+      phaseLabel: String(snapshot?.phaseLabel || phaseLabelForLaunch(snapshot?.phase)),
+      stageName: String(snapshot?.stageName || ""),
+      guidanceMode: String(snapshot?.guidanceMode || snapshot?.autopilotMode || "n/a"),
+      altitudeKm: Number(snapshot?.altitudeKm),
+      speedKmS: Number(snapshot?.speedKmS),
+      tracked: String(selectedId || "") === bodyId,
+      selectable: hasVisibleBodyState(bodyId),
+    });
+  }
+  return entries;
 }
 
 function updateLegendBoosterFuelToggle() {
@@ -2416,7 +3187,25 @@ function setupLaunchMissionPicker() {
   if (!legendLaunchMissionSelect) {
     return;
   }
-  const profiles = launchController?.getMissionProfiles?.() || [];
+  const controllerProfiles = launchController?.getMissionProfiles?.() || [];
+  const mergedProfileById = new Map();
+  for (const profile of controllerProfiles) {
+    const id = String(profile?.id || "").trim();
+    if (!id) {
+      continue;
+    }
+    mergedProfileById.set(id, {
+      id,
+      name: String(profile?.name || id),
+      description: String(profile?.description || profile?.name || id),
+    });
+  }
+  for (const profile of REQUIRED_LAUNCH_MISSION_PROFILES) {
+    if (!mergedProfileById.has(profile.id)) {
+      mergedProfileById.set(profile.id, { ...profile });
+    }
+  }
+  const profiles = Array.from(mergedProfileById.values());
   const selectedProfile = launchController?.getMissionProfile?.() || null;
   const selectedId = selectedProfile?.id || "";
 
@@ -2438,11 +3227,33 @@ function setupLaunchMissionPicker() {
   if (legendLaunchMissionSelect.dataset.bound !== "true") {
     legendLaunchMissionSelect.addEventListener("change", () => {
       const selected = legendLaunchMissionSelect.value;
+      const active = Boolean(launchController?.isActive?.());
+      if (active) {
+        const selectedName = String(
+          legendLaunchMissionSelect.options?.[legendLaunchMissionSelect.selectedIndex]?.textContent
+          || selected
+          || "Mission",
+        ).trim() || "Mission";
+        appendLaunchLogEntry("info", {
+          name: "mission_selection_staged",
+          selectedMissionId: selected,
+          selectedMissionName: selectedName,
+        });
+        updateLaunchStatusPanel(
+          true,
+          `Mission staged for next launch stack: ${selectedName}. Active mission remains unchanged.`,
+        );
+        return;
+      }
       const applied = launchController?.setMissionProfile?.(selected);
-      if (!applied) {
+      if (!applied || String(applied.id || "") !== selected) {
+        if (applied?.id) {
+          legendLaunchMissionSelect.value = String(applied.id);
+        }
         appendLaunchLogEntry("error", {
           name: "mission_selection_rejected",
           selectedMissionId: selected,
+          resolvedMissionId: String(applied?.id || ""),
         });
         return;
       }
@@ -2457,17 +3268,264 @@ function setupLaunchMissionPicker() {
   }
 }
 
+function isLaunchTelemetryVehicleId(bodyId) {
+  return isLaunchTelemetryVehicleIdView(bodyId, {
+    launchBodyId: LAUNCH_BODY_ID,
+    launchBoosterBodyId: LAUNCH_BOOSTER_BODY_ID,
+  });
+}
+
+function activeLaunchTelemetryBodyId() {
+  return activeLaunchTelemetryBodyIdView({
+    selectedId,
+    launchVehicleViewPreference,
+    hasVisibleBodyState,
+    launchBodyId: LAUNCH_BODY_ID,
+    launchBoosterBodyId: LAUNCH_BOOSTER_BODY_ID,
+  });
+}
+
+function launchTelemetryVehicleSortKey(bodyId) {
+  const id = String(bodyId || "");
+  if (id === String(LAUNCH_BODY_ID)) {
+    return { bucket: 0, sequence: 0, id };
+  }
+  if (id === String(LAUNCH_BOOSTER_BODY_ID)) {
+    return { bucket: 1, sequence: 0, id };
+  }
+  if (id.startsWith("earth_mission_ship_")) {
+    const sequence = Number(id.match(/_(\d+)$/)?.[1]);
+    return {
+      bucket: 2,
+      sequence: Number.isFinite(sequence) ? sequence : Number.POSITIVE_INFINITY,
+      id,
+    };
+  }
+  if (id.startsWith("earth_refuel_tanker_")) {
+    const sequence = Number(id.match(/_(\d+)$/)?.[1]);
+    return {
+      bucket: 3,
+      sequence: Number.isFinite(sequence) ? sequence : Number.POSITIVE_INFINITY,
+      id,
+    };
+  }
+  return { bucket: 4, sequence: Number.POSITIVE_INFINITY, id };
+}
+
+function compareLaunchTelemetryVehicleIds(a, b) {
+  const keyA = launchTelemetryVehicleSortKey(a);
+  const keyB = launchTelemetryVehicleSortKey(b);
+  if (keyA.bucket !== keyB.bucket) {
+    return keyA.bucket - keyB.bucket;
+  }
+  if (keyA.sequence !== keyB.sequence) {
+    return keyA.sequence - keyB.sequence;
+  }
+  const labelA = String(metaById.get(String(a || ""))?.name || keyA.id);
+  const labelB = String(metaById.get(String(b || ""))?.name || keyB.id);
+  return labelA.localeCompare(labelB);
+}
+
+function listManageableTelemetryVehicleIds() {
+  const ids = [];
+  for (let i = 0; i < bodies.length; i += 1) {
+    const id = String(bodies[i]?.id || "");
+    if (!id || !isLaunchTelemetryVehicleId(id)) {
+      continue;
+    }
+    if (!hasVisibleBodyState(id)) {
+      continue;
+    }
+    ids.push(id);
+  }
+  ids.sort(compareLaunchTelemetryVehicleIds);
+  return ids;
+}
+
+function formatLaunchPhaseLabel(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function fleetVehicleOptionLabel(bodyId, nowMs = Date.now()) {
+  const id = String(bodyId || "");
+  const baseName = String(metaById.get(id)?.name || id);
+  if (!launchFeatureEnabled || !launchController || !nBodyState?.initialized) {
+    return baseName;
+  }
+  const snapshot = launchController.statusSnapshotForBody?.(nBodyState, id, nowMs) || null;
+  if (!snapshot) {
+    return baseName;
+  }
+  const phaseLabel = String(snapshot.missionPhase || snapshot.phase || "").trim();
+  if (!phaseLabel) {
+    return baseName;
+  }
+  return `${baseName} | ${formatLaunchPhaseLabel(phaseLabel)}`;
+}
+
+function focusManagedTelemetryVehicle(bodyId, moveCamera = true) {
+  const targetId = String(bodyId || "").trim();
+  if (!targetId || !metaById.has(targetId)) {
+    return false;
+  }
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+    setObservationMode(OBSERVATION_MODES.BODY_LOCK);
+  }
+  setSelected(targetId, moveCamera);
+  updateLaunchControls();
+  updateLaunchStatusPanel(true);
+  return true;
+}
+
+function cycleManagedTelemetryVehicle(direction = 1) {
+  if (!legendFleetVehicleSelect || legendFleetVehicleSelect.disabled) {
+    return;
+  }
+  const options = Array.from(legendFleetVehicleSelect.options);
+  if (options.length <= 0) {
+    return;
+  }
+  const currentValue = String(legendFleetVehicleSelect.value || "");
+  let index = options.findIndex((option) => option.value === currentValue);
+  if (index < 0) {
+    index = 0;
+  }
+  const nextIndex = (index + (direction >= 0 ? 1 : -1) + options.length) % options.length;
+  legendFleetVehicleSelect.value = options[nextIndex].value;
+  focusManagedTelemetryVehicle(options[nextIndex].value, true);
+}
+
+function updateLegendFleetManager() {
+  if (!legendFleetVehicleSelect) {
+    return;
+  }
+  const vehicleIds = listManageableTelemetryVehicleIds();
+  const selectedTelemetryId = isLaunchTelemetryVehicleId(selectedId) ? String(selectedId || "") : "";
+  const previousValue = String(legendFleetVehicleSelect.value || "");
+  let desiredValue = selectedTelemetryId || previousValue || (vehicleIds[0] || "");
+  if (!vehicleIds.includes(desiredValue)) {
+    desiredValue = vehicleIds[0] || "";
+  }
+
+  const existingValues = Array.from(legendFleetVehicleSelect.options).map((option) => option.value);
+  const optionsChanged = existingValues.length !== vehicleIds.length
+    || existingValues.some((value, index) => value !== vehicleIds[index]);
+  if (optionsChanged) {
+    legendFleetVehicleSelect.innerHTML = "";
+    const nowMs = Date.now();
+    for (let i = 0; i < vehicleIds.length; i += 1) {
+      const id = vehicleIds[i];
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = fleetVehicleOptionLabel(id, nowMs);
+      option.title = option.textContent;
+      legendFleetVehicleSelect.appendChild(option);
+    }
+  }
+
+  if (desiredValue && legendFleetVehicleSelect.value !== desiredValue) {
+    legendFleetVehicleSelect.value = desiredValue;
+  }
+
+  const hasVehicles = vehicleIds.length > 0;
+  legendFleetVehicleSelect.disabled = !hasVehicles;
+  if (legendFleetPreviousButton) {
+    legendFleetPreviousButton.disabled = !hasVehicles;
+  }
+  if (legendFleetNextButton) {
+    legendFleetNextButton.disabled = !hasVehicles;
+  }
+  if (legendFleetTrackButton) {
+    const currentValue = String(legendFleetVehicleSelect.value || "");
+    const trackingSelected = hasVehicles && currentValue && currentValue === String(selectedId || "");
+    legendFleetTrackButton.disabled = !hasVehicles;
+    legendFleetTrackButton.classList.toggle("on", trackingSelected);
+    legendFleetTrackButton.setAttribute("aria-pressed", trackingSelected ? "true" : "false");
+  }
+  if (legendFleetStatusNode) {
+    if (!hasVehicles) {
+      legendFleetStatusNode.textContent = "No active spacecraft in the scene.";
+    } else {
+      const activeId = String(legendFleetVehicleSelect.value || vehicleIds[0] || "");
+      const activeName = String(metaById.get(activeId)?.name || activeId);
+      legendFleetStatusNode.textContent = `${vehicleIds.length} active spacecraft | Selected: ${activeName}`;
+    }
+  }
+}
+
+async function ensureRuntimeCatalogBody(bodyMeta) {
+  return ensureRuntimeCatalogBodyView({
+    bodyMeta,
+    hasBody: (id) => metaById.has(id),
+    registerBody: (normalized) => {
+      bodies = [...bodies, normalized];
+      metaById.set(normalized.id, normalized);
+    },
+    createBodyVisual,
+    mountBodyVisual: (visual) => {
+      scene.add(visual.root);
+      bodyVisuals.set(visual.id, visual);
+    },
+    rebuildBodyLegend,
+    onError: (error, id) => {
+      console.warn(`[launch] Failed to create visual for runtime body ${id}.`, error);
+    },
+  });
+}
+
+function selectedTankerLaunchMode() {
+  const mode = String(legendTankerLaunchModeSelect?.value || "pad_launch").trim().toLowerCase();
+  return mode === "orbit_inject" ? "orbit_inject" : "pad_launch";
+}
+
+function selectedMissionLaunchMode() {
+  const mode = String(legendMissionLaunchModeSelect?.value || "pad_launch").trim().toLowerCase();
+  return mode === "orbit_inject" ? "orbit_inject" : "pad_launch";
+}
+
+function tankerLaunchRejectLabel(reason) {
+  const key = String(reason || "").trim().toLowerCase();
+  if (key === "pad_launch_only") {
+    return "Tankers must launch from Earth with a booster.";
+  }
+  if (key === "orbit_inject_unavailable") {
+    return "Orbit inject is currently unavailable.";
+  }
+  if (key === "earth_state_unavailable") {
+    return "Earth state unavailable for orbit inject.";
+  }
+  if (key === "earth_gravity_unavailable") {
+    return "Earth gravity model unavailable for orbit inject.";
+  }
+  if (key === "pad_launch_requires_idle_stack") {
+    return "Primary stack is in flight. Tankers launch from pad only.";
+  }
+  if (key === "tanker_pad_launch_already_active") {
+    return "A tanker pad launch is already in progress.";
+  }
+  if (key === "tanker_id_exhausted") {
+    return "No tanker IDs available.";
+  }
+  return key || "launch_not_allowed";
+}
+
 function setupLaunchControls() {
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
     launchReturnButton?.remove();
     launchResetButton?.remove();
+    launchDeleteButton?.remove();
+    launchTankerButton?.remove();
     missionControlScreenController.disableAndRemove();
     return;
   }
   setupLaunchMissionPicker();
   if (launchControlButton) {
-    launchControlButton.addEventListener("click", () => {
+    launchControlButton.addEventListener("click", async () => {
       if (launchModuleLoadError) {
         appendLaunchLogEntry("error", {
           name: "launch_command_rejected",
@@ -2484,17 +3542,51 @@ function setupLaunchControls() {
         updateLaunchStatusPanel(true, "Launch unavailable until startup seed is ready.");
         return;
       }
+      const selectedMissionId = legendLaunchMissionSelect?.value
+        || launchController.getMissionProfile?.()?.id
+        || "";
       if (launchController.isActive()) {
+        const missionLaunchMode = selectedMissionLaunchMode();
+        const launchResult = launchController.launchMissionShip?.(
+          nBodyState,
+          selectedMissionId,
+          Date.now(),
+          {
+            mode: missionLaunchMode,
+            orbitInjectAltitudeKm: 150,
+          },
+        );
+        if (!launchResult?.accepted) {
+          appendLaunchLogEntry("error", {
+            name: "fleet_mission_ship_launch_rejected",
+            reason: String(launchResult?.reason || "launch_not_allowed"),
+            missionId: selectedMissionId,
+            mode: missionLaunchMode,
+          });
+          updateLaunchStatusPanel(true, `Additional mission launch rejected: ${launchResult?.reason || "launch_not_allowed"}`);
+          updateLaunchControls();
+          return;
+        }
+        if (launchResult?.shipMeta) {
+          await ensureRuntimeCatalogBody(launchResult.shipMeta);
+        }
+        if (launchResult?.shipId) {
+          setSelected(launchResult.shipId, true);
+        }
         appendLaunchLogEntry("info", {
-          name: "launch_command_ignored",
-          reason: "launch_already_active",
+          name: "fleet_mission_ship_launch_requested",
+          shipId: launchResult.shipId,
+          missionId: launchResult.missionId || selectedMissionId,
+          missionPhase: launchResult.missionPhase || "",
+          launchMode: launchResult.launchMode || missionLaunchMode,
+          orbitInjectAltitudeKm: Number(launchResult.orbitInjectAltitudeKm) || null,
         });
-        updateLaunchStatusPanel(true, "Launch already active.");
         updateLaunchControls();
+        updateLaunchStatusPanel(true);
         return;
       }
-      if (legendLaunchMissionSelect?.value) {
-        launchController.setMissionProfile?.(legendLaunchMissionSelect.value);
+      if (selectedMissionId) {
+        launchController.setMissionProfile?.(selectedMissionId);
       }
       const started = launchController.startLaunch(nBodyState, Date.now());
       if (started) {
@@ -2551,13 +3643,69 @@ function setupLaunchControls() {
       updateLaunchStatusPanel(true);
     });
   }
+  launchVehicleDeleteController.bindControls();
+  if (launchTankerButton && launchTankerButton.dataset.bound !== "true") {
+    launchTankerButton.addEventListener("click", async () => {
+      if (launchModuleLoadError) {
+        appendLaunchLogEntry("error", {
+          name: "refuel_tanker_launch_rejected",
+          reason: launchModuleLoadError,
+        });
+        updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
+        return;
+      }
+      if (!launchController || !nBodyState?.initialized) {
+        appendLaunchLogEntry("error", {
+          name: "refuel_tanker_launch_rejected",
+          reason: "startup_seed_not_ready",
+        });
+        updateLaunchStatusPanel(true, "Tanker launch unavailable until startup seed is ready.");
+        return;
+      }
+      const tankerLaunchMode = selectedTankerLaunchMode();
+      const launchResult = launchController.launchRefuelTanker?.(
+        nBodyState,
+        Date.now(),
+        { mode: tankerLaunchMode },
+      );
+      if (!launchResult?.accepted) {
+        const rejectLabel = tankerLaunchRejectLabel(launchResult?.reason);
+        appendLaunchLogEntry("error", {
+          name: "refuel_tanker_launch_rejected",
+          reason: String(launchResult?.reason || "launch_not_allowed"),
+          mode: tankerLaunchMode,
+        });
+        updateLaunchStatusPanel(true, `Tanker launch rejected: ${rejectLabel}`);
+        return;
+      }
+      if (launchResult?.tankerMeta) {
+        await ensureRuntimeCatalogBody(launchResult.tankerMeta);
+      }
+      appendLaunchLogEntry("info", {
+        name: "refuel_tanker_launch_requested",
+        tankerId: launchResult.tankerId,
+        mode: launchResult.mode || "rendezvous",
+        requestedMode: tankerLaunchMode,
+        transferKg: launchResult.transferKg,
+        completedFlights: launchResult.completedFlights,
+        requiredFlights: launchResult.requiredFlights,
+      });
+      updateLaunchControls();
+      updateLaunchStatusPanel(true);
+    });
+    launchTankerButton.dataset.bound = "true";
+  }
   missionControlScreenController.bindControls((isVisible) => {
     if (isVisible) {
       const viewState = missionControlVehicleViewState();
-      const preferredView = viewState.activeView === "booster"
-        ? "booster"
-        : (launchVehicleViewPreference === "booster" ? "booster" : "starship");
-      focusLegendVehicleView(preferredView);
+      if (viewState.starshipViewAvailable) {
+        focusLegendVehicleView("starship");
+      } else if (!isLaunchTelemetryVehicleId(selectedId)) {
+        const preferredView = viewState.activeView === "booster"
+          ? "booster"
+          : (launchVehicleViewPreference === "booster" ? "booster" : "starship");
+        focusLegendVehicleView(preferredView);
+      }
     }
     updateLaunchStatusPanel(true);
   });
@@ -2574,8 +3722,8 @@ function updateLaunchControls() {
   }
   const initialized = Boolean(launchController && nBodyState?.initialized);
   const active = Boolean(launchController?.isActive());
-  launchControlButton.textContent = "Launch";
-  launchControlButton.disabled = active;
+  launchControlButton.textContent = active ? "Launch +1 Stack" : "Launch";
+  launchControlButton.disabled = !initialized || Boolean(launchModuleLoadError);
   launchControlButton.classList.toggle("on", active);
   launchControlButton.setAttribute("aria-pressed", active ? "true" : "false");
   if (launchReturnButton) {
@@ -2593,10 +3741,24 @@ function updateLaunchControls() {
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
   }
+  launchVehicleDeleteController.syncButtonState({ initialized });
+  if (launchTankerButton) {
+    const canLaunchTanker = Boolean(
+      launchController
+      && initialized
+      && !launchModuleLoadError,
+    );
+    launchTankerButton.disabled = !canLaunchTanker;
+    launchTankerButton.classList.toggle("on", canLaunchTanker);
+    launchTankerButton.setAttribute("aria-pressed", canLaunchTanker ? "true" : "false");
+    if (legendTankerLaunchModeSelect) {
+      legendTankerLaunchModeSelect.disabled = !canLaunchTanker;
+    }
+  }
   missionControlScreenController.syncButtonState();
   if (legendLaunchMissionSelect) {
     const selectedMissionId = launchController?.getMissionProfile?.()?.id || "";
-    if (selectedMissionId && legendLaunchMissionSelect.value !== selectedMissionId) {
+    if (!active && selectedMissionId && legendLaunchMissionSelect.value !== selectedMissionId) {
       legendLaunchMissionSelect.value = selectedMissionId;
     }
     legendLaunchMissionSelect.disabled = !launchController || legendLaunchMissionSelect.options.length <= 0;
@@ -2615,6 +3777,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const nowMs = Date.now();
   const launchActive = Boolean(launchController?.isActive());
   const viewState = missionControlVehicleViewState();
+  const fleetEntries = missionControlFleetEntries(nowMs);
   const minIntervalMs = launchActive ? 120 : 1000;
   if (!force && nowMs - lastLaunchStatusRenderMs < minIntervalMs) {
     return;
@@ -2625,20 +3788,23 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
       ? `Launch module load error: ${launchModuleLoadError}`
       : "Launch controller unavailable.");
     updateLaunchMissionControlPanel(null, false);
-    missionControlScreenController.render(null, false, launchEventLogEntries, lastLaunchEventSummary, viewState);
+    missionControlScreenController.render(null, false, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
     return;
   }
-  const snapshot = launchController.statusSnapshot();
+  const telemetryBodyId = activeLaunchTelemetryBodyId();
+  const snapshot = launchController.statusSnapshotForBody?.(nBodyState, telemetryBodyId, nowMs)
+    || launchController.statusSnapshot();
+  updateLegendFallbackIndicators();
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
     updateLaunchMissionControlPanel(null, launchActive);
-    missionControlScreenController.render(null, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState);
+    missionControlScreenController.render(null, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
     return;
   }
   if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(snapshot.speedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
     updateLaunchMissionControlPanel(snapshot, launchActive);
-    missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState);
+    missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
     return;
   }
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
@@ -2657,11 +3823,26 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const rcsLine = snapshot.rcsActive
     ? ` | RCS ${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 0)}% [${Array.isArray(snapshot.rcsJets) && snapshot.rcsJets.length > 0 ? snapshot.rcsJets.join(",") : "active"}]`
     : "";
-  const boosterLine = snapshot.boosterPhase
+  const boosterLine = snapshot.bodyId === LAUNCH_BODY_ID && snapshot.boosterPhase
     ? ` | Booster ${snapshot.boosterPhase}${Number.isFinite(snapshot.boosterAltitudeKm) ? ` ${formatNumber(snapshot.boosterAltitudeKm, 2)} km` : ""}`
     : "";
   const missionLine = snapshot.missionName
     ? ` | Mission ${snapshot.missionName}${snapshot.missionPhase ? ` (${snapshot.missionPhase})` : ""}${snapshot.missionCompleted ? " [complete]" : ""}`
+    : "";
+  const transferProgressPct = Number.isFinite(Number(snapshot.refuelTransferProgress))
+    ? Number(snapshot.refuelTransferProgress) * 100
+    : Number.NaN;
+  const transferRateKgS = Number(snapshot.refuelTransferRateKgS);
+  const transferRemainingKg = Number(snapshot.refuelTransferRemainingKg);
+  const transferTankerId = String(snapshot.refuelTransferTankerId || "").trim();
+  const transferLine = Boolean(snapshot.refuelTransferActive)
+    ? ` | Fueling ${Number.isFinite(transferProgressPct) ? `${formatNumber(transferProgressPct, 1)}%` : "active"}${Number.isFinite(transferRateKgS) ? ` @ ${formatNumber(transferRateKgS, 1)} kg/s` : ""}${Number.isFinite(transferRemainingKg) ? ` rem ${formatNumber(transferRemainingKg, 0)} kg` : ""}${transferTankerId ? ` [${transferTankerId}]` : ""}`
+    : (Boolean(snapshot.refuelUndockActive) ? " | Undocking sequence active" : "");
+  const refuelMissionVisible = snapshot.missionId === "moon_orbit_return"
+    || snapshot.missionId === "orbital_refuel_demo"
+    || snapshot.missionPhase === "orbital_refuel";
+  const refuelLine = refuelMissionVisible
+    ? ` | Refuel ${Number(snapshot.refuelCompletedFlights) || 0}/${Number(snapshot.refuelRequiredFlights) || 0}${Number.isFinite(Number(snapshot.refuelFillFraction)) ? ` (${formatNumber(Number(snapshot.refuelFillFraction) * 100, 1)}%)` : ""}${snapshot.refuelCanLaunchTanker ? " [launch window]" : ""} | Tankers available ${Math.max(0, Number(snapshot.refuelAvailableTankers) || Number(snapshot.refuelActiveFlights) || Number(snapshot.refuelAtSlotTankers) || 0)} (online ${Math.max(0, Number(snapshot.refuelOnlineTankers) || 0)})${transferLine}`
     : "";
   const targetBodyName = String(snapshot.targetBodyName || "").trim();
   const targetDistanceKm = Number(snapshot.targetDistanceKm);
@@ -2678,9 +3859,10 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const eventLine = lastLaunchEventSummary
     ? ` | Event ${lastLaunchEventSummary}${Number.isFinite(eventAgeSeconds) ? ` (${formatNumber(eventAgeSeconds, 1)}s ago)` : ""}`
     : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}% | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
+  const trackingLine = snapshot.vehicleName ? ` | Tracking ${snapshot.vehicleName}` : "";
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}%${trackingLine} | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${refuelLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
   updateLaunchMissionControlPanel(snapshot, launchActive);
-  missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState);
+  missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
 }
 
 function phaseLabelForLaunch(phase) {
@@ -3014,6 +4196,18 @@ function updateLaunchTrajectoryPath(snapshot) {
   });
 }
 
+function ensureRefuelTransferVisual() {
+  return refuelTransferVisualController.ensureRefuelTransferVisual();
+}
+
+function hideRefuelTransferVisual() {
+  refuelTransferVisualController.hideRefuelTransferVisual();
+}
+
+function updateRefuelTransferVisual() {
+  refuelTransferVisualController.updateRefuelTransferVisual();
+}
+
 function updateLaunchVehicleVisuals() {
   if (!launchFeatureEnabled) {
     return;
@@ -3083,11 +4277,22 @@ function updateLaunchVehicleVisuals() {
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
   const launchActive = Boolean(launchController?.isActive());
   const guidanceMode = String(snapshot?.guidanceMode || "").toLowerCase();
+  const refuelDockingVisual = Boolean(
+    snapshot?.refuelTransferActive
+    || snapshot?.refuelUndockActive
+    || guidanceMode.includes("rcs-dock")
+    || guidanceMode.includes("rcs-fuel-lock"),
+  );
+  const dockingLock = refuelDockingVisualLockForBody(LAUNCH_BODY_ID, snapshot);
   const forceVerticalVisual =
     !launchActive
-    || guidanceMode.includes("vertical");
+    || guidanceMode.includes("vertical")
+    || refuelDockingVisual
+    || Boolean(dockingLock);
   let targetDirection = upScene || prograde || defaultAxis;
-  if (!forceVerticalVisual && upScene && prograde) {
+  if (dockingLock?.directionScene) {
+    targetDirection = dockingLock.directionScene;
+  } else if (!forceVerticalVisual && upScene && prograde) {
     const altitudeKm = Number(snapshot?.altitudeKm) || 0;
     const speedBlend = clamp((speed - 0.35) / 1.8, 0, 1);
     const altitudeBlend = clamp((altitudeKm - 1.2) / 12, 0, 1);
@@ -3105,7 +4310,11 @@ function updateLaunchVehicleVisuals() {
 
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
-    visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
+    if (dockingLock?.hardLock) {
+      visual.tiltGroup.quaternion.copy(targetQuaternion);
+    } else {
+      visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
+    }
   }
   const heatEligible = reentryHeatEligibleForLaunchState(LAUNCH_BODY_ID, snapshot);
   if (!heatEligible) {
@@ -3207,6 +4416,173 @@ function updateBoosterVehicleVisuals() {
   } else {
     const reentryHeatTarget = computeReentryHeatTargetForBody(LAUNCH_BOOSTER_BODY_ID, snapshot);
     applyReentryHeatToVisual(visual, reentryHeatTarget);
+  }
+}
+
+function isFleetSpacecraftVisualId(bodyId) {
+  const id = String(bodyId || "");
+  return id.startsWith("earth_refuel_tanker_") || id.startsWith("earth_mission_ship_");
+}
+
+function resolveFleetVisualStageIndex(bodyId, snapshot) {
+  const isTanker = String(bodyId || "").startsWith("earth_refuel_tanker_")
+    || String(snapshot?.vehicleKind || "").toLowerCase() === "tanker";
+  const isMissionShip = String(bodyId || "").startsWith("earth_mission_ship_")
+    || String(snapshot?.vehicleKind || "").toLowerCase() === "starship";
+  const launchMode = String(snapshot?.launchMode || "").trim().toLowerCase();
+  const orbitInjectedMissionShip = isMissionShip && launchMode === "orbit_inject";
+  const rawStageIndex = Number(snapshot?.stageIndex);
+  const baseStageIndex = Number.isFinite(rawStageIndex)
+    ? rawStageIndex
+    : (isTanker ? 1 : 0);
+  if (orbitInjectedMissionShip) {
+    return 1;
+  }
+  if (!isTanker) {
+    return baseStageIndex;
+  }
+  const missionPhase = String(snapshot?.missionPhase || "").toLowerCase();
+  const altitudeKm = Number(snapshot?.altitudeKm);
+  const orbitalMissionPhase = (
+    missionPhase === "orbital_hold"
+    || missionPhase === "earth_orbit_hold"
+    || missionPhase === "orbital_refuel"
+    || missionPhase === "tli_burn"
+    || missionPhase === "coast_to_moon"
+    || missionPhase === "lunar_capture"
+    || missionPhase === "lunar_orbit_hold"
+  );
+  const clearlyOrbitalAltitude = Number.isFinite(altitudeKm) && altitudeKm >= 120;
+  return (orbitalMissionPhase || clearlyOrbitalAltitude)
+    ? 1
+    : baseStageIndex;
+}
+
+function updateFleetSpacecraftVisuals() {
+  if (!launchFeatureEnabled || !THREE_NS || typeof launchController?.statusSnapshotForBody !== "function") {
+    return;
+  }
+
+  const nowMs = Date.now();
+  const earthCoordsKm = runtimeCoordsOrLiveById("earth");
+  const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
+  const earthVelocityFinite = finiteVectorKm(earthVelocityKmS);
+  const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
+
+  for (const [bodyId, visual] of bodyVisuals.entries()) {
+    if (!isFleetSpacecraftVisualId(bodyId) || !visual?.launchStackState) {
+      continue;
+    }
+
+    const snapshot = launchController.statusSnapshotForBody?.(nBodyState, bodyId, nowMs) || null;
+    const stageIndex = resolveFleetVisualStageIndex(bodyId, snapshot);
+    applyStarshipVisualStageFn?.(visual.launchStackState, stageIndex, snapshot);
+
+    if (!visual.root?.visible || !visual.tiltGroup?.quaternion || !snapshot) {
+      applyReentryHeatToVisual(visual, 0, true);
+      continue;
+    }
+
+    const vehicleVelocityKmS = runtimeVelocityKmSOrLiveById(bodyId);
+    if (!finiteVectorKm(vehicleVelocityKmS)) {
+      applyReentryHeatToVisual(visual, 0);
+      continue;
+    }
+
+    const relVelocityKmS = earthVelocityFinite
+      ? {
+          x: (Number(vehicleVelocityKmS.x) || 0) - (Number(earthVelocityKmS.x) || 0),
+          y: (Number(vehicleVelocityKmS.y) || 0) - (Number(earthVelocityKmS.y) || 0),
+          z: (Number(vehicleVelocityKmS.z) || 0) - (Number(earthVelocityKmS.z) || 0),
+        }
+      : vehicleVelocityKmS;
+    const velocityScene = new THREE_NS.Vector3(
+      Number(relVelocityKmS.x) || 0,
+      Number(relVelocityKmS.z) || 0,
+      Number(relVelocityKmS.y) || 0,
+    );
+    if (!vector3Finite(velocityScene)) {
+      applyReentryHeatToVisual(visual, 0);
+      continue;
+    }
+
+    const speed = velocityScene.length();
+    const prograde = speed > 1e-12 ? velocityScene.clone().multiplyScalar(1 / speed) : null;
+
+    const vehicleCoordsKm = runtimeCoordsOrLiveById(bodyId);
+    let upScene = null;
+    if (finiteVectorKm(vehicleCoordsKm) && finiteVectorKm(earthCoordsKm)) {
+      const up = new THREE_NS.Vector3(
+        (Number(vehicleCoordsKm.x) || 0) - (Number(earthCoordsKm.x) || 0),
+        (Number(vehicleCoordsKm.z) || 0) - (Number(earthCoordsKm.z) || 0),
+        (Number(vehicleCoordsKm.y) || 0) - (Number(earthCoordsKm.y) || 0),
+      );
+      const upLength = up.length();
+      if (upLength > 1e-12) {
+        upScene = up.multiplyScalar(1 / upLength);
+      }
+    }
+
+    const guidanceMode = String(snapshot?.guidanceMode || snapshot?.autopilotMode || "").toLowerCase();
+    const stageName = String(snapshot?.stageName || "").toLowerCase();
+    const launchMode = String(snapshot?.launchMode || "").toLowerCase();
+    const isTanker = String(snapshot?.vehicleKind || "").toLowerCase() === "tanker"
+      || stageName.includes("tanker")
+      || String(bodyId).startsWith("earth_refuel_tanker_");
+    const isMissionShip = String(snapshot?.vehicleKind || "").toLowerCase() === "starship"
+      || String(bodyId).startsWith("earth_mission_ship_");
+    const forceHorizontalInjectVisual = isMissionShip
+      && launchMode === "orbit_inject";
+    const dockingLock = refuelDockingVisualLockForBody(bodyId, snapshot);
+    const forceVerticalVisual = Boolean(
+      dockingLock
+      || (
+      isTanker && (
+        snapshot?.rcsActive
+        || guidanceMode.includes("rcs-")
+        || guidanceMode.includes("orbital-refuel")
+      )
+      )
+    );
+
+    let targetDirection = upScene || prograde || defaultAxis;
+    if (dockingLock?.directionScene) {
+      targetDirection = dockingLock.directionScene;
+    } else if (forceHorizontalInjectVisual && prograde) {
+      targetDirection = prograde;
+    } else if (forceVerticalVisual && upScene) {
+      targetDirection = upScene;
+    } else if (upScene && prograde) {
+      const altitudeKm = Number(snapshot?.altitudeKm) || 0;
+      const blend = clamp((altitudeKm - 2) / 42, 0, 1) * clamp((speed - 0.03) / 0.6, 0, 1);
+      targetDirection = safeNormalizeSceneDirection(
+        upScene
+          .clone()
+          .multiplyScalar(1 - blend)
+          .add(prograde.clone().multiplyScalar(blend)),
+        upScene,
+      );
+    }
+
+    const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
+    if (targetQuaternion) {
+      if (dockingLock?.hardLock) {
+        visual.tiltGroup.quaternion.copy(targetQuaternion);
+      } else {
+        const alignAlpha = forceHorizontalInjectVisual
+          ? 0.46
+          : (forceVerticalVisual ? 0.3 : 0.18);
+        visual.tiltGroup.quaternion.slerp(targetQuaternion, alignAlpha);
+      }
+    }
+
+    const heatEligible = reentryHeatEligibleForLaunchState(bodyId, snapshot);
+    if (!heatEligible) {
+      applyReentryHeatToVisual(visual, 0, true);
+    } else {
+      const reentryHeatTarget = computeReentryHeatTargetForBody(bodyId, snapshot);
+      applyReentryHeatToVisual(visual, reentryHeatTarget);
+    }
   }
 }
 
@@ -3402,6 +4778,8 @@ async function createSpacecraftVisual(body) {
     : Math.max((Number(body?.radius_km) || 0.0045) * DISTANCE_SCALE, 1e-8);
   const isLaunchVehicle = body?.id === LAUNCH_BODY_ID;
   const isLaunchBooster = body?.id === LAUNCH_BOOSTER_BODY_ID;
+  const isRefuelTanker = String(body?.id || "").startsWith("earth_refuel_tanker_");
+  const isMissionShip = String(body?.id || "").startsWith("earth_mission_ship_");
   const root = new THREE_NS.Object3D();
   const tiltGroup = new THREE_NS.Object3D();
   const spinGroup = new THREE_NS.Object3D();
@@ -3438,7 +4816,11 @@ async function createSpacecraftVisual(body) {
     spinGroup.add(fallbackMesh);
   }
   if (stack?.state) {
-    applyStarshipVisualStageFn?.(stack.state, 0);
+    const initialSnapshot = typeof launchController?.statusSnapshotForBody === "function"
+      ? (launchController.statusSnapshotForBody(nBodyState, body?.id, Date.now()) || null)
+      : null;
+    const initialStageIndex = resolveFleetVisualStageIndex(body?.id, initialSnapshot);
+    applyStarshipVisualStageFn?.(stack.state, initialStageIndex, initialSnapshot);
   }
 
   const lod = {
@@ -3473,9 +4855,15 @@ async function createSpacecraftVisual(body) {
     ringMode: "none",
     mapSource: isLaunchBooster
       ? "inline_super_heavy_booster_geometry"
-      : (stackSource
-        ? `${stackSource}${stackResolution ? ` (${stackResolution})` : ""}`
-        : (isInlineStack ? "inline_starship_booster_geometry" : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"))),
+        : (stackSource
+          ? `${stackSource}${stackResolution ? ` (${stackResolution})` : ""}`
+          : (isInlineStack
+          ? (
+            isRefuelTanker
+              ? "inline_starship_tanker_geometry"
+              : (isMissionShip ? "inline_starship_mission_geometry" : "inline_starship_booster_geometry")
+          )
+          : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"))),
     launchStackState: isLaunchVehicle ? (stack?.state || null) : null,
     boosterVisualState: isLaunchBooster ? (stack?.state || null) : null,
     extraMaterials: stack?.materials || [],
@@ -7982,6 +9370,9 @@ function animate(timestampMs = 0) {
       runFrameTaskSafely("launch-status", () => {
         updateLaunchStatusPanel();
       });
+      runFrameTaskSafely("launch-persistence", () => {
+        persistLaunchRuntimeState(nowMs);
+      });
     }
     runFrameTaskSafely("body-spins", () => {
       updatePrimeMeridianSpins(nowMs, deltaSeconds);
@@ -7992,6 +9383,12 @@ function animate(timestampMs = 0) {
       });
       runFrameTaskSafely("booster-visuals", () => {
         updateBoosterVehicleVisuals();
+      });
+      runFrameTaskSafely("fleet-spacecraft-visuals", () => {
+        updateFleetSpacecraftVisuals();
+      });
+      runFrameTaskSafely("refuel-transfer-visual", () => {
+        updateRefuelTransferVisual();
       });
     }
     runFrameTaskSafely("eclipse-uniforms", () => {
@@ -8193,6 +9590,7 @@ function initializeInfoPanelControls() {
 }
 
 initializeLegendPanelControls();
+initializeLegendSectionControls();
 initializeInfoPanelControls();
 
 function updateInfoOverlay() {
@@ -8205,14 +9603,15 @@ function updateInfoOverlay() {
   const meta = metaById.get(detailBodyId);
   const live = positionsById.get(detailBodyId);
   const visual = bodyVisuals.get(detailBodyId);
-  if (!meta || !live || !visual) {
+  const runtimeCoords = runtimeCoordsKmById.get(detailBodyId) || null;
+  if (!meta || !visual || (!live && !runtimeCoords)) {
     infoCard.classList.remove("visible");
     infoCard.innerHTML = "";
     return;
   }
 
   const cameraDistance = camera.position.distanceTo(visual.root.position);
-  const coords = runtimeCoordsKmById.get(detailBodyId) || live.coordinates_km || null;
+  const coords = runtimeCoords || live?.coordinates_km || null;
   const sunCoords = runtimeCoordsKmById.get("sun") || positionsById.get("sun")?.coordinates_km || null;
   const hasCoords =
     Boolean(coords) &&
@@ -8234,7 +9633,11 @@ function updateInfoOverlay() {
   const semimajor = meta.semimajor_axis_km;
   const parent = meta.parent || "sun";
   const description = meta.description || "n/a";
-  const sourceError = live.source_error ? ` (${live.source_error})` : "";
+  const sourceLabel = String(
+    live?.source
+    || (isLaunchTelemetryVehicleId(meta.id) ? "SIMULATED" : "n/a"),
+  );
+  const sourceError = live?.source_error ? ` (${live.source_error})` : "";
   const observationModeLabel =
     observation.mode === OBSERVATION_MODES.SURFACE
       ? "Surface Observer"
@@ -8301,8 +9704,12 @@ function updateInfoOverlay() {
   const dominantGravityMS2 = Number.isFinite(gravity?.dominantContributionMS2)
     ? gravity.dominantContributionMS2
     : null;
-  const launchSnapshot = launchFeatureEnabled && (meta.id === LAUNCH_BODY_ID || meta.id === LAUNCH_BOOSTER_BODY_ID)
-    ? (launchController?.statusSnapshot() || null)
+  const launchSnapshot = launchFeatureEnabled && isLaunchTelemetryVehicleId(meta.id)
+    ? (
+      launchController?.statusSnapshotForBody?.(nBodyState, meta.id, Date.now())
+      || launchController?.statusSnapshot?.()
+      || null
+    )
     : null;
   const launchDurationLabel = launchSnapshot?.phase === "complete"
     ? "Full Mission Duration"
@@ -8333,9 +9740,12 @@ function updateInfoOverlay() {
     `;
   }
 
-  if (meta.id === LAUNCH_BODY_ID || meta.id === LAUNCH_BOOSTER_BODY_ID) {
+  if (isLaunchTelemetryVehicleId(meta.id)) {
     const isBoosterSelected = meta.id === LAUNCH_BOOSTER_BODY_ID;
-    const selectedVehicleLabel = isBoosterSelected ? "Booster" : "Starship";
+    const isTankerSelected = String(meta.id || "").startsWith("earth_refuel_tanker_");
+    const selectedVehicleLabel = isBoosterSelected
+      ? "Booster"
+      : (isTankerSelected ? "Tanker" : "Starship");
     const missionElapsedLine = launchSnapshot
       ? `${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}`
       : "Mission Elapsed: n/a";
@@ -8352,6 +9762,12 @@ function updateInfoOverlay() {
       : "n/a";
     const starshipThrustLine = Number.isFinite(launchSnapshot?.thrustN)
       ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN @ ${Number.isFinite(launchSnapshot?.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}`
+      : "n/a";
+    const tankerRcsOrbitCorrectionLine = Number.isFinite(launchSnapshot?.rcsOrbitCorrectionForceN)
+      ? `${formatNumber(Math.max(0, Number(launchSnapshot.rcsOrbitCorrectionForceN) || 0) / 1_000_000, 6)} MN`
+      : "n/a";
+    const tankerRcsOrbitAccelLine = Number.isFinite(launchSnapshot?.rcsOrbitCorrectionAccelKmS2)
+      ? `${formatNumber(Math.max(0, Number(launchSnapshot.rcsOrbitCorrectionAccelKmS2) || 0) * 1000, 6)} m/s²`
       : "n/a";
     const starshipOrbitLine = `${Number.isFinite(launchSnapshot?.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot?.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}`;
     const targetBodyName = String(launchSnapshot?.targetBodyName || "").trim() || "n/a";
@@ -8416,6 +9832,16 @@ function updateInfoOverlay() {
         <p class="line launch-line">Lateral Closing Speed: ${boosterLaunchSiteClosingLine}</p>
         <p class="line launch-line">Landed: ${launchSnapshot?.boosterLanded ? "yes" : "no"}</p>
       `;
+    } else if (isTankerSelected) {
+      selectedVehicleLines = `
+        <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
+        <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
+        <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
+        <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
+        <p class="line launch-line">RCS Orbit Correction: ${tankerRcsOrbitCorrectionLine} | Accel: ${tankerRcsOrbitAccelLine}</p>
+        <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
+        <p class="line launch-line">Target: ${targetBodyName} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+      `;
     } else {
       selectedVehicleLines = `
         <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
@@ -8431,7 +9857,7 @@ function updateInfoOverlay() {
 
     const launchTelemetryContent = `
       <p class="line">Observation Mode: ${observationModeLabel}</p>
-      <p class="line">Data Source: ${live.source}${sourceError}</p>
+      <p class="line">Data Source: ${sourceLabel}${sourceError}</p>
       <p class="line">Mission: ${launchSnapshot?.missionName || "n/a"} | Phase: ${launchSnapshot?.missionPhase || "n/a"} | Complete: ${launchSnapshot?.missionCompleted ? "yes" : "no"}</p>
       <p class="line launch-line">${missionElapsedLine}</p>
       <p class="line launch-line">Launch Site: ${launchSnapshot?.launchSiteName || "n/a"}</p>
@@ -8482,7 +9908,7 @@ function updateInfoOverlay() {
   const bodyInfoContent = `
     <p class="line">Type: ${meta.body_type}</p>
     <p class="line">Parent Body: ${parent}</p>
-    <p class="line">Data Source: ${live.source}${sourceError}</p>
+    <p class="line">Data Source: ${sourceLabel}${sourceError}</p>
     ${atmospherePhysicsLine}
     <p class="line">Observation Mode: ${observationModeLabel}</p>
     <p class="line">Observer Preset: ${observerLabel}</p>

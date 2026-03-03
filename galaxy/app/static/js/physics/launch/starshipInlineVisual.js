@@ -1244,9 +1244,16 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
   if (!stageState?.shipGroup) return;
 
   const stageTwoActive = Number.isFinite(stageIndex) && stageIndex >= 1;
-  const detached = snapshot && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive")
-    ? Boolean(snapshot.boosterActive)
-    : stageTwoActive;
+  const snapshotBodyId = String(snapshot?.bodyId || "");
+  const fleetVehicle = snapshotBodyId.startsWith("earth_mission_ship_")
+    || snapshotBodyId.startsWith("earth_refuel_tanker_");
+  const detached = fleetVehicle
+    ? stageTwoActive
+    : (
+      snapshot && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive")
+        ? Boolean(snapshot.boosterActive)
+        : stageTwoActive
+    );
 
   if (stageState.boosterGroup) stageState.boosterGroup.visible = !detached;
 
@@ -1254,6 +1261,34 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
     stageState.shipGroup.position.y = detached
       ? stageState.detachedShipCenterY
       : stageState.fullShipCenterY;
+  }
+
+  // Ship main engines (used by mission ships/tankers during powered phases).
+  const shipPlumes = stageState.shipMainEnginePlumes;
+  if (shipPlumes) {
+    const phase = String(snapshot?.phase || "").toLowerCase();
+    const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
+    const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
+    const shipPowered = phase === "powered" && thrustN > 0.01 && detached;
+    setEnginePlumeVisual(shipPlumes, shipPowered, throttle, 1, {
+      pressurePa: Number(snapshot?.pressurePa) || 0,
+      phaseScale: 1,
+    });
+  }
+
+  // Ship RCS jets (critical for tanker orbit-hold and docking visuals).
+  const shipRcsJets = stageState.shipRcsJets;
+  if (shipRcsJets) {
+    const requestedJets = Array.isArray(snapshot?.rcsJets) ? snapshot.rcsJets : [];
+    const rcsActive = Boolean(snapshot?.rcsActive) && requestedJets.length > 0;
+    const authority = clamp(Number(snapshot?.rcsAuthority) || 0, 0, 1);
+    updateRcsJetVisuals(
+      shipRcsJets,
+      requestedJets,
+      rcsActive,
+      authority,
+      20,
+    );
   }
 }
 

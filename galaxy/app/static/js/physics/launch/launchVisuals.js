@@ -1466,9 +1466,16 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
     return;
   }
   const stageTwoActive = Number.isFinite(stageIndex) && stageIndex >= 1;
-  const detached = snapshot && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive")
-    ? Boolean(snapshot.boosterActive)
-    : stageTwoActive;
+  const snapshotBodyId = String(snapshot?.bodyId || "");
+  const fleetVehicle = snapshotBodyId.startsWith("earth_mission_ship_")
+    || snapshotBodyId.startsWith("earth_refuel_tanker_");
+  const detached = fleetVehicle
+    ? stageTwoActive
+    : (
+      snapshot && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive")
+        ? Boolean(snapshot.boosterActive)
+        : stageTwoActive
+    );
   if (stageState.boosterGroup) {
     stageState.boosterGroup.visible = !detached;
   }

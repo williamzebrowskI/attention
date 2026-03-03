@@ -7,6 +7,7 @@ import {
   LAUNCH_BOOSTER_META,
   LAUNCH_BODY_ID,
   LAUNCH_BODY_META,
+  LAUNCH_REFUEL_TANKER_METAS,
   LAUNCH_INITIAL_MASS_KG,
   LAUNCH_RCS_CONFIG,
   LAUNCH_SITE,
@@ -23,7 +24,7 @@ import {
   LAUNCH_MISSION_PROFILES,
   missionProfileById,
   normalizeMissionId,
-} from "./launchMissions.js";
+} from "./launchMissions.js?v=20260302n";
 import {
   applyEarthSurfaceContactForVehicle,
   sampleEarthSurfaceAtRelativePosition,
@@ -85,8 +86,28 @@ import {
   startHotstageSequence,
   updateHotstageGates,
 } from "./hotstageLogic.js";
+import {
+  createLaunchRefuelController,
+  computeRefuelFillFraction,
+  refuelDefaults,
+  resolveRefuelTargetKg,
+} from "./launchRefuel.js";
+import { isFlightDockingEligible } from "./refuel/availability.js";
+import {
+  buildVehicleStatusSnapshot,
+  tankerMetaForId,
+} from "./launchVehicleTelemetry.js";
+import { createLaunchFleetController } from "./launchFleetController.js";
+import {
+  createNavigationSystem,
+  NAVIGATION_SYSTEM_MODES,
+} from "../navigation_system/index.js";
 
 const MIN_ROCKET_MASS_KG = 500;
+const PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM = 145;
+const PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM = 150;
+const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
+const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
 
 function fallbackAxes() {
   return {
@@ -109,6 +130,10 @@ function sanitizeAxes(rawAxes) {
 
 function stageAtIndex(stageIndex) {
   return LAUNCH_VEHICLE_CONFIG.stages[stageIndex] || null;
+}
+
+function stage2PropellantCapacityKg() {
+  return Math.max(0, Number(stageAtIndex(1)?.propellantMassKg) || 0);
 }
 
 function stageReservePropellantKg(stageIndex) {
@@ -496,6 +521,14 @@ function telemetryFromState({
   const vehicleAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
     ? centerAltitudeAboveTerrainKm - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM
     : null;
+  const refuelTargetPropellantKg = resolveRefuelTargetKg(
+    runtime.refuel,
+    stage2PropellantCapacityKg(),
+  );
+  const refuelFillFraction = computeRefuelFillFraction(
+    runtime.stagePropellantKg,
+    refuelTargetPropellantKg,
+  );
   return {
     phase: runtime.phase,
     elapsedSeconds: runtime.elapsedSeconds,
@@ -516,6 +549,7 @@ function telemetryFromState({
     throttleCommand: runtime.lastStep?.throttleCommand || 0,
     thrustN: runtime.lastStep?.thrustN || 0,
     burnRateKgS: runtime.lastStep?.burnRateKgS || 0,
+    stagePropellantKg: Math.max(0, Number(runtime.stagePropellantKg) || 0),
     dynamicPressurePa,
     angleOfAttackDeg: Number(runtime.lastStep?.angleOfAttackDeg) || 0,
     qAlphaPaRad: Number(runtime.lastStep?.qAlphaPaRad) || 0,
@@ -546,6 +580,12 @@ function telemetryFromState({
     missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
     missionPhase: runtime.mission.phase,
     missionCompleted: Boolean(runtime.mission.completed),
+    refuelRequiredFlights: Math.max(0, Number(runtime.refuel.requiredFlights) || 0),
+    refuelCompletedFlights: Math.max(0, Number(runtime.refuel.completedFlights) || 0),
+    refuelActiveFlights: Math.max(0, Number(runtime.refuel.activeFlights) || 0),
+    refuelLaunchedFlights: Math.max(0, Number(runtime.refuel.launchedFlights) || 0),
+    refuelTargetPropellantKg,
+    refuelFillFraction,
     rcsActive: Boolean(runtime.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.lastStep?.rcsErrorDeg) || 0,
     rcsAuthority: Number(runtime.lastStep?.rcsAuthority) || 0,
@@ -804,6 +844,7 @@ export function createLaunchController(options) {
     stageMassModel: createMassModelState(),
     boosterActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     boosterMassModel: createMassModelState(),
+    stage2RefuelRecoveryApplied: false,
     mission: {
       selectedId: DEFAULT_LAUNCH_MISSION_ID,
       phase: defaultMissionPhaseForProfileId(DEFAULT_LAUNCH_MISSION_ID),
@@ -824,8 +865,20 @@ export function createLaunchController(options) {
       telemetry: null,
       contactHoldSec: 0,
     },
+    refuel: refuelDefaults({
+      targetPropellantKg: stage2PropellantCapacityKg(),
+    }),
+    fleet: {
+      nextShipSequence: 1,
+      vehicles: new Map(),
+    },
     hotstage: createHotstageState(),
+    pendingPadTankerLaunch: null,
   };
+  const primaryNavigationSystem = createNavigationSystem({
+    missionId: runtime.mission.selectedId,
+    mode: NAVIGATION_SYSTEM_MODES.RULE_BASED_BASELINE,
+  });
   const lastEmittedEventByKey = new Map();
 
   function finiteVector(v) {
@@ -835,6 +888,61 @@ export function createLaunchController(options) {
       && Number.isFinite(Number(v.y))
       && Number.isFinite(Number(v.z)),
     );
+  }
+
+  function finiteNumber(value, fallback = 0) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+    const fallbackNumeric = Number(fallback);
+    return Number.isFinite(fallbackNumeric) ? fallbackNumeric : 0;
+  }
+
+  function finiteOrNull(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  function cloneVector(value, fallback = { x: 0, y: 0, z: 0 }) {
+    if (!finiteVector(value)) {
+      return {
+        x: Number(fallback?.x) || 0,
+        y: Number(fallback?.y) || 0,
+        z: Number(fallback?.z) || 0,
+      };
+    }
+    return {
+      x: Number(value.x),
+      y: Number(value.y),
+      z: Number(value.z),
+    };
+  }
+
+  function cloneVectorOrNull(value) {
+    return finiteVector(value) ? cloneVector(value) : null;
+  }
+
+  function cloneJson(value, fallback = null) {
+    if (value === undefined) {
+      return fallback;
+    }
+    if (value === null) {
+      return null;
+    }
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
+  function isManagedLaunchBodyId(bodyId) {
+    const id = String(bodyId || "");
+    return id === LAUNCH_BODY_ID
+      || id === LAUNCH_BOOSTER_BODY_ID
+      || id.startsWith("earth_refuel_tanker_")
+      || id.startsWith("earth_mission_ship_");
   }
 
   function shouldEmitEvent(name, details) {
@@ -918,6 +1026,156 @@ export function createLaunchController(options) {
       return;
     }
     emitLaunchEvent(name, { severity: "error", ...details });
+  }
+
+  const refuelController = createLaunchRefuelController({
+    runtime,
+    missionIdMoonOrbitReturn: LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,
+    missionIdsRefuelEligible: [
+      LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,
+      LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO,
+    ],
+    stage2CapacityKg: stage2PropellantCapacityKg,
+    stage2DryMassKg: () => Math.max(10_000, Number(stageAtIndex(1)?.dryMassKg) || 120_000),
+    getEarthRadiusKm,
+    getEarthMassKg,
+    gravitationalConstantKm3PerKgS2,
+    minRocketMassKg: MIN_ROCKET_MASS_KG,
+    rocketStateFromNBody,
+    earthStateFromNBody,
+    finiteVector,
+    emitLaunchEvent,
+    buildTankerMeta: ({ id, sequenceNumber, massKg }) => (
+      tankerMetaForId(id, sequenceNumber, massKg, LAUNCH_REFUEL_TANKER_METAS[0] || null)
+    ),
+  });
+  const fleetController = createLaunchFleetController({
+    runtime,
+    stageAtIndex,
+    minRocketMassKg: MIN_ROCKET_MASS_KG,
+    getEarthRadiusKm,
+    getEarthMassKg,
+    getBodyRadiusKm,
+    getBodyMassKg,
+    sampleEarthAtmosphere,
+    earthAxes,
+    gravitationalConstantKm3PerKgS2,
+    emitLaunchEvent,
+  });
+
+  function computePrimaryNavigationAutopilotCommand({
+    state,
+    earthState,
+    rocketState,
+    orbital,
+    relPos,
+    relVel,
+    up,
+    activeRefuelTarget,
+  }) {
+    if (runtime.mission.selectedId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+      return null;
+    }
+    if (!state || !earthState || !rocketState || !orbital) {
+      return null;
+    }
+
+    const moonState = bodyStateFromNBody(state, "moon");
+    const moonMassKg = Number(getBodyMassKg?.("moon")) || Number(moonState?.massKg) || 7.342e22;
+    const moonRadiusKm = Number(getBodyRadiusKm?.("moon")) || 1737.4;
+    const moonMuKm3S2 = gravitationalConstantKm3PerKgS2 * moonMassKg;
+    const moonRelPos = (moonState?.position && finiteVector(moonState.position))
+      ? subtract(rocketState.position, moonState.position)
+      : null;
+    const moonRelVel = (moonState?.velocity && finiteVector(moonState.velocity))
+      ? subtract(
+        rocketState.velocity || { x: 0, y: 0, z: 0 },
+        moonState.velocity || { x: 0, y: 0, z: 0 },
+      )
+      : null;
+    const moonOrbit = moonRelPos && moonRelVel && moonMuKm3S2 > 0
+      ? orbitalStateFromRelative(moonMuKm3S2, moonRadiusKm, moonRelPos, moonRelVel)
+      : null;
+
+    const earthDistanceKm = length(relPos);
+    const earthRadialSpeedKmS = earthDistanceKm > 1e-9
+      ? dot(relPos, relVel) / earthDistanceKm
+      : 0;
+    const moonDistanceKm = moonRelPos ? length(moonRelPos) : Number.POSITIVE_INFINITY;
+    const moonAltitudeKm = moonDistanceKm - moonRadiusKm;
+    const nearestRefuelTarget = activeRefuelTarget || refuelController.activeRendezvousTarget?.(state) || null;
+
+    const refuelTargetKg = resolveRefuelTargetKg(
+      runtime.refuel,
+      stage2PropellantCapacityKg(),
+    );
+    const refuelFillFraction = computeRefuelFillFraction(
+      runtime.stagePropellantKg,
+      refuelTargetKg,
+    );
+    const tangent = normalize(relVel, up);
+    const navResult = primaryNavigationSystem.update({
+      measurement: {
+        position: rocketState.position || { x: 0, y: 0, z: 0 },
+        velocity: rocketState.velocity || { x: 0, y: 0, z: 0 },
+      },
+      orbital,
+      moonOrbit,
+      metrics: {
+        earthDistanceKm,
+        earthRadialSpeedKmS,
+        moonDistanceKm,
+        moonAltitudeKm,
+        refuelFillFraction,
+        refuelTargetDistanceKm: Number(nearestRefuelTarget?.distanceKm),
+        refuelRelativeSpeedKmS: Number(nearestRefuelTarget?.relativeSpeedKmS),
+        refuelClosingSpeedKmS: Number(nearestRefuelTarget?.closingSpeedKmS),
+      },
+      targetVectors: {
+        tangent,
+        up,
+        toMoon: moonState?.position
+          ? subtract(moonState.position, rocketState.position)
+          : tangent,
+        toEarth: scale(relPos, -1),
+        toRefuelTarget: nearestRefuelTarget?.relativePositionKm || null,
+        refuelTargetRelativeVelocityKmS: nearestRefuelTarget?.relativeVelocityKmS || null,
+      },
+      timestampSec: runtime.elapsedSeconds,
+    });
+
+    const navState = navResult?.state;
+    const navPhase = String(navState?.missionPhase || "").trim();
+    if (navPhase && runtime.mission.phase !== navPhase) {
+      setMissionPhase(runtime, navPhase);
+    }
+    runtime.mission.completed = Boolean(navState?.missionCompleted);
+    const navDrivenMoonPhases = new Set([
+      "orbital_refuel",
+      "tli_burn",
+      "coast_to_moon",
+      "lunar_insertion",
+      "lunar_orbit_hold",
+      "tei_burn",
+      "coast_to_earth",
+      "earth_capture",
+    ]);
+    if (runtime.stageIndex < 1 || !navDrivenMoonPhases.has(navPhase)) {
+      return null;
+    }
+
+    const command = navResult?.command;
+    if (!command) {
+      return null;
+    }
+    const phaseRaw = String(command.phase || "").trim().toLowerCase();
+    const phase = phaseRaw === "powered" || phaseRaw === "orbit" ? phaseRaw : "coast";
+    return {
+      phase,
+      throttle: phase === "powered" ? clamp(Number(command.throttle) || 0, 0, 1) : 0,
+      direction: normalize(command.direction || tangent, tangent),
+      mode: String(command.mode || "navigation-system"),
+    };
   }
 
   function captureRuntimeLogState() {
@@ -1040,6 +1298,7 @@ export function createLaunchController(options) {
     runtime.stageMassModel = createMassModelState();
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.boosterMassModel = createMassModelState();
+    runtime.stage2RefuelRecoveryApplied = false;
     runtime.mission.selectedId = missionId;
     runtime.mission.phase = defaultMissionPhaseForProfileId(missionId);
     runtime.mission.phaseStartedElapsedSec = 0;
@@ -1056,7 +1315,14 @@ export function createLaunchController(options) {
     runtime.booster.lastTrackedPositionKm = null;
     runtime.booster.telemetry = null;
     runtime.booster.contactHoldSec = 0;
+    refuelController.resetRefuelState();
     runtime.hotstage = resetHotstageState(runtime.hotstage);
+    runtime.pendingPadTankerLaunch = null;
+    primaryNavigationSystem.reset({
+      missionIdOverride: missionId,
+      modeOverride: NAVIGATION_SYSTEM_MODES.RULE_BASED_BASELINE,
+      timestampSec: runtime.elapsedSeconds,
+    });
     lastRuntimeLogState = captureRuntimeLogState();
   }
 
@@ -1117,6 +1383,7 @@ export function createLaunchController(options) {
     if (missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
       const moonwardPhases = new Set([
         "launch_to_parking",
+        "orbital_refuel",
         "tli_burn",
         "coast_to_moon",
         "lunar_insertion",
@@ -1142,6 +1409,368 @@ export function createLaunchController(options) {
       bodyName: "Earth",
       distanceKm: runtime.earthDistanceKm,
       closingSpeedKmS: runtime.earthClosingSpeedKmS,
+    };
+  }
+
+  function refuelTankerIndicatorsFromState(state) {
+    const indicators = {
+      onlineTankers: 0,
+      availableTankers: 0,
+    };
+    if (!state?.dynamicBodies || state.dynamicBodies.size <= 0) {
+      return indicators;
+    }
+    const earthState = earthStateFromNBody(state);
+    if (
+      !earthState
+      || !finiteVector(earthState.position)
+      || !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      return indicators;
+    }
+    const refuelFlights = Array.isArray(runtime?.refuel?.flights) ? runtime.refuel.flights : [];
+    const flightsById = new Map();
+    for (let i = 0; i < refuelFlights.length; i += 1) {
+      const flight = refuelFlights[i];
+      const id = String(flight?.id || "").trim();
+      if (id) {
+        flightsById.set(id, flight);
+      }
+    }
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthMassKg = Number(getEarthMassKg?.()) || Number(earthState.massKg) || 0;
+    const muKm3S2 = Number(gravitationalConstantKm3PerKgS2) * earthMassKg;
+    for (const [bodyId, tankerState] of state.dynamicBodies.entries()) {
+      const tankerId = String(bodyId || "");
+      if (!tankerId.startsWith("earth_refuel_tanker_")) {
+        continue;
+      }
+      if (
+        !finiteVector(tankerState?.position)
+        || !finiteVector(tankerState?.velocity || { x: 0, y: 0, z: 0 })
+      ) {
+        continue;
+      }
+      indicators.onlineTankers += 1;
+      if (!(muKm3S2 > 0)) {
+        continue;
+      }
+      const relPos = subtract(tankerState.position, earthState.position);
+      const relVel = subtract(
+        tankerState.velocity || { x: 0, y: 0, z: 0 },
+        earthState.velocity || { x: 0, y: 0, z: 0 },
+      );
+      const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
+      const periapsisKm = Number(orbital?.periapsisKm);
+      const apoapsisKm = Number(orbital?.apoapsisKm);
+      const inStableEarthOrbit =
+        Number(orbital?.specificEnergy) < 0
+        && periapsisKm >= 145
+        && periapsisKm <= 165
+        && apoapsisKm >= 145
+        && apoapsisKm <= 165;
+      const refuelFlight = flightsById.get(tankerId) || null;
+      const inferredAltitudeKm = vectorMagnitude(relPos) - earthRadiusKm;
+      const dockingEligible = isFlightDockingEligible(
+        refuelFlight
+          ? {
+            ...refuelFlight,
+            active: true,
+            sensorAltitudeKm: Number.isFinite(inferredAltitudeKm)
+              ? inferredAltitudeKm
+              : refuelFlight.sensorAltitudeKm,
+          }
+          : {
+            active: true,
+            sensorAltitudeKm: inferredAltitudeKm,
+            status: "external_orbit",
+          },
+        runtime?.refuel,
+      );
+      if (inStableEarthOrbit && dockingEligible) {
+        indicators.availableTankers += 1;
+      }
+    }
+    return indicators;
+  }
+
+  function launchMissionShip(state, missionId = runtime.mission.selectedId, nowMs = Date.now(), options = {}) {
+    return fleetController.launchMissionShip(state, missionId, nowMs, options);
+  }
+
+  function removeVehicleById(state, bodyId, nowMs = Date.now()) {
+    const id = String(bodyId || "").trim();
+    if (!id) {
+      return { accepted: false, reason: "invalid_body_id" };
+    }
+    if (id === LAUNCH_BODY_ID || id === LAUNCH_BOOSTER_BODY_ID) {
+      return { accepted: false, reason: "primary_vehicle_protected" };
+    }
+    const dynamicBodies = state?.dynamicBodies;
+    if (!dynamicBodies || typeof dynamicBodies.delete !== "function") {
+      return { accepted: false, reason: "state_unavailable" };
+    }
+
+    const fleetRemoval = fleetController.removeVehicleById?.(
+      state,
+      id,
+      { preserveDynamicBody: true },
+    ) || { removed: false };
+    const refuelRemoval = refuelController.removeTankerById?.(
+      state,
+      id,
+      { preserveDynamicBody: true },
+    ) || false;
+    const removedDynamic = dynamicBodies.delete(id);
+
+    if (String(runtime.pendingPadTankerLaunch?.tankerId || "") === id) {
+      runtime.pendingPadTankerLaunch = null;
+    }
+
+    const removedAny = removedDynamic || fleetRemoval.removed || Boolean(refuelRemoval);
+    if (!removedAny) {
+      return { accepted: false, reason: "vehicle_not_found" };
+    }
+
+    const vehicleRole = fleetRemoval.removed
+      ? String(fleetRemoval.vehicleRole || "mission")
+      : (id.startsWith("earth_refuel_tanker_") ? "tanker" : "mission");
+    emitLaunchEvent("vehicle_removed", {
+      bodyId: id,
+      vehicleRole,
+      vehicleName: fleetRemoval.vehicleName || (vehicleRole === "tanker" ? "Starship Tanker" : "Starship"),
+      missionId: fleetRemoval.missionId || null,
+      missionPhase: fleetRemoval.missionPhase || null,
+      removedDynamicBody: Boolean(removedDynamic),
+      removedFleetVehicle: Boolean(fleetRemoval.removed),
+      removedRefuelTracking: Boolean(refuelRemoval),
+      timestampMs: nowMs,
+    });
+    emitRuntimeTransitionEvents("vehicle_removed");
+    return {
+      accepted: true,
+      bodyId: id,
+      vehicleRole,
+      vehicleName: fleetRemoval.vehicleName || "",
+      removedDynamicBody: Boolean(removedDynamic),
+      removedFleetVehicle: Boolean(fleetRemoval.removed),
+      removedRefuelTracking: Boolean(refuelRemoval),
+    };
+  }
+
+  function reserveNextTankerIdentity(state) {
+    if (!state?.dynamicBodies) {
+      return null;
+    }
+    const activeFlights = Array.isArray(runtime.refuel.flights) ? runtime.refuel.flights : [];
+    let sequenceNumber = Math.max(1, Number(runtime.refuel.nextGeneratedId) || 1);
+    while (sequenceNumber < 1_000_000_000) {
+      const id = `earth_refuel_tanker_${sequenceNumber}`;
+      const existsInDynamics = state.dynamicBodies.has(id);
+      const existsInFlights = activeFlights.some((flight) => String(flight?.id || "") === id);
+      const existsPending = String(runtime.pendingPadTankerLaunch?.tankerId || "") === id;
+      if (!existsInDynamics && !existsInFlights && !existsPending) {
+        runtime.refuel.nextGeneratedId = sequenceNumber + 1;
+        return { id, sequenceNumber };
+      }
+      sequenceNumber += 1;
+    }
+    return null;
+  }
+
+  function tankerDeploymentOrbitReady(orbital) {
+    const specificEnergy = Number(orbital?.specificEnergy);
+    const periapsisKm = Number(orbital?.periapsisKm);
+    const apoapsisKm = Number(orbital?.apoapsisKm);
+    if (!(specificEnergy < 0)) {
+      return false;
+    }
+    if (!Number.isFinite(periapsisKm) || !Number.isFinite(apoapsisKm)) {
+      return false;
+    }
+    return periapsisKm >= PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM
+      && apoapsisKm >= PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM
+      && periapsisKm <= PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM
+      && apoapsisKm <= PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM;
+  }
+
+  function maybeFinalizePendingPadTankerLaunch(state, nowMs, {
+    rocketState,
+    orbital,
+  } = {}) {
+    const pending = runtime.pendingPadTankerLaunch;
+    if (!pending?.active || !pending.tankerId) {
+      return false;
+    }
+    if (!state?.dynamicBodies || !rocketState || runtime.stageIndex < 1) {
+      return false;
+    }
+    if (!tankerDeploymentOrbitReady(orbital)) {
+      return false;
+    }
+
+    const tankerMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || MIN_ROCKET_MASS_KG);
+    const tankerState = {
+      id: pending.tankerId,
+      massKg: tankerMassKg,
+      position: { ...(rocketState.position || { x: 0, y: 0, z: 0 }) },
+      velocity: { ...(rocketState.velocity || { x: 0, y: 0, z: 0 }) },
+    };
+    state.dynamicBodies.set(pending.tankerId, tankerState);
+
+    emitLaunchEvent("refuel_tanker_pad_launch_completed", {
+      tankerId: pending.tankerId,
+      sequenceNumber: Number(pending.sequenceNumber) || 1,
+      missionId: pending.missionId || LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
+      deployedMassKg: tankerMassKg,
+      orbitApoapsisKm: Number(orbital?.apoapsisKm),
+      orbitPeriapsisKm: Number(orbital?.periapsisKm),
+    });
+
+    const restoreMissionId = normalizeMissionId(
+      pending.restoreMissionId || DEFAULT_LAUNCH_MISSION_ID,
+    );
+    runtime.pendingPadTankerLaunch = null;
+    const resetOk = resetToPad(state, nowMs, { clearRefuelTankers: false });
+    if (!resetOk) {
+      return true;
+    }
+    setMissionProfile(restoreMissionId);
+    if (Number.isFinite(Number(pending.restoreTargetOrbitAltitudeKm))) {
+      runtime.targetOrbitAltitudeKm = Math.max(80, Number(pending.restoreTargetOrbitAltitudeKm));
+    }
+    return true;
+  }
+
+  function launchRefuelTanker(state, nowMs = Date.now(), options = {}) {
+    const requestedModeRaw = String(options?.mode || "pad_launch").trim().toLowerCase();
+    const requestedMode = requestedModeRaw === "orbit_inject" ? "orbit_inject" : "pad_launch";
+    const launchStackIdle = runtime.phase === "idle" && !runtime.booster.active;
+    if (runtime.pendingPadTankerLaunch?.active) {
+      return {
+        accepted: false,
+        reason: "tanker_pad_launch_already_active",
+      };
+    }
+    if (requestedMode === "orbit_inject") {
+      const orbitInject = refuelController.launchDirectOrbitTanker?.(state, nowMs);
+      if (!orbitInject?.accepted) {
+        return {
+          accepted: false,
+          reason: String(orbitInject?.reason || "orbit_inject_unavailable"),
+          mode: "orbit_inject",
+        };
+      }
+      emitLaunchEvent("refuel_tanker_orbit_inject_requested", {
+        tankerId: orbitInject.tankerId,
+        mode: "orbit_inject",
+        orbitAltitudeKm: Number(orbitInject.orbitAltitudeKm),
+      });
+      return {
+        ...orbitInject,
+        mode: "orbit_inject",
+        pending: false,
+        launchKind: "tanker-orbit-inject",
+      };
+    }
+    if (!launchStackIdle) {
+      const identity = reserveNextTankerIdentity(state);
+      if (!identity) {
+        return {
+          accepted: false,
+          reason: "tanker_id_exhausted",
+        };
+      }
+      const fleetLaunch = fleetController.launchMissionShip(
+        state,
+        LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
+        nowMs,
+        {
+          forcedId: identity.id,
+          forcedSequenceNumber: identity.sequenceNumber,
+          vehicleRole: "tanker",
+          vehicleName: `Starship Tanker ${identity.sequenceNumber}`,
+        },
+      );
+      if (!fleetLaunch?.accepted) {
+        return {
+          accepted: false,
+          reason: String(fleetLaunch?.reason || "fleet_tanker_launch_failed"),
+        };
+      }
+      emitLaunchEvent("refuel_tanker_fleet_launch_requested", {
+        tankerId: identity.id,
+        sequenceNumber: identity.sequenceNumber,
+        mode: "pad_fleet_launch",
+      });
+      return {
+        accepted: true,
+        tankerId: identity.id,
+        tankerMeta: fleetLaunch.shipMeta
+          || tankerMetaForId(identity.id, identity.sequenceNumber, null, LAUNCH_REFUEL_TANKER_METAS[0] || null),
+        mode: "pad_fleet_launch",
+        pending: false,
+        launchKind: "tanker-pad-fleet",
+      };
+    }
+
+    const identity = reserveNextTankerIdentity(state);
+    if (!identity) {
+      return {
+        accepted: false,
+        reason: "tanker_id_exhausted",
+      };
+    }
+    const previousMissionId = normalizeMissionId(runtime.mission.selectedId);
+    const previousTargetOrbitAltitudeKm = Number(runtime.targetOrbitAltitudeKm);
+    runtime.targetOrbitAltitudeKm = 155;
+    const started = startLaunch(state, nowMs, {
+      missionIdOverride: LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
+      preserveRefuelTankers: true,
+      launchKind: "tanker-pad",
+    });
+    if (!started) {
+      if (Number.isFinite(previousTargetOrbitAltitudeKm)) {
+        runtime.targetOrbitAltitudeKm = Math.max(80, previousTargetOrbitAltitudeKm);
+      }
+      return {
+        accepted: false,
+        reason: "pad_launch_start_failed",
+      };
+    }
+
+    const tankerMeta = tankerMetaForId(
+      identity.id,
+      identity.sequenceNumber,
+      null,
+      LAUNCH_REFUEL_TANKER_METAS[0] || null,
+    );
+    runtime.pendingPadTankerLaunch = {
+      active: true,
+      tankerId: identity.id,
+      sequenceNumber: identity.sequenceNumber,
+      restoreMissionId: previousMissionId,
+      restoreTargetOrbitAltitudeKm: Number.isFinite(previousTargetOrbitAltitudeKm)
+        ? previousTargetOrbitAltitudeKm
+        : null,
+      missionId: LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
+    };
+    runtime.refuel.nextGeneratedId = Math.max(
+      Number(runtime.refuel.nextGeneratedId) || 1,
+      identity.sequenceNumber + 1,
+    );
+    emitLaunchEvent("refuel_tanker_pad_launch_started", {
+      tankerId: identity.id,
+      sequenceNumber: identity.sequenceNumber,
+      restoreMissionId: previousMissionId,
+    });
+    return {
+      accepted: true,
+      tankerId: identity.id,
+      tankerMeta,
+      mode: "pad_launch",
+      pending: true,
+      launchKind: "tanker-pad",
     };
   }
 
@@ -1256,6 +1885,9 @@ export function createLaunchController(options) {
     };
     mergeOrInsert(LAUNCH_BODY_META);
     mergeOrInsert(LAUNCH_BOOSTER_META);
+    for (let i = 0; i < LAUNCH_REFUEL_TANKER_METAS.length; i += 1) {
+      mergeOrInsert(LAUNCH_REFUEL_TANKER_METAS[i]);
+    }
     return next;
   }
 
@@ -1333,8 +1965,12 @@ export function createLaunchController(options) {
     return rocketState;
   }
 
-  function resetToPad(state, nowMs = Date.now()) {
+  function resetToPad(state, nowMs = Date.now(), options = {}) {
+    const clearRefuelTankers = options?.clearRefuelTankers !== false;
     clearBoosterFromState(state);
+    if (clearRefuelTankers) {
+      refuelController.clearRefuelTankersFromState(state);
+    }
     const earthState = earthStateFromNBody(state);
     const rocketState = ensureRocketInNBody(state, nowMs);
     if (!earthState || !rocketState) {
@@ -1416,20 +2052,31 @@ export function createLaunchController(options) {
     return true;
   }
 
-  function startLaunch(state, nowMs = Date.now()) {
-    if (!resetToPad(state, nowMs)) {
+  function startLaunch(state, nowMs = Date.now(), options = {}) {
+    const missionIdForLaunch = normalizeMissionId(
+      options?.missionIdOverride || runtime.mission.selectedId,
+    );
+    const preserveRefuelTankers = options?.preserveRefuelTankers !== false;
+    if (!resetToPad(state, nowMs, { clearRefuelTankers: !preserveRefuelTankers })) {
       return false;
     }
+    runtime.mission.selectedId = missionIdForLaunch;
+    refuelController.applyMissionProfile(runtime.mission.selectedId);
     runtime.phase = "powered";
     runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-vertical-ascent" : "manual-ascent";
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(runtime.mission.selectedId));
     runtime.mission.phaseStartedElapsedSec = runtime.elapsedSeconds;
     runtime.mission.completed = false;
+    primaryNavigationSystem.reset({
+      missionIdOverride: runtime.mission.selectedId,
+      timestampSec: runtime.elapsedSeconds,
+    });
     emitLaunchEvent("launch_started", {
       launchSiteName: LAUNCH_SITE.name || "Launch Site",
       autopilotEnabled: runtime.autopilotEnabled,
       missionId: runtime.mission.selectedId,
       missionPhase: runtime.mission.phase,
+      launchKind: String(options?.launchKind || "primary"),
     });
     emitRuntimeTransitionEvents("start_launch");
     return true;
@@ -1946,6 +2593,7 @@ export function createLaunchController(options) {
     runtime.lastStep = null;
     try {
       prepareBoosterStep(state, dtSeconds, nowMs);
+      fleetController.prepareStep(state, dtSeconds, nowMs);
       if (runtime.phase === "idle") {
         return;
       }
@@ -2224,6 +2872,7 @@ export function createLaunchController(options) {
 
       if (runtime.phase === "coast") {
         if (runtime.autopilotEnabled) {
+          const activeRefuelTarget = refuelController.activeRendezvousTarget?.(state) || null;
           let autopilotCommand = computeAutopilotCommand({
             runtime,
             orbital,
@@ -2235,7 +2884,16 @@ export function createLaunchController(options) {
             earthRadiusKm,
             dynamicPressurePa,
           });
-          const missionCommand = computeMissionAutopilotCommand({
+          const missionCommand = computePrimaryNavigationAutopilotCommand({
+            state,
+            earthState,
+            rocketState,
+            orbital,
+            relPos,
+            relVel,
+            up: orbital.up,
+            activeRefuelTarget,
+          }) || computeMissionAutopilotCommand({
             runtime,
             state,
             earthState,
@@ -2250,6 +2908,7 @@ export function createLaunchController(options) {
             earthRadiusKm,
             getBodyRadiusKm,
             getBodyMassKg,
+            activeRefuelTarget,
           });
           if (missionCommand) {
             autopilotCommand = missionCommand;
@@ -2306,6 +2965,7 @@ export function createLaunchController(options) {
       });
 
       if (runtime.autopilotEnabled) {
+        const activeRefuelTarget = refuelController.activeRendezvousTarget?.(state) || null;
         let autopilotCommand = computeAutopilotCommand({
           runtime,
           orbital,
@@ -2317,7 +2977,16 @@ export function createLaunchController(options) {
           earthRadiusKm,
           dynamicPressurePa,
         });
-        const missionCommand = computeMissionAutopilotCommand({
+        const missionCommand = computePrimaryNavigationAutopilotCommand({
+          state,
+          earthState,
+          rocketState,
+          orbital,
+          relPos,
+          relVel,
+          up: orbital.up,
+          activeRefuelTarget,
+        }) || computeMissionAutopilotCommand({
           runtime,
           state,
           earthState,
@@ -2332,6 +3001,7 @@ export function createLaunchController(options) {
           earthRadiusKm,
           getBodyRadiusKm,
           getBodyMassKg,
+          activeRefuelTarget,
         });
         if (missionCommand) {
           autopilotCommand = missionCommand;
@@ -2411,12 +3081,17 @@ export function createLaunchController(options) {
     if (bodyId === LAUNCH_BOOSTER_BODY_ID) {
       return runtime.booster.lastStep?.accelerationKmS2 || { x: 0, y: 0, z: 0 };
     }
-    return { x: 0, y: 0, z: 0 };
+    return fleetController.externalAccelerationKmS2(bodyId);
   }
 
   function finalizeStep(state, dtSeconds, nowMs = Date.now()) {
     try {
+      const fleetActive = fleetController.hasActiveVehicles();
+      if (runtime.phase === "idle" && !runtime.booster.active && !fleetActive) {
+        return;
+      }
       if (runtime.phase === "idle" && !runtime.booster.active) {
+        fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
       if (runtime.phase === "complete") {
@@ -2426,6 +3101,7 @@ export function createLaunchController(options) {
       const earthState = earthStateFromNBody(state);
       if (!rocketState || !earthState) {
         runtime.phase = "idle";
+        fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
       if (
@@ -2442,10 +3118,34 @@ export function createLaunchController(options) {
           rocketVelocityFinite: finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 }),
         });
         runtime.phase = "idle";
+        fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
       const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
       const currentEarthAxes = earthAxes(nowMs);
+      const moonRefuelRecoveryEligible =
+        runtime.stageIndex > 1
+        && isMoonTransferMissionActive(runtime)
+        && runtime.mission.phase === "orbital_refuel";
+      if (moonRefuelRecoveryEligible) {
+        const stage2 = stageAtIndex(1);
+        const stage2DryMassKg = Math.max(0, Number(stage2?.dryMassKg) || 0);
+        if (!runtime.stage2RefuelRecoveryApplied && stage2DryMassKg > 0) {
+          rocketState.massKg = Math.max(
+            MIN_ROCKET_MASS_KG,
+            (Number(rocketState.massKg) || MIN_ROCKET_MASS_KG) + stage2DryMassKg,
+          );
+          runtime.stage2RefuelRecoveryApplied = true;
+          emitLaunchEvent("terminal_stage_refuel_recovery_enabled", {
+            restoredDryMassKg: stage2DryMassKg,
+            missionId: runtime.mission.selectedId,
+            missionPhase: runtime.mission.phase,
+          });
+        }
+        runtime.stageIndex = 1;
+        runtime.phase = "coast";
+        runtime.autopilotMode = "navsys:orbital-refuel-await-target";
+      }
       const distanceStageIndex = runtime.stageIndex;
       accumulateDistanceTravelled(
         rocketState,
@@ -2524,7 +3224,15 @@ export function createLaunchController(options) {
             dynamicPressurePaOverride: dynamicPressurePa,
             runtime,
           });
+          if (maybeFinalizePendingPadTankerLaunch(state, nowMs, {
+            rocketState,
+            orbital: orbitalNow,
+          })) {
+            fleetController.finalizeStep(state, dtSeconds, nowMs);
+            return;
+          }
           finalizeBoosterStep(state, dtSeconds, nowMs);
+          fleetController.finalizeStep(state, dtSeconds, nowMs);
           runtime.elapsedSeconds += dtSeconds;
           return;
         }
@@ -2546,6 +3254,14 @@ export function createLaunchController(options) {
     const stage = stageAtIndex(runtime.stageIndex);
     const reservePropellantKg = stageReservePropellantKg(runtime.stageIndex);
     const stagePropellantThresholdKg = reservePropellantKg + 1e-6;
+    const stagePropellantDepleted = Boolean(
+      stage && runtime.stagePropellantKg <= stagePropellantThresholdKg,
+    );
+    const stageDepletedThisStep = stagePropellantDepleted
+      && (
+        appliedBurnKg > 1e-8
+        || (Number(runtime.lastStep?.thrustN) || 0) > 1
+      );
     if (
       stage
       && sustainedOrbitReserveActive
@@ -2553,10 +3269,10 @@ export function createLaunchController(options) {
       && runtime.stagePropellantKg <= stagePropellantThresholdKg
     ) {
       runtime.stagePropellantKg = Math.max(
-        runtime.stagePropellantKg,
-        stagePropellantThresholdKg + EARTH_ORBIT_HOLD_MISSION_CONFIG.sustainedOrbitReserveKg,
-      );
-    } else if (stage && runtime.stagePropellantKg <= stagePropellantThresholdKg) {
+          runtime.stagePropellantKg,
+          stagePropellantThresholdKg + EARTH_ORBIT_HOLD_MISSION_CONFIG.sustainedOrbitReserveKg,
+        );
+    } else if (stagePropellantDepleted && stageDepletedThisStep) {
       if (runtime.stageIndex === 0) {
         const nextStage = stageAtIndex(1);
         if (nextStage) {
@@ -2602,14 +3318,13 @@ export function createLaunchController(options) {
           runtime.stageMassModel = createMassModelState();
         }
       } else {
-        rocketState.massKg = Math.max(
-          MIN_ROCKET_MASS_KG,
-          rocketState.massKg - (Number(stage.dryMassKg) || 0),
-        );
-
-        runtime.stageIndex += 1;
-        const nextStage = stageAtIndex(runtime.stageIndex);
+        const nextStage = stageAtIndex(runtime.stageIndex + 1);
         if (nextStage) {
+          rocketState.massKg = Math.max(
+            MIN_ROCKET_MASS_KG,
+            rocketState.massKg - (Number(stage.dryMassKg) || 0),
+          );
+          runtime.stageIndex += 1;
           runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
           runtime.coastRemainingSec = Math.max(0, Number(stage.coastAfterBurnSec) || 0);
           runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
@@ -2618,6 +3333,7 @@ export function createLaunchController(options) {
           );
           runtime.stageMassModel = createMassModelState();
         } else {
+          // Terminal stage dry-out: keep stage attached so on-orbit refuel can re-enable propulsion.
           runtime.stagePropellantKg = 0;
           const relPos = subtract(rocketState.position, earthState.position);
           const relVel = subtract(
@@ -2627,10 +3343,21 @@ export function createLaunchController(options) {
           const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
           const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
           const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
-          runtime.phase = stableOrbit ? "orbit" : "coast";
-          runtime.autopilotMode = stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast";
+          runtime.phase = "coast";
+          runtime.autopilotMode = (
+            isMoonTransferMissionActive(runtime) && runtime.mission.phase === "orbital_refuel"
+          )
+            ? "navsys:orbital-refuel-await-target"
+            : (stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast");
           runtime.stageActuator = createActuatorState(normalize(relPos, currentEarthAxes.pole));
           runtime.stageMassModel = createMassModelState();
+          emitLaunchEvent("terminal_stage_propellant_depleted", {
+            missionId: runtime.mission.selectedId,
+            missionPhase: runtime.mission.phase,
+            orbitalApoapsisKm: Number(orbital?.apoapsisKm),
+            orbitalPeriapsisKm: Number(orbital?.periapsisKm),
+            stableOrbit,
+          });
         }
       }
     }
@@ -2688,6 +3415,8 @@ export function createLaunchController(options) {
       }
     }
 
+      refuelController.updateRefuelFlights(state, earthState, dtSeconds);
+
       const relPosNow = subtract(rocketState.position, earthState.position);
       const relVelNow = subtract(
         rocketState.velocity || { x: 0, y: 0, z: 0 },
@@ -2721,16 +3450,54 @@ export function createLaunchController(options) {
         dynamicPressurePaOverride: dynamicPressurePa,
         runtime,
       });
+      const muKm3S2Final = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+      const orbitalNow = orbitalStateFromRelative(muKm3S2Final, earthRadiusKm, relPosNow, relVelNow);
+      if (maybeFinalizePendingPadTankerLaunch(state, nowMs, {
+        rocketState,
+        orbital: orbitalNow,
+      })) {
+        fleetController.finalizeStep(state, dtSeconds, nowMs);
+        return;
+      }
       finalizeBoosterStep(state, dtSeconds, nowMs);
+      fleetController.finalizeStep(state, dtSeconds, nowMs);
     } finally {
       emitRuntimeTransitionEvents("finalize_step");
     }
   }
 
-  function statusSnapshot() {
+  function statusSnapshot(state = null) {
     const telemetry = runtime.lastTelemetry;
     const targetDescriptor = missionTargetDescriptor();
     const hotstageSinceIgnitionSec = hotstageTimeSinceIgnitionSec(runtime.hotstage, runtime.elapsedSeconds);
+    const refuelStatus = refuelController.status();
+    const tankerIndicators = refuelTankerIndicatorsFromState(state);
+    const refuelTargetKg = refuelStatus.targetPropellantKg;
+    const refuelRequiredFlights = refuelStatus.requiredFlights;
+    const refuelCompletedFlights = refuelStatus.completedFlights;
+    const refuelActiveFlights = refuelStatus.activeFlights;
+    const refuelLaunchedFlights = refuelStatus.launchedFlights;
+    const refuelFill = refuelStatus.fillFraction;
+    const refuelCanLaunchTanker = refuelStatus.refuelCanLaunchTanker;
+    const refuelTransferActive = Boolean(refuelStatus.transferActive);
+    const refuelTransferTankerId = String(refuelStatus.transferTankerId || "");
+    const refuelTransferProgress = clamp(Number(refuelStatus.transferProgress) || 0, 0, 1);
+    const refuelTransferRemainingKg = Math.max(0, Number(refuelStatus.transferRemainingKg) || 0);
+    const refuelTransferRateKgS = Math.max(0, Number(refuelStatus.transferRateKgS) || 0);
+    const refuelTransferLocked = Boolean(refuelStatus.transferLocked);
+    const refuelUndockActive = Boolean(refuelStatus.undockActive);
+    const refuelShipRcsActive = Boolean(refuelStatus.shipRcsActive);
+    const refuelShipRcsAuthority = clamp(Number(refuelStatus.shipRcsAuthority) || 0, 0, 1);
+    const refuelShipRcsJets = Array.isArray(refuelStatus.shipRcsJets) ? refuelStatus.shipRcsJets : [];
+    const refuelShipRcsMode = String(refuelStatus.shipRcsMode || "");
+    const refuelOnlineTankers = Math.max(0, Number(tankerIndicators.onlineTankers) || 0);
+    const refuelAvailableTankers = Math.max(
+      0,
+      Number(tankerIndicators.availableTankers) || Number(refuelStatus.activeFlights) || 0,
+    );
+    const refuelIndicatorState = refuelAvailableTankers > 0
+      ? "available"
+      : (refuelOnlineTankers > 0 ? "online" : "offline");
     if (!telemetry) {
       return {
         bodyId: LAUNCH_BODY_ID,
@@ -2743,16 +3510,37 @@ export function createLaunchController(options) {
         missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
         missionPhase: runtime.mission.phase,
         missionCompleted: Boolean(runtime.mission.completed),
+        stagePropellantKg: Math.max(0, Number(runtime.stagePropellantKg) || 0),
+        refuelRequiredFlights,
+        refuelCompletedFlights,
+        refuelActiveFlights,
+        refuelLaunchedFlights,
+        refuelTargetPropellantKg: refuelTargetKg,
+        refuelFillFraction: refuelFill,
+        refuelCanLaunchTanker,
+        refuelOnlineTankers,
+        refuelAvailableTankers,
+        refuelAtSlotTankers: refuelAvailableTankers,
+        refuelIndicatorState,
+        refuelLastAction: runtime.refuel.lastAction || "",
+        refuelLastActionTimeSec: Number(runtime.refuel.lastActionTimeSec) || 0,
+        refuelTransferActive,
+        refuelTransferTankerId,
+        refuelTransferProgress,
+        refuelTransferRemainingKg,
+        refuelTransferRateKgS,
+        refuelTransferLocked,
+        refuelUndockActive,
         moonDistanceKm: runtime.moonDistanceKm,
         moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
         targetBodyId: targetDescriptor.bodyId,
         targetBodyName: targetDescriptor.bodyName,
         targetDistanceKm: targetDescriptor.distanceKm,
         targetClosingSpeedKmS: targetDescriptor.closingSpeedKmS,
-        rcsActive: false,
+        rcsActive: refuelShipRcsActive,
         rcsErrorDeg: 0,
-        rcsAuthority: 0,
-        rcsJets: [],
+        rcsAuthority: refuelShipRcsActive ? refuelShipRcsAuthority : 0,
+        rcsJets: refuelShipRcsActive ? refuelShipRcsJets : [],
         boosterDistanceKm: runtime.boosterDistanceKm,
         starshipDistanceKm: runtime.starshipDistanceKm,
         boosterPhase: runtime.booster.phase,
@@ -2803,6 +3591,23 @@ export function createLaunchController(options) {
         statusLine: `Launch vehicle initialized at ${LAUNCH_SITE.name || "launch site"}.`,
       };
     }
+    const telemetryGuidanceMode = refuelShipRcsMode
+      ? `${telemetry.guidanceMode}:${refuelShipRcsMode}`
+      : telemetry.guidanceMode;
+    const telemetryRcsActive = Boolean(telemetry.rcsActive || refuelShipRcsActive);
+    const telemetryRcsAuthority = clamp(
+      Math.max(
+        Number(telemetry.rcsAuthority) || 0,
+        refuelShipRcsActive ? refuelShipRcsAuthority : 0,
+      ),
+      0,
+      1,
+    );
+    const telemetryRcsJets = (
+      refuelShipRcsActive && refuelShipRcsJets.length > 0
+    )
+      ? refuelShipRcsJets
+      : (Array.isArray(telemetry.rcsJets) ? telemetry.rcsJets : []);
     return {
       bodyId: LAUNCH_BODY_ID,
       phase: runtime.phase,
@@ -2833,11 +3638,34 @@ export function createLaunchController(options) {
       comNormalized: telemetry.comNormalized,
       inertiaNormalized: telemetry.inertiaNormalized,
       controlAuthorityScale: telemetry.controlAuthorityScale,
-      guidanceMode: telemetry.guidanceMode,
+      guidanceMode: telemetryGuidanceMode,
       missionId: telemetry.missionId,
       missionName: telemetry.missionName,
       missionPhase: telemetry.missionPhase,
       missionCompleted: telemetry.missionCompleted,
+      stagePropellantKg: Number(telemetry.stagePropellantKg) || 0,
+      refuelRequiredFlights: Number(telemetry.refuelRequiredFlights) || refuelRequiredFlights,
+      refuelCompletedFlights: Number(telemetry.refuelCompletedFlights) || refuelCompletedFlights,
+      refuelActiveFlights: Number(telemetry.refuelActiveFlights) || refuelActiveFlights,
+      refuelLaunchedFlights: Number(telemetry.refuelLaunchedFlights) || refuelLaunchedFlights,
+      refuelTargetPropellantKg: Number(telemetry.refuelTargetPropellantKg) || refuelTargetKg,
+      refuelFillFraction: Number.isFinite(Number(telemetry.refuelFillFraction))
+        ? clamp(Number(telemetry.refuelFillFraction), 0, 1)
+        : refuelFill,
+      refuelCanLaunchTanker,
+      refuelOnlineTankers,
+      refuelAvailableTankers,
+      refuelAtSlotTankers: refuelAvailableTankers,
+      refuelIndicatorState,
+      refuelLastAction: runtime.refuel.lastAction || "",
+      refuelLastActionTimeSec: Number(runtime.refuel.lastActionTimeSec) || 0,
+      refuelTransferActive,
+      refuelTransferTankerId,
+      refuelTransferProgress,
+      refuelTransferRemainingKg,
+      refuelTransferRateKgS,
+      refuelTransferLocked,
+      refuelUndockActive,
       moonDistanceKm: runtime.moonDistanceKm,
       moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
       targetBodyId: targetDescriptor.bodyId,
@@ -2845,10 +3673,10 @@ export function createLaunchController(options) {
       targetDistanceKm: targetDescriptor.distanceKm,
       targetClosingSpeedKmS: targetDescriptor.closingSpeedKmS,
       autopilotMode: telemetry.autopilotMode,
-      rcsActive: telemetry.rcsActive,
+      rcsActive: telemetryRcsActive,
       rcsErrorDeg: telemetry.rcsErrorDeg,
-      rcsAuthority: telemetry.rcsAuthority,
-      rcsJets: telemetry.rcsJets,
+      rcsAuthority: telemetryRcsAuthority,
+      rcsJets: telemetryRcsJets,
       targetOrbitAltitudeKm: telemetry.targetOrbitAltitudeKm,
       radialSpeedKmS: telemetry.radialSpeedKmS,
       tangentialSpeedKmS: telemetry.tangentialSpeedKmS,
@@ -2921,6 +3749,39 @@ export function createLaunchController(options) {
     };
   }
 
+  function statusSnapshotForBody(state, bodyId = LAUNCH_BODY_ID, nowMs = Date.now()) {
+    const baseSnapshot = statusSnapshot(state);
+    const fleetSnapshot = fleetController.statusSnapshotForBody({
+      state,
+      bodyId,
+      nowMs,
+      baseSnapshot,
+      phaseLabel,
+    });
+    if (fleetSnapshot) {
+      return fleetSnapshot;
+    }
+    return buildVehicleStatusSnapshot({
+      baseSnapshot,
+      trackedBodyId: bodyId,
+      state,
+      nowMs,
+      runtime,
+      refuelStatus: refuelController.status(),
+      getEarthRadiusKm,
+      getEarthMassKg,
+      gravitationalConstantKm3PerKgS2,
+      sampleEarthAtmosphere,
+      earthAxes,
+      earthStateFromNBody,
+      finiteVector,
+      orbitalStateFromRelative,
+      dynamicPressurePaFromAtmosphere,
+      resolveMissionName: () => safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
+      phaseLabel,
+    });
+  }
+
   function setMissionProfile(missionId) {
     const previousMissionId = runtime.mission.selectedId;
     const previousMissionPhase = runtime.mission.phase;
@@ -2928,6 +3789,8 @@ export function createLaunchController(options) {
     runtime.mission.selectedId = normalized;
     runtime.mission.completed = false;
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(normalized));
+    refuelController.applyMissionProfile(normalized);
+    primaryNavigationSystem.setMission(normalized, runtime.elapsedSeconds);
     emitLaunchEvent("mission_profile_selected", {
       fromMissionId: previousMissionId,
       toMissionId: normalized,
@@ -2955,6 +3818,491 @@ export function createLaunchController(options) {
     return LAUNCH_MISSION_PROFILES.map((profile) => ({ ...profile }));
   }
 
+  function managedCatalogMetaForBody(bodyId, bodyState = null) {
+    const id = String(bodyId || "").trim();
+    if (!id || id === LAUNCH_BODY_ID || id === LAUNCH_BOOSTER_BODY_ID) {
+      return null;
+    }
+    const vehicle = runtime.fleet?.vehicles instanceof Map
+      ? runtime.fleet.vehicles.get(id)
+      : null;
+    const sequenceNumber = Number(id.match(/_(\d+)$/)?.[1]) || 1;
+    const vehicleRole = String(vehicle?.vehicleRole || (id.startsWith("earth_refuel_tanker_") ? "tanker" : "mission")).toLowerCase();
+    const massKg = Math.max(
+      MIN_ROCKET_MASS_KG,
+      finiteNumber(bodyState?.massKg, vehicle?.dryMassKg),
+    );
+    if (vehicleRole === "tanker" || id.startsWith("earth_refuel_tanker_")) {
+      return tankerMetaForId(
+        id,
+        sequenceNumber,
+        massKg,
+        LAUNCH_REFUEL_TANKER_METAS[0] || null,
+      );
+    }
+    const missionId = normalizeMissionId(vehicle?.missionId || runtime.mission.selectedId);
+    const missionName = safeMissionProfile(missionId)?.name || "Mission";
+    const vehicleName = String(vehicle?.vehicleName || `Starship ${sequenceNumber}`).trim() || `Starship ${sequenceNumber}`;
+    return {
+      id,
+      name: `${vehicleName} (${missionName})`,
+      body_type: "spacecraft",
+      parent: "earth",
+      radius_km: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5,
+      mass_kg: massKg,
+      semimajor_axis_km: null,
+      orbital_period_days: null,
+      phase: 0,
+      description: `Pad-launched autonomous Starship assigned to ${missionName}.`,
+    };
+  }
+
+  function serializeRuntimeForPersistence() {
+    const fleetVehicles = [];
+    if (runtime.fleet?.vehicles instanceof Map) {
+      for (const [id, vehicle] of runtime.fleet.vehicles.entries()) {
+        const normalizedId = String(id || vehicle?.id || "").trim();
+        if (!normalizedId) {
+          continue;
+        }
+        const snapshot = cloneJson(vehicle, {});
+        snapshot.id = normalizedId;
+        fleetVehicles.push(snapshot);
+      }
+    }
+    return {
+      phase: String(runtime.phase || "idle"),
+      elapsedSeconds: Math.max(0, finiteNumber(runtime.elapsedSeconds, 0)),
+      stageIndex: Math.max(0, Math.floor(finiteNumber(runtime.stageIndex, 0))),
+      stagePropellantKg: Math.max(0, finiteNumber(runtime.stagePropellantKg, 0)),
+      coastRemainingSec: Math.max(0, finiteNumber(runtime.coastRemainingSec, 0)),
+      lastStep: cloneJson(runtime.lastStep),
+      lastTelemetry: cloneJson(runtime.lastTelemetry),
+      lastError: String(runtime.lastError || ""),
+      autopilotEnabled: Boolean(runtime.autopilotEnabled),
+      autopilotMode: String(runtime.autopilotMode || "idle"),
+      targetOrbitAltitudeKm: finiteNumber(runtime.targetOrbitAltitudeKm, 250),
+      launchPlaneNormal: cloneVectorOrNull(runtime.launchPlaneNormal),
+      boosterDistanceKm: Math.max(0, finiteNumber(runtime.boosterDistanceKm, 0)),
+      starshipDistanceKm: Math.max(0, finiteNumber(runtime.starshipDistanceKm, 0)),
+      earthDistanceKm: finiteOrNull(runtime.earthDistanceKm),
+      earthClosingSpeedKmS: finiteOrNull(runtime.earthClosingSpeedKmS),
+      moonDistanceKm: finiteOrNull(runtime.moonDistanceKm),
+      moonClosingSpeedKmS: finiteOrNull(runtime.moonClosingSpeedKmS),
+      lastTrackedPositionKm: cloneVectorOrNull(runtime.lastTrackedPositionKm),
+      lastSurfaceSample: cloneJson(runtime.lastSurfaceSample),
+      windSeed: Math.max(0, Math.floor(finiteNumber(runtime.windSeed, Date.now() % 1_000_000))),
+      stageActuator: cloneJson(runtime.stageActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
+      stageMassModel: cloneJson(runtime.stageMassModel, createMassModelState()),
+      boosterActuator: cloneJson(runtime.boosterActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
+      boosterMassModel: cloneJson(runtime.boosterMassModel, createMassModelState()),
+      stage2RefuelRecoveryApplied: Boolean(runtime.stage2RefuelRecoveryApplied),
+      mission: {
+        selectedId: normalizeMissionId(runtime.mission.selectedId),
+        phase: String(runtime.mission.phase || ""),
+        phaseStartedElapsedSec: Math.max(0, finiteNumber(runtime.mission.phaseStartedElapsedSec, 0)),
+        completed: Boolean(runtime.mission.completed),
+      },
+      booster: {
+        active: Boolean(runtime.booster.active),
+        phase: String(runtime.booster.phase || "idle"),
+        guidanceMode: String(runtime.booster.guidanceMode || "booster-idle"),
+        propellantKg: Math.max(0, finiteNumber(runtime.booster.propellantKg, 0)),
+        initialPropellantKg: Math.max(0, finiteNumber(runtime.booster.initialPropellantKg, 0)),
+        separationTimeSec: Math.max(0, finiteNumber(runtime.booster.separationTimeSec, 0)),
+        landed: Boolean(runtime.booster.landed),
+        lastStep: cloneJson(runtime.booster.lastStep),
+        lastSurfaceSample: cloneJson(runtime.booster.lastSurfaceSample),
+        lastTrackedPositionKm: cloneVectorOrNull(runtime.booster.lastTrackedPositionKm),
+        telemetry: cloneJson(runtime.booster.telemetry),
+        contactHoldSec: Math.max(0, finiteNumber(runtime.booster.contactHoldSec, 0)),
+      },
+      refuel: cloneJson(runtime.refuel, refuelDefaults({ targetPropellantKg: stage2PropellantCapacityKg() })),
+      fleet: {
+        nextShipSequence: Math.max(1, Math.floor(finiteNumber(runtime.fleet?.nextShipSequence, 1))),
+        vehicles: fleetVehicles,
+      },
+      hotstage: cloneJson(runtime.hotstage, createHotstageState()),
+      pendingPadTankerLaunch: cloneJson(runtime.pendingPadTankerLaunch),
+    };
+  }
+
+  function applyActuatorSnapshot(currentState, snapshot, fallbackDirection = { x: 0, y: 0, z: 1 }) {
+    const base = createActuatorState(fallbackDirection);
+    const merged = {
+      ...base,
+      ...(currentState && typeof currentState === "object" ? currentState : {}),
+      ...(snapshot && typeof snapshot === "object" ? snapshot : {}),
+    };
+    merged.throttleCommand = clamp(finiteNumber(merged.throttleCommand, 0), 0, 1);
+    merged.throttleActual = clamp(finiteNumber(merged.throttleActual, 0), 0, 1);
+    merged.directionCommand = normalize(merged.directionCommand || fallbackDirection, fallbackDirection);
+    merged.directionActual = normalize(merged.directionActual || merged.directionCommand, merged.directionCommand);
+    merged.gimbalErrorDeg = Math.max(0, finiteNumber(merged.gimbalErrorDeg, 0));
+    return merged;
+  }
+
+  function applyMassModelSnapshot(currentState, snapshot) {
+    const base = createMassModelState();
+    const merged = {
+      ...base,
+      ...(currentState && typeof currentState === "object" ? currentState : {}),
+      ...(snapshot && typeof snapshot === "object" ? snapshot : {}),
+    };
+    merged.comNormalized = clamp(finiteNumber(merged.comNormalized, 0.5), 0, 1);
+    merged.inertiaNormalized = clamp(finiteNumber(merged.inertiaNormalized, 1), 0.1, 10);
+    merged.controlAuthorityScale = clamp(finiteNumber(merged.controlAuthorityScale, 1), 0.1, 5);
+    return merged;
+  }
+
+  function applyRuntimeSnapshot(snapshot = null) {
+    if (!snapshot || typeof snapshot !== "object") {
+      return false;
+    }
+    runtime.phase = String(snapshot.phase || runtime.phase || "idle");
+    runtime.elapsedSeconds = Math.max(0, finiteNumber(snapshot.elapsedSeconds, runtime.elapsedSeconds));
+    runtime.stageIndex = Math.max(0, Math.floor(finiteNumber(snapshot.stageIndex, runtime.stageIndex)));
+    runtime.stagePropellantKg = Math.max(0, finiteNumber(snapshot.stagePropellantKg, runtime.stagePropellantKg));
+    runtime.coastRemainingSec = Math.max(0, finiteNumber(snapshot.coastRemainingSec, runtime.coastRemainingSec));
+    runtime.lastStep = cloneJson(snapshot.lastStep);
+    runtime.lastTelemetry = cloneJson(snapshot.lastTelemetry);
+    runtime.lastError = String(snapshot.lastError || "");
+    runtime.autopilotEnabled = Boolean(snapshot.autopilotEnabled);
+    runtime.autopilotMode = String(snapshot.autopilotMode || runtime.autopilotMode || "idle");
+    runtime.targetOrbitAltitudeKm = Math.max(
+      100,
+      finiteNumber(snapshot.targetOrbitAltitudeKm, runtime.targetOrbitAltitudeKm),
+    );
+    runtime.launchPlaneNormal = cloneVectorOrNull(snapshot.launchPlaneNormal);
+    runtime.boosterDistanceKm = Math.max(0, finiteNumber(snapshot.boosterDistanceKm, runtime.boosterDistanceKm));
+    runtime.starshipDistanceKm = Math.max(0, finiteNumber(snapshot.starshipDistanceKm, runtime.starshipDistanceKm));
+    runtime.earthDistanceKm = finiteOrNull(snapshot.earthDistanceKm);
+    runtime.earthClosingSpeedKmS = finiteOrNull(snapshot.earthClosingSpeedKmS);
+    runtime.moonDistanceKm = finiteOrNull(snapshot.moonDistanceKm);
+    runtime.moonClosingSpeedKmS = finiteOrNull(snapshot.moonClosingSpeedKmS);
+    runtime.lastTrackedPositionKm = cloneVectorOrNull(snapshot.lastTrackedPositionKm);
+    runtime.lastSurfaceSample = cloneJson(snapshot.lastSurfaceSample);
+    runtime.windSeed = Math.max(0, Math.floor(finiteNumber(snapshot.windSeed, runtime.windSeed)));
+    runtime.stageActuator = applyActuatorSnapshot(
+      runtime.stageActuator,
+      snapshot.stageActuator,
+      { x: 0, y: 0, z: 1 },
+    );
+    runtime.stageMassModel = applyMassModelSnapshot(runtime.stageMassModel, snapshot.stageMassModel);
+    runtime.boosterActuator = applyActuatorSnapshot(
+      runtime.boosterActuator,
+      snapshot.boosterActuator,
+      { x: 0, y: 0, z: 1 },
+    );
+    runtime.boosterMassModel = applyMassModelSnapshot(runtime.boosterMassModel, snapshot.boosterMassModel);
+    runtime.stage2RefuelRecoveryApplied = Boolean(snapshot.stage2RefuelRecoveryApplied);
+
+    const missionSnapshot = snapshot.mission && typeof snapshot.mission === "object"
+      ? snapshot.mission
+      : {};
+    const missionId = normalizeMissionId(missionSnapshot.selectedId || runtime.mission.selectedId);
+    runtime.mission.selectedId = missionId;
+    runtime.mission.phase = String(
+      missionSnapshot.phase || defaultMissionPhaseForProfileId(missionId),
+    );
+    runtime.mission.phaseStartedElapsedSec = Math.max(
+      0,
+      finiteNumber(missionSnapshot.phaseStartedElapsedSec, runtime.mission.phaseStartedElapsedSec),
+    );
+    runtime.mission.completed = Boolean(missionSnapshot.completed);
+
+    const boosterSnapshot = snapshot.booster && typeof snapshot.booster === "object"
+      ? snapshot.booster
+      : {};
+    runtime.booster.active = Boolean(boosterSnapshot.active);
+    runtime.booster.phase = String(boosterSnapshot.phase || runtime.booster.phase || "idle");
+    runtime.booster.guidanceMode = String(
+      boosterSnapshot.guidanceMode || runtime.booster.guidanceMode || "booster-idle",
+    );
+    runtime.booster.propellantKg = Math.max(
+      0,
+      finiteNumber(boosterSnapshot.propellantKg, runtime.booster.propellantKg),
+    );
+    runtime.booster.initialPropellantKg = Math.max(
+      0,
+      finiteNumber(boosterSnapshot.initialPropellantKg, runtime.booster.initialPropellantKg),
+    );
+    runtime.booster.separationTimeSec = Math.max(
+      0,
+      finiteNumber(boosterSnapshot.separationTimeSec, runtime.booster.separationTimeSec),
+    );
+    runtime.booster.landed = Boolean(boosterSnapshot.landed);
+    runtime.booster.lastStep = cloneJson(boosterSnapshot.lastStep);
+    runtime.booster.lastSurfaceSample = cloneJson(boosterSnapshot.lastSurfaceSample);
+    runtime.booster.lastTrackedPositionKm = cloneVectorOrNull(boosterSnapshot.lastTrackedPositionKm);
+    runtime.booster.telemetry = cloneJson(boosterSnapshot.telemetry);
+    runtime.booster.contactHoldSec = Math.max(
+      0,
+      finiteNumber(boosterSnapshot.contactHoldSec, runtime.booster.contactHoldSec),
+    );
+
+    const refuelDefaultsSnapshot = refuelDefaults({
+      targetPropellantKg: stage2PropellantCapacityKg(),
+    });
+    const incomingRefuel = snapshot.refuel && typeof snapshot.refuel === "object"
+      ? cloneJson(snapshot.refuel, {})
+      : {};
+    runtime.refuel = {
+      ...refuelDefaultsSnapshot,
+      ...incomingRefuel,
+    };
+    runtime.refuel.flights = Array.isArray(incomingRefuel.flights)
+      ? incomingRefuel.flights
+        .map((flight) => ({
+          ...flight,
+          id: String(flight?.id || "").trim(),
+          rcsJets: Array.isArray(flight?.rcsJets) ? [...flight.rcsJets] : [],
+          shipRcsJets: Array.isArray(flight?.shipRcsJets) ? [...flight.shipRcsJets] : [],
+        }))
+        .filter((flight) => Boolean(flight.id))
+      : [];
+    runtime.refuel.consumedTankerIds = Array.from(
+      new Set(
+        (Array.isArray(incomingRefuel.consumedTankerIds) ? incomingRefuel.consumedTankerIds : [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean),
+      ),
+    );
+    runtime.refuel.nextGeneratedId = Math.max(
+      1,
+      Math.floor(finiteNumber(runtime.refuel.nextGeneratedId, 1)),
+    );
+    runtime.refuel.nextSlot = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.refuel.nextSlot, 0)),
+    );
+    runtime.refuel.requiredFlights = Math.max(0, finiteNumber(runtime.refuel.requiredFlights, 0));
+    runtime.refuel.completedFlights = Math.max(0, finiteNumber(runtime.refuel.completedFlights, 0));
+    runtime.refuel.launchedFlights = Math.max(0, finiteNumber(runtime.refuel.launchedFlights, 0));
+    refuelController.recalcRefuelFlightCounts?.();
+
+    const fleetSnapshot = snapshot.fleet && typeof snapshot.fleet === "object"
+      ? snapshot.fleet
+      : {};
+    runtime.fleet = runtime.fleet && typeof runtime.fleet === "object"
+      ? runtime.fleet
+      : { nextShipSequence: 1, vehicles: new Map() };
+    runtime.fleet.nextShipSequence = Math.max(
+      1,
+      Math.floor(finiteNumber(fleetSnapshot.nextShipSequence, runtime.fleet.nextShipSequence)),
+    );
+    const fleetVehicles = Array.isArray(fleetSnapshot.vehicles)
+      ? fleetSnapshot.vehicles
+      : [];
+    runtime.fleet.vehicles = new Map();
+    for (let i = 0; i < fleetVehicles.length; i += 1) {
+      const vehicle = cloneJson(fleetVehicles[i], {});
+      const id = String(vehicle?.id || "").trim();
+      if (!id || !isManagedLaunchBodyId(id)) {
+        continue;
+      }
+      vehicle.id = id;
+      vehicle.stageProfiles = Array.isArray(vehicle.stageProfiles) ? vehicle.stageProfiles : [];
+      runtime.fleet.vehicles.set(id, vehicle);
+    }
+
+    runtime.hotstage = {
+      ...createHotstageState(),
+      ...(cloneJson(snapshot.hotstage, {}) || {}),
+    };
+    runtime.hotstage.active = Boolean(runtime.hotstage.active);
+    runtime.hotstage.ignitionTimeSec = runtime.hotstage.active
+      ? finiteOrNull(runtime.hotstage.ignitionTimeSec)
+      : null;
+    runtime.hotstage.overlapSeconds = Math.max(
+      0,
+      finiteNumber(runtime.hotstage.overlapSeconds, hotstageOverlapSeconds()),
+    );
+    runtime.hotstage.boosterReservePropellantKg = Math.max(
+      0,
+      finiteNumber(runtime.hotstage.boosterReservePropellantKg, 0),
+    );
+    runtime.hotstage.ignitionStableSec = Math.max(0, finiteNumber(runtime.hotstage.ignitionStableSec, 0));
+    runtime.hotstage.virtualSeparationKm = Math.max(0, finiteNumber(runtime.hotstage.virtualSeparationKm, 0));
+    runtime.hotstage.detachReason = String(runtime.hotstage.detachReason || "");
+
+    runtime.pendingPadTankerLaunch = snapshot.pendingPadTankerLaunch
+      && typeof snapshot.pendingPadTankerLaunch === "object"
+      ? cloneJson(snapshot.pendingPadTankerLaunch, null)
+      : null;
+    if (runtime.pendingPadTankerLaunch && runtime.pendingPadTankerLaunch.tankerId) {
+      runtime.pendingPadTankerLaunch.tankerId = String(runtime.pendingPadTankerLaunch.tankerId);
+    }
+    lastRuntimeLogState = captureRuntimeLogState();
+    return true;
+  }
+
+  function exportPersistentSnapshot(state, nowMs = Date.now()) {
+    if (!state?.dynamicBodies || typeof state.dynamicBodies.entries !== "function") {
+      return null;
+    }
+    const earthState = earthStateFromNBody(state);
+    const earthVectorReady = Boolean(
+      earthState
+      && finiteVector(earthState.position)
+      && finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }),
+    );
+    const managedBodies = [];
+    const catalogBodies = [];
+    for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
+      const id = String(bodyId || "");
+      if (!isManagedLaunchBodyId(id)) {
+        continue;
+      }
+      if (
+        !finiteVector(bodyState?.position)
+        || !finiteVector(bodyState?.velocity || { x: 0, y: 0, z: 0 })
+      ) {
+        continue;
+      }
+      const absolutePosition = cloneVector(bodyState.position);
+      const absoluteVelocity = cloneVector(bodyState.velocity || { x: 0, y: 0, z: 0 });
+      const relativeToEarth = earthVectorReady
+        ? {
+          position: cloneVector(subtract(absolutePosition, earthState.position)),
+          velocity: cloneVector(
+            subtract(
+              absoluteVelocity,
+              earthState.velocity || { x: 0, y: 0, z: 0 },
+            ),
+          ),
+        }
+        : null;
+      managedBodies.push({
+        id,
+        massKg: Math.max(MIN_ROCKET_MASS_KG, finiteNumber(bodyState.massKg, MIN_ROCKET_MASS_KG)),
+        position: absolutePosition,
+        velocity: absoluteVelocity,
+        relativeToEarth,
+      });
+      const meta = managedCatalogMetaForBody(id, bodyState);
+      if (meta) {
+        catalogBodies.push(meta);
+      }
+    }
+    if (managedBodies.length <= 0) {
+      return null;
+    }
+    return {
+      version: 1,
+      savedAtMs: Math.max(0, finiteNumber(nowMs, Date.now())),
+      runtime: serializeRuntimeForPersistence(),
+      navigation: primaryNavigationSystem.snapshot?.() || null,
+      managedBodies,
+      catalogBodies,
+    };
+  }
+
+  function importPersistentSnapshot(state, snapshot, nowMs = Date.now()) {
+    if (!state?.dynamicBodies || typeof state.dynamicBodies.set !== "function") {
+      return { applied: false, reason: "state_unavailable" };
+    }
+    const payload = snapshot && typeof snapshot === "object" ? snapshot : null;
+    if (!payload) {
+      return { applied: false, reason: "snapshot_unavailable" };
+    }
+    const runtimeRestored = applyRuntimeSnapshot(payload.runtime || null);
+    if (!runtimeRestored) {
+      return { applied: false, reason: "runtime_snapshot_unavailable" };
+    }
+
+    const earthState = earthStateFromNBody(state);
+    const earthVectorReady = Boolean(
+      earthState
+      && finiteVector(earthState.position)
+      && finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 }),
+    );
+
+    for (const bodyId of Array.from(state.dynamicBodies.keys())) {
+      if (isManagedLaunchBodyId(bodyId)) {
+        state.dynamicBodies.delete(bodyId);
+      }
+    }
+
+    const restoredBodyIds = [];
+    const managedBodies = Array.isArray(payload.managedBodies) ? payload.managedBodies : [];
+    for (let i = 0; i < managedBodies.length; i += 1) {
+      const body = managedBodies[i];
+      const id = String(body?.id || "").trim();
+      if (!id || !isManagedLaunchBodyId(id)) {
+        continue;
+      }
+      let position = null;
+      let velocity = null;
+      if (
+        earthVectorReady
+        && finiteVector(body?.relativeToEarth?.position)
+        && finiteVector(body?.relativeToEarth?.velocity)
+      ) {
+        position = add(earthState.position, cloneVector(body.relativeToEarth.position));
+        velocity = add(
+          earthState.velocity || { x: 0, y: 0, z: 0 },
+          cloneVector(body.relativeToEarth.velocity),
+        );
+      } else if (
+        finiteVector(body?.position)
+        && finiteVector(body?.velocity)
+      ) {
+        position = cloneVector(body.position);
+        velocity = cloneVector(body.velocity);
+      }
+      if (!position || !velocity) {
+        continue;
+      }
+      state.dynamicBodies.set(id, {
+        id,
+        massKg: Math.max(MIN_ROCKET_MASS_KG, finiteNumber(body?.massKg, MIN_ROCKET_MASS_KG)),
+        position,
+        velocity,
+      });
+      restoredBodyIds.push(id);
+    }
+
+    if (!state.dynamicBodies.has(LAUNCH_BODY_ID)) {
+      ensureRocketInNBody(state, nowMs);
+      if (state.dynamicBodies.has(LAUNCH_BODY_ID)) {
+        restoredBodyIds.push(LAUNCH_BODY_ID);
+      }
+    }
+    if (!state.dynamicBodies.has(LAUNCH_BOOSTER_BODY_ID)) {
+      clearBoosterFromState(state);
+    }
+
+    if (typeof primaryNavigationSystem.restore === "function") {
+      primaryNavigationSystem.restore(payload.navigation || null, {
+        missionIdFallback: runtime.mission.selectedId,
+        modeFallback: NAVIGATION_SYSTEM_MODES.RULE_BASED_BASELINE,
+        timestampSec: runtime.elapsedSeconds,
+      });
+    } else {
+      primaryNavigationSystem.reset({
+        missionIdOverride: runtime.mission.selectedId,
+        modeOverride: NAVIGATION_SYSTEM_MODES.RULE_BASED_BASELINE,
+        timestampSec: runtime.elapsedSeconds,
+      });
+    }
+
+    lastRuntimeLogState = captureRuntimeLogState();
+    emitLaunchEvent("launch_state_restored", {
+      restoredBodyCount: restoredBodyIds.length,
+      missionId: runtime.mission.selectedId,
+      missionPhase: runtime.mission.phase,
+      phase: runtime.phase,
+      savedAtMs: finiteOrNull(payload.savedAtMs),
+    });
+    return {
+      applied: true,
+      restoredBodyIds,
+      catalogBodies: Array.isArray(payload.catalogBodies) ? payload.catalogBodies : [],
+      savedAtMs: finiteOrNull(payload.savedAtMs),
+    };
+  }
+
   emitLaunchEvent("launch_controller_initialized", {
     autopilotEnabled: runtime.autopilotEnabled,
     defaultMissionId: runtime.mission.selectedId,
@@ -2969,10 +4317,16 @@ export function createLaunchController(options) {
     ensureRocketInNBody,
     resetToPad,
     startLaunch,
+    launchMissionShip,
+    removeVehicleById,
+    launchRefuelTanker,
     prepareStep,
     externalAccelerationKmS2,
     finalizeStep,
     statusSnapshot,
+    statusSnapshotForBody,
+    exportPersistentSnapshot,
+    importPersistentSnapshot,
     setMissionProfile,
     getMissionProfile,
     getMissionProfiles,

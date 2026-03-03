@@ -4,13 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260302e" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260303a" />
   </head>
   <body>
     <canvas id="scene"></canvas>
     <button id="launch-control-button" class="launch-floating-button" type="button" aria-pressed="false">Launch</button>
     <button id="launch-return-button" class="launch-floating-button launch-return-button" type="button" aria-pressed="false">Return to Ship</button>
     <button id="launch-reset-button" class="launch-floating-button launch-reset-button" type="button" aria-pressed="false">Reset</button>
+    <button id="launch-delete-button" class="launch-floating-button launch-delete-button" type="button" aria-pressed="false">Delete Selected</button>
+    <button id="launch-tanker-button" class="launch-floating-button launch-tanker-button" type="button" aria-pressed="false">Launch Tanker</button>
     <button id="launch-mission-control-button" class="launch-floating-button launch-mission-control-button" type="button" aria-pressed="false">Mission Control</button>
     <div id="planet-info" class="planet-info"></div>
     <aside id="body-legend" class="body-legend" aria-label="Solar system bodies">
@@ -99,6 +101,10 @@
               <p class="mission-control-live-viewport-label">Scene Camera Feed</p>
             </div>
           </section>
+          <section class="mission-control-block mission-control-fleet-block">
+            <h3>Fleet Operations</h3>
+            <div id="mission-control-fleet" class="mission-control-fleet"></div>
+          </section>
           <section class="mission-control-block mission-control-overview-block">
             <h3>Flight Overview</h3>
             <div id="mission-control-overview" class="mission-control-overview-grid"></div>
@@ -108,12 +114,12 @@
             <ol id="mission-control-sequence" class="mission-control-sequence-list"></ol>
           </section>
           <section class="mission-control-block mission-control-events-block">
-            <h3>Event Timeline</h3>
+            <h3>Terminal Timeline</h3>
             <pre id="mission-control-events" class="mission-control-events-log"></pre>
           </section>
         </main>
       </div>
     </section>
-    <script type="module" src="/static/js/app.js?v=20260302e"></script>
+    <script type="module" src="/static/js/app.js?v=20260303ac"></script>
   </body>
 </html>

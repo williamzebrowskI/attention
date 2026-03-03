@@ -1,5 +1,13 @@
 export const LAUNCH_BODY_ID = "earth_launch_vehicle";
 export const LAUNCH_BOOSTER_BODY_ID = "earth_launch_booster";
+export const LAUNCH_REFUEL_TANKER_BODY_IDS = Object.freeze([
+  "earth_refuel_tanker_1",
+  "earth_refuel_tanker_2",
+  "earth_refuel_tanker_3",
+  "earth_refuel_tanker_4",
+  "earth_refuel_tanker_5",
+  "earth_refuel_tanker_6",
+]);
 
 export const STARSHIP_STACK_DIMENSIONS_KM = Object.freeze({
   diameterKm: 0.009,
@@ -212,3 +220,18 @@ export const LAUNCH_BOOSTER_META = Object.freeze({
   phase: 0,
   description: "Separated first stage booster with controlled atmospheric reentry and landing burn.",
 });
+
+export const LAUNCH_REFUEL_TANKER_METAS = Object.freeze(
+  LAUNCH_REFUEL_TANKER_BODY_IDS.map((id, index) => Object.freeze({
+    id,
+    name: `Starship Tanker ${index + 1}`,
+    body_type: "spacecraft",
+    parent: "earth",
+    radius_km: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5,
+    mass_kg: (Number(LAUNCH_VEHICLE_CONFIG.stages?.[1]?.dryMassKg) || 120_000) + 220_000,
+    semimajor_axis_km: null,
+    orbital_period_days: null,
+    phase: 0,
+    description: "Reusable orbital tanker Starship used for in-space propellant transfer.",
+  })),
+);
