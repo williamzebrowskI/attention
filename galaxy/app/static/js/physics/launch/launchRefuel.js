@@ -22,6 +22,7 @@ import {
   vectorDot,
   vectorMagnitude,
 } from "./refuel/math.js";
+import { applyAttitudeLimitedAcceleration } from "./refuel/attitude.js";
 import {
   finiteNonNegative,
   normalizedTargetFillFraction,
@@ -43,6 +44,55 @@ function defaultTankerMeta({ id, sequenceNumber, massKg }) {
     phase: 0,
     description: "Reusable orbital tanker Starship used for in-space propellant transfer.",
   };
+}
+
+function defaultFlightAttitudeTelemetry() {
+  return {
+    attitudeAxisKm: null,
+    attitudeDesiredAxisKm: null,
+    attitudeErrorDeg: 0,
+    attitudeAuthority: 1,
+    attitudeLimited: false,
+    attitudeControlConeDeg: 0,
+  };
+}
+
+function defaultRefuelFlightRuntimeState(overrides = {}) {
+  return {
+    transferPlannedKg: 0,
+    transferRemainingKg: 0,
+    transferTransferredKg: 0,
+    transferRateKgS: 0,
+    transferDurationSec: 0,
+    transferStartedElapsedSec: 0,
+    undockDurationSec: 0,
+    undockRemainingSec: 0,
+    dockBandStableSec: 0,
+    dockBandInRange: false,
+    dockBandRadialStable: false,
+    availableForDocking: false,
+    shipRcsActive: false,
+    shipRcsMode: "",
+    shipRcsAuthority: 0,
+    shipRcsJets: [],
+    ...defaultFlightAttitudeTelemetry(),
+    ...overrides,
+  };
+}
+
+function normalizeFiniteAxis(axisCandidate, fallbackAxis = { x: 0, y: 0, z: 1 }) {
+  const source = axisCandidate && typeof axisCandidate === "object"
+    ? axisCandidate
+    : fallbackAxis;
+  const normalized = normalize(source, fallbackAxis);
+  if (
+    Number.isFinite(Number(normalized?.x))
+    && Number.isFinite(Number(normalized?.y))
+    && Number.isFinite(Number(normalized?.z))
+  ) {
+    return normalized;
+  }
+  return normalize(fallbackAxis, { x: 0, y: 0, z: 1 });
 }
 
 function buildTankerIdentity(state, runtime) {
@@ -455,22 +505,9 @@ export function createLaunchRefuelController({
             existingFlight.status = "external_orbit";
           }
           existingFlight.completedElapsedSec = 0;
-          existingFlight.transferPlannedKg = 0;
-          existingFlight.transferRemainingKg = 0;
-          existingFlight.transferTransferredKg = 0;
-          existingFlight.transferRateKgS = 0;
-          existingFlight.transferDurationSec = 0;
-          existingFlight.transferStartedElapsedSec = 0;
-          existingFlight.undockDurationSec = 0;
-          existingFlight.undockRemainingSec = 0;
-          existingFlight.dockBandStableSec = 0;
-          existingFlight.dockBandInRange = false;
-          existingFlight.dockBandRadialStable = false;
-          existingFlight.availableForDocking = false;
-          existingFlight.shipRcsActive = false;
-          existingFlight.shipRcsMode = "";
-          existingFlight.shipRcsAuthority = 0;
-          existingFlight.shipRcsJets = [];
+          Object.assign(existingFlight, defaultRefuelFlightRuntimeState({
+            attitudeAxisKm: existingFlight.attitudeAxisKm || null,
+          }));
           reactivatedCount += 1;
         }
         if (!(Number(existingFlight.transferKg) > 1e-6)) {
@@ -496,22 +533,7 @@ export function createLaunchRefuelController({
         launchedElapsedSec: runtime.elapsedSeconds,
         launchTimestampMs: nowMs,
         transferKg,
-        transferPlannedKg: 0,
-        transferRemainingKg: 0,
-        transferTransferredKg: 0,
-        transferRateKgS: 0,
-        transferDurationSec: 0,
-        transferStartedElapsedSec: 0,
-        undockDurationSec: 0,
-        undockRemainingSec: 0,
-        dockBandStableSec: 0,
-        dockBandInRange: false,
-        dockBandRadialStable: false,
-        availableForDocking: false,
-        shipRcsActive: false,
-        shipRcsMode: "",
-        shipRcsAuthority: 0,
-        shipRcsJets: [],
+        ...defaultRefuelFlightRuntimeState(),
       });
       existingFlightsById.set(tankerId, runtime.refuel.flights[runtime.refuel.flights.length - 1]);
       slot += 1;
@@ -765,6 +787,7 @@ export function createLaunchRefuelController({
         flight.dockBandInRange = false;
         flight.dockBandRadialStable = false;
         flight.availableForDocking = false;
+        Object.assign(flight, defaultFlightAttitudeTelemetry());
         continue;
       }
       const sensedDistanceKm = Number.isFinite(Number(metrics.distanceKm))
@@ -787,6 +810,37 @@ export function createLaunchRefuelController({
       const rocketVelocityNow = rocketState.velocity || zeroVector;
       const tankerRelVel = subtract(tankerState.velocity || zeroVector, earthVelocity);
       const relVelToRocket = subtract(tankerState.velocity || zeroVector, rocketVelocityNow);
+      const tankerTangentialVel = subtract(tankerRelVel, scale(localUp, vectorDot(tankerRelVel, localUp)));
+      const fallbackAttitudeAxisKm = normalizeFiniteAxis(
+        vectorMagnitude(tankerTangentialVel) > 1e-9 ? tankerTangentialVel : localUp,
+        localUp,
+      );
+      flight.attitudeAxisKm = normalizeFiniteAxis(flight.attitudeAxisKm, fallbackAttitudeAxisKm);
+      flight.attitudeDesiredAxisKm = flight.attitudeAxisKm;
+      flight.attitudeErrorDeg = 0;
+      flight.attitudeAuthority = 1;
+      flight.attitudeLimited = false;
+      flight.attitudeControlConeDeg = 0;
+
+      function resolveTankerAttitudeCommand(commandedAccelKmS2) {
+        const constrained = applyAttitudeLimitedAcceleration({
+          commandedAccelKmS2,
+          currentAxisKm: flight.attitudeAxisKm,
+          fallbackAxisKm: fallbackAttitudeAxisKm,
+          dtSeconds: rcsDtSeconds,
+          maxTurnRateDegPerSec: Number(config.attitudeSlewRateDegPerSec) || 22,
+          controlConeDeg: Number(config.attitudeControlConeDeg) || 28,
+          freeAxisAccelKmS2: Number(config.attitudeFreeAxisAccelKmS2) || 0.00008,
+          freeConeDeg: Number(config.attitudeFreeConeDeg) || 82,
+        });
+        flight.attitudeAxisKm = normalizeFiniteAxis(constrained.thrustAxisKm, fallbackAttitudeAxisKm);
+        flight.attitudeDesiredAxisKm = normalizeFiniteAxis(constrained.desiredAxisKm, flight.attitudeAxisKm);
+        flight.attitudeErrorDeg = Math.max(0, Number(constrained.attitudeErrorDeg) || 0);
+        flight.attitudeAuthority = clamp(Number(constrained.attitudeAuthority) || 0, 0, 1);
+        flight.attitudeLimited = Boolean(constrained.attitudeLimited);
+        flight.attitudeControlConeDeg = Math.max(0, Number(constrained.controlConeDeg) || 0);
+        return constrained.appliedAccelKmS2;
+      }
       const orbitHold = tankerOrbitHoldCommand({
         tankerState,
         earthState,
@@ -824,14 +878,17 @@ export function createLaunchRefuelController({
       if (!shouldCommandTanker) {
         flight.status = "external_orbit";
         if (orbitHold) {
-          const holdDeltaV = scale(orbitHold.commandedAccelKmS2, rcsDtSeconds);
+          const holdAppliedAccelKmS2 = resolveTankerAttitudeCommand(orbitHold.commandedAccelKmS2);
+          const holdDeltaV = scale(holdAppliedAccelKmS2, rcsDtSeconds);
           if (rcsDtSeconds > 0 && vectorMagnitude(holdDeltaV) > 0) {
             tankerState.velocity = add(tankerState.velocity || zeroVector, holdDeltaV);
           }
-          const holdAccelMagKmS2 = vectorMagnitude(orbitHold.commandedAccelKmS2);
+          const holdAccelMagKmS2 = vectorMagnitude(holdAppliedAccelKmS2);
           const holdDeltaVMagKmS = vectorMagnitude(holdDeltaV);
           flight.rcsActive = holdAccelMagKmS2 > 1e-10;
-          flight.rcsMode = orbitHold.mode;
+          flight.rcsMode = flight.attitudeLimited
+            ? `${orbitHold.mode}-attitude-limit`
+            : orbitHold.mode;
           flight.rcsAuthority = clamp(
             holdAccelMagKmS2 / Math.max(orbitHold.maxAccelKmS2, 1e-9),
             0,
@@ -845,7 +902,7 @@ export function createLaunchRefuelController({
           flight.verticalRateKmS = Number(orbitHold.radialSpeedKmS) || 0;
           flight.rcsJets = flight.rcsActive
             ? tankerRcsJetsFromCommand({
-              commandedAccelKmS2: orbitHold.commandedAccelKmS2,
+              commandedAccelKmS2: holdAppliedAccelKmS2,
               localUp: orbitHold.localUp,
               tankerRelVel,
               relVelToRocket,
@@ -862,6 +919,11 @@ export function createLaunchRefuelController({
           flight.verticalErrorKm = 0;
           flight.verticalRateKmS = 0;
           flight.rcsJets = [];
+          flight.attitudeDesiredAxisKm = flight.attitudeAxisKm;
+          flight.attitudeErrorDeg = 0;
+          flight.attitudeAuthority = 1;
+          flight.attitudeLimited = false;
+          flight.attitudeControlConeDeg = 0;
         }
         flight.shipRcsActive = false;
         flight.shipRcsMode = "";
@@ -886,6 +948,12 @@ export function createLaunchRefuelController({
           z: Number(lockTargetPosition.z) || 0,
         };
         tankerState.velocity = { ...(rocketState.velocity || zeroVector) };
+        flight.attitudeAxisKm = normalizeFiniteAxis(dockLockUp, localUp);
+        flight.attitudeDesiredAxisKm = flight.attitudeAxisKm;
+        flight.attitudeErrorDeg = 0;
+        flight.attitudeAuthority = 1;
+        flight.attitudeLimited = false;
+        flight.attitudeControlConeDeg = 0;
 
         const plannedTransferKg = Math.max(0, Number(flight.transferPlannedKg) || Number(flight.transferKg) || 0);
         const remainingKg = Math.max(0, Number(flight.transferRemainingKg) || plannedTransferKg);
@@ -979,6 +1047,12 @@ export function createLaunchRefuelController({
         const shipDeltaV = scale(dockLockUp, -separationAccelKmS2 * rcsDtSeconds * 0.35);
         tankerState.velocity = add(tankerState.velocity || zeroVector, tankerDeltaV);
         rocketState.velocity = add(rocketState.velocity || zeroVector, shipDeltaV);
+        flight.attitudeAxisKm = normalizeFiniteAxis(dockLockUp, localUp);
+        flight.attitudeDesiredAxisKm = flight.attitudeAxisKm;
+        flight.attitudeErrorDeg = 0;
+        flight.attitudeAuthority = 1;
+        flight.attitudeLimited = false;
+        flight.attitudeControlConeDeg = 0;
 
         undockRemainingSec = Math.max(0, undockRemainingSec - safeDtSeconds);
         flight.undockRemainingSec = undockRemainingSec;
@@ -1015,6 +1089,11 @@ export function createLaunchRefuelController({
         flight.shipRcsMode = "undocked";
         flight.shipRcsAuthority = 0;
         flight.shipRcsJets = [];
+        flight.attitudeDesiredAxisKm = flight.attitudeAxisKm;
+        flight.attitudeErrorDeg = 0;
+        flight.attitudeAuthority = 1;
+        flight.attitudeLimited = false;
+        flight.attitudeControlConeDeg = 0;
         tankerState.massKg = dryMassKg;
         markTankerConsumed(flight.id);
         runtime.refuel.lastAction = "undock_completed";
@@ -1110,8 +1189,8 @@ export function createLaunchRefuelController({
         }
       }
       commandedAccelKmS2 = clampVectorMagnitude(commandedAccelKmS2, maxAccelKmS2);
-
-      const commandedDeltaVKmS = scale(commandedAccelKmS2, rcsDtSeconds);
+      const appliedAccelKmS2 = resolveTankerAttitudeCommand(commandedAccelKmS2);
+      const commandedDeltaVKmS = scale(appliedAccelKmS2, rcsDtSeconds);
       if (rcsDtSeconds > 0 && vectorMagnitude(commandedDeltaVKmS) > 0) {
         tankerState.velocity = add(tankerState.velocity || zeroVector, commandedDeltaVKmS);
       }
@@ -1155,10 +1234,10 @@ export function createLaunchRefuelController({
         }
       }
 
-      const rcsAccelMagKmS2 = vectorMagnitude(commandedAccelKmS2);
+      const rcsAccelMagKmS2 = vectorMagnitude(appliedAccelKmS2);
       const rcsDeltaVMagKmS = vectorMagnitude(commandedDeltaVKmS);
       const rcsJets = tankerRcsJetsFromCommand({
-        commandedAccelKmS2,
+        commandedAccelKmS2: appliedAccelKmS2,
         localUp,
         tankerRelVel,
         relVelToRocket,
@@ -1178,7 +1257,9 @@ export function createLaunchRefuelController({
         })
         : [];
       flight.rcsActive = rcsAccelMagKmS2 > 1e-10;
-      flight.rcsMode = mode;
+      flight.rcsMode = flight.attitudeLimited
+        ? `${mode}-attitude-limit`
+        : mode;
       flight.rcsAuthority = clamp(
         rcsAccelMagKmS2 / Math.max(maxAccelKmS2, 1e-9),
         0,
@@ -1259,6 +1340,11 @@ export function createLaunchRefuelController({
         flight.shipRcsMode = "";
         flight.shipRcsAuthority = 0;
         flight.shipRcsJets = [];
+        flight.attitudeDesiredAxisKm = flight.attitudeAxisKm;
+        flight.attitudeErrorDeg = 0;
+        flight.attitudeAuthority = 1;
+        flight.attitudeLimited = false;
+        flight.attitudeControlConeDeg = 0;
         tankerState.massKg = dryMassKg;
         markTankerConsumed(flight.id);
         continue;
@@ -1427,22 +1513,9 @@ export function createLaunchRefuelController({
       launchedElapsedSec: runtime.elapsedSeconds,
       launchTimestampMs: nowMs,
       transferKg,
-      transferPlannedKg: 0,
-      transferRemainingKg: 0,
-      transferTransferredKg: 0,
-      transferRateKgS: 0,
-      transferDurationSec: 0,
-      transferStartedElapsedSec: 0,
-      undockDurationSec: 0,
-      undockRemainingSec: 0,
-      dockBandStableSec: 0,
-      dockBandInRange: false,
-      dockBandRadialStable: false,
-      availableForDocking: false,
-      shipRcsActive: false,
-      shipRcsMode: "",
-      shipRcsAuthority: 0,
-      shipRcsJets: [],
+      ...defaultRefuelFlightRuntimeState({
+        attitudeAxisKm: normalizeFiniteAxis(eligibility.rocketState.velocity, normalize(offset, { x: 0, y: 0, z: 1 })),
+      }),
     });
     runtime.refuel.launchedFlights = Math.max(0, Number(runtime.refuel.launchedFlights) || 0) + 1;
     runtime.refuel.nextSlot = slot + 1;

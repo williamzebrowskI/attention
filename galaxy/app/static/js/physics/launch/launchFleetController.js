@@ -1877,6 +1877,29 @@ export function createLaunchFleetController({
     const rcsOrbitCorrectionForceN = (vehicleKind === "tanker" || stepRcsActive)
       ? Math.max(0, (Number(shipState.massKg) || 0) * rcsOrbitCorrectionAccelKmS2 * 1000)
       : 0;
+    const rcsErrorDeg = Math.max(0, Number(refuelFlight?.attitudeErrorDeg) || 0);
+    const rcsAttitudeAuthority = clamp(
+      Number.isFinite(Number(refuelFlight?.attitudeAuthority))
+        ? Number(refuelFlight.attitudeAuthority)
+        : 1,
+      0,
+      1,
+    );
+    const rcsAttitudeLimited = Boolean(refuelFlight?.attitudeLimited);
+    const rcsThrustAxisKm = finiteVector(refuelFlight?.attitudeAxisKm)
+      ? {
+        x: Number(refuelFlight.attitudeAxisKm.x) || 0,
+        y: Number(refuelFlight.attitudeAxisKm.y) || 0,
+        z: Number(refuelFlight.attitudeAxisKm.z) || 0,
+      }
+      : null;
+    const rcsDesiredAxisKm = finiteVector(refuelFlight?.attitudeDesiredAxisKm)
+      ? {
+        x: Number(refuelFlight.attitudeDesiredAxisKm.x) || 0,
+        y: Number(refuelFlight.attitudeDesiredAxisKm.y) || 0,
+        z: Number(refuelFlight.attitudeDesiredAxisKm.z) || 0,
+      }
+      : null;
     const missionPhaseGateReason = fleetMissionPhaseGateReason({
       vehicle,
       orbital,
@@ -1993,9 +2016,13 @@ export function createLaunchFleetController({
       moonProjectedMissDistanceKm,
       missionPhaseGateReason,
       rcsActive: flightRcsActive,
-      rcsErrorDeg: 0,
+      rcsErrorDeg,
       rcsAuthority,
       rcsJets,
+      rcsAttitudeAuthority,
+      rcsAttitudeLimited,
+      rcsThrustAxisKm,
+      rcsDesiredAxisKm,
       rcsOrbitCorrectionAccelKmS2,
       rcsOrbitCorrectionForceN,
       launchSiteName: LAUNCH_SITE.name || "Launch Site",

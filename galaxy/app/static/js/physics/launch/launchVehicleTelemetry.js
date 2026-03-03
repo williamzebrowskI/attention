@@ -215,6 +215,29 @@ export function buildVehicleStatusSnapshot({
   const tankerRcsOrbitCorrectionForceN = vehicleKind === "tanker"
     ? Math.max(0, (Number(bodyState.massKg) || 0) * tankerRcsOrbitCorrectionAccelKmS2 * 1000)
     : 0;
+  const tankerAttitudeErrorDeg = Math.max(0, Number(tankerRefuelFlight?.attitudeErrorDeg) || 0);
+  const tankerAttitudeAuthority = clamp(
+    Number.isFinite(Number(tankerRefuelFlight?.attitudeAuthority))
+      ? Number(tankerRefuelFlight.attitudeAuthority)
+      : 1,
+    0,
+    1,
+  );
+  const tankerAttitudeLimited = Boolean(tankerRefuelFlight?.attitudeLimited);
+  const tankerThrustAxisKm = finiteVector?.(tankerRefuelFlight?.attitudeAxisKm)
+    ? {
+      x: Number(tankerRefuelFlight.attitudeAxisKm.x) || 0,
+      y: Number(tankerRefuelFlight.attitudeAxisKm.y) || 0,
+      z: Number(tankerRefuelFlight.attitudeAxisKm.z) || 0,
+    }
+    : null;
+  const tankerDesiredAxisKm = finiteVector?.(tankerRefuelFlight?.attitudeDesiredAxisKm)
+    ? {
+      x: Number(tankerRefuelFlight.attitudeDesiredAxisKm.x) || 0,
+      y: Number(tankerRefuelFlight.attitudeDesiredAxisKm.y) || 0,
+      z: Number(tankerRefuelFlight.attitudeDesiredAxisKm.z) || 0,
+    }
+    : null;
 
   return {
     ...baseSnapshot,
@@ -276,9 +299,13 @@ export function buildVehicleStatusSnapshot({
     targetDistanceKm: Math.max(0, radialDistanceKm - earthRadiusKm),
     targetClosingSpeedKmS: radialClosingSpeedKmS,
     rcsActive: tankerRcsActive,
-    rcsErrorDeg: 0,
+    rcsErrorDeg: vehicleKind === "tanker" ? tankerAttitudeErrorDeg : 0,
     rcsAuthority: tankerRcsAuthority,
     rcsJets: tankerRcsJets,
+    rcsAttitudeAuthority: vehicleKind === "tanker" ? tankerAttitudeAuthority : 1,
+    rcsAttitudeLimited: vehicleKind === "tanker" ? tankerAttitudeLimited : false,
+    rcsThrustAxisKm: vehicleKind === "tanker" ? tankerThrustAxisKm : null,
+    rcsDesiredAxisKm: vehicleKind === "tanker" ? tankerDesiredAxisKm : null,
     rcsOrbitCorrectionAccelKmS2: tankerRcsOrbitCorrectionAccelKmS2,
     rcsOrbitCorrectionForceN: tankerRcsOrbitCorrectionForceN,
     launchSiteName: LAUNCH_SITE.name || "Launch Site",

@@ -2881,6 +2881,8 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "AoA", value: Number.isFinite(Number(snapshot.angleOfAttackDeg)) ? `${formatNumber(snapshot.angleOfAttackDeg, 2)}°` : "n/a" },
     { label: "q-alpha", value: Number.isFinite(Number(snapshot.qAlphaPaRad)) ? `${formatNumber(snapshot.qAlphaPaRad, 1)} Pa·rad` : "n/a" },
     { label: "Gimbal Err", value: Number.isFinite(Number(snapshot.gimbalErrorDeg)) ? `${formatNumber(snapshot.gimbalErrorDeg, 2)}°` : "n/a" },
+    { label: "RCS Err", value: snapshot?.rcsActive && Number.isFinite(Number(snapshot.rcsErrorDeg)) ? `${formatNumber(snapshot.rcsErrorDeg, 2)}°` : "n/a" },
+    { label: "RCS Attitude", value: snapshot?.rcsActive && Number.isFinite(Number(snapshot.rcsAttitudeAuthority)) ? `${formatNumber(clamp(Number(snapshot.rcsAttitudeAuthority), 0, 1) * 100, 1)}%` : "n/a" },
   ];
 
   const boosterMetrics = [
@@ -4565,15 +4567,31 @@ function updateFleetSpacecraftVisuals() {
       && missionPhase === "orbital_refuel";
     const forceHorizontalVisual = forceHorizontalInjectVisual || forceHorizontalRefuelVisual;
     const dockingLock = refuelDockingVisualLockForBody(bodyId, snapshot);
+    const thrustAxisKm = snapshot?.rcsThrustAxisKm;
+    const thrustAxisScene = (
+      isTanker
+      && snapshot?.rcsActive
+      && finiteVectorKm(thrustAxisKm)
+    )
+      ? safeNormalizeSceneDirection(
+        new THREE_NS.Vector3(
+          Number(thrustAxisKm.x) || 0,
+          Number(thrustAxisKm.z) || 0,
+          Number(thrustAxisKm.y) || 0,
+        ),
+        null,
+      )
+      : null;
+    const tankerDockingVerticalVisual = isTanker && (
+      guidanceMode.includes("rcs-fuel-lock")
+      || guidanceMode.includes("rcs-docked-lock")
+      || guidanceMode.includes("rcs-undock")
+      || guidanceMode.includes("rcs-dock")
+    );
     const forceVerticalVisual = Boolean(
       dockingLock
-      || (
-      isTanker && (
-        snapshot?.rcsActive
-        || guidanceMode.includes("rcs-")
-        || guidanceMode.includes("orbital-refuel")
-      )
-      )
+      || guidanceMode.includes("vertical")
+      || tankerDockingVerticalVisual
     );
 
     let targetDirection = upScene || prograde || defaultAxis;
@@ -4585,6 +4603,8 @@ function updateFleetSpacecraftVisuals() {
         );
     } else if (dockingLock?.directionScene) {
       targetDirection = dockingLock.directionScene;
+    } else if (thrustAxisScene && !forceVerticalVisual) {
+      targetDirection = thrustAxisScene;
     } else if (forceVerticalVisual && upScene) {
       targetDirection = upScene;
     } else if (upScene && prograde) {
@@ -9805,6 +9825,15 @@ function updateInfoOverlay() {
     const tankerRcsOrbitAccelLine = Number.isFinite(launchSnapshot?.rcsOrbitCorrectionAccelKmS2)
       ? `${formatNumber(Math.max(0, Number(launchSnapshot.rcsOrbitCorrectionAccelKmS2) || 0) * 1000, 6)} m/s²`
       : "n/a";
+    const tankerAttitudeErrorLine = launchSnapshot?.rcsActive && Number.isFinite(launchSnapshot?.rcsErrorDeg)
+      ? `${formatNumber(Math.max(0, Number(launchSnapshot.rcsErrorDeg) || 0), 2)}°`
+      : "n/a";
+    const tankerAttitudeAuthorityLine = launchSnapshot?.rcsActive && Number.isFinite(launchSnapshot?.rcsAttitudeAuthority)
+      ? `${formatNumber(clamp(Number(launchSnapshot.rcsAttitudeAuthority) || 0, 0, 1) * 100, 1)}%`
+      : "n/a";
+    const tankerAttitudeLimitedLine = launchSnapshot?.rcsActive
+      ? (launchSnapshot?.rcsAttitudeLimited ? "yes" : "no")
+      : "n/a";
     const starshipOrbitLine = `${Number.isFinite(launchSnapshot?.apoapsisKm) ? `${formatNumber(launchSnapshot.apoapsisKm)} km` : "n/a"} / ${Number.isFinite(launchSnapshot?.periapsisKm) ? `${formatNumber(launchSnapshot.periapsisKm)} km` : "n/a"}`;
     const targetBodyName = String(launchSnapshot?.targetBodyName || "").trim() || "n/a";
     const targetBodyId = String(launchSnapshot?.targetBodyId || "").trim();
@@ -9884,6 +9913,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">RCS Orbit Correction: ${tankerRcsOrbitCorrectionLine} | Accel: ${tankerRcsOrbitAccelLine}</p>
+        <p class="line launch-line">Attitude Error: ${tankerAttitudeErrorLine} | Authority: ${tankerAttitudeAuthorityLine} | Limited: ${tankerAttitudeLimitedLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
