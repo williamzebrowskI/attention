@@ -1109,12 +1109,21 @@ export function createLaunchFleetController({
           const refuelDistanceKm = Number(target.distanceKm);
           const refuelRelativeSpeedKmS = Math.max(0, Number(target.relativeSpeedKmS) || 0);
           const refuelClosingSpeedKmS = Number(target.closingSpeedKmS);
+          const targetAltitudeKm = Number(target.altitudeKm);
+          const targetRadialSpeedKmS = Number(target.radialSpeedKmS);
           const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
           const periapsisNowKm = Number(orbital?.periapsisKm);
           const apoapsisNowKm = Number(orbital?.apoapsisKm);
           const speedNowKmS = Math.max(0, Number(orbital?.speedKmS) || length(relVel));
           const circularSpeedKmS = Math.max(0.001, Number(orbital?.circularSpeedKmS) || 7.8);
           const speedExcessKmS = speedNowKmS - circularSpeedKmS;
+          const shipAltitudeKm = Math.max(0, Number(orbital?.altitudeKm) || 0);
+          const altitudeErrorKm = Number.isFinite(targetAltitudeKm)
+            ? (targetAltitudeKm - shipAltitudeKm)
+            : 0;
+          const radialSpeedErrorKmS = Number.isFinite(targetRadialSpeedKmS)
+            ? (targetRadialSpeedKmS - radialSpeedKmS)
+            : 0;
           const recoveryEnter = Number.isFinite(periapsisNowKm)
             && (periapsisNowKm < 124 || (periapsisNowKm < 138 && radialSpeedKmS < -0.0016));
           const recoveryExit = Number.isFinite(periapsisNowKm)
@@ -1146,8 +1155,15 @@ export function createLaunchFleetController({
           }
           const recoveryActive = Boolean(vehicle.refuelOrbitRecovery.active);
           const highEnergyRisk =
-            speedExcessKmS > 0.32
-            || (Number.isFinite(apoapsisNowKm) && apoapsisNowKm > 1100);
+            speedExcessKmS > 0.22
+            || (
+              Number.isFinite(apoapsisNowKm)
+              && apoapsisNowKm > (
+                Number.isFinite(targetAltitudeKm)
+                  ? Math.max(targetAltitudeKm + 300, 460)
+                  : 700
+              )
+            );
           const rcsAssistEnabled = true;
           if (rcsAssistEnabled) {
             const closeRange = refuelDistanceKm <= 1.5;
@@ -1204,19 +1220,34 @@ export function createLaunchFleetController({
             const closureWeak = !Number.isFinite(refuelClosingSpeedKmS)
               || refuelClosingSpeedKmS < (desiredFarClosingKmS * 0.72);
             if (closureWeak) {
-              // Phasing/catch-up burn: push prograde to raise energy and improve along-track intercept.
+              // Phasing/catch-up burn: choose raise/lower orbit from along-track geometry.
+              // If target is ahead, lower orbit (retrograde) to gain phase; if behind, raise orbit.
+              const alongTrackKm = dot(target.relativePositionKm || { x: 0, y: 0, z: 0 }, prograde);
+              const targetAhead = alongTrackKm >= 0;
+              const phaseSign = targetAhead ? -1 : 1;
+              const phaseDirection = phaseSign > 0 ? prograde : scale(prograde, -1);
+              const verticalBias = clamp(
+                (altitudeErrorKm / 140) + (radialSpeedErrorKmS / 0.07),
+                -0.18,
+                0.18,
+              );
               let catchupThrottle = clamp(0.08 + (refuelDistanceKm / 140_000), 0.08, 0.20);
-              if (speedExcessKmS > 0.06) {
+              if (speedExcessKmS > 0.04) {
                 const excessPenalty = clamp(1 - (speedExcessKmS / 0.28), 0.2, 1);
                 catchupThrottle *= excessPenalty;
+              }
+              if (targetAhead) {
+                // Lower-orbit phasing burns should be gentler to avoid large periapsis excursions.
+                catchupThrottle = Math.min(catchupThrottle, 0.16);
               }
               requestedThrottle = catchupThrottle;
               desiredDirection = normalize(
                 add(
-                  scale(prograde, 0.78),
-                  scale(directionHorizontal, 0.22),
+                  scale(phaseDirection, 0.72),
+                  scale(directionHorizontal, 0.20),
+                  scale(up, verticalBias),
                 ),
-                prograde,
+                phaseDirection,
               );
               guidanceMode = "navsys:orbital-refuel-phase-catchup";
             } else {
