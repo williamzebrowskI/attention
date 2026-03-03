@@ -30,7 +30,10 @@ import {
   computePhaseCatchupCommand,
   orbitalRelativeFrame,
 } from "./refuel/missionShipRendezvous.js";
-import { estimateMoonRoundTripFuelBudget } from "./missionFuelBudget.js";
+import {
+  estimateMoonRoundTripFuelBudget,
+  estimateOrbitalRefuelDemoFuelBudget,
+} from "./missionFuelBudget.js";
 import {
   FLEET_MISSION_SHIP_ID_PREFIX,
   FLEET_MOON_CAPTURE_GATE_DISTANCE_KM,
@@ -50,6 +53,8 @@ const FLEET_MOON_MIDCOURSE_MIN_BURN_SEC = 24;
 const FLEET_MOON_MIDCOURSE_EXIT_STABLE_SEC = 28;
 const FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM = 130;
 const FLEET_TLI_PERIAPSIS_RECOVER_TARGET_KM = 155;
+const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_450_000;
+const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG = 90_000;
 const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
 const FLEET_TLI_TARGET_APOAPSIS_KM = 382_000;
 const FLEET_TLI_TARGET_APOAPSIS_MARGIN_KM = 3_000;
@@ -143,7 +148,27 @@ function fleetMissionPhaseGateReason({
   earthDistanceKm = Number.POSITIVE_INFINITY,
   earthRadialSpeedKmS = 0,
 } = {}) {
-  if (!vehicle || vehicle.missionId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+  if (!vehicle) {
+    return "";
+  }
+  if (vehicle.missionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO) {
+    const phase = String(vehicle.missionPhase || "").trim();
+    if (phase === "orbital_refuel") {
+      const fuelBudget = vehicle.fuelBudget && typeof vehicle.fuelBudget === "object"
+        ? vehicle.fuelBudget
+        : null;
+      const feasible = fuelBudget ? Boolean(fuelBudget.feasible) : null;
+      const marginKg = Number(fuelBudget?.marginKg);
+      const status = feasible === null ? "pending" : (feasible ? "feasible" : "deficit");
+      const marginLabel = Number.isFinite(marginKg) ? ` (${formatFleetGateMassKg(marginKg)})` : "";
+      return `Awaiting tanker rendezvous gate: fuel budget ${status}${marginLabel}; match relative velocity and close to docking corridor.`;
+    }
+    if (phase === "earth_orbit_hold") {
+      return "Refuel mission complete: Earth orbit hold.";
+    }
+    return "Awaiting next refuel mission gate.";
+  }
+  if (vehicle.missionId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
     return "";
   }
   const phase = String(vehicle.missionPhase || "").trim();
@@ -735,6 +760,16 @@ export function createLaunchFleetController({
         ispVacuumS: Math.max(1, Number(stage2Raw?.ispVacuumS) || Number(stage2Raw?.ispSeaLevelS) || 380),
       },
     ];
+    if (
+      vehicleRole !== "tanker"
+      && normalizedMissionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO
+      && stageProfiles[1]
+    ) {
+      stageProfiles[1].propellantMassKg = Math.max(
+        Number(stageProfiles[1].propellantMassKg) || 0,
+        FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG,
+      );
+    }
     const injectedStageIndex = 1;
     const injectedStage = stageProfiles[injectedStageIndex] || stageProfiles[stageProfiles.length - 1];
     const initialMassKg = launchMode === "orbit_inject"
@@ -1067,6 +1102,7 @@ export function createLaunchFleetController({
       let rcsAssistJets = [];
       let decisionTargetBodyId = "earth";
       let decisionTargetBodyName = "Earth";
+      let orbitalRefuelTarget = null;
       if (
         vehicle.vehicleRole !== "tanker"
         && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
@@ -1130,6 +1166,7 @@ export function createLaunchFleetController({
         guidanceMode = "autopilot-orbital-hold";
       } else if (vehicle.missionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO && vehicle.missionPhase === "orbital_refuel") {
         const target = nearestEligibleTankerTarget(state, shipState, earthState);
+        orbitalRefuelTarget = target;
         if (!target || !target.relativePositionKm) {
           requestedThrottle = 0;
           desiredDirection = prograde;
@@ -1516,11 +1553,9 @@ export function createLaunchFleetController({
 
       const requestedThrottleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
       const stageIspVacuumEstimateS = Math.max(1, Number(activeStage?.ispVacuumS) || 360);
-      const moonFuelBudget = (
-        vehicle.vehicleRole !== "tanker"
-        && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
-      )
-        ? estimateMoonRoundTripFuelBudget({
+      let missionFuelBudget = null;
+      if (vehicle.vehicleRole !== "tanker" && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+        missionFuelBudget = estimateMoonRoundTripFuelBudget({
           missionPhase: vehicle.missionPhase,
           shipState,
           earthState,
@@ -1531,9 +1566,42 @@ export function createLaunchFleetController({
           moonMuKm3S2,
           stageIspVacuumS: stageIspVacuumEstimateS,
           stagePropellantKg: availablePropellantKg,
-        })
-        : null;
-      vehicle.fuelBudget = moonFuelBudget;
+        });
+      } else if (
+        vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO
+      ) {
+        missionFuelBudget = estimateOrbitalRefuelDemoFuelBudget({
+          missionPhase: vehicle.missionPhase,
+          shipState,
+          earthState,
+          earthRadiusKm,
+          stageIspVacuumS: stageIspVacuumEstimateS,
+          stagePropellantKg: availablePropellantKg,
+          target: orbitalRefuelTarget,
+        });
+      }
+      vehicle.fuelBudget = missionFuelBudget;
+
+      if (
+        vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO
+        && vehicle.missionPhase === "orbital_refuel"
+        && missionFuelBudget
+      ) {
+        const budgetFeasible = Boolean(missionFuelBudget.feasible);
+        const budgetMarginKg = Number(missionFuelBudget.marginKg);
+        if (!budgetFeasible && availablePropellantKg > 1e-6) {
+          requestedThrottle = 0;
+          desiredDirection = prograde;
+          guidanceMode = "navsys:orbital-refuel-budget-hold";
+        } else if (Number.isFinite(budgetMarginKg) && budgetMarginKg < FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG) {
+          requestedThrottle = Math.min(requestedThrottle, 0.18);
+          if (requestedThrottle > 1e-3 && guidanceMode.startsWith("navsys:orbital-refuel")) {
+            guidanceMode = `${guidanceMode}:fuel-conserve`;
+          }
+        }
+      }
 
       if (availablePropellantKg <= 1e-6) {
         requestedThrottle = 0;

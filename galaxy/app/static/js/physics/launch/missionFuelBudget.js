@@ -87,6 +87,35 @@ function propellantRequiredKg({
   return Math.max(0, m0 - mf);
 }
 
+function summarizeFuelBudget({
+  initialMassKg = 0,
+  stagePropellantKg = 0,
+  stageIspVacuumS = 380,
+  requiredDeltaVKmS = 0,
+} = {}) {
+  const currentMassKg = Math.max(1, Number(initialMassKg) || 1);
+  const availablePropellantKg = Math.max(0, Number(stagePropellantKg) || 0);
+  const availableDeltaVKmS = deltaVCapacityKmS({
+    initialMassKg: currentMassKg,
+    propellantKg: availablePropellantKg,
+    ispVacuumS: stageIspVacuumS,
+  });
+  const minimumRequiredPropellantKg = propellantRequiredKg({
+    initialMassKg: currentMassKg,
+    deltaVRequiredKmS: requiredDeltaVKmS,
+    ispVacuumS: stageIspVacuumS,
+  });
+  const marginKg = availablePropellantKg - minimumRequiredPropellantKg;
+  return {
+    requiredDeltaVKmS,
+    availableDeltaVKmS,
+    minimumRequiredPropellantKg,
+    availablePropellantKg,
+    marginKg,
+    feasible: marginKg >= 0,
+  };
+}
+
 export function estimateMoonRoundTripFuelBudget({
   missionPhase = "",
   shipState = null,
@@ -159,27 +188,102 @@ export function estimateMoonRoundTripFuelBudget({
       + (earthCaptureDvKmS * weights.earthCapture)
       + (reserveDvKmS * weights.reserve),
   );
-  const currentMassKg = Math.max(1, Number(shipState.massKg) || 1);
-  const availablePropellantKg = Math.max(0, Number(stagePropellantKg) || 0);
-  const availableDeltaVKmS = deltaVCapacityKmS({
-    initialMassKg: currentMassKg,
-    propellantKg: availablePropellantKg,
-    ispVacuumS: stageIspVacuumS,
-  });
-  const minimumRequiredPropellantKg = propellantRequiredKg({
-    initialMassKg: currentMassKg,
-    deltaVRequiredKmS: requiredDeltaVKmS,
-    ispVacuumS: stageIspVacuumS,
-  });
-  const marginKg = availablePropellantKg - minimumRequiredPropellantKg;
-  return {
+  const summary = summarizeFuelBudget({
+    initialMassKg: Number(shipState.massKg) || 1,
+    stagePropellantKg,
+    stageIspVacuumS,
     requiredDeltaVKmS,
-    availableDeltaVKmS,
-    minimumRequiredPropellantKg,
-    availablePropellantKg,
-    marginKg,
-    feasible: marginKg >= 0,
+  });
+  return {
+    ...summary,
     shipToMoonDistanceKm: shipMoonDistanceKm,
     earthToMoonDistanceKm: moonEarthRadiusKm,
+  };
+}
+
+export function estimateOrbitalRefuelDemoFuelBudget({
+  missionPhase = "",
+  shipState = null,
+  earthState = null,
+  earthRadiusKm = 6371,
+  stageIspVacuumS = 380,
+  stagePropellantKg = 0,
+  target = null,
+} = {}) {
+  if (!shipState || !earthState || !shipState.position || !earthState.position) {
+    return null;
+  }
+
+  const phase = String(missionPhase || "").trim().toLowerCase();
+  const shipEarthRel = subtract(shipState.position, earthState.position);
+  const shipAltitudeKm = Math.max(0, length(shipEarthRel) - safePositive(earthRadiusKm, 6371));
+  const targetDistanceKmRaw = Number(target?.distanceKm);
+  const targetDistanceKnown = Number.isFinite(targetDistanceKmRaw);
+  const targetDistanceKm = targetDistanceKnown ? Math.max(0, targetDistanceKmRaw) : Number.NaN;
+  const targetRelativeSpeedKmS = Math.max(0, Number(target?.relativeSpeedKmS) || 0);
+  const targetClosingSpeedRawKmS = Number(target?.closingSpeedKmS);
+  const targetMovingAwaySpeedKmS = Number.isFinite(targetClosingSpeedRawKmS) && targetClosingSpeedRawKmS < 0
+    ? Math.abs(targetClosingSpeedRawKmS)
+    : 0;
+  const targetAltitudeKm = Number(target?.altitudeKm);
+  const altitudeErrorKm = Number.isFinite(targetAltitudeKm)
+    ? Math.abs(targetAltitudeKm - shipAltitudeKm)
+    : 0;
+
+  let requiredDeltaVKmS = 0.16;
+  if (phase === "orbital_refuel") {
+    if (targetDistanceKnown) {
+      const phaseCatchupDvKmS = clamp(
+        0.018 + (targetDistanceKm / 70_000),
+        0.018,
+        0.30,
+      );
+      const relativeMatchDvKmS = clamp(
+        targetRelativeSpeedKmS * 0.85,
+        0.015,
+        1.25,
+      );
+      const movingAwayPenaltyDvKmS = clamp(
+        targetMovingAwaySpeedKmS * 0.6,
+        0,
+        0.9,
+      );
+      const altitudeTrimDvKmS = clamp(
+        altitudeErrorKm / 2500,
+        0,
+        0.18,
+      );
+      const dockingTrimDvKmS = 0.03;
+      const orbitReserveDvKmS = clamp(
+        0.12 + (targetDistanceKm / 220_000),
+        0.12,
+        0.28,
+      );
+      requiredDeltaVKmS = phaseCatchupDvKmS
+        + relativeMatchDvKmS
+        + movingAwayPenaltyDvKmS
+        + altitudeTrimDvKmS
+        + dockingTrimDvKmS
+        + orbitReserveDvKmS;
+    } else {
+      // No eligible tanker yet: preserve a modest station-keeping + intercept reserve.
+      requiredDeltaVKmS = 0.26;
+    }
+  }
+
+  const summary = summarizeFuelBudget({
+    initialMassKg: Number(shipState.massKg) || 1,
+    stagePropellantKg,
+    stageIspVacuumS,
+    requiredDeltaVKmS,
+  });
+  return {
+    ...summary,
+    shipAltitudeKm,
+    targetDistanceKm: targetDistanceKnown ? targetDistanceKm : null,
+    targetRelativeSpeedKmS,
+    targetClosingSpeedKmS: Number.isFinite(targetClosingSpeedRawKmS)
+      ? targetClosingSpeedRawKmS
+      : null,
   };
 }
