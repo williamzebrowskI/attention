@@ -22,6 +22,7 @@ export function enforceMoonEarthAvoidanceDirection({
   direction,
   tangent,
   up,
+  previousApplied = false,
   toMoonVectorKm = null,
   earthDistanceKm = Number.POSITIVE_INFINITY,
   earthRadiusKm = 6371,
@@ -48,12 +49,14 @@ export function enforceMoonEarthAvoidanceDirection({
 
   const safeEarthRadiusKm = Math.max(1000, Number(earthRadiusKm) || 6371);
   const altitudeKm = Number(earthDistanceKm) - safeEarthRadiusKm;
-  const lowEarthRisk = Number.isFinite(altitudeKm) && altitudeKm < 120_000;
-  const periapsisRisk = Number.isFinite(Number(periapsisKm)) && Number(periapsisKm) < 150;
+  const guardWasApplied = Boolean(previousApplied);
+  const lowEarthRisk = Number.isFinite(altitudeKm) && altitudeKm < (guardWasApplied ? 125_000 : 120_000);
+  const periapsisRisk = Number.isFinite(Number(periapsisKm))
+    && Number(periapsisKm) < (guardWasApplied ? 165 : 152);
   const moonDirection = finiteVector(toMoonVectorKm) ? normalize(toMoonVectorKm, tangent) : null;
   const moonOccludedByEarth = Boolean(moonDirection && dot(moonDirection, up) < 0);
   const radialComponent = dot(baseDirection, up);
-  const inwardBurn = radialComponent < 0;
+  const inwardBurn = radialComponent < (guardWasApplied ? 0.03 : -0.005);
   if (!(lowEarthRisk && (inwardBurn || moonOccludedByEarth || periapsisRisk))) {
     return {
       direction: baseDirection,

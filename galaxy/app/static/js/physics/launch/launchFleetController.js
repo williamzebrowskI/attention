@@ -981,6 +981,7 @@ export function createLaunchFleetController({
       guidanceRequestedThrottle: 0,
       guidanceInertNoPropellant: false,
       guidanceInertReason: "",
+      moonEarthGuardActive: false,
       fuelBudget: null,
       launchTimestampMs: nowMs,
     });
@@ -1774,6 +1775,7 @@ export function createLaunchFleetController({
           direction: desiredDirection,
           tangent: prograde,
           up,
+          previousApplied: Boolean(vehicle.moonEarthGuardActive),
           toMoonVectorKm: finiteVector(moonState?.position)
             ? subtract(moonState.position, shipState.position)
             : null,
@@ -1781,6 +1783,7 @@ export function createLaunchFleetController({
           earthRadiusKm,
           periapsisKm: Number(orbital?.periapsisKm),
         });
+        vehicle.moonEarthGuardActive = earthAvoidance.applied;
         if (earthAvoidance.applied) {
           desiredDirection = earthAvoidance.direction;
           guidanceMode = guidanceMode.includes("earth-occlusion-guard")

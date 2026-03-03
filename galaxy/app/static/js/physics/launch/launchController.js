@@ -844,6 +844,7 @@ export function createLaunchController(options) {
     moonProjectedMissDistanceKm: null,
     moonProjectedPeriluneAltitudeKm: null,
     moonBPlaneErrorKm: null,
+    moonEarthGuardActive: false,
     missionPhaseGateReason: "",
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
@@ -1373,11 +1374,13 @@ export function createLaunchController(options) {
       direction: normalize(command.direction || tangent, tangent),
       tangent,
       up,
+      previousApplied: Boolean(runtime.moonEarthGuardActive),
       toMoonVectorKm,
       earthDistanceKm,
       earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
       periapsisKm: Number(orbital?.periapsisKm),
     });
+    runtime.moonEarthGuardActive = constrainedCommand.applied;
     const modeBase = String(command.mode || "navigation-system");
     return {
       phase,
@@ -1553,6 +1556,7 @@ export function createLaunchController(options) {
     runtime.moonProjectedMissDistanceKm = null;
     runtime.moonProjectedPeriluneAltitudeKm = null;
     runtime.moonBPlaneErrorKm = null;
+    runtime.moonEarthGuardActive = false;
     runtime.missionPhaseGateReason = "";
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
