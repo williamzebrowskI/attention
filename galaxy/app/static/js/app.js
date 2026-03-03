@@ -2904,6 +2904,8 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Closing", value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Moon Rel V", value: Number.isFinite(moonRelativeSpeedKmS) ? `${formatNumber(moonRelativeSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Proj Miss", value: Number.isFinite(moonProjectedMissDistanceKm) ? `${formatNumber(moonProjectedMissDistanceKm, 1)} km` : "n/a" },
+    { label: "Perilune Est", value: Number.isFinite(Number(snapshot.moonProjectedPeriluneAltitudeKm)) ? `${formatNumber(snapshot.moonProjectedPeriluneAltitudeKm, 1)} km` : "n/a" },
+    { label: "B-Plane Err", value: Number.isFinite(Number(snapshot.moonBPlaneErrorKm)) ? `${formatNumber(snapshot.moonBPlaneErrorKm, 1)} km` : "n/a" },
     { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
     { label: "Phase Gate", value: missionPhaseGateReason || "n/a" },
   ];
@@ -10030,6 +10032,12 @@ function updateInfoOverlay() {
     const moonProjectedMissLine = Number.isFinite(launchSnapshot?.moonProjectedMissDistanceKm)
       ? `${formatNumber(launchSnapshot.moonProjectedMissDistanceKm, 1)} km`
       : "n/a";
+    const moonPeriluneEstimateLine = Number.isFinite(launchSnapshot?.moonProjectedPeriluneAltitudeKm)
+      ? `${formatNumber(launchSnapshot.moonProjectedPeriluneAltitudeKm, 1)} km`
+      : "n/a";
+    const moonBPlaneErrorLine = Number.isFinite(launchSnapshot?.moonBPlaneErrorKm)
+      ? `${formatNumber(launchSnapshot.moonBPlaneErrorKm, 1)} km`
+      : "n/a";
     const phaseGateReasonLine = String(launchSnapshot?.missionPhaseGateReason || "").trim() || "n/a";
     const guidanceBurnRequestedLine = Boolean(launchSnapshot?.guidanceBurnRequested) ? "yes" : "no";
     const guidanceRequestedThrottleLine = Number.isFinite(Number(launchSnapshot?.guidanceRequestedThrottle))
@@ -10115,6 +10123,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
+        <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
@@ -10129,6 +10138,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
+        <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>

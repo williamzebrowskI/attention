@@ -17,6 +17,20 @@ export function createMoonGuidanceRuntime() {
       active: false,
       burnSec: 0,
       stableSec: 0,
+      cooldownSec: 0,
+      lastStartSec: null,
+      lastStopSec: null,
+    },
+    retarget: {
+      lastSolveSec: null,
+      lastSolveReason: "",
+    },
+    approach: {
+      projectedPeriluneAltitudeKm: null,
+      corridorErrorKm: null,
+      bPlaneErrorKm: null,
+      timeToClosestSec: null,
+      lastDecision: "",
     },
     lastTimestampSec: null,
   };
@@ -60,6 +74,40 @@ export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
         active: Boolean(midcourse.active),
         burnSec: Math.max(0, Number(midcourse.burnSec) || 0),
         stableSec: Math.max(0, Number(midcourse.stableSec) || 0),
+        cooldownSec: Math.max(0, Number(midcourse.cooldownSec) || 0),
+        lastStartSec: Number.isFinite(Number(midcourse.lastStartSec))
+          ? Number(midcourse.lastStartSec)
+          : null,
+        lastStopSec: Number.isFinite(Number(midcourse.lastStopSec))
+          ? Number(midcourse.lastStopSec)
+          : null,
+      };
+    }
+    const retarget = moonSnapshot.retarget;
+    if (retarget && typeof retarget === "object") {
+      normalized.moon.retarget = {
+        lastSolveSec: Number.isFinite(Number(retarget.lastSolveSec))
+          ? Number(retarget.lastSolveSec)
+          : null,
+        lastSolveReason: String(retarget.lastSolveReason || ""),
+      };
+    }
+    const approach = moonSnapshot.approach;
+    if (approach && typeof approach === "object") {
+      normalized.moon.approach = {
+        projectedPeriluneAltitudeKm: Number.isFinite(Number(approach.projectedPeriluneAltitudeKm))
+          ? Number(approach.projectedPeriluneAltitudeKm)
+          : null,
+        corridorErrorKm: Number.isFinite(Number(approach.corridorErrorKm))
+          ? Number(approach.corridorErrorKm)
+          : null,
+        bPlaneErrorKm: Number.isFinite(Number(approach.bPlaneErrorKm))
+          ? Number(approach.bPlaneErrorKm)
+          : null,
+        timeToClosestSec: Number.isFinite(Number(approach.timeToClosestSec))
+          ? Number(approach.timeToClosestSec)
+          : null,
+        lastDecision: String(approach.lastDecision || ""),
       };
     }
     const lastTs = Number(moonSnapshot.lastTimestampSec);
@@ -76,6 +124,20 @@ function resetMoonGuidanceRuntime(moonRuntime, { clearEstimate = false } = {}) {
     active: false,
     burnSec: 0,
     stableSec: 0,
+    cooldownSec: 0,
+    lastStartSec: null,
+    lastStopSec: null,
+  };
+  moonRuntime.retarget = {
+    lastSolveSec: null,
+    lastSolveReason: "",
+  };
+  moonRuntime.approach = {
+    projectedPeriluneAltitudeKm: null,
+    corridorErrorKm: null,
+    bPlaneErrorKm: null,
+    timeToClosestSec: null,
+    lastDecision: "",
   };
   if (clearEstimate) {
     moonRuntime.sensorEstimate = null;

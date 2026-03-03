@@ -779,6 +779,8 @@ export function createMissionControlScreenController(options = {}) {
       ["Target Distance", Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a"],
       ["Moon Rel Speed", Number.isFinite(Number(snapshot.moonRelativeSpeedKmS)) ? `${formatNumber(snapshot.moonRelativeSpeedKmS, 4)} km/s` : "n/a"],
       ["Projected Miss", Number.isFinite(Number(snapshot.moonProjectedMissDistanceKm)) ? `${formatNumber(snapshot.moonProjectedMissDistanceKm, 1)} km` : "n/a"],
+      ["Perilune Estimate", Number.isFinite(Number(snapshot.moonProjectedPeriluneAltitudeKm)) ? `${formatNumber(snapshot.moonProjectedPeriluneAltitudeKm, 1)} km` : "n/a"],
+      ["B-Plane Error", Number.isFinite(Number(snapshot.moonBPlaneErrorKm)) ? `${formatNumber(snapshot.moonBPlaneErrorKm, 1)} km` : "n/a"],
       ["Phase Gate", String(snapshot.missionPhaseGateReason || "").trim() || "n/a"],
       ["Booster", snapshot.boosterPhase || "n/a"],
       ["Booster Fuel", Number.isFinite(Number(snapshot.boosterFuelFraction)) ? `${formatNumber(Number(snapshot.boosterFuelFraction) * 100, 1)}%` : "n/a"],

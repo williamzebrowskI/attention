@@ -135,6 +135,12 @@ export function createNavigationSystem({
         position: { ...estimate.position },
         velocity: { ...estimate.velocity },
         timestampSec: estimate.timestampSec,
+        positionSigmaKm: Number.isFinite(Number(estimate.positionSigmaKm))
+          ? Number(estimate.positionSigmaKm)
+          : null,
+        velocitySigmaKmS: Number.isFinite(Number(estimate.velocitySigmaKmS))
+          ? Number(estimate.velocitySigmaKmS)
+          : null,
       } : null,
       lastCommand: runtime.lastCommand ? {
         ...runtime.lastCommand,

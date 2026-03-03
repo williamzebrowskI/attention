@@ -6,15 +6,52 @@ import {
   length,
   normalize,
   scale,
+  subtract,
 } from "../navigationMath.js";
 import { NAVIGATION_MISSION_PHASES } from "../navigationMissionProfiles.js";
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
-import { projectedClosestApproachDistanceKm } from "./interceptMath.js";
+import {
+  projectedClosestApproachDistanceKm,
+  projectedClosestApproachStateKm,
+} from "./interceptMath.js";
 import {
   createMoonGuidanceRuntime,
   updateMoonSensorEstimate,
 } from "./moonGuidanceState.js";
 import { planRefuelRendezvousCommand } from "./refuelRendezvousPlanner.js";
+
+const DEFAULT_MOON_RADIUS_KM = 1737.4;
+
+function finiteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : Number(fallback);
+}
+
+function inferMoonRadiusKm(metrics = {}) {
+  const distanceKm = Number(metrics.moonDistanceKm);
+  const altitudeKm = Number(metrics.moonAltitudeKm);
+  if (Number.isFinite(distanceKm) && Number.isFinite(altitudeKm)) {
+    const inferred = distanceKm - altitudeKm;
+    if (inferred > 500 && inferred < 4000) {
+      return inferred;
+    }
+  }
+  return DEFAULT_MOON_RADIUS_KM;
+}
+
+function projectedBPlaneVectorKm({
+  closestPositionKm = null,
+  alongTrackDirection = null,
+} = {}) {
+  if (!finiteVector(closestPositionKm) || !finiteVector(alongTrackDirection)) {
+    return null;
+  }
+  const alongMagnitudeKm = dot(closestPositionKm, alongTrackDirection);
+  return subtract(
+    closestPositionKm,
+    scale(alongTrackDirection, alongMagnitudeKm),
+  );
+}
 
 export function planMoonMissionCommand({
   phase,
@@ -95,6 +132,13 @@ export function planMoonMissionCommand({
           ? scale(targetVectors.shipMinusMoonRelativeVelocityKmS, -1)
           : null
       );
+    const shipMinusMoonRelVel = finiteVector(targetVectors.shipMinusMoonRelativeVelocityKmS)
+      ? targetVectors.shipMinusMoonRelativeVelocityKmS
+      : (
+        finiteVector(moonMinusShipRelVel)
+          ? scale(moonMinusShipRelVel, -1)
+          : null
+      );
     const rawMoonDistanceKm = Number.isFinite(Number(metrics.moonDistanceKm))
       ? Number(metrics.moonDistanceKm)
       : (finiteVector(targetVectors.toMoon) ? length(targetVectors.toMoon) : Number.POSITIVE_INFINITY);
@@ -112,6 +156,11 @@ export function planMoonMissionCommand({
         relativeVelocityKmS: moonMinusShipRelVel,
         horizonSec: Number(plannerConfig.moonMidcoursePredictHorizonSec),
       });
+    const closestApproach = projectedClosestApproachStateKm({
+      relativePositionKm: targetVectors.toMoon,
+      relativeVelocityKmS: moonMinusShipRelVel,
+      horizonSec: Number(plannerConfig.moonMidcoursePredictHorizonSec),
+    });
     const filteredEstimate = updateMoonSensorEstimate({
       moonRuntime,
       rawMeasurement: {
@@ -135,25 +184,122 @@ export function planMoonMissionCommand({
     const estimatedDirection = finiteVector(filteredEstimate?.direction)
       ? normalize(filteredEstimate.direction, moonDirection)
       : moonDirection;
-
+    const moonRadiusKm = inferMoonRadiusKm(metrics);
+    const captureGateKm = Math.max(1_000, Number(plannerConfig.moonCaptureGateDistanceKm) || 55_000);
     const approachDistanceKm = Math.max(10_000, Number(plannerConfig.moonApproachDistanceKm) || 120_000);
+    const minClosingKmS = Math.max(0.001, Number(plannerConfig.moonMidcourseMinClosingSpeedKmS) || 0.02);
+    const closingWindowKmS = Math.max(0.001, Number(plannerConfig.moonMidcourseClosingWindowKmS) || 0.18);
+    const missGateKm = Math.max(
+      captureGateKm + 1_000,
+      Number(plannerConfig.moonMidcourseMissDistanceKm) || 95_000,
+    );
+    const targetPeriluneAltitudeKm = Math.max(
+      20,
+      Number(plannerConfig.moonTargetPeriluneAltitudeKm) || 120,
+    );
+    const targetPeriluneToleranceKm = Math.max(
+      10,
+      Number(plannerConfig.moonTargetPeriluneToleranceKm) || 80,
+    );
+    const bPlaneToleranceKm = Math.max(
+      1_000,
+      Number(plannerConfig.moonBPlaneToleranceKm) || 6_000,
+    );
+    const minTimeToClosestSec = Math.max(
+      120,
+      Number(plannerConfig.moonRetargetMinTimeToClosestSec) || 1_200,
+    );
+    const projectedPeriluneAltitudeKm = Number.isFinite(Number(closestApproach?.distanceKm))
+      ? Number(closestApproach.distanceKm) - moonRadiusKm
+      : Number.POSITIVE_INFINITY;
+    const corridorErrorKm = Number.isFinite(projectedPeriluneAltitudeKm)
+      ? projectedPeriluneAltitudeKm - targetPeriluneAltitudeKm
+      : Number.POSITIVE_INFINITY;
+    const bPlaneVectorKm = projectedBPlaneVectorKm({
+      closestPositionKm: closestApproach?.closestPositionKm || null,
+      alongTrackDirection: closestApproach?.alongTrackDirection || null,
+    });
+    const bPlaneErrorKm = finiteVector(bPlaneVectorKm)
+      ? length(bPlaneVectorKm)
+      : estimatedMissDistanceKm;
+    const timeToClosestSec = Number.isFinite(Number(closestApproach?.timeToClosestSec))
+      ? Number(closestApproach.timeToClosestSec)
+      : Number.POSITIVE_INFINITY;
+
+    moonRuntime.approach.projectedPeriluneAltitudeKm = Number.isFinite(projectedPeriluneAltitudeKm)
+      ? projectedPeriluneAltitudeKm
+      : null;
+    moonRuntime.approach.corridorErrorKm = Number.isFinite(corridorErrorKm) ? corridorErrorKm : null;
+    moonRuntime.approach.bPlaneErrorKm = Number.isFinite(bPlaneErrorKm) ? bPlaneErrorKm : null;
+    moonRuntime.approach.timeToClosestSec = Number.isFinite(timeToClosestSec) ? timeToClosestSec : null;
+
     const farFromMoon = estimatedDistanceKm > approachDistanceKm;
-    const weakClosing = estimatedClosingSpeedKmS < (Number(plannerConfig.moonMidcourseMinClosingSpeedKmS) || 0.02);
+    const weakClosing = estimatedClosingSpeedKmS < minClosingKmS;
     const projectedMissRisk = estimatedMissDistanceKm > (Number(plannerConfig.moonMidcourseMissDistanceKm) || 95_000);
+    const corridorRisk = Number.isFinite(corridorErrorKm) && Math.abs(corridorErrorKm) > targetPeriluneToleranceKm;
+    const bPlaneRisk = Number.isFinite(bPlaneErrorKm) && bPlaneErrorKm > bPlaneToleranceKm;
     const earthDistanceKm = Number(metrics.earthDistanceKm);
     const earthRadialSpeedKmS = Number(metrics.earthRadialSpeedKmS);
     const earthFallbackRisk = Number.isFinite(earthDistanceKm)
       && Number.isFinite(earthRadialSpeedKmS)
       && earthRadialSpeedKmS < (Number(plannerConfig.earthFallbackRadialSpeedKmS) || -0.01)
       && earthDistanceKm < (approachDistanceKm * 3.5);
-    const correctionNeeded = farFromMoon && (weakClosing || projectedMissRisk || earthFallbackRisk);
+    const solutionAgeSec = Number.isFinite(nowSec) && Number.isFinite(Number(moonRuntime.retarget.lastSolveSec))
+      ? Math.max(0, nowSec - Number(moonRuntime.retarget.lastSolveSec))
+      : Number.POSITIVE_INFINITY;
+    const retargetCadenceSec = Math.max(30, Number(plannerConfig.moonRetargetCadenceSec) || 180);
+    const retargetForceCadenceSec = Math.max(retargetCadenceSec, Number(plannerConfig.moonRetargetForceCadenceSec) || 420);
+    const staleRetarget = !(solutionAgeSec < retargetForceCadenceSec);
+    const retargetNeeded = farFromMoon
+      && (
+        weakClosing
+        || projectedMissRisk
+        || corridorRisk
+        || bPlaneRisk
+        || earthFallbackRisk
+        || staleRetarget
+      );
+    const shouldRetarget = retargetNeeded && (
+      solutionAgeSec >= retargetCadenceSec
+      || staleRetarget
+      || !Number.isFinite(solutionAgeSec)
+    );
+    if (shouldRetarget && Number.isFinite(nowSec)) {
+      moonRuntime.retarget.lastSolveSec = nowSec;
+      moonRuntime.retarget.lastSolveReason = (
+        projectedMissRisk ? "miss-risk"
+          : (corridorRisk ? "corridor-error"
+            : (bPlaneRisk ? "b-plane-error"
+              : (weakClosing ? "closing-speed"
+                : (earthFallbackRisk ? "earth-fallback" : "retarget-cadence"))))
+      );
+    }
+
+    const correctionNeeded = farFromMoon
+      && (timeToClosestSec >= minTimeToClosestSec)
+      && (
+        weakClosing
+        || projectedMissRisk
+        || corridorRisk
+        || bPlaneRisk
+        || earthFallbackRisk
+      );
 
     const midcourse = moonRuntime.midcourse;
-    if (correctionNeeded) {
+    if (!midcourse.active) {
+      midcourse.cooldownSec = Math.max(0, finiteNumber(midcourse.cooldownSec, 0) - dtSec);
+    }
+    if (correctionNeeded && !midcourse.active && !(Number(midcourse.cooldownSec) > 0)) {
       midcourse.active = true;
+      midcourse.burnSec = 0;
       midcourse.stableSec = 0;
+      midcourse.lastStartSec = Number.isFinite(nowSec) ? nowSec : midcourse.lastStartSec;
     } else if (midcourse.active) {
-      midcourse.stableSec = Math.max(0, Number(midcourse.stableSec) || 0) + dtSec;
+      if (correctionNeeded) {
+        midcourse.stableSec = 0;
+      } else {
+        midcourse.stableSec = Math.max(0, Number(midcourse.stableSec) || 0) + dtSec;
+      }
     }
     if (midcourse.active) {
       midcourse.burnSec = Math.max(0, Number(midcourse.burnSec) || 0) + dtSec;
@@ -164,42 +310,120 @@ export function planMoonMissionCommand({
         midcourse.active = false;
         midcourse.burnSec = 0;
         midcourse.stableSec = 0;
+        midcourse.cooldownSec = Math.max(0, Number(plannerConfig.moonMidcourseCooldownSec) || 12);
+        midcourse.lastStopSec = Number.isFinite(nowSec) ? nowSec : midcourse.lastStopSec;
       }
     }
     if (midcourse.active) {
+      const desiredClosingKmS = clamp(
+        estimatedDistanceKm / Math.max(minTimeToClosestSec, timeToClosestSec || minTimeToClosestSec),
+        minClosingKmS,
+        1.6,
+      );
       const closingDeficit = clamp(
-        ((Number(plannerConfig.moonMidcourseMinClosingSpeedKmS) || 0.02) - estimatedClosingSpeedKmS)
-          / Math.max(0.001, Number(plannerConfig.moonMidcourseClosingWindowKmS) || 0.18),
+        (desiredClosingKmS - estimatedClosingSpeedKmS) / closingWindowKmS,
         0,
         1,
       );
-      const captureGateKm = Math.max(1_000, Number(plannerConfig.moonCaptureGateDistanceKm) || 55_000);
-      const missGateKm = Math.max(captureGateKm + 1_000, Number(plannerConfig.moonMidcourseMissDistanceKm) || 95_000);
+      const closingSurplus = clamp(
+        (estimatedClosingSpeedKmS - desiredClosingKmS) / closingWindowKmS,
+        0,
+        1,
+      );
       const missRisk = clamp(
         (estimatedMissDistanceKm - captureGateKm) / Math.max(1, missGateKm - captureGateKm),
         0,
         1,
       );
+      const corridorRiskNorm = clamp(
+        Math.abs(corridorErrorKm) / Math.max(1, targetPeriluneToleranceKm * 4),
+        0,
+        1,
+      );
+      const bPlaneRiskNorm = clamp(
+        (bPlaneErrorKm - bPlaneToleranceKm) / Math.max(1, bPlaneToleranceKm * 3),
+        0,
+        1,
+      );
+      const moonRelativeSpeedKmS = Number.isFinite(Number(metrics.moonRelativeSpeedKmS))
+        ? Number(metrics.moonRelativeSpeedKmS)
+        : (finiteVector(shipMinusMoonRelVel) ? length(shipMinusMoonRelVel) : desiredClosingKmS);
+      const moonCircularSpeedKmS = Number(metrics.moonCircularSpeedKmS);
+      const speedBrakeRisk = Number.isFinite(moonCircularSpeedKmS)
+        ? clamp((moonRelativeSpeedKmS - (moonCircularSpeedKmS * 2.2)) / Math.max(0.1, moonCircularSpeedKmS), 0, 1)
+        : 0;
+      const corridorDirection = corridorErrorKm >= 0
+        ? estimatedDirection
+        : scale(estimatedDirection, -1);
+      const bPlaneCorrectionDirection = finiteVector(bPlaneVectorKm)
+        ? normalize(scale(bPlaneVectorKm, -1), corridorDirection)
+        : corridorDirection;
+      const velocityDampingDirection = finiteVector(moonMinusShipRelVel)
+        ? normalize(moonMinusShipRelVel, estimatedDirection)
+        : estimatedDirection;
+      const tangentialDirection = (closingDeficit - closingSurplus) >= 0
+        ? tangent
+        : scale(tangent, -1);
+      const bPlaneVerticalSign = finiteVector(bPlaneVectorKm)
+        ? Math.sign(dot(bPlaneVectorKm, up))
+        : 0;
+      const verticalDirection = bPlaneVerticalSign > 0
+        ? scale(up, -1)
+        : up;
+      const lateralGain = Math.max(0.01, Number(plannerConfig.moonMidcourseLateralGain) || 0.35);
+      const tangentialGain = Math.max(0.01, Number(plannerConfig.moonMidcourseTangentialGain) || 0.22);
+      const verticalGain = Math.max(0.01, Number(plannerConfig.moonMidcourseVerticalGain) || 0.12);
       return {
         phase: "powered",
         throttle: clamp(
           (Number(plannerConfig.moonMidcourseThrottleBase) || 0.22)
-            + (closingDeficit * 0.34)
+            + (closingDeficit * 0.26)
+            + (closingSurplus * 0.08)
             + (missRisk * 0.24)
+            + (corridorRiskNorm * 0.16)
+            + (bPlaneRiskNorm * 0.12)
+            + (speedBrakeRisk * 0.1)
             + (earthFallbackRisk ? 0.16 : 0),
           Number(plannerConfig.moonMidcourseThrottleBase) || 0.22,
           Number(plannerConfig.moonMidcourseThrottleMax) || 0.78,
         ),
         direction: normalize(
           add(
-            scale(estimatedDirection, 0.84),
-            add(scale(tangent, 0.12), scale(up, 0.04)),
+            scale(estimatedDirection, 0.58 + (missRisk * 0.22) + (closingDeficit * 0.16)),
+            add(
+              scale(corridorDirection, lateralGain * (0.22 + (corridorRiskNorm * 0.65))),
+              add(
+                scale(bPlaneCorrectionDirection, lateralGain * (0.18 + (bPlaneRiskNorm * 0.62))),
+                add(
+                  scale(tangentialDirection, tangentialGain * (0.2 + Math.abs(closingDeficit - closingSurplus))),
+                  add(
+                    scale(velocityDampingDirection, 0.08 + (speedBrakeRisk * 0.16)),
+                    scale(verticalDirection, verticalGain * (0.16 + bPlaneRiskNorm)),
+                  ),
+                ),
+              ),
+            ),
           ),
           estimatedDirection,
         ),
-        mode: "navsys:moon-midcourse-correction",
+        mode: shouldRetarget
+          ? "navsys:moon-midcourse-correction+retarget"
+          : "navsys:moon-midcourse-correction",
       };
     }
+    if (shouldRetarget) {
+      moonRuntime.approach.lastDecision = "navsys:moon-retarget-solve";
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: normalize(
+          add(scale(estimatedDirection, 0.9), add(scale(tangent, 0.08), scale(up, 0.02))),
+          estimatedDirection,
+        ),
+        mode: "navsys:moon-retarget-solve",
+      };
+    }
+    moonRuntime.approach.lastDecision = "navsys:coast-to-moon";
     return {
       phase: "coast",
       throttle: 0,

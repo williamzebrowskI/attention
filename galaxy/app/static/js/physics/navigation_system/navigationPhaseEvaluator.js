@@ -80,7 +80,15 @@ export function evaluateMoonMissionPhase({
   }
 
   if (currentPhase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON) {
-    if (moonDistanceKm <= profile.moonApproachDistanceKm) {
+    const moonClosingSpeedKmS = finiteOr(metrics.moonClosingSpeedKmS, 0);
+    const moonProjectedMissDistanceKm = finiteOr(
+      metrics.moonProjectedMissDistanceKm,
+      Number.POSITIVE_INFINITY,
+    );
+    const approachClosingValid =
+      moonClosingSpeedKmS >= (profile.midcourseMinClosingSpeedKmS * 0.3)
+      || moonProjectedMissDistanceKm <= (profile.tliInterceptMissDistanceKm * 0.8);
+    if (moonDistanceKm <= profile.moonApproachDistanceKm && approachClosingValid) {
       return {
         nextPhase: NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
         reason: "moon_approach_gate",

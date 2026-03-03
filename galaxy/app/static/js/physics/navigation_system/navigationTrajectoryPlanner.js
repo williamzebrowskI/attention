@@ -45,6 +45,34 @@ export function createNavigationTrajectoryPlanner({
           active: Boolean(plannerRuntime.moon.midcourse.active),
           burnSec: Math.max(0, Number(plannerRuntime.moon.midcourse.burnSec) || 0),
           stableSec: Math.max(0, Number(plannerRuntime.moon.midcourse.stableSec) || 0),
+          cooldownSec: Math.max(0, Number(plannerRuntime.moon.midcourse.cooldownSec) || 0),
+          lastStartSec: Number.isFinite(Number(plannerRuntime.moon.midcourse.lastStartSec))
+            ? Number(plannerRuntime.moon.midcourse.lastStartSec)
+            : null,
+          lastStopSec: Number.isFinite(Number(plannerRuntime.moon.midcourse.lastStopSec))
+            ? Number(plannerRuntime.moon.midcourse.lastStopSec)
+            : null,
+        },
+        retarget: {
+          lastSolveSec: Number.isFinite(Number(plannerRuntime.moon.retarget?.lastSolveSec))
+            ? Number(plannerRuntime.moon.retarget.lastSolveSec)
+            : null,
+          lastSolveReason: String(plannerRuntime.moon.retarget?.lastSolveReason || ""),
+        },
+        approach: {
+          projectedPeriluneAltitudeKm: Number.isFinite(Number(plannerRuntime.moon.approach?.projectedPeriluneAltitudeKm))
+            ? Number(plannerRuntime.moon.approach.projectedPeriluneAltitudeKm)
+            : null,
+          corridorErrorKm: Number.isFinite(Number(plannerRuntime.moon.approach?.corridorErrorKm))
+            ? Number(plannerRuntime.moon.approach.corridorErrorKm)
+            : null,
+          bPlaneErrorKm: Number.isFinite(Number(plannerRuntime.moon.approach?.bPlaneErrorKm))
+            ? Number(plannerRuntime.moon.approach.bPlaneErrorKm)
+            : null,
+          timeToClosestSec: Number.isFinite(Number(plannerRuntime.moon.approach?.timeToClosestSec))
+            ? Number(plannerRuntime.moon.approach.timeToClosestSec)
+            : null,
+          lastDecision: String(plannerRuntime.moon.approach?.lastDecision || ""),
         },
         lastTimestampSec: Number.isFinite(Number(plannerRuntime.moon.lastTimestampSec))
           ? Number(plannerRuntime.moon.lastTimestampSec)

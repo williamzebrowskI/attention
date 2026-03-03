@@ -45,6 +45,7 @@ These are planner-side labels that map to the same mission behavior:
 
 - `navsys:tli-periapsis-protect`: Planner equivalent of periapsis-protect TLI burn.
 - `navsys:tli-burn`: Planner equivalent of main TLI burn.
+- `navsys:moon-retarget-solve`: Periodic guidance retarget solve while coasting (updates corridor/perilune aim and B-plane trim intent).
 - `navsys:moon-midcourse-correction`: Planner equivalent of midcourse correction.
 - `navsys:coast-to-moon`: Planner equivalent of coast-to-moon.
 - `navsys:lunar-capture-retrograde`: Planner equivalent of lunar capture burn.
