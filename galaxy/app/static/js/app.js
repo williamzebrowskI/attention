@@ -30,6 +30,15 @@ import {
   earthAtmosphereSampleUS1976,
 } from "./physics/atmosphere/atmosphereDynamics.js";
 import {
+  LUNAR_MASCON_MODEL_ENABLED,
+  computeLunarMasconAccelerationKmS2,
+} from "./physics/dynamics/lunarMasconModel.js";
+import {
+  SOLAR_RADIATION_PRESSURE_ENABLED,
+  computeSolarRadiationAccelerationKmS2,
+  computeSolarShadowTransmittance,
+} from "./physics/dynamics/solarRadiationPressure.js";
+import {
   OBLATE_GRAVITY_ENABLED,
   OBLATE_GRAVITY_MODEL,
 } from "./physics/config/oblatenessConfig.js";
@@ -7141,15 +7150,16 @@ function sourceBodyFixedAxesEclipticForBody(bodyId, pole, timestampMs = Date.now
 
 function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now()) {
   const contextById = new Map();
-  if (!OBLATE_GRAVITY_ENABLED) {
+  if (!OBLATE_GRAVITY_ENABLED && !LUNAR_MASCON_MODEL_ENABLED) {
     return contextById;
   }
   for (const sourceId of sourceIds || []) {
     if (!sourceId || contextById.has(sourceId)) {
       continue;
     }
+    const useLunarMasconAxes = LUNAR_MASCON_MODEL_ENABLED && sourceId === "moon";
     const model = oblateModelForBody(sourceId);
-    if (!model) {
+    if (!model && !useLunarMasconAxes) {
       continue;
     }
     const pole = sourcePoleUnitVectorEclipticForBody(sourceId, timestampMs);
@@ -7157,15 +7167,17 @@ function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now())
       continue;
     }
     const fixedAxes = sourceBodyFixedAxesEclipticForBody(sourceId, pole, timestampMs);
+    const fallbackRadiusKm = Number(metaById.get(sourceId)?.radius_km) || 0;
     contextById.set(sourceId, {
-      j2: model.j2,
-      j4: model.j4,
-      c22: model.c22,
-      s22: model.s22,
-      referenceRadiusKm: model.referenceRadiusKm,
+      j2: Number(model?.j2) || 0,
+      j4: Number(model?.j4) || 0,
+      c22: Number(model?.c22) || 0,
+      s22: Number(model?.s22) || 0,
+      referenceRadiusKm: Number(model?.referenceRadiusKm) || fallbackRadiusKm || 1737.4,
       pole,
       xAxis: fixedAxes?.xAxis || null,
       yAxis: fixedAxes?.yAxis || null,
+      lunarMasconEnabled: useLunarMasconAxes,
     });
   }
   return contextById;
@@ -7210,57 +7222,86 @@ function computeGravityAccelerationFromSource(
   let az = -muOverR3 * rz;
 
   const oblate = oblateSourceContextById?.get(sourceId);
-  if (!oblate) {
-    return { x: ax, y: ay, z: az };
-  }
-  const pole = oblate.pole;
-  const poleDotRel = (pole.x * rx) + (pole.y * ry) + (pole.z * rz);
-  const u = poleDotRel * invRadius;
-  const u2 = u * u;
-  const refOverR = oblate.referenceRadiusKm * invRadius;
-  const refOverR2 = refOverR * refOverR;
+  if (oblate) {
+    const pole = oblate.pole;
+    const poleDotRel = (pole.x * rx) + (pole.y * ry) + (pole.z * rz);
+    const u = poleDotRel * invRadius;
+    const u2 = u * u;
+    const refOverR = oblate.referenceRadiusKm * invRadius;
+    const refOverR2 = refOverR * refOverR;
 
-  if (oblate.j2) {
-    const coeff2 = muOverR3 * oblate.j2 * refOverR2;
-    const termR2 = 1.5 * ((5 * u2) - 1);
-    const termK2 = 3 * u * radius;
-    ax += coeff2 * ((termR2 * rx) - (termK2 * pole.x));
-    ay += coeff2 * ((termR2 * ry) - (termK2 * pole.y));
-    az += coeff2 * ((termR2 * rz) - (termK2 * pole.z));
+    if (oblate.j2) {
+      const coeff2 = muOverR3 * oblate.j2 * refOverR2;
+      const termR2 = 1.5 * ((5 * u2) - 1);
+      const termK2 = 3 * u * radius;
+      ax += coeff2 * ((termR2 * rx) - (termK2 * pole.x));
+      ay += coeff2 * ((termR2 * ry) - (termK2 * pole.y));
+      az += coeff2 * ((termR2 * rz) - (termK2 * pole.z));
+    }
+
+    if (oblate.j4) {
+      const u3 = u2 * u;
+      const u4 = u2 * u2;
+      const refOverR4 = refOverR2 * refOverR2;
+      const coeff4 = muOverR3 * oblate.j4 * refOverR4;
+      const termR4 = (15 / 8) * ((21 * u4) - (14 * u2) + 1);
+      const termK4 = 0.5 * ((35 * u3) - (15 * u)) * radius;
+      ax += coeff4 * ((termR4 * rx) - (termK4 * pole.x));
+      ay += coeff4 * ((termR4 * ry) - (termK4 * pole.y));
+      az += coeff4 * ((termR4 * rz) - (termK4 * pole.z));
+    }
+
+    if (oblate.c22 || oblate.s22) {
+      const xAxis = oblate.xAxis;
+      const yAxis = oblate.yAxis;
+      if (xAxis && yAxis) {
+        const ux = ((xAxis.x * rx) + (xAxis.y * ry) + (xAxis.z * rz)) * invRadius;
+        const uy = ((yAxis.x * rx) + (yAxis.y * ry) + (yAxis.z * rz)) * invRadius;
+        const uz = u;
+        const c22 = oblate.c22;
+        const s22 = oblate.s22;
+        const q22 = (c22 * ((ux * ux) - (uy * uy))) + (2 * s22 * ux * uy);
+        const termX = (2 * ((c22 * ux) + (s22 * uy))) - (5 * ux * q22);
+        const termY = (2 * ((s22 * ux) - (c22 * uy))) - (5 * uy * q22);
+        const termZ = -5 * uz * q22;
+        const coeff22 = 3 * muOverR3 * refOverR2 * radius;
+        const axBody = coeff22 * termX;
+        const ayBody = coeff22 * termY;
+        const azBody = coeff22 * termZ;
+        ax += (axBody * xAxis.x) + (ayBody * yAxis.x) + (azBody * pole.x);
+        ay += (axBody * xAxis.y) + (ayBody * yAxis.y) + (azBody * pole.y);
+        az += (axBody * xAxis.z) + (ayBody * yAxis.z) + (azBody * pole.z);
+      }
+    }
   }
 
-  if (oblate.j4) {
-    const u3 = u2 * u;
-    const u4 = u2 * u2;
-    const refOverR4 = refOverR2 * refOverR2;
-    const coeff4 = muOverR3 * oblate.j4 * refOverR4;
-    const termR4 = (15 / 8) * ((21 * u4) - (14 * u2) + 1);
-    const termK4 = 0.5 * ((35 * u3) - (15 * u)) * radius;
-    ax += coeff4 * ((termR4 * rx) - (termK4 * pole.x));
-    ay += coeff4 * ((termR4 * ry) - (termK4 * pole.y));
-    az += coeff4 * ((termR4 * rz) - (termK4 * pole.z));
-  }
-
-  if (oblate.c22 || oblate.s22) {
-    const xAxis = oblate.xAxis;
-    const yAxis = oblate.yAxis;
-    if (xAxis && yAxis) {
-      const ux = ((xAxis.x * rx) + (xAxis.y * ry) + (xAxis.z * rz)) * invRadius;
-      const uy = ((yAxis.x * rx) + (yAxis.y * ry) + (yAxis.z * rz)) * invRadius;
-      const uz = u;
-      const c22 = oblate.c22;
-      const s22 = oblate.s22;
-      const q22 = (c22 * ((ux * ux) - (uy * uy))) + (2 * s22 * ux * uy);
-      const termX = (2 * ((c22 * ux) + (s22 * uy))) - (5 * ux * q22);
-      const termY = (2 * ((s22 * ux) - (c22 * uy))) - (5 * uy * q22);
-      const termZ = -5 * uz * q22;
-      const coeff22 = 3 * muOverR3 * refOverR2 * radius;
-      const axBody = coeff22 * termX;
-      const ayBody = coeff22 * termY;
-      const azBody = coeff22 * termZ;
-      ax += (axBody * xAxis.x) + (ayBody * yAxis.x) + (azBody * pole.x);
-      ay += (axBody * xAxis.y) + (ayBody * yAxis.y) + (azBody * pole.y);
-      az += (axBody * xAxis.z) + (ayBody * yAxis.z) + (azBody * pole.z);
+  if (
+    LUNAR_MASCON_MODEL_ENABLED
+    && sourceId === "moon"
+    && oblate?.xAxis
+    && oblate?.yAxis
+    && oblate?.pole
+  ) {
+    const masconAcceleration = computeLunarMasconAccelerationKmS2({
+      targetPosKm: targetPos,
+      moonCenterPosKm: sourcePos,
+      moonMassKg: sourceMassKg,
+      moonRadiusKm: Number(oblate.referenceRadiusKm) || bodyRadiusKmById("moon") || 1737.4,
+      moonAxes: {
+        xAxis: oblate.xAxis,
+        yAxis: oblate.yAxis,
+        pole: oblate.pole,
+      },
+      gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+    });
+    if (
+      Number.isFinite(masconAcceleration.x)
+      && Number.isFinite(masconAcceleration.y)
+      && Number.isFinite(masconAcceleration.z)
+    ) {
+      ax += masconAcceleration.x;
+      ay += masconAcceleration.y;
+      az += masconAcceleration.z;
     }
   }
 
@@ -7304,6 +7345,77 @@ function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextB
   return { x: ax, y: ay, z: az };
 }
 
+function computeNBodySolarRadiationAccelerationForTarget(state, targetId) {
+  if (!SOLAR_RADIATION_PRESSURE_ENABLED) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const targetBody = state?.dynamicBodies?.get(targetId);
+  if (!targetBody?.position) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const targetMeta = metaById.get(targetId) || null;
+  if (String(targetMeta?.body_type || "").trim().toLowerCase() !== "spacecraft") {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const sunState =
+    state?.dynamicBodies?.get("sun")
+    || state?.staticSources?.get("sun")
+    || null;
+  if (!sunState?.position) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const sunRadiusKm = bodyRadiusKmById("sun");
+  if (!(sunRadiusKm > 0)) {
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  const occluders = [];
+  for (const [occluderId, occluderState] of state?.dynamicBodies || []) {
+    if (!occluderState?.position || occluderId === "sun" || occluderId === targetId) {
+      continue;
+    }
+    const radiusKm = bodyRadiusKmById(occluderId);
+    if (!(radiusKm > 0)) {
+      continue;
+    }
+    occluders.push({
+      id: occluderId,
+      positionKm: occluderState.position,
+      radiusKm,
+    });
+  }
+  for (const [occluderId, occluderState] of state?.staticSources || []) {
+    if (!occluderState?.position || occluderId === "sun" || occluderId === targetId) {
+      continue;
+    }
+    const radiusKm = bodyRadiusKmById(occluderId);
+    if (!(radiusKm > 0)) {
+      continue;
+    }
+    occluders.push({
+      id: occluderId,
+      positionKm: occluderState.position,
+      radiusKm,
+    });
+  }
+
+  const shadowTransmittance = computeSolarShadowTransmittance({
+    targetId,
+    targetPosKm: targetBody.position,
+    sunPosKm: sunState.position,
+    sunRadiusKm,
+    occluders,
+  });
+  return computeSolarRadiationAccelerationKmS2({
+    bodyId: targetId,
+    bodyMeta: targetMeta,
+    bodyMassKg: Number(targetBody.massKg) || Number(targetMeta?.mass_kg) || 0,
+    targetPosKm: targetBody.position,
+    sunPosKm: sunState.position,
+    transmittance: shadowTransmittance,
+  });
+}
+
 function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceContextById = null) {
   const gravity = finiteAccelerationKmS2(
     computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById),
@@ -7314,9 +7426,12 @@ function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceCon
   const thrust = launchFeatureEnabled
     ? finiteAccelerationKmS2(launchController?.externalAccelerationKmS2(targetId) || { x: 0, y: 0, z: 0 })
     : { x: 0, y: 0, z: 0 };
-  const totalX = gravity.x + atmospheric.x + thrust.x;
-  const totalY = gravity.y + atmospheric.y + thrust.y;
-  const totalZ = gravity.z + atmospheric.z + thrust.z;
+  const solarRadiation = finiteAccelerationKmS2(
+    computeNBodySolarRadiationAccelerationForTarget(state, targetId),
+  );
+  const totalX = gravity.x + atmospheric.x + thrust.x + solarRadiation.x;
+  const totalY = gravity.y + atmospheric.y + thrust.y + solarRadiation.y;
+  const totalZ = gravity.z + atmospheric.z + thrust.z + solarRadiation.z;
   if (!Number.isFinite(totalX) || !Number.isFinite(totalY) || !Number.isFinite(totalZ)) {
     return { x: 0, y: 0, z: 0 };
   }
@@ -9812,8 +9927,10 @@ function updateInfoOverlay() {
     : "Mission Elapsed";
   const runtimeMassKg = nBodyState?.dynamicBodies?.get(meta.id)?.massKg;
   const displayedMassKg = Number.isFinite(runtimeMassKg) ? runtimeMassKg : Number(meta.mass_kg);
+  const masconModelLabel = LUNAR_MASCON_MODEL_ENABLED ? ", lunar mascon perturbations" : "";
+  const srpModelLabel = SOLAR_RADIATION_PRESSURE_ENABLED ? ", SRP (spacecraft) w/ eclipse shadowing" : "";
   const orbitDynamicsLine = isNBodyDrivenBodyId(meta.id)
-    ? `N-body gravity (startup-seeded from Horizons${OBLATE_GRAVITY_ENABLED ? ", J2/J4 zonal terms" : ""})`
+    ? `N-body gravity (startup-seeded from Horizons${OBLATE_GRAVITY_ENABLED ? ", J2/J4 zonal terms" : ""}${masconModelLabel}${srpModelLabel})`
     : "Ephemeris / existing propagation";
   const configuredOrbitHours = Number(ORBIT_VISUAL_PERIOD_HOURS?.[meta.id]);
   const configuredSolarDayHours = Number(ROTATION_SOLAR_DAY_HOURS?.[meta.id]);
