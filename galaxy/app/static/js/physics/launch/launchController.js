@@ -2840,7 +2840,7 @@ export function createLaunchController(options) {
       const orbitalRefuelMissionActive =
         runtime.stageIndex >= 1
         && String(runtime?.mission?.phase || "") === "orbital_refuel";
-      if (runtime.phase === "orbit" && runtime.autopilotEnabled && orbitalRefuelMissionActive) {
+      if (runtime.phase === "orbit" && orbitalRefuelMissionActive) {
         runtime.phase = "coast";
         runtime.autopilotMode = "navsys:orbital-refuel-await-target";
       }

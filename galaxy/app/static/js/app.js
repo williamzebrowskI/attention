@@ -173,7 +173,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260303ac";
+const FRONTEND_MODULE_VERSION = "20260303ai";
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: "earth_orbit_hold",
@@ -4524,6 +4524,7 @@ function updateFleetSpacecraftVisuals() {
     }
 
     const guidanceMode = String(snapshot?.guidanceMode || snapshot?.autopilotMode || "").toLowerCase();
+    const missionPhase = String(snapshot?.missionPhase || "").toLowerCase();
     const stageName = String(snapshot?.stageName || "").toLowerCase();
     const launchMode = String(snapshot?.launchMode || "").toLowerCase();
     const isTanker = String(snapshot?.vehicleKind || "").toLowerCase() === "tanker"
@@ -4533,6 +4534,9 @@ function updateFleetSpacecraftVisuals() {
       || String(bodyId).startsWith("earth_mission_ship_");
     const forceHorizontalInjectVisual = isMissionShip
       && launchMode === "orbit_inject";
+    const forceHorizontalRefuelVisual = isMissionShip
+      && missionPhase === "orbital_refuel";
+    const forceHorizontalVisual = forceHorizontalInjectVisual || forceHorizontalRefuelVisual;
     const dockingLock = refuelDockingVisualLockForBody(bodyId, snapshot);
     const forceVerticalVisual = Boolean(
       dockingLock
@@ -4546,10 +4550,14 @@ function updateFleetSpacecraftVisuals() {
     );
 
     let targetDirection = upScene || prograde || defaultAxis;
-    if (dockingLock?.directionScene) {
+    if (forceHorizontalVisual) {
+      targetDirection = prograde
+        || safeNormalizeSceneDirection(
+          defaultAxis.clone().applyQuaternion(visual.tiltGroup.quaternion),
+          defaultAxis,
+        );
+    } else if (dockingLock?.directionScene) {
       targetDirection = dockingLock.directionScene;
-    } else if (forceHorizontalInjectVisual && prograde) {
-      targetDirection = prograde;
     } else if (forceVerticalVisual && upScene) {
       targetDirection = upScene;
     } else if (upScene && prograde) {
@@ -4569,7 +4577,7 @@ function updateFleetSpacecraftVisuals() {
       if (dockingLock?.hardLock) {
         visual.tiltGroup.quaternion.copy(targetQuaternion);
       } else {
-        const alignAlpha = forceHorizontalInjectVisual
+        const alignAlpha = forceHorizontalVisual
           ? 0.46
           : (forceVerticalVisual ? 0.3 : 0.18);
         visual.tiltGroup.quaternion.slerp(targetQuaternion, alignAlpha);
@@ -4780,6 +4788,7 @@ async function createSpacecraftVisual(body) {
   const isLaunchBooster = body?.id === LAUNCH_BOOSTER_BODY_ID;
   const isRefuelTanker = String(body?.id || "").startsWith("earth_refuel_tanker_");
   const isMissionShip = String(body?.id || "").startsWith("earth_mission_ship_");
+  const isFleetSpacecraft = isRefuelTanker || isMissionShip;
   const root = new THREE_NS.Object3D();
   const tiltGroup = new THREE_NS.Object3D();
   const spinGroup = new THREE_NS.Object3D();
@@ -4864,7 +4873,7 @@ async function createSpacecraftVisual(body) {
               : (isMissionShip ? "inline_starship_mission_geometry" : "inline_starship_booster_geometry")
           )
           : (stack ? "local_starship_geometry" : "fallback_spacecraft_geometry"))),
-    launchStackState: isLaunchVehicle ? (stack?.state || null) : null,
+    launchStackState: (isLaunchVehicle || isFleetSpacecraft) ? (stack?.state || null) : null,
     boosterVisualState: isLaunchBooster ? (stack?.state || null) : null,
     extraMaterials: stack?.materials || [],
   };
