@@ -301,32 +301,6 @@ body {
   opacity: 0.92;
 }
 
-.mission-control-live-viewport::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 64px;
-  height: 64px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  border: 1px solid rgba(141, 211, 250, 0.36);
-  box-shadow: 0 0 0 1px rgba(141, 211, 250, 0.12), inset 0 0 14px rgba(141, 211, 250, 0.08);
-  pointer-events: none;
-}
-
-.mission-control-live-viewport::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 12px;
-  background-image:
-    linear-gradient(rgba(141, 206, 245, 0.1) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(141, 206, 245, 0.1) 1px, transparent 1px);
-  background-size: 32px 32px;
-  pointer-events: none;
-}
-
 .mission-control-live-viewport-label {
   position: absolute;
   left: 50%;
