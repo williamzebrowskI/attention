@@ -111,6 +111,15 @@ const PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM = 145;
 const PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM = 150;
 const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
 const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
+const MOON_BURN_ATTITUDE_GATE_PHASES = new Set([
+  "tli_burn",
+  "coast_to_moon",
+  "lunar_insertion",
+  "tei_burn",
+  "earth_capture",
+]);
+const MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG = 5;
+const MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG = 2;
 
 function fallbackAxes() {
   return {
@@ -845,6 +854,7 @@ export function createLaunchController(options) {
     moonProjectedPeriluneAltitudeKm: null,
     moonBPlaneErrorKm: null,
     moonEarthGuardActive: false,
+    moonBurnAttitudeGateActive: false,
     missionPhaseGateReason: "",
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
@@ -1557,6 +1567,7 @@ export function createLaunchController(options) {
     runtime.moonProjectedPeriluneAltitudeKm = null;
     runtime.moonBPlaneErrorKm = null;
     runtime.moonEarthGuardActive = false;
+    runtime.moonBurnAttitudeGateActive = false;
     runtime.missionPhaseGateReason = "";
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
@@ -3060,6 +3071,31 @@ export function createLaunchController(options) {
             massKg: Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || 0),
           });
         }
+        const moonBurnPhase = String(runtime?.mission?.phase || "");
+        const moonAttitudeGateEligible = (
+          canThrust
+          && throttleCommand > 1e-3
+          && runtime.stageIndex >= 1
+          && runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+          && MOON_BURN_ATTITUDE_GATE_PHASES.has(moonBurnPhase)
+        );
+        let moonAttitudeGateApplied = false;
+        if (moonAttitudeGateEligible || runtime.moonBurnAttitudeGateActive) {
+          const currentAxis = normalize(
+            runtime.stageActuator?.directionActual || steeringDirection,
+            steeringDirection,
+          );
+          const attitudeErrorDeg = degrees(angleBetweenRadians(currentAxis, steeringDirection));
+          const gateWasActive = Boolean(runtime.moonBurnAttitudeGateActive);
+          const shouldGate = gateWasActive
+            ? attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG
+            : attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG;
+          if (shouldGate && canThrust) {
+            throttleCommand = 0;
+            moonAttitudeGateApplied = true;
+          }
+        }
+        runtime.moonBurnAttitudeGateActive = moonAttitudeGateApplied;
 
         runtime.stageActuator = applyActuatorModel(runtime.stageActuator, {
           requestedThrottle: canThrust ? throttleCommand : 0,
@@ -3121,9 +3157,12 @@ export function createLaunchController(options) {
           up: orbital.up,
           controlAuthorityScale: runtime.stageMassModel.controlAuthorityScale,
         });
-        const guidanceModeLabel = qAlphaSteering.limited
+        let guidanceModeLabel = qAlphaSteering.limited
           ? `${guidanceMode}+qalpha-limit`
           : guidanceMode;
+        if (runtime.moonBurnAttitudeGateActive && !guidanceModeLabel.includes("attitude-align")) {
+          guidanceModeLabel = `${guidanceModeLabel}+attitude-align`;
+        }
         runtime.lastStep = {
           accelerationKmS2: add(add(thrustAccelerationKmS2, aero.accelerationKmS2), rcs.accelerationKmS2),
           throttle: throttleActual,
@@ -4230,6 +4269,7 @@ export function createLaunchController(options) {
       moonProjectedMissDistanceKm: finiteOrNull(runtime.moonProjectedMissDistanceKm),
       moonProjectedPeriluneAltitudeKm: finiteOrNull(runtime.moonProjectedPeriluneAltitudeKm),
       moonBPlaneErrorKm: finiteOrNull(runtime.moonBPlaneErrorKm),
+      moonBurnAttitudeGateActive: Boolean(runtime.moonBurnAttitudeGateActive),
       missionPhaseGateReason: String(runtime.missionPhaseGateReason || ""),
       lastTrackedPositionKm: cloneVectorOrNull(runtime.lastTrackedPositionKm),
       lastSurfaceSample: cloneJson(runtime.lastSurfaceSample),
@@ -4326,6 +4366,7 @@ export function createLaunchController(options) {
     runtime.moonProjectedMissDistanceKm = finiteOrNull(snapshot.moonProjectedMissDistanceKm);
     runtime.moonProjectedPeriluneAltitudeKm = finiteOrNull(snapshot.moonProjectedPeriluneAltitudeKm);
     runtime.moonBPlaneErrorKm = finiteOrNull(snapshot.moonBPlaneErrorKm);
+    runtime.moonBurnAttitudeGateActive = Boolean(snapshot.moonBurnAttitudeGateActive);
     runtime.missionPhaseGateReason = String(snapshot.missionPhaseGateReason || "");
     runtime.lastTrackedPositionKm = cloneVectorOrNull(snapshot.lastTrackedPositionKm);
     runtime.lastSurfaceSample = cloneJson(snapshot.lastSurfaceSample);
