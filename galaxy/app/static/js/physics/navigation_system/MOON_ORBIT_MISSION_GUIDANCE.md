@@ -28,15 +28,14 @@ This file now includes both:
 | Label | Definition | How it works |
 |---|---|---|
 | `navsys:orbital-refuel-await-target` | Waiting for eligible tanker. | No target selected; holds orbit and keeps propulsion off except stabilization. |
-| `navsys:orbital-refuel-orbit-recovery` | Recover orbit before chase. | If orbital energy/periapsis is unsafe, prioritizes orbit repair instead of intercept. |
-| `navsys:orbital-refuel-speed-brake` | Bleed excess energy. | If speed/apoapsis is too high for safe rendezvous, commands braking-biased burn first. |
-| `navsys:orbital-refuel-phase-catchup-lower` | Long-range lower-orbit phase correction. | If tanker is ahead in-track, performs controlled retrograde-biased phasing burn to drop orbit period and catch up in phase. |
-| `navsys:orbital-refuel-phase-catchup-raise` | Long-range raise-orbit phase correction. | If tanker is behind in-track, performs prograde-biased phasing burn to increase period and align intercept timing. |
-| `navsys:orbital-refuel-phase-catchup` | Long-range phase correction (fallback). | Fallback guidance if detailed frame solution is unavailable; uses conservative phase/intercept blend. |
-| `navsys:orbital-refuel-rendezvous-far` | Far-range rendezvous. | Guides along horizontal/intercept direction with controlled throttle toward tanker. |
-| `navsys:orbital-refuel-rendezvous-mid` | Mid-range rendezvous. | Adds stronger relative-velocity damping while reducing approach corridor. |
-| `navsys:orbital-refuel-brake` | Near-range speed trim. | If near target but approach speed is high, burns to reduce relative velocity before final approach. |
-| `navsys:orbital-refuel-final-approach` | Fine docking approach. | Very low-throttle closure with line-of-sight and velocity damping for precision dock corridor. |
+| `navsys:orbital-refuel-phase-coast-window` | Passive long-range phasing window. | If projected closest-approach under coast is favorable, preserves fuel and waits for geometry to converge naturally. |
+| `navsys:orbital-refuel-phasing-burn` | Long-range orbital period shaping burn. | Uses main engines to reshape orbital period first (catch-up geometry), then transitions toward transfer closure. |
+| `navsys:orbital-refuel-transfer-burn` | Mid-range transfer burn. | Uses controlled main-engine thrust to reduce range while damping relative velocity and cross-track/radial errors. |
+| `navsys:orbital-refuel-velocity-match` | Relative speed correction burn. | Uses main engines opposite relative-motion error to reduce closing overspeed before final corridor entry. |
+| `navsys:orbital-refuel-coast-window` | Mid/near passive closure window. | Holds thrust when projected intercept is already convergent and speed is within gate. |
+| `navsys:orbital-refuel-rcs-reacquire-burn` | Close-range separation recovery. | If close but separating, applies a tiny correction burn to re-enter RCS translation corridor. |
+| `navsys:orbital-refuel-rcs-translate` | RCS-only close approach. | Main engines stay off; translational RCS handles fine closure/alignment into docking corridor. |
+| `navsys:orbital-refuel-final-approach` | Final docking corridor. | Main engines remain off; only fine RCS translation is expected as speed gates tighten to dock limits. |
 | `navsys:orbital-refuel-lock` | Docked lock state. | Relative motion conditions met; guidance holds lock for transfer operation. |
 
 ## Navigation planner equivalents (`navsys:*`)

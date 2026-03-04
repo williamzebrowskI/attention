@@ -39,6 +39,7 @@ import {
 } from "./lunar/windowTargeting.js";
 import { isFlightDockingEligible } from "./refuel/availability.js";
 import { REFUEL_TANKER_CONFIG } from "./refuel/config.js";
+import { selectStickyTarget } from "./refuel/targetSelection.js";
 import {
   estimateMoonRoundTripFuelBudget,
   estimateOrbitalRefuelDemoFuelBudget,
@@ -74,6 +75,14 @@ const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 2_600_000;
 const FLEET_MOON_MISSION_MARGIN_CONSERVE_KG = 220_000;
 const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
 const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
+// Temporary tuning: skip refuel orbit-recovery hold so demo ships start rendezvous burns immediately.
+const FLEET_REFUEL_DEMO_BYPASS_ORBIT_RECOVERY = true;
+const FLEET_REFUEL_SPEED_BRAKE_ENTER_EXCESS_KM_S = 0.22;
+const FLEET_REFUEL_SPEED_BRAKE_EXIT_EXCESS_KM_S = 0.14;
+const FLEET_REFUEL_SPEED_BRAKE_ENTER_APO_BUFFER_KM = 300;
+const FLEET_REFUEL_SPEED_BRAKE_EXIT_APO_BUFFER_KM = 200;
+const FLEET_REFUEL_SPEED_BRAKE_MIN_HOLD_SEC = 75;
+const FLEET_REFUEL_SPEED_BRAKE_EXIT_STABLE_SEC = 18;
 const FLEET_TEI_DEPARTURE_DISTANCE_KM = 140_000;
 const FLEET_EARTH_CAPTURE_DISTANCE_KM = 180_000;
 const FLEET_EARTH_CAPTURE_APOAPSIS_MAX_KM = 75_000;
@@ -479,7 +488,7 @@ export function createLaunchFleetController({
     return null;
   }
 
-  function nearestEligibleTankerTarget(state, shipState, earthState) {
+  function listEligibleTankerTargets(state, shipState, earthState) {
     if (
       !state?.dynamicBodies
       || !shipState
@@ -489,7 +498,7 @@ export function createLaunchFleetController({
       || !finiteVector(earthState.position)
       || !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 })
     ) {
-      return null;
+      return [];
     }
     const flights = Array.isArray(runtime?.refuel?.flights) ? runtime.refuel.flights : [];
     const flightsById = new Map();
@@ -510,7 +519,11 @@ export function createLaunchFleetController({
       shipRelVelEarth,
       normalize(shipRelPosEarth, { x: 0, y: 0, z: 1 }),
     );
-    let best = null;
+    const shipProgradeEarth = normalize(
+      shipRelVelEarth,
+      normalize(shipRelPosEarth, { x: 0, y: 0, z: 1 }),
+    );
+    const candidates = [];
     for (const [bodyId, tankerState] of state.dynamicBodies.entries()) {
       const tankerId = String(bodyId || "").trim();
       if (!tankerId.startsWith("earth_refuel_tanker_")) {
@@ -563,6 +576,12 @@ export function createLaunchFleetController({
       const desiredClosingKmS = clamp(distanceKm / 80_000, 0.005, 0.12);
       const weakClosingPenaltyKmS = Math.max(0, desiredClosingKmS - safeClosingSpeedKmS);
       const separatingPenaltyKmS = Math.max(0, -safeClosingSpeedKmS);
+      const aheadDot = dot(unitToTarget, shipProgradeEarth);
+      const behindRecoverable = aheadDot <= -0.05
+        && safeClosingSpeedKmS >= 0.004
+        && relativeSpeedKmS <= 0.09
+        && altitudeErrorKm <= 40
+        && radialSpeedErrorKmS <= 0.02;
       const interceptScore = (
         (distanceKm / 6000)
         + (relativeSpeedKmS * 80)
@@ -582,13 +601,51 @@ export function createLaunchFleetController({
         radialSpeedKmS,
         altitudeErrorKm,
         radialSpeedErrorKmS,
+        aheadDot,
+        behindRecoverable,
         interceptScore,
       };
-      if (!best || candidate.interceptScore < best.interceptScore) {
-        best = candidate;
-      }
+      candidates.push(candidate);
     }
-    return best;
+    candidates.sort((a, b) => Number(a.interceptScore) - Number(b.interceptScore));
+    return candidates;
+  }
+
+  function selectLockedTankerTargetForVehicle(
+    vehicle,
+    state,
+    shipState,
+    earthState,
+    { mutateLock = true } = {},
+  ) {
+    const candidates = listEligibleTankerTargets(state, shipState, earthState);
+    const nowSec = Math.max(0, Number(vehicle?.elapsedSeconds) || 0);
+    const selection = selectStickyTarget({
+      candidates,
+      lockId: String(vehicle?.refuelTargetLockId || ""),
+      lockAcquiredSec: Number(vehicle?.refuelTargetLockAcquiredSec) || 0,
+      nowSec,
+      options: {
+        minHoldSec: 140,
+        switchGainFraction: 0.22,
+        lockDistanceFactor: 1.55,
+        lockDistanceMarginKm: 900,
+        separatingClosingThresholdKmS: -0.01,
+        separatingImprovementKmS: 0.01,
+        avoidBehindTargets: true,
+        allowRecoverableBehindTargets: true,
+        behindDotThreshold: -0.05,
+        behindRecoverableMinClosingKmS: 0.004,
+        behindRecoverableMaxRelativeSpeedKmS: 0.09,
+        behindRecoverableMaxDistanceKm: 1600,
+        stickToLockUntilInvalid: true,
+      },
+    });
+    if (vehicle && typeof vehicle === "object" && mutateLock) {
+      vehicle.refuelTargetLockId = String(selection.nextLockId || "");
+      vehicle.refuelTargetLockAcquiredSec = Math.max(0, Number(selection.nextLockAcquiredSec) || 0);
+    }
+    return selection.selected;
   }
 
   function reserveNextFleetMissionIdentity(state) {
@@ -919,6 +976,13 @@ export function createLaunchFleetController({
       moonEarthGuardActive: false,
       moonProjectedPeriluneAltitudeKm: null,
       moonBPlaneErrorKm: null,
+      refuelTargetLockId: "",
+      refuelTargetLockAcquiredSec: 0,
+      refuelSpeedBrakeState: {
+        active: false,
+        activeSec: 0,
+        stableSec: 0,
+      },
       navPlannerRuntime: createPlannerRuntime(),
       fuelBudget: null,
       launchTimestampMs: nowMs,
@@ -998,6 +1062,15 @@ export function createLaunchFleetController({
     } else {
       vehicle.moonProjectedPeriluneAltitudeKm = null;
       vehicle.moonBPlaneErrorKm = null;
+    }
+    if (phaseName !== "orbital_refuel") {
+      vehicle.refuelTargetLockId = "";
+      vehicle.refuelTargetLockAcquiredSec = 0;
+      vehicle.refuelSpeedBrakeState = {
+        active: false,
+        activeSec: 0,
+        stableSec: 0,
+      };
     }
     if (typeof emitLaunchEvent === "function") {
       emitLaunchEvent("fleet_mission_phase_changed", {
@@ -1243,7 +1316,7 @@ export function createLaunchFleetController({
         desiredDirection = prograde;
         guidanceMode = "autopilot-orbital-hold";
       } else if (vehicle.missionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO && vehicle.missionPhase === "orbital_refuel") {
-        const target = nearestEligibleTankerTarget(state, shipState, earthState);
+        const target = selectLockedTankerTargetForVehicle(vehicle, state, shipState, earthState);
         orbitalRefuelTarget = target;
         if (!target || !target.relativePositionKm) {
           requestedThrottle = 0;
@@ -1266,25 +1339,33 @@ export function createLaunchFleetController({
           const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
           const periapsisNowKm = Number(orbital?.periapsisKm);
           const apoapsisNowKm = Number(orbital?.apoapsisKm);
+          const nearApoapsisForRecoveryBurn = Number.isFinite(timeToApoapsisSec)
+            && Math.abs(timeToApoapsisSec) < 220;
           const speedNowKmS = Math.max(0, Number(orbital?.speedKmS) || length(relVel));
           const circularSpeedKmS = Math.max(0.001, Number(orbital?.circularSpeedKmS) || 7.8);
           const speedExcessKmS = speedNowKmS - circularSpeedKmS;
           const recoveryEnter = Number.isFinite(periapsisNowKm)
-            && (periapsisNowKm < 124 || (periapsisNowKm < 138 && radialSpeedKmS < -0.0016));
+            && (periapsisNowKm < 120 || (periapsisNowKm < 142 && radialSpeedKmS < -0.0018));
           const recoveryExit = Number.isFinite(periapsisNowKm)
-            && periapsisNowKm >= 156
-            && radialSpeedKmS >= -0.0007;
+            && periapsisNowKm >= 148
+            && radialSpeedKmS >= -0.0012;
           if (!vehicle.refuelOrbitRecovery || typeof vehicle.refuelOrbitRecovery !== "object") {
             vehicle.refuelOrbitRecovery = {
               active: false,
               stableSec: 0,
+              activeSec: 0,
             };
           }
           if (!vehicle.refuelOrbitRecovery.active && recoveryEnter) {
             vehicle.refuelOrbitRecovery.active = true;
             vehicle.refuelOrbitRecovery.stableSec = 0;
+            vehicle.refuelOrbitRecovery.activeSec = 0;
           }
           if (vehicle.refuelOrbitRecovery.active) {
+            vehicle.refuelOrbitRecovery.activeSec = Math.max(
+              0,
+              Number(vehicle.refuelOrbitRecovery.activeSec) || 0,
+            ) + safeDtSeconds;
             if (recoveryExit) {
               vehicle.refuelOrbitRecovery.stableSec = Math.max(
                 0,
@@ -1293,23 +1374,75 @@ export function createLaunchFleetController({
             } else {
               vehicle.refuelOrbitRecovery.stableSec = 0;
             }
-            if ((Number(vehicle.refuelOrbitRecovery.stableSec) || 0) >= 18) {
+            if (
+              (Number(vehicle.refuelOrbitRecovery.stableSec) || 0) >= 14
+              || (Number(vehicle.refuelOrbitRecovery.activeSec) || 0) >= 600
+            ) {
               vehicle.refuelOrbitRecovery.active = false;
               vehicle.refuelOrbitRecovery.stableSec = 0;
+              vehicle.refuelOrbitRecovery.activeSec = 0;
             }
           }
           const recoveryActive = Boolean(vehicle.refuelOrbitRecovery.active);
-          const highEnergyRisk =
-            speedExcessKmS > 0.22
+          if (!vehicle.refuelSpeedBrakeState || typeof vehicle.refuelSpeedBrakeState !== "object") {
+            vehicle.refuelSpeedBrakeState = {
+              active: false,
+              activeSec: 0,
+              stableSec: 0,
+            };
+          }
+          const brakeEnterApoGateKm = Number.isFinite(targetAltitudeKm)
+            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_ENTER_APO_BUFFER_KM, 460)
+            : 700;
+          const brakeExitApoGateKm = Number.isFinite(targetAltitudeKm)
+            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_EXIT_APO_BUFFER_KM, 430)
+            : 640;
+          const highEnergyEnter = (
+            speedExcessKmS > FLEET_REFUEL_SPEED_BRAKE_ENTER_EXCESS_KM_S
             || (
               Number.isFinite(apoapsisNowKm)
-              && apoapsisNowKm > (
-                Number.isFinite(targetAltitudeKm)
-                  ? Math.max(targetAltitudeKm + 300, 460)
-                  : 700
-              )
-            );
-          const rcsAssistEnabled = true;
+              && apoapsisNowKm > brakeEnterApoGateKm
+            )
+          );
+          const highEnergyExitCandidate = (
+            speedExcessKmS <= FLEET_REFUEL_SPEED_BRAKE_EXIT_EXCESS_KM_S
+            && (
+              !Number.isFinite(apoapsisNowKm)
+              || apoapsisNowKm <= brakeExitApoGateKm
+            )
+          );
+          if (!vehicle.refuelSpeedBrakeState.active && highEnergyEnter) {
+            vehicle.refuelSpeedBrakeState.active = true;
+            vehicle.refuelSpeedBrakeState.activeSec = 0;
+            vehicle.refuelSpeedBrakeState.stableSec = 0;
+          }
+          if (vehicle.refuelSpeedBrakeState.active) {
+            vehicle.refuelSpeedBrakeState.activeSec = Math.max(
+              0,
+              Number(vehicle.refuelSpeedBrakeState.activeSec) || 0,
+            ) + safeDtSeconds;
+            if (highEnergyExitCandidate) {
+              vehicle.refuelSpeedBrakeState.stableSec = Math.max(
+                0,
+                Number(vehicle.refuelSpeedBrakeState.stableSec) || 0,
+              ) + safeDtSeconds;
+            } else {
+              vehicle.refuelSpeedBrakeState.stableSec = 0;
+            }
+            if (
+              (Number(vehicle.refuelSpeedBrakeState.activeSec) || 0) >= FLEET_REFUEL_SPEED_BRAKE_MIN_HOLD_SEC
+              && (Number(vehicle.refuelSpeedBrakeState.stableSec) || 0) >= FLEET_REFUEL_SPEED_BRAKE_EXIT_STABLE_SEC
+            ) {
+              vehicle.refuelSpeedBrakeState.active = false;
+              vehicle.refuelSpeedBrakeState.activeSec = 0;
+              vehicle.refuelSpeedBrakeState.stableSec = 0;
+            }
+          }
+          const highEnergyRisk = Boolean(vehicle.refuelSpeedBrakeState.active) || highEnergyEnter;
+          let plannerRcsProfile = "";
+          let plannerRcsTranslationHint = false;
+          let plannerMainEngineHint = false;
+          const rcsAssistEnabled = refuelDistanceKm <= Math.max(2, (Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014) * 120);
           if (rcsAssistEnabled) {
             const closeRange = refuelDistanceKm <= 1.5;
             const midRange = refuelDistanceKm <= 15;
@@ -1346,22 +1479,41 @@ export function createLaunchFleetController({
             requestedThrottle = 0;
             desiredDirection = prograde;
             guidanceMode = "navsys:orbital-refuel-lock";
-          } else if (recoveryActive) {
-            // Safety gate: recover orbital energy before any aggressive line-of-sight chase.
-            requestedThrottle = clamp(0.26 + (Math.max(0, 130 - (Number.isFinite(periapsisNowKm) ? periapsisNowKm : 130)) / 80), 0.26, 0.54);
-            desiredDirection = prograde;
-            guidanceMode = "navsys:orbital-refuel-orbit-recovery";
+          } else if (recoveryActive && !FLEET_REFUEL_DEMO_BYPASS_ORBIT_RECOVERY) {
+            // Recovery is phase-aware: raise periapsis near apoapsis; otherwise coast.
+            const periapsisDeficitKm = Number.isFinite(periapsisNowKm)
+              ? Math.max(0, 150 - periapsisNowKm)
+              : 0;
+            const recoveryNeedsBurn = periapsisDeficitKm > 0.2;
+            if (recoveryNeedsBurn && nearApoapsisForRecoveryBurn) {
+              requestedThrottle = clamp(0.18 + (periapsisDeficitKm / 90), 0.18, 0.42);
+              desiredDirection = prograde;
+              guidanceMode = "navsys:orbital-refuel-orbit-recovery-burn";
+            } else {
+              requestedThrottle = 0;
+              desiredDirection = prograde;
+              guidanceMode = "navsys:orbital-refuel-orbit-recovery-coast";
+            }
           } else if (highEnergyRisk) {
-            // Do not keep adding orbital energy during catch-up; brake until back near stable orbit energy.
-            requestedThrottle = clamp(0.14 + Math.max(0, speedExcessKmS * 0.48), 0.14, 0.44);
-            desiredDirection = normalize(
-              add(
-                scale(prograde, -0.9),
-                scale(directionHorizontal, 0.1),
-              ),
-              scale(prograde, -1),
-            );
-            guidanceMode = "navsys:orbital-refuel-speed-brake";
+            // Brake retrograde near periapsis to reduce apoapsis growth; coast otherwise.
+            const nearPeriapsisForBrake = Number.isFinite(periapsisNowKm)
+              && Number.isFinite(altitudeKm)
+              && Math.abs(altitudeKm - periapsisNowKm) <= 35;
+            if (nearPeriapsisForBrake) {
+              requestedThrottle = clamp(0.14 + Math.max(0, speedExcessKmS * 0.48), 0.14, 0.44);
+              desiredDirection = normalize(
+                add(
+                  scale(prograde, -0.9),
+                  scale(directionHorizontal, 0.1),
+                ),
+                scale(prograde, -1),
+              );
+              guidanceMode = "navsys:orbital-refuel-speed-brake";
+            } else {
+              requestedThrottle = 0;
+              desiredDirection = prograde;
+              guidanceMode = "navsys:orbital-refuel-speed-brake-coast-to-peri";
+            }
           } else {
             const plannerCommand = planRefuelRendezvousCommand({
               targetVectors: {
@@ -1377,6 +1529,9 @@ export function createLaunchFleetController({
               tangent: prograde,
               plannerConfig: NAVIGATION_DEFAULTS.planner,
             });
+            plannerRcsProfile = String(plannerCommand?.rcsAssistProfile || "").trim();
+            plannerRcsTranslationHint = Boolean(plannerCommand?.actuators?.rcsTranslation);
+            plannerMainEngineHint = Boolean(plannerCommand?.actuators?.mainEngine);
             requestedThrottle = plannerCommand?.phase === "powered"
               ? clamp(Number(plannerCommand?.throttle) || 0, 0, 1)
               : 0;
@@ -1390,6 +1545,48 @@ export function createLaunchFleetController({
               requestedThrottle = 0;
               desiredDirection = prograde;
               guidanceMode = "navsys:orbital-refuel-lock";
+            }
+          }
+          const closeProximityMode = guidanceMode.includes("orbital-refuel-final-approach")
+            || guidanceMode.includes("orbital-refuel-rcs-translate")
+            || guidanceMode.includes("orbital-refuel-lock")
+            || guidanceMode.includes("orbital-refuel-docked");
+          const preserveRcsAssist = (
+            closeProximityMode
+            || plannerRcsTranslationHint
+            || refuelDistanceKm <= Math.max(2, dockDistanceKm * 140)
+          ) && (
+            requestedThrottle <= 0.08
+            || !plannerMainEngineHint
+          );
+          if (!preserveRcsAssist) {
+            rcsAssistAccelKmS2 = { x: 0, y: 0, z: 0 };
+            rcsAssistAuthority = 0;
+            rcsAssistJets = [];
+            rcsAssistMode = "";
+          } else if (rcsAssistAuthority > 1e-8) {
+            if (plannerRcsProfile === "fine" || closeProximityMode) {
+              const fineLimitKmS2 = 0.000018;
+              rcsAssistAccelKmS2 = clampVectorMagnitude(rcsAssistAccelKmS2, fineLimitKmS2);
+              rcsAssistMode = "rcs-dock-assist-fine";
+              rcsAssistAuthority = clamp(length(rcsAssistAccelKmS2) / fineLimitKmS2, 0, 1);
+              rcsAssistJets = rcsJetsFromAccel({
+                accelKmS2: rcsAssistAccelKmS2,
+                prograde,
+                up,
+                thresholdKmS2: Math.max(1e-8, fineLimitKmS2 * 0.14),
+              });
+            } else if (plannerRcsProfile === "coarse") {
+              const coarseLimitKmS2 = 0.000011;
+              rcsAssistAccelKmS2 = clampVectorMagnitude(rcsAssistAccelKmS2, coarseLimitKmS2);
+              rcsAssistMode = "rcs-dock-assist-coarse";
+              rcsAssistAuthority = clamp(length(rcsAssistAccelKmS2) / coarseLimitKmS2, 0, 1);
+              rcsAssistJets = rcsJetsFromAccel({
+                accelKmS2: rcsAssistAccelKmS2,
+                prograde,
+                up,
+                thresholdKmS2: Math.max(1e-8, coarseLimitKmS2 * 0.14),
+              });
             }
           }
         }
@@ -1425,7 +1622,7 @@ export function createLaunchFleetController({
           ? dot(relPos, relVel) / earthDistanceKm
           : 0;
         const moonRefuelTarget = vehicle.missionPhase === "orbital_refuel"
-          ? nearestEligibleTankerTarget(state, shipState, earthState)
+          ? selectLockedTankerTargetForVehicle(vehicle, state, shipState, earthState)
           : null;
         if (moonRefuelTarget && moonRefuelTarget.relativePositionKm) {
           decisionTargetBodyId = String(moonRefuelTarget.tankerId || "refuel_tanker");
@@ -2066,7 +2263,13 @@ export function createLaunchFleetController({
         vehicle.missionPhase === "orbital_refuel"
         && vehicle.vehicleRole !== "tanker"
       ) {
-        const target = nearestEligibleTankerTarget(state, shipState, earthState);
+        const target = selectLockedTankerTargetForVehicle(
+          vehicle,
+          state,
+          shipState,
+          earthState,
+          { mutateLock: false },
+        );
         if (target && Number.isFinite(Number(target.distanceKm))) {
           targetBodyId = String(target.tankerId || "refuel_tanker");
           targetBodyName = "Refuel Tanker";

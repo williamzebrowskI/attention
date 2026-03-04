@@ -166,9 +166,27 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlLiveFeedCanvasNode = options.missionControlLiveFeedCanvasNode
     || missionControlScreenNode?.querySelector?.(".mission-control-live-feed-canvas")
     || null;
+  const missionControlVehicleOverlayNode = options.missionControlVehicleOverlayNode
+    || missionControlScreenNode?.querySelector?.("#mission-control-vehicle-overlay")
+    || null;
   const staleViewportLabelNode = missionControlScreenNode?.querySelector?.(".mission-control-live-viewport-label") || null;
   if (staleViewportLabelNode && typeof staleViewportLabelNode.remove === "function") {
     staleViewportLabelNode.remove();
+  }
+  const missionControlVehiclePartMap = new Map();
+  if (missionControlVehicleOverlayNode) {
+    const partNodes = missionControlVehicleOverlayNode.querySelectorAll("[data-part]");
+    for (let i = 0; i < partNodes.length; i += 1) {
+      const node = partNodes[i];
+      const part = String(node?.getAttribute?.("data-part") || "").trim().toLowerCase();
+      if (!part) {
+        continue;
+      }
+      if (!missionControlVehiclePartMap.has(part)) {
+        missionControlVehiclePartMap.set(part, []);
+      }
+      missionControlVehiclePartMap.get(part).push(node);
+    }
   }
   const liveFeedSourceCanvas = options.liveFeedSourceCanvas || null;
   const missionControlViewStarshipButton = options.missionControlViewStarshipButton || null;
@@ -198,6 +216,192 @@ export function createMissionControlScreenController(options = {}) {
   let cachedFleetEntries = [];
   let lastFleetMarkupSignature = "";
   let liveFeedDrawFailed = false;
+
+  function setVehiclePartActivity(part, active, strength = 0.6) {
+    const nodes = missionControlVehiclePartMap.get(String(part || "").trim().toLowerCase());
+    if (!nodes || nodes.length <= 0) {
+      return;
+    }
+    const activity = clamp(Number(strength) || 0, 0, 1);
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      if (!(node instanceof Element)) {
+        continue;
+      }
+      if (active) {
+        node.classList.add("active");
+        node.style.setProperty("--activity", activity.toFixed(3));
+      } else {
+        node.classList.remove("active");
+        node.style.removeProperty("--activity");
+      }
+    }
+  }
+
+  function clearVehicleOverlayActivity() {
+    const keys = missionControlVehiclePartMap.keys();
+    for (const part of keys) {
+      setVehiclePartActivity(part, false, 0);
+    }
+  }
+
+  function normalizeRcsJetPart(rawToken) {
+    const token = String(rawToken || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[_\s]+/g, "-");
+    if (!token) {
+      return "";
+    }
+    const map = {
+      nose: "forward",
+      fore: "forward",
+      forward: "forward",
+      tail: "aft",
+      rear: "aft",
+      aft: "aft",
+      top: "dorsal",
+      dorsal: "dorsal",
+      bottom: "ventral",
+      ventral: "ventral",
+      left: "port",
+      port: "port",
+      right: "starboard",
+      starboard: "starboard",
+    };
+    if (map[token]) {
+      return map[token];
+    }
+    const candidates = token.split(/[^a-z0-9-]+/g).filter(Boolean);
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      if (map[candidate]) {
+        return map[candidate];
+      }
+    }
+    if (token.includes("forward") || token.includes("fore") || token.includes("nose")) {
+      return "forward";
+    }
+    if (token.includes("aft") || token.includes("rear") || token.includes("tail")) {
+      return "aft";
+    }
+    if (token.includes("dorsal") || token.includes("top")) {
+      return "dorsal";
+    }
+    if (token.includes("ventral") || token.includes("bottom")) {
+      return "ventral";
+    }
+    if (token.includes("port") || token.includes("left")) {
+      return "port";
+    }
+    if (token.includes("starboard") || token.includes("right")) {
+      return "starboard";
+    }
+    return "";
+  }
+
+  function collectRcsJetParts(jets) {
+    const parts = new Set();
+    if (!Array.isArray(jets)) {
+      return parts;
+    }
+    for (let i = 0; i < jets.length; i += 1) {
+      const raw = String(jets[i] || "").trim();
+      if (!raw) {
+        continue;
+      }
+      const tokens = raw
+        .split(/[,+/|]/g)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (tokens.length <= 0) {
+        const normalizedSingle = normalizeRcsJetPart(raw);
+        if (normalizedSingle) {
+          parts.add(normalizedSingle);
+        }
+        continue;
+      }
+      for (let j = 0; j < tokens.length; j += 1) {
+        const normalized = normalizeRcsJetPart(tokens[j]);
+        if (normalized) {
+          parts.add(normalized);
+        }
+      }
+    }
+    return parts;
+  }
+
+  function preferredOverlayMode(vehicleViewState) {
+    const activeView = String(vehicleViewState?.activeView || "").trim().toLowerCase();
+    if (activeView === "booster") {
+      return "booster";
+    }
+    if (activeView === "starship") {
+      return "starship";
+    }
+    if (vehicleViewState?.starshipViewAvailable) {
+      return "starship";
+    }
+    if (vehicleViewState?.boosterViewAvailable) {
+      return "booster";
+    }
+    return "starship";
+  }
+
+  function syncVehicleOverlay(vehicleViewState, snapshot) {
+    if (!missionControlVehicleOverlayNode) {
+      return;
+    }
+    const mode = preferredOverlayMode(vehicleViewState);
+    missionControlVehicleOverlayNode.classList.toggle("booster-mode", mode === "booster");
+    missionControlVehicleOverlayNode.classList.toggle("starship-mode", mode !== "booster");
+
+    clearVehicleOverlayActivity();
+    if (!snapshot || typeof snapshot !== "object") {
+      return;
+    }
+
+    const isBoosterMode = mode === "booster";
+    const mainThrottle = isBoosterMode
+      ? Number(snapshot?.boosterThrottleCommand ?? snapshot?.boosterThrottle)
+      : Number(snapshot?.throttleCommand ?? snapshot?.throttle);
+    const mainThrustN = isBoosterMode
+      ? Number(snapshot?.boosterThrustN)
+      : Number(snapshot?.thrustN);
+    const mainEngineOn = (Number.isFinite(mainThrustN) && mainThrustN > 1)
+      || (Number.isFinite(mainThrottle) && mainThrottle > 0.01);
+    const mainEngineActivity = clamp(
+      Number.isFinite(mainThrottle)
+        ? mainThrottle
+        : (mainEngineOn ? 0.45 : 0),
+      0,
+      1,
+    );
+    setVehiclePartActivity("main-engine", mainEngineOn, mainEngineActivity);
+
+    const rcsActive = isBoosterMode
+      ? Boolean(snapshot?.boosterRcsActive)
+      : Boolean(snapshot?.rcsActive);
+    const rcsAuthority = isBoosterMode
+      ? Number(snapshot?.boosterRcsAuthority)
+      : Number(snapshot?.rcsAuthority);
+    const rcsJets = isBoosterMode
+      ? snapshot?.boosterRcsJets
+      : snapshot?.rcsJets;
+    const activeParts = rcsActive ? collectRcsJetParts(rcsJets) : new Set();
+    const thrusterActivity = clamp(
+      Number.isFinite(rcsAuthority)
+        ? Math.max(0.3, rcsAuthority)
+        : (rcsActive ? 0.55 : 0),
+      0,
+      1,
+    );
+    const thrusterParts = ["forward", "aft", "dorsal", "ventral", "port", "starboard"];
+    for (let i = 0; i < thrusterParts.length; i += 1) {
+      const part = thrusterParts[i];
+      setVehiclePartActivity(part, activeParts.has(part), thrusterActivity);
+    }
+  }
 
   function syncLiveViewportFeed() {
     if (!visible || !missionControlLiveFeedCanvasNode || !liveFeedSourceCanvas || liveFeedDrawFailed) {
@@ -529,6 +733,7 @@ export function createMissionControlScreenController(options = {}) {
       missionControlViewBoosterButton.classList.toggle("on", active);
       missionControlViewBoosterButton.setAttribute("aria-pressed", active ? "true" : "false");
     }
+    return safeState;
   }
 
   function normalizeFleetEntries(fleetEntries) {
@@ -707,9 +912,10 @@ export function createMissionControlScreenController(options = {}) {
     if (!missionControlScreenNode || !missionControlOverviewNode || !missionControlSequenceNode || !missionControlEventsNode || !missionControlSubtitleNode) {
       return;
     }
-    syncVehicleViewState(vehicleViewState);
+    const safeVehicleViewState = syncVehicleViewState(vehicleViewState);
     renderFleetOperations(fleetEntries);
     syncLiveViewportFeed();
+    syncVehicleOverlay(safeVehicleViewState, snapshot);
     const active = Boolean(launchActive && snapshot);
     if (!snapshot) {
       missionControlSubtitleNode.textContent = "Waiting for telemetry. You can launch when systems are ready.";
@@ -752,6 +958,35 @@ export function createMissionControlScreenController(options = {}) {
     const fuelBudgetFeasible = snapshot?.fuelBudgetFeasible === null || snapshot?.fuelBudgetFeasible === undefined
       ? null
       : Boolean(snapshot.fuelBudgetFeasible);
+    const throttleCommandPct = Number.isFinite(Number(snapshot?.throttleCommand))
+      ? Number(snapshot.throttleCommand) * 100
+      : Number.NaN;
+    const boosterThrottleCommandPct = Number.isFinite(Number(snapshot?.boosterThrottleCommand))
+      ? Number(snapshot.boosterThrottleCommand) * 100
+      : Number.NaN;
+    const rcsAuthorityPct = Number.isFinite(Number(snapshot?.rcsAuthority))
+      ? clamp(Number(snapshot.rcsAuthority), 0, 1) * 100
+      : Number.NaN;
+    const boosterRcsAuthorityPct = Number.isFinite(Number(snapshot?.boosterRcsAuthority))
+      ? clamp(Number(snapshot.boosterRcsAuthority), 0, 1) * 100
+      : Number.NaN;
+    const rcsJetsLabel = Array.isArray(snapshot?.rcsJets) && snapshot.rcsJets.length > 0
+      ? snapshot.rcsJets.join(", ")
+      : (snapshot?.rcsActive ? "active (unspecified)" : "n/a");
+    const boosterRcsJetsLabel = Array.isArray(snapshot?.boosterRcsJets) && snapshot.boosterRcsJets.length > 0
+      ? snapshot.boosterRcsJets.join(", ")
+      : (snapshot?.boosterRcsActive ? "active (unspecified)" : "n/a");
+    const rcsThrustAxis = snapshot?.rcsThrustAxisKm;
+    const rcsThrustAxisLabel = (
+      rcsThrustAxis
+      && Number.isFinite(Number(rcsThrustAxis.x))
+      && Number.isFinite(Number(rcsThrustAxis.y))
+      && Number.isFinite(Number(rcsThrustAxis.z))
+    )
+      ? `${formatNumber(Number(rcsThrustAxis.x), 3)}, ${formatNumber(Number(rcsThrustAxis.y), 3)}, ${formatNumber(Number(rcsThrustAxis.z), 3)}`
+      : "n/a";
+    const rcsCorrectionForceN = Number(snapshot?.rcsOrbitCorrectionForceN);
+    const rcsCorrectionAccelKmS2 = Number(snapshot?.rcsOrbitCorrectionAccelKmS2);
     missionControlSubtitleNode.textContent = active
       ? `${missionName} | ${missionPhase} | ${phaseLabel} | ${stageName} | MET ${met}`
       : `${missionName} | Last known phase ${missionPhase} | MET ${met}`;
@@ -774,6 +1009,7 @@ export function createMissionControlScreenController(options = {}) {
       ["Periapsis", Number.isFinite(Number(snapshot.periapsisKm)) ? `${formatNumber(snapshot.periapsisKm, 2)} km` : "n/a"],
       ["Thrust", Number.isFinite(Number(snapshot.thrustN)) ? `${formatNumber(Number(snapshot.thrustN) / 1_000_000, 3)} MN` : "n/a"],
       ["Throttle", Number.isFinite(Number(snapshot.throttle)) ? `${formatNumber(Number(snapshot.throttle) * 100, 1)}%` : "n/a"],
+      ["Throttle Cmd", Number.isFinite(throttleCommandPct) ? `${formatNumber(throttleCommandPct, 1)}%` : "n/a"],
       ["Dyn Pressure", Number.isFinite(Number(snapshot.dynamicPressurePa)) ? `${formatNumber(Number(snapshot.dynamicPressurePa) / 1000, 2)} kPa` : "n/a"],
       ["Target Body", snapshot.targetBodyName || "n/a"],
       ["Target Distance", Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a"],
@@ -797,7 +1033,14 @@ export function createMissionControlScreenController(options = {}) {
       ["Fuel Margin", Number.isFinite(fuelBudgetMarginKg) ? `${formatNumber(fuelBudgetMarginKg, 0)} kg` : "n/a"],
       ["Tanker Window", snapshot.refuelCanLaunchTanker ? "Open" : "Closed"],
       ["Hot-Stage", snapshot.hotstageActive ? "Active" : (snapshot.hotstageDetachReason ? `Detached (${snapshot.hotstageDetachReason})` : "Inactive")],
-      ["RCS", snapshot.rcsActive ? `On (${formatNumber((Number(snapshot.rcsAuthority) || 0) * 100, 1)}%)` : "Off"],
+      ["RCS", snapshot.rcsActive ? `On (${Number.isFinite(rcsAuthorityPct) ? formatNumber(rcsAuthorityPct, 1) : "n/a"}%)` : "Off"],
+      ["RCS Jets", rcsJetsLabel],
+      ["RCS Thrust Axis", rcsThrustAxisLabel],
+      ["RCS Corr Force", Number.isFinite(rcsCorrectionForceN) ? `${formatNumber(rcsCorrectionForceN / 1000, 2)} kN` : "n/a"],
+      ["RCS Corr Accel", Number.isFinite(rcsCorrectionAccelKmS2) ? `${formatNumber(rcsCorrectionAccelKmS2 * 1000, 4)} m/s²` : "n/a"],
+      ["Booster Throttle Cmd", Number.isFinite(boosterThrottleCommandPct) ? `${formatNumber(boosterThrottleCommandPct, 1)}%` : "n/a"],
+      ["Booster RCS", snapshot.boosterRcsActive ? `On (${Number.isFinite(boosterRcsAuthorityPct) ? formatNumber(boosterRcsAuthorityPct, 1) : "n/a"}%)` : "Off"],
+      ["Booster RCS Jets", boosterRcsJetsLabel],
       ["Last Event", missionLastEventSummary
         ? humanizeLaunchEventName(missionLastEventSummary)
         : (lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "n/a")],

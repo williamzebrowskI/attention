@@ -54,6 +54,12 @@ export const NAVIGATION_DEFAULTS = Object.freeze({
     tliPeriapsisProtectUpBias: 0.24,
     earthFallbackRadialSpeedKmS: -0.01,
     sensorTimeConstantSec: 24,
+    refuelFarDistanceKm: 60,
+    refuelMidDistanceKm: 8,
+    refuelRcsOnlyDistanceKm: 1.2,
+    refuelFinalApproachDistanceKm: 0.08,
+    refuelCoastWindowHorizonSec: 2_400,
+    refuelCoastWindowDistanceScale: 0.62,
   }),
 });
 

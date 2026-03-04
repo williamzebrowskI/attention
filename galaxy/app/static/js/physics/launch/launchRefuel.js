@@ -33,6 +33,7 @@ import {
   finiteNonNegative,
   normalizedTargetFillFraction,
 } from "./refuel/status.js";
+import { selectStickyTarget } from "./refuel/targetSelection.js";
 
 export { REFUEL_TANKER_CONFIG };
 
@@ -93,6 +94,8 @@ export function refuelDefaults({
     transferStartedElapsedSec: 0,
     undockActive: false,
     undockTankerId: "",
+    activeRendezvousTankerId: "",
+    activeRendezvousTargetAcquiredSec: 0,
     lastAction: "",
     lastActionTimeSec: 0,
   };
@@ -641,6 +644,8 @@ export function createLaunchRefuelController({
       runtime.refuel.transferRateKgS = 0;
       runtime.refuel.undockActive = false;
       runtime.refuel.undockTankerId = "";
+      runtime.refuel.activeRendezvousTankerId = "";
+      runtime.refuel.activeRendezvousTargetAcquiredSec = 0;
       return;
     }
     syncExternalOrbitTankers(state);
@@ -653,6 +658,8 @@ export function createLaunchRefuelController({
       runtime.refuel.transferRateKgS = 0;
       runtime.refuel.undockActive = false;
       runtime.refuel.undockTankerId = "";
+      runtime.refuel.activeRendezvousTankerId = "";
+      runtime.refuel.activeRendezvousTargetAcquiredSec = 0;
       return;
     }
     const rocketState = rocketStateFromNBody?.(state);
@@ -669,6 +676,8 @@ export function createLaunchRefuelController({
       runtime.refuel.transferRateKgS = 0;
       runtime.refuel.undockActive = false;
       runtime.refuel.undockTankerId = "";
+      runtime.refuel.activeRendezvousTankerId = "";
+      runtime.refuel.activeRendezvousTargetAcquiredSec = 0;
       return;
     }
     const transferTargetKg = resolveRefuelTargetKg(runtime.refuel, stage2CapacityKg?.() || 0);
@@ -1329,8 +1338,18 @@ export function createLaunchRefuelController({
     const earthState = earthStateFromNBody?.(state);
     const earthVelocity = earthState?.velocity || { x: 0, y: 0, z: 0 };
     const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const rocketPrograde = (
+      earthState
+      && finiteVector?.(earthState.position)
+      && finiteVector?.(earthState.velocity || { x: 0, y: 0, z: 0 })
+    )
+      ? normalize(
+        subtract(rocketState.velocity || { x: 0, y: 0, z: 0 }, earthVelocity),
+        normalize(subtract(rocketState.position, earthState.position), { x: 0, y: 0, z: 1 }),
+      )
+      : normalize(rocketState.velocity || { x: 1, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
     const consumedIds = consumedTankerIdsSet();
-    let best = null;
+    const candidates = [];
     for (let i = 0; i < flights.length; i += 1) {
       const flight = flights[i];
       if (!flight?.id) {
@@ -1389,20 +1408,59 @@ export function createLaunchRefuelController({
       if (!metrics) {
         continue;
       }
-      if (!best || metrics.distanceKm < best.distanceKm) {
-        best = {
-          tankerId: flight.id,
-          slot: Number(flight.slot) || 0,
-          transferKg: Math.max(0, Number(flight.transferKg) || 0),
-          distanceKm: metrics.distanceKm,
-          relativeSpeedKmS: metrics.relativeSpeedKmS,
-          closingSpeedKmS: metrics.closingSpeedKmS,
-          relativePositionKm: metrics.relativePositionKm,
-          relativeVelocityKmS: metrics.relativeVelocityKmS,
-        };
-      }
+      const candidateScore = (
+        Number(metrics.distanceKm)
+        + (Math.max(0, -Number(metrics.closingSpeedKmS) || 0) * 420)
+        + (Math.max(0, Number(metrics.relativeSpeedKmS) - 0.002) * 240)
+      );
+      const distanceKm = Math.max(1e-9, Number(metrics.distanceKm) || 0);
+      const unitToTarget = scale(metrics.relativePositionKm || { x: 0, y: 0, z: 0 }, 1 / distanceKm);
+      const aheadDot = vectorDot(unitToTarget, rocketPrograde);
+      const behindRecoverable = aheadDot <= -0.05
+        && (Number(metrics.closingSpeedKmS) || 0) >= 0.003
+        && (Number(metrics.relativeSpeedKmS) || 0) <= 0.09
+        && distanceKm <= 1200;
+      candidates.push({
+        tankerId: flight.id,
+        slot: Number(flight.slot) || 0,
+        transferKg: Math.max(0, Number(flight.transferKg) || 0),
+        distanceKm: metrics.distanceKm,
+        relativeSpeedKmS: metrics.relativeSpeedKmS,
+        closingSpeedKmS: metrics.closingSpeedKmS,
+        relativePositionKm: metrics.relativePositionKm,
+        relativeVelocityKmS: metrics.relativeVelocityKmS,
+        aheadDot,
+        behindRecoverable,
+        candidateScore,
+      });
     }
-    return best;
+    const selection = selectStickyTarget({
+      candidates,
+      lockId: String(runtime.refuel.activeRendezvousTankerId || ""),
+      lockAcquiredSec: Number(runtime.refuel.activeRendezvousTargetAcquiredSec) || 0,
+      nowSec: Math.max(0, Number(runtime.elapsedSeconds) || 0),
+      options: {
+        minHoldSec: 120,
+        switchGainFraction: 0.22,
+        lockDistanceFactor: 1.45,
+        lockDistanceMarginKm: 750,
+        separatingClosingThresholdKmS: -0.006,
+        separatingImprovementKmS: 0.004,
+        avoidBehindTargets: true,
+        allowRecoverableBehindTargets: true,
+        behindDotThreshold: -0.05,
+        behindRecoverableMinClosingKmS: 0.003,
+        behindRecoverableMaxRelativeSpeedKmS: 0.09,
+        behindRecoverableMaxDistanceKm: 1200,
+        stickToLockUntilInvalid: true,
+      },
+    });
+    runtime.refuel.activeRendezvousTankerId = String(selection.nextLockId || "");
+    runtime.refuel.activeRendezvousTargetAcquiredSec = Math.max(
+      0,
+      Number(selection.nextLockAcquiredSec) || 0,
+    );
+    return selection.selected;
   }
 
   function launchMissionRefuelTanker(state, eligibility, nowMs = Date.now()) {
