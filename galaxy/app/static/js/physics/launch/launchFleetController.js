@@ -42,6 +42,8 @@ import {
   sampleWindVectorKmS,
 } from "./launchAeroModel.js";
 import { enforceMoonEarthAvoidanceDirection } from "./lunar/guidanceSafety.js";
+import { evaluateMoonTliGoNoGo } from "./lunar/moonGoNoGoGates.js";
+import { computeMoonSurvivalRecoveryOverride } from "./lunar/moonSurvivalRecovery.js";
 import {
   normalizeAngleZeroToTau,
 } from "./lunar/windowTargeting.js";
@@ -91,11 +93,12 @@ const FLEET_MOON_MIDCOURSE_PREDICT_HORIZON_SEC = Math.max(
   Number(NAVIGATION_DEFAULTS?.planner?.moonMidcoursePredictHorizonSec) || (36 * 3600),
 );
 const FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM = 130;
-const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_650_000;
+const FLEET_TLI_GO_NOGO_MIN_ALTITUDE_KM = 120;
+const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 2_400_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG = 90_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_SOFT_DEFICIT_KG = -8_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_HARD_HOLD_KG = -30_000;
-const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 3_600_000;
+const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 5_000_000;
 const FLEET_MOON_MISSION_MARGIN_CONSERVE_KG = 220_000;
 const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
 const FLEET_MOON_PAD_WINDOW_PHASE_TOLERANCE_DEG = 4.0;
@@ -334,6 +337,9 @@ function fleetMissionPhaseGateReason({
     return `Awaiting refuel target: fill ${formatFleetGatePercent(fillFraction)} / ${formatFleetGatePercent(FLEET_MOON_REFUEL_TARGET_FILL_FRACTION)}.`;
   }
   if (phase === "tli_burn") {
+    if (String(vehicle.moonGoNoGoStatus || "") === "NO-GO" && vehicle.moonGoNoGoReason) {
+      return String(vehicle.moonGoNoGoReason);
+    }
     const tliGate = evaluateMoonTliExitGate({
       vehicle,
       orbital,
@@ -1183,6 +1189,8 @@ export function createLaunchFleetController({
       moonTliTargetMissGateKm: null,
       moonTliTargetBPlaneKm: null,
       moonTliTargetPeriluneKm: null,
+      moonGoNoGoStatus: "n/a",
+      moonGoNoGoReason: "",
       refuelTargetLockId: "",
       refuelTargetLockAcquiredSec: 0,
       refuelSpeedBrakeState: {
@@ -1294,6 +1302,8 @@ export function createLaunchFleetController({
       vehicle.moonTliTargetMissGateKm = null;
       vehicle.moonTliTargetBPlaneKm = null;
       vehicle.moonTliTargetPeriluneKm = null;
+      vehicle.moonGoNoGoStatus = "n/a";
+      vehicle.moonGoNoGoReason = "";
     }
     if (phaseName !== "orbital_refuel") {
       vehicle.refuelTargetLockId = "";
@@ -1318,6 +1328,8 @@ export function createLaunchFleetController({
     if (phaseName === "tli_burn") {
       vehicle.moonProjectedMissTrendKmS = null;
       vehicle.moonPrevProjectedMissDistanceKm = null;
+      vehicle.moonGoNoGoStatus = "n/a";
+      vehicle.moonGoNoGoReason = "";
     }
     if (typeof emitLaunchEvent === "function") {
       emitLaunchEvent("fleet_mission_phase_changed", {
@@ -2214,9 +2226,26 @@ export function createLaunchFleetController({
           || vehicle.missionPhase === "lunar_capture"
         );
         if (moonBurnPhase && !budgetFeasible && availablePropellantKg > 1e-6) {
-          requestedThrottle = 0;
-          desiredDirection = prograde;
-          guidanceMode = "autopilot-moon-fuel-budget-hold";
+          const survivalRecovery = computeMoonSurvivalRecoveryOverride({
+            missionPhase: vehicle.missionPhase,
+            periapsisKm: Number(orbital?.periapsisKm),
+            altitudeKm: Number(orbital?.altitudeKm),
+            radialSpeedKmS: Number(orbital?.radialSpeedKmS),
+            prograde,
+            up,
+            availablePropellantKg,
+            reasonPrefix: "Fuel budget hold overridden by survival recovery.",
+          });
+          if (survivalRecovery) {
+            requestedThrottle = clamp(Number(survivalRecovery.throttle) || 0, 0, 1);
+            desiredDirection = normalize(survivalRecovery.direction || prograde, prograde);
+            guidanceMode = String(survivalRecovery.mode || "navsys:moon-survival-periapsis-recovery");
+            vehicle.moonGoNoGoReason = String(survivalRecovery.gateReason || "");
+          } else {
+            requestedThrottle = 0;
+            desiredDirection = prograde;
+            guidanceMode = "autopilot-moon-fuel-budget-hold";
+          }
         } else if (moonBurnPhase && Number.isFinite(budgetMarginKg) && budgetMarginKg < FLEET_MOON_MISSION_MARGIN_CONSERVE_KG) {
           const conserveCap = budgetMarginKg < FLEET_MOON_MISSION_MARGIN_CRITICAL_KG
             ? 0.16
@@ -2229,6 +2258,67 @@ export function createLaunchFleetController({
             guidanceMode = `${guidanceMode}:fuel-conserve`;
           }
         }
+      }
+      if (
+        vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      ) {
+        const moonGoNoGo = evaluateMoonTliGoNoGo({
+          missionId: vehicle.missionId,
+          missionPhase: vehicle.missionPhase,
+          commandPhase: requestedThrottle > 1e-4 ? "powered" : "coast",
+          requestedThrottle,
+          periapsisKm: Number(orbital?.periapsisKm),
+          altitudeKm: Number(orbital?.altitudeKm),
+          propellantKg: availablePropellantKg,
+          fuelBudget: missionFuelBudget,
+          missionElapsedInPhaseSec: Number(vehicle.phaseElapsedSec) || 0,
+          moonDepartureWindowReady: vehicle.moonPadWindowStatus
+            ? Boolean(vehicle.moonPadWindowStatus.ready)
+            : null,
+          moonDepartureWindowWaitSec: vehicle.moonDepartureWindowWaitSec,
+          plannerConfig: NAVIGATION_DEFAULTS.planner,
+          minPeriapsisKm: FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM,
+          minAltitudeKm: FLEET_TLI_GO_NOGO_MIN_ALTITUDE_KM,
+          minPropellantKg: 1,
+        });
+        if (moonGoNoGo.applies) {
+          vehicle.moonGoNoGoStatus = moonGoNoGo.status;
+          vehicle.moonGoNoGoReason = moonGoNoGo.reason;
+          if (!moonGoNoGo.go) {
+            const failures = Array.isArray(moonGoNoGo.failures) ? moonGoNoGo.failures : [];
+            const periapsisFailure = failures.includes("periapsis-safe");
+            const survivalRecovery = periapsisFailure
+              ? computeMoonSurvivalRecoveryOverride({
+                missionPhase: vehicle.missionPhase,
+                periapsisKm: Number(moonGoNoGo?.diagnostics?.periapsisKm),
+                altitudeKm: Number(moonGoNoGo?.diagnostics?.altitudeKm),
+                radialSpeedKmS: Number(orbital?.radialSpeedKmS),
+                prograde,
+                up,
+                availablePropellantKg,
+                reasonPrefix: moonGoNoGo.reason,
+              })
+              : null;
+            if (survivalRecovery) {
+              requestedThrottle = clamp(Number(survivalRecovery.throttle) || 0, 0, 1);
+              desiredDirection = normalize(survivalRecovery.direction || prograde, prograde);
+              guidanceMode = `${String(survivalRecovery.mode || "navsys:moon-survival-periapsis-recovery")}:go-no-go-survival-recovery`;
+              vehicle.moonGoNoGoReason = String(survivalRecovery.gateReason || moonGoNoGo.reason);
+            } else {
+              requestedThrottle = 0;
+              guidanceMode = guidanceMode.includes("go-no-go-hold")
+                ? guidanceMode
+                : `${guidanceMode}:go-no-go-hold`;
+            }
+          }
+        } else {
+          vehicle.moonGoNoGoStatus = "n/a";
+          vehicle.moonGoNoGoReason = "";
+        }
+      } else {
+        vehicle.moonGoNoGoStatus = "n/a";
+        vehicle.moonGoNoGoReason = "";
       }
 
       if (
@@ -2794,11 +2884,15 @@ export function createLaunchFleetController({
         moonDepartureAlignNow: null,
         moonDepartureAlignProjected: null,
         moonEstimatedTliDeltaVKmS: null,
+        moonDepartureWindowReady: false,
+        moonDepartureWindowLaunchTimeMs: null,
         moonTliTargetMode: "",
         moonTliTargetMissKm: null,
         moonTliTargetMissGateKm: null,
         moonTliTargetBPlaneKm: null,
         moonTliTargetPeriluneKm: null,
+        moonGoNoGoStatus: "n/a",
+        moonGoNoGoReason: "",
         missionPhaseGateReason: "",
         refuelTransferActive: false,
         refuelTransferTankerId: "",
@@ -3151,11 +3245,22 @@ export function createLaunchFleetController({
       moonDepartureAlignNow: finiteOrNull(vehicle.moonDepartureAlignNow),
       moonDepartureAlignProjected: finiteOrNull(vehicle.moonDepartureAlignProjected),
       moonEstimatedTliDeltaVKmS: finiteOrNull(vehicle.moonEstimatedTliDeltaVKmS),
+      moonDepartureWindowReady: Number.isFinite(Number(vehicle.moonDepartureWindowWaitSec))
+        ? Number(vehicle.moonDepartureWindowWaitSec) <= 1
+        : false,
+      moonDepartureWindowLaunchTimeMs: Number.isFinite(Number(vehicle.moonDepartureWindowWaitSec))
+        ? (
+          Number(nowMs)
+          + (Math.max(0, Number(vehicle.moonDepartureWindowWaitSec)) * 1000)
+        )
+        : null,
       moonTliTargetMode: String(vehicle.moonTliTargetMode || ""),
       moonTliTargetMissKm: finiteOrNull(vehicle.moonTliTargetMissKm),
       moonTliTargetMissGateKm: finiteOrNull(vehicle.moonTliTargetMissGateKm),
       moonTliTargetBPlaneKm: finiteOrNull(vehicle.moonTliTargetBPlaneKm),
       moonTliTargetPeriluneKm: finiteOrNull(vehicle.moonTliTargetPeriluneKm),
+      moonGoNoGoStatus: String(vehicle.moonGoNoGoStatus || "n/a"),
+      moonGoNoGoReason: String(vehicle.moonGoNoGoReason || ""),
       missionPhaseGateReason,
       guidanceBurnRequested,
       guidanceRequestedThrottle,

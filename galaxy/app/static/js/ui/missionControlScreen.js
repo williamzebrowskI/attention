@@ -1031,6 +1031,10 @@ export function createMissionControlScreenController(options = {}) {
         ? `${formatNumber(fuelBudgetMinimumPropellantKg, 0)} / ${formatNumber(fuelBudgetAvailablePropellantKg, 0)} kg`
         : "n/a"],
       ["Fuel Margin", Number.isFinite(fuelBudgetMarginKg) ? `${formatNumber(fuelBudgetMarginKg, 0)} kg` : "n/a"],
+      ["Space Wx", Number.isFinite(Number(snapshot.spaceWeatherF107)) && Number.isFinite(Number(snapshot.spaceWeatherKp))
+        ? `F10.7 ${formatNumber(snapshot.spaceWeatherF107, 1)} sfu | Kp ${formatNumber(snapshot.spaceWeatherKp, 2)}`
+        : "n/a"],
+      ["Space Wx Src", String(snapshot.spaceWeatherSource || "").trim() || "n/a"],
       ["Tanker Window", snapshot.refuelCanLaunchTanker ? "Open" : "Closed"],
       ["Hot-Stage", snapshot.hotstageActive ? "Active" : (snapshot.hotstageDetachReason ? `Detached (${snapshot.hotstageDetachReason})` : "Inactive")],
       ["RCS", snapshot.rcsActive ? `On (${Number.isFinite(rcsAuthorityPct) ? formatNumber(rcsAuthorityPct, 1) : "n/a"}%)` : "Off"],

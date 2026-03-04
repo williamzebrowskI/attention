@@ -5,12 +5,19 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.services.launch_site import LaunchSiteService
 from app.services.physics_lock import PhysicsLockError, validate_catalog_lock
+from app.services.earth_eop import EarthEopService
+from app.services.environment_forcing import (
+    SCENARIO_PROFILES,
+    EnvironmentForcingService,
+    normalize_environment_scenario,
+)
+from app.services.space_weather import SpaceWeatherService
 from app.services.solar_system import SolarSystemService, create_default_service
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -52,6 +59,13 @@ except PhysicsLockError as exc:
 
 service: SolarSystemService = create_default_service()
 launch_site_service = LaunchSiteService()
+environment_forcing_service = EnvironmentForcingService()
+space_weather_service = SpaceWeatherService(
+    forcing_context_provider=environment_forcing_service.current_context,
+)
+earth_eop_service = EarthEopService(
+    forcing_context_provider=environment_forcing_service.current_context,
+)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -69,16 +83,71 @@ async def healthz() -> dict[str, str]:
 @app.on_event("startup")
 async def startup_refresh_launch_site() -> None:
     await launch_site_service.refresh_on_startup()
+    await space_weather_service.refresh_on_startup()
+    await earth_eop_service.refresh_on_startup()
 
 
 @app.get("/api/config")
 async def runtime_config() -> dict[str, object]:
+    forcing_mode = str(os.getenv("ENVIRONMENT_FORCING_MODE") or "simulated").strip().lower() or "simulated"
+    forcing_snapshot = environment_forcing_service.snapshot()
     return {
         "features": {
             "starship_launch": _parse_bool(os.getenv("ENABLE_STARSHIP_LAUNCH"), default=True),
         },
+        "environment_forcing": {
+            "mode": forcing_mode,
+            "space_weather_mode": str(os.getenv("SPACE_WEATHER_MODE") or forcing_mode).strip().lower() or forcing_mode,
+            "earth_eop_mode": str(os.getenv("EARTH_EOP_MODE") or forcing_mode).strip().lower() or forcing_mode,
+            "scenario": forcing_snapshot.get("scenario"),
+            "updated_at_utc": forcing_snapshot.get("updated_at_utc"),
+            "profile": forcing_snapshot.get("profile"),
+        },
         "launch_site": launch_site_service.current_site().to_dict(),
     }
+
+
+@app.get("/api/environment-forcing")
+async def runtime_environment_forcing() -> dict[str, object]:
+    return environment_forcing_service.snapshot()
+
+
+@app.post("/api/environment-forcing")
+async def update_environment_forcing(
+    scenario: str = Query(
+        ...,
+        description="Environment scenario: quiet, moderate, storm, extreme.",
+    ),
+    force_refresh: bool = Query(
+        default=True,
+        description="Refresh simulated forcing services immediately after scenario update.",
+    ),
+) -> dict[str, object]:
+    requested = str(scenario or "").strip().lower()
+    if requested not in SCENARIO_PROFILES:
+        raise HTTPException(status_code=400, detail=f"Invalid scenario '{scenario}'.")
+    normalized = normalize_environment_scenario(requested)
+    snapshot = environment_forcing_service.set_scenario(normalized)
+    if force_refresh:
+        await space_weather_service.get_snapshot(force_refresh=True)
+        await earth_eop_service.get_snapshot(force_refresh=True)
+    return snapshot
+
+
+@app.get("/api/space-weather")
+async def runtime_space_weather(
+    force_refresh: bool = Query(default=False, description="Force a live refresh of cached space-weather inputs."),
+) -> dict[str, object]:
+    snapshot = await space_weather_service.get_snapshot(force_refresh=force_refresh)
+    return snapshot.to_dict()
+
+
+@app.get("/api/earth-eop")
+async def runtime_earth_eop(
+    force_refresh: bool = Query(default=False, description="Force a live refresh of cached Earth orientation parameters."),
+) -> dict[str, object]:
+    snapshot = await earth_eop_service.get_snapshot(force_refresh=force_refresh)
+    return snapshot.to_dict()
 
 
 @app.get("/api/bodies")

@@ -1,3 +1,5 @@
+import { sampleUpperAtmosphereNRLMSISEApprox } from "./upperAtmosphereModel.js";
+
 const EARTH_MEAN_RADIUS_KM = 6_371.0;
 const EARTH_GEOPOTENTIAL_RADIUS_KM = 6_356.766;
 const EARTH_MU_M3_PER_S2 = 3.986004418e14;
@@ -10,14 +12,6 @@ const ATMOSPHERE_LAYER_BASE_ALT_KM = [0, 11, 20, 32, 47, 51, 71, 86];
 const ATMOSPHERE_LAYER_BASE_TEMP_K = [288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.946];
 const ATMOSPHERE_LAYER_LAPSE_K_PER_KM = [-6.5, 0, 1.0, 2.8, 0, -2.8, -2.0];
 const ATMOSPHERE_LAYER_BASE_PRESSURE_PA = [101325, 22632.06, 5474.889, 868.0187, 110.9063, 66.93887, 3.956420];
-
-const EXOSPHERE_SEGMENTS = [
-  { startKm: 86, endKm: 120, scaleHeightKm: 7.5 },
-  { startKm: 120, endKm: 200, scaleHeightKm: 12.0 },
-  { startKm: 200, endKm: 300, scaleHeightKm: 25.0 },
-  { startKm: 300, endKm: 500, scaleHeightKm: 45.0 },
-  { startKm: 500, endKm: 1000, scaleHeightKm: 70.0 },
-];
 
 const DRAG_CONFIG_BY_BODY_ID = Object.freeze({
   iss: Object.freeze({
@@ -97,29 +91,12 @@ function pressureAndTemperatureBelow86Km(geometricAltitudeKm) {
   return { pressurePa, temperatureK };
 }
 
-function densityAbove86Km(geometricAltitudeKm) {
-  const sample86 = pressureAndTemperatureBelow86Km(86);
-  const density86 = sample86.pressurePa / (AIR_GAS_CONSTANT_J_PER_KG_K * sample86.temperatureK);
-  let rhoBase = density86;
-  let zBase = 86;
-  for (const segment of EXOSPHERE_SEGMENTS) {
-    if (geometricAltitudeKm <= segment.endKm) {
-      const dz = Math.max(0, geometricAltitudeKm - zBase);
-      return rhoBase * Math.exp(-dz / segment.scaleHeightKm);
-    }
-    const dzSegment = segment.endKm - zBase;
-    rhoBase *= Math.exp(-dzSegment / segment.scaleHeightKm);
-    zBase = segment.endKm;
-  }
-  return 0;
-}
-
 export function earthGravityMs2AtAltitudeKm(altitudeKm) {
   const rMeters = (EARTH_MEAN_RADIUS_KM + Math.max(altitudeKm, 0)) * 1000;
   return EARTH_MU_M3_PER_S2 / (rMeters * rMeters);
 }
 
-export function earthAtmosphereSampleUS1976(geometricAltitudeKm) {
+export function earthAtmosphereSampleUS1976(geometricAltitudeKm, options = {}) {
   const altitudeKm = Math.max(0, Number(geometricAltitudeKm) || 0);
   if (altitudeKm > 1000) {
     return {
@@ -134,6 +111,9 @@ export function earthAtmosphereSampleUS1976(geometricAltitudeKm) {
   let temperatureK = 0;
   let pressurePa = 0;
   let densityKgM3 = 0;
+  let exosphericTemperatureK = null;
+  let meanMolarMassKgPerMol = null;
+  let upperAtmosphereModel = null;
 
   if (altitudeKm <= 86) {
     const below = pressureAndTemperatureBelow86Km(altitudeKm);
@@ -141,10 +121,28 @@ export function earthAtmosphereSampleUS1976(geometricAltitudeKm) {
     pressurePa = below.pressurePa;
     densityKgM3 = pressurePa / (AIR_GAS_CONSTANT_J_PER_KG_K * temperatureK);
   } else {
-    const density = densityAbove86Km(altitudeKm);
-    densityKgM3 = Math.max(density, 0);
-    temperatureK = 186.946;
-    pressurePa = densityKgM3 * AIR_GAS_CONSTANT_J_PER_KG_K * temperatureK;
+    const base86 = pressureAndTemperatureBelow86Km(86);
+    const baseDensityKgM3 = base86.pressurePa / (AIR_GAS_CONSTANT_J_PER_KG_K * base86.temperatureK);
+    const upper = sampleUpperAtmosphereNRLMSISEApprox({
+      altitudeKm,
+      baseDensityKgM3,
+      latitudeDeg: Number(options?.latitudeDeg) || 0,
+      longitudeDeg: Number(options?.longitudeDeg) || 0,
+      timestampMs: Number(options?.timestampMs) || Date.now(),
+      f107: Number(options?.f107) || 150,
+      kp: Number(options?.kp) || 3,
+      kpHistory: Array.isArray(options?.kpHistory) ? options.kpHistory : [],
+    });
+    densityKgM3 = Math.max(0, Number(upper?.densityKgM3) || 0);
+    pressurePa = Math.max(0, Number(upper?.pressurePa) || 0);
+    temperatureK = Math.max(1, Number(upper?.temperatureK) || 186.946);
+    exosphericTemperatureK = Number.isFinite(Number(upper?.exosphericTemperatureK))
+      ? Number(upper.exosphericTemperatureK)
+      : null;
+    meanMolarMassKgPerMol = Number.isFinite(Number(upper?.meanMolarMassKgPerMol))
+      ? Number(upper.meanMolarMassKgPerMol)
+      : null;
+    upperAtmosphereModel = String(upper?.model || "nrlmsise-approx");
   }
 
   return {
@@ -153,6 +151,9 @@ export function earthAtmosphereSampleUS1976(geometricAltitudeKm) {
     temperatureK,
     pressurePa,
     densityKgM3,
+    exosphericTemperatureK,
+    meanMolarMassKgPerMol,
+    upperAtmosphereModel,
   };
 }
 
@@ -223,15 +224,54 @@ function earthCoRotationVelocityKmS(relativePositionKm, spinAxisEcliptic) {
   return cross(omega, relativePositionKm);
 }
 
+function earthLatLonFromRelativePosition(relativePositionKm, axes) {
+  const rel = relativePositionKm || null;
+  if (!rel) {
+    return null;
+  }
+  const radius = vectorLength(rel);
+  if (!(radius > 1e-9)) {
+    return null;
+  }
+
+  const pole = normalizeOrNull(axes?.pole || { x: 0, y: 0, z: 1 }) || { x: 0, y: 0, z: 1 };
+  let xAxis = normalizeOrNull(axes?.xAxis || null);
+  let yAxis = normalizeOrNull(axes?.yAxis || null);
+  if (!xAxis || !yAxis) {
+    const fallback = normalizeOrNull({
+      x: 1 - (pole.x * pole.x),
+      y: -(pole.x * pole.y),
+      z: -(pole.x * pole.z),
+    }) || { x: 1, y: 0, z: 0 };
+    xAxis = fallback;
+    yAxis = normalizeOrNull(cross(pole, xAxis)) || { x: 0, y: 1, z: 0 };
+  }
+
+  const unit = {
+    x: rel.x / radius,
+    y: rel.y / radius,
+    z: rel.z / radius,
+  };
+  const localX = (unit.x * xAxis.x) + (unit.y * xAxis.y) + (unit.z * xAxis.z);
+  const localY = (unit.x * yAxis.x) + (unit.y * yAxis.y) + (unit.z * yAxis.z);
+  const localZ = clamp((unit.x * pole.x) + (unit.y * pole.y) + (unit.z * pole.z), -1, 1);
+  return {
+    latitudeDeg: (Math.asin(localZ) * 180) / Math.PI,
+    longitudeDeg: (Math.atan2(localY, localX) * 180) / Math.PI,
+  };
+}
+
 export function createAtmosphereDynamicsController(options) {
   const {
     getBodyMeta,
     getBodyRadiusKm,
     getBodyMassKg,
     getBodySpinAxisEcliptic,
+    getEarthFixedAxesEcliptic,
+    sampleEarthAtmosphere,
   } = options || {};
 
-  function computeAtmosphericAccelerationKmS2(state, bodyId) {
+  function computeAtmosphericAccelerationKmS2(state, bodyId, nowMs = Date.now()) {
     const id = String(bodyId || "");
     const bodyState = state?.dynamicBodies?.get(bodyId);
     if (!bodyState?.position || !bodyState?.velocity) {
@@ -276,7 +316,22 @@ export function createAtmosphereDynamicsController(options) {
       return { x: 0, y: 0, z: 0 };
     }
 
-    const atmosphere = earthAtmosphereSampleUS1976(altitudeKm);
+    const earthAxes = typeof getEarthFixedAxesEcliptic === "function"
+      ? (getEarthFixedAxesEcliptic(nowMs) || null)
+      : null;
+    const latLon = earthLatLonFromRelativePosition(relPos, earthAxes);
+    const atmosphereSampler = typeof sampleEarthAtmosphere === "function"
+      ? sampleEarthAtmosphere
+      : earthAtmosphereSampleUS1976;
+    const atmosphere = atmosphereSampler(
+      altitudeKm,
+      {
+        timestampMs: nowMs,
+        latitudeDeg: Number(latLon?.latitudeDeg) || 0,
+        longitudeDeg: Number(latLon?.longitudeDeg) || 0,
+        relativePositionKm: relPos,
+      },
+    );
     if (!(atmosphere.densityKgM3 > 0)) {
       return { x: 0, y: 0, z: 0 };
     }

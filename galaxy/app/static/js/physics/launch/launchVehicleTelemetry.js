@@ -132,8 +132,15 @@ export function buildVehicleStatusSnapshot({
     ? -dot(relVel, scale(relPos, 1 / radialDistanceKm))
     : null;
   const altitudeKm = Math.max(0, Number(orbital.altitudeKm) || 0);
-  const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
   const currentEarthAxes = earthAxes?.(nowMs) || { pole: { x: 0, y: 0, z: 1 } };
+  const atmosphereSample = sampleEarthAtmosphere?.(
+    altitudeKm,
+    {
+      timestampMs: nowMs,
+      relativePositionKm: relPos,
+      earthAxes: currentEarthAxes,
+    },
+  ) || null;
   const dynamicPressurePa = dynamicPressurePaFromAtmosphere?.(
     atmosphereSample,
     relPos,
@@ -293,6 +300,15 @@ export function buildVehicleStatusSnapshot({
     refuelLastActionTimeSec: Number(runtime?.refuel?.lastActionTimeSec) || 0,
     moonRelativeSpeedKmS: null,
     moonProjectedMissDistanceKm: null,
+    moonDepartureWindowScore: null,
+    moonDepartureWindowWaitSec: null,
+    moonDepartureWindowPhaseErrorDeg: null,
+    moonDepartureGeometryScore: null,
+    moonDepartureAlignNow: null,
+    moonDepartureAlignProjected: null,
+    moonEstimatedTliDeltaVKmS: null,
+    moonDepartureWindowReady: false,
+    moonDepartureWindowLaunchTimeMs: null,
     missionPhaseGateReason: "",
     targetBodyId: "earth",
     targetBodyName: "Earth",

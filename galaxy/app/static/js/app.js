@@ -29,6 +29,8 @@ import {
   createAtmosphereDynamicsController,
   earthAtmosphereSampleUS1976,
 } from "./physics/atmosphere/atmosphereDynamics.js";
+import { createSpaceWeatherProvider } from "./physics/space_weather/spaceWeatherProvider.js";
+import { createEarthEopProvider } from "./physics/dynamics/earthEopProvider.js";
 import {
   LUNAR_MASCON_MODEL_ENABLED,
   computeLunarMasconAccelerationKmS2,
@@ -38,6 +40,17 @@ import {
   computeSolarRadiationAccelerationKmS2,
   computeSolarShadowTransmittance,
 } from "./physics/dynamics/solarRadiationPressure.js";
+import {
+  EARTH_SOLID_TIDE_ENABLED,
+  EARTH_SOLID_TIDE_SOURCE_BODY_IDS,
+  computeEarthSolidTidePerturbationKmS2,
+} from "./physics/dynamics/earthSolidTideModel.js";
+import { computeOblateGravityPerturbationKmS2 } from "./physics/dynamics/oblateGravityPerturbation.js";
+import {
+  applyEarthOrientationToAxes,
+  estimateEarthOrientationParameters,
+  setEarthOrientationRuntimeProvider,
+} from "./physics/dynamics/earthOrientationModel.js";
 import {
   OBLATE_GRAVITY_ENABLED,
   OBLATE_GRAVITY_MODEL,
@@ -186,6 +199,8 @@ const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
 const FRONTEND_MODULE_VERSION = "20260303av";
+const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: "earth_orbit_hold",
@@ -224,7 +239,7 @@ const N_BODY_STEP_SECONDS = 2;
 const N_BODY_STEP_SECONDS_LAUNCH_ACTIVE = 0.25;
 const N_BODY_STEP_SECONDS_LAUNCH_COAST = 0.75;
 const N_BODY_STEP_SECONDS_LAUNCH_ORBIT = 1.25;
-const N_BODY_MAX_SUBSTEPS_PER_FRAME = 10;
+const N_BODY_MAX_SUBSTEPS_PER_FRAME = 24;
 const N_BODY_MAX_INTEGRATION_BUDGET_MS = 8;
 const REENTRY_HEAT_COLOR_HEX = 0xff7a1a;
 const REENTRY_HEAT_ATMOSPHERE_MAX_KM = 160;
@@ -252,6 +267,9 @@ let applyStarshipVisualStageFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
+let spaceWeatherProvider = null;
+let earthEopProvider = null;
+let environmentForcingSnapshot = null;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
   "mercury",
@@ -1186,6 +1204,10 @@ function registerLaunchLogDebugHandles() {
     lastLaunchEventTimestampUtc = "";
     updateLaunchEventFeed();
   };
+  window.getEnvironmentForcing = () => currentEnvironmentForcingSnapshot();
+  window.setEnvironmentForcingScenario = async (scenario = "moderate", forceRefresh = true) => (
+    setEnvironmentForcingScenario(scenario, forceRefresh)
+  );
 }
 
 function launchPersistenceManagedBodyId(bodyId) {
@@ -1408,6 +1430,9 @@ let geolocationTrackingActive = false;
 
 window.addEventListener("resize", onResize);
 window.addEventListener("beforeunload", () => {
+  spaceWeatherProvider?.stop?.();
+  earthEopProvider?.stop?.();
+  setEarthOrientationRuntimeProvider(null);
   persistLaunchRuntimeState(Date.now(), { force: true });
   stopLiveLocationTracking(false);
 });
@@ -1425,6 +1450,8 @@ async function init() {
   assertPhysicsLockInvariants();
   registerLaunchLogDebugHandles();
   await loadRuntimeConfig();
+  setupSpaceWeatherProvider();
+  setupEarthEopProvider();
   if (launchFeatureEnabled) {
     try {
       await loadLaunchFeatureModules();
@@ -1450,6 +1477,118 @@ async function init() {
   animate();
 }
 
+function setupSpaceWeatherProvider() {
+  if (spaceWeatherProvider) {
+    return;
+  }
+  spaceWeatherProvider = createSpaceWeatherProvider({
+    refreshIntervalMs: SPACE_WEATHER_REFRESH_INTERVAL_MS,
+    onError: (error) => {
+      console.warn("[space-weather] Using cached/default values:", error);
+    },
+  });
+  spaceWeatherProvider.start();
+}
+
+function setupEarthEopProvider() {
+  if (earthEopProvider) {
+    return;
+  }
+  earthEopProvider = createEarthEopProvider({
+    refreshIntervalMs: EARTH_EOP_REFRESH_INTERVAL_MS,
+    onError: (error) => {
+      console.warn("[earth-eop] Using fallback orientation model:", error);
+    },
+  });
+  setEarthOrientationRuntimeProvider((timestampMs) => (
+    earthEopProvider?.sampleOrientation?.(timestampMs) || null
+  ));
+  earthEopProvider.start();
+}
+
+function currentSpaceWeatherSnapshot() {
+  return spaceWeatherProvider?.snapshot?.() || null;
+}
+
+function currentEarthEopSnapshot() {
+  return earthEopProvider?.snapshot?.() || null;
+}
+
+function earthLatLonFromRelativePositionKm(relativePositionKm, earthAxes) {
+  if (!finiteVectorKm(relativePositionKm)) {
+    return null;
+  }
+  const radius = Math.hypot(relativePositionKm.x, relativePositionKm.y, relativePositionKm.z);
+  if (!(radius > 1e-9)) {
+    return null;
+  }
+  const pole = finiteVectorKm(earthAxes?.pole)
+    ? (normalizeVector3OrNull(earthAxes.pole) || { x: 0, y: 0, z: 1 })
+    : { x: 0, y: 0, z: 1 };
+  let xAxis = finiteVectorKm(earthAxes?.xAxis)
+    ? normalizeVector3OrNull(earthAxes.xAxis)
+    : null;
+  let yAxis = finiteVectorKm(earthAxes?.yAxis)
+    ? normalizeVector3OrNull(earthAxes.yAxis)
+    : null;
+  if (!xAxis || !yAxis) {
+    xAxis = normalizeVector3OrNull({
+      x: 1 - (pole.x * pole.x),
+      y: -(pole.x * pole.y),
+      z: -(pole.x * pole.z),
+    }) || { x: 1, y: 0, z: 0 };
+    yAxis = normalizeVector3OrNull(crossVector3(pole, xAxis)) || { x: 0, y: 1, z: 0 };
+  }
+
+  const unit = {
+    x: relativePositionKm.x / radius,
+    y: relativePositionKm.y / radius,
+    z: relativePositionKm.z / radius,
+  };
+  const localX = (unit.x * xAxis.x) + (unit.y * xAxis.y) + (unit.z * xAxis.z);
+  const localY = (unit.x * yAxis.x) + (unit.y * yAxis.y) + (unit.z * yAxis.z);
+  const localZ = clamp((unit.x * pole.x) + (unit.y * pole.y) + (unit.z * pole.z), -1, 1);
+  return {
+    latitudeDeg: (Math.asin(localZ) * 180) / Math.PI,
+    longitudeDeg: (Math.atan2(localY, localX) * 180) / Math.PI,
+  };
+}
+
+function sampleEarthAtmosphereRuntime(altitudeKm, context = {}) {
+  const snapshot = currentSpaceWeatherSnapshot();
+  const timestampMs = Number(context?.timestampMs) || Date.now();
+  let latitudeDeg = Number(context?.latitudeDeg);
+  let longitudeDeg = Number(context?.longitudeDeg);
+  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
+    const relPositionKm = context?.relativePositionKm;
+    if (finiteVectorKm(relPositionKm)) {
+      const earthAxes = context?.earthAxes || (
+        finiteVectorKm(context?.earthPole)
+          ? { pole: context.earthPole }
+          : null
+      );
+      const latLon = earthLatLonFromRelativePositionKm(relPositionKm, earthAxes);
+      if (latLon) {
+        latitudeDeg = latLon.latitudeDeg;
+        longitudeDeg = latLon.longitudeDeg;
+      }
+    }
+  }
+  const atmosphereOptions = spaceWeatherProvider?.atmosphereOptions?.({
+    timestampMs,
+    latitudeDeg: Number.isFinite(latitudeDeg) ? latitudeDeg : 0,
+    longitudeDeg: Number.isFinite(longitudeDeg) ? longitudeDeg : 0,
+  }) || {
+    timestampMs,
+    latitudeDeg: Number.isFinite(latitudeDeg) ? latitudeDeg : 0,
+    longitudeDeg: Number.isFinite(longitudeDeg) ? longitudeDeg : 0,
+    f107: Number(snapshot?.f107) || 150,
+    kp: Number(snapshot?.kp) || 3,
+    kpHistory: Array.isArray(snapshot?.kpHistory) ? snapshot.kpHistory : [],
+  };
+  return earthAtmosphereSampleUS1976(altitudeKm, atmosphereOptions);
+}
+
 async function loadRuntimeConfig() {
   try {
     const response = await fetch("/api/config", { cache: "no-store" });
@@ -1465,6 +1604,15 @@ async function loadRuntimeConfig() {
     if (launchSite && typeof launchSite === "object") {
       setRuntimeLaunchSite(launchSite);
     }
+    const forcing = payload?.environment_forcing;
+    if (forcing && typeof forcing === "object") {
+      environmentForcingSnapshot = {
+        mode: String(forcing.mode || "").trim(),
+        scenario: String(forcing.scenario || "").trim(),
+        updatedAtUtc: String(forcing.updated_at_utc || "").trim(),
+        profile: forcing.profile && typeof forcing.profile === "object" ? { ...forcing.profile } : null,
+      };
+    }
   } catch (error) {
     console.warn("[solar-system] Using default runtime config:", error);
   }
@@ -1473,6 +1621,51 @@ async function loadRuntimeConfig() {
     launchReturnButton?.remove();
     launchResetButton?.remove();
   }
+}
+
+function currentEnvironmentForcingSnapshot() {
+  return environmentForcingSnapshot
+    ? {
+        ...environmentForcingSnapshot,
+        profile: environmentForcingSnapshot.profile ? { ...environmentForcingSnapshot.profile } : null,
+      }
+    : null;
+}
+
+async function setEnvironmentForcingScenario(scenario = "moderate", forceRefresh = true) {
+  const scenarioLabel = String(scenario || "").trim().toLowerCase();
+  if (!scenarioLabel) {
+    throw new Error("scenario is required");
+  }
+  const query = new URLSearchParams({
+    scenario: scenarioLabel,
+    force_refresh: forceRefresh ? "true" : "false",
+  });
+  const response = await fetch(`/api/environment-forcing?${query.toString()}`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const message = `environment forcing update failed (${response.status})`;
+    throw new Error(message);
+  }
+  const payload = await response.json();
+  environmentForcingSnapshot = {
+    mode: String(environmentForcingSnapshot?.mode || "simulated").trim() || "simulated",
+    scenario: String(payload?.scenario || scenarioLabel).trim(),
+    updatedAtUtc: String(payload?.updated_at_utc || "").trim(),
+    profile: payload?.profile && typeof payload.profile === "object" ? { ...payload.profile } : null,
+  };
+  try {
+    await Promise.all([
+      spaceWeatherProvider?.refresh?.(),
+      earthEopProvider?.refresh?.(),
+    ]);
+  } catch (error) {
+    console.warn("[environment-forcing] refresh after scenario change failed:", error);
+  }
+  updateInfoOverlay();
+  return currentEnvironmentForcingSnapshot();
 }
 
 async function loadLaunchFeatureModules() {
@@ -1708,6 +1901,17 @@ function setupScene(THREE) {
     getBodyRadiusKm: (bodyId) => bodyRadiusKmById(bodyId),
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
     getBodySpinAxisEcliptic: (bodyId) => sourcePoleUnitVectorEclipticForBody(bodyId, Date.now()),
+    getEarthFixedAxesEcliptic: (timestampMs) => {
+      const pole = sourcePoleUnitVectorEclipticForBody("earth", timestampMs);
+      const fixedAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, timestampMs);
+      return {
+        xAxis: fixedAxes?.xAxis || { x: 1, y: 0, z: 0 },
+        yAxis: fixedAxes?.yAxis || { x: 0, y: 1, z: 0 },
+        pole: fixedAxes?.pole || pole || { x: 0, y: 0, z: 1 },
+        earthOrientation: fixedAxes?.earthOrientation || null,
+      };
+    },
+    sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
   });
   if (launchFeatureEnabled && createLaunchControllerFn) {
     launchController = createLaunchControllerFn({
@@ -1721,10 +1925,11 @@ function setupScene(THREE) {
         return {
           xAxis: fixedAxes?.xAxis || { x: 1, y: 0, z: 0 },
           yAxis: fixedAxes?.yAxis || { x: 0, y: 1, z: 0 },
-          pole: pole || { x: 0, y: 0, z: 1 },
+          pole: fixedAxes?.pole || pole || { x: 0, y: 0, z: 1 },
+          earthOrientation: fixedAxes?.earthOrientation || null,
         };
       },
-      sampleEarthAtmosphere: (altitudeKm) => earthAtmosphereSampleUS1976(altitudeKm),
+      sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
       gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
       onEvent: (event) => {
         appendLaunchLogEntry("info", event);
@@ -2821,6 +3026,14 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     : Number.NaN;
   const moonRelativeSpeedKmS = Number(snapshot.moonRelativeSpeedKmS);
   const moonProjectedMissDistanceKm = Number(snapshot.moonProjectedMissDistanceKm);
+  const moonWindowWaitSec = Number(snapshot.moonDepartureWindowWaitSec);
+  const moonWindowWaitLabel = Number.isFinite(moonWindowWaitSec)
+    ? formatDurationSeconds(Math.max(0, moonWindowWaitSec))
+    : "n/a";
+  const moonWindowReadyLabel = snapshot.moonDepartureWindowReady ? "ready" : "wait";
+  const moonWindowLaunchClockLabel = Number.isFinite(Number(snapshot.moonDepartureWindowLaunchTimeMs))
+    ? new Date(Number(snapshot.moonDepartureWindowLaunchTimeMs)).toLocaleTimeString()
+    : "n/a";
   const missionPhaseGateReason = String(snapshot.missionPhaseGateReason || "").trim();
   const targetBodyLabel = launchTargetLabel(snapshot?.targetBodyName, snapshot?.targetBodyId);
   const boosterFuelPct = Number.isFinite(Number(snapshot.boosterFuelFraction))
@@ -2911,6 +3124,9 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Window Geo", value: Number.isFinite(Number(snapshot.moonDepartureGeometryScore)) ? `${formatNumber(Number(snapshot.moonDepartureGeometryScore) * 100, 1)}%` : "n/a" },
     { label: "Align Now", value: Number.isFinite(Number(snapshot.moonDepartureAlignNow)) ? formatNumber(snapshot.moonDepartureAlignNow, 3) : "n/a" },
     { label: "Align Proj", value: Number.isFinite(Number(snapshot.moonDepartureAlignProjected)) ? formatNumber(snapshot.moonDepartureAlignProjected, 3) : "n/a" },
+    { label: "Window In", value: moonWindowWaitLabel },
+    { label: "Window Ready", value: moonWindowReadyLabel },
+    { label: "Best Launch", value: moonWindowLaunchClockLabel },
     { label: "TLI Target", value: String(snapshot.moonTliTargetMode || "").trim() || "n/a" },
     { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
     { label: "Phase Gate", value: missionPhaseGateReason || "n/a" },
@@ -2943,6 +3159,13 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const hotstageStatus = Boolean(snapshot.hotstageActive)
     ? `active${Number.isFinite(Number(snapshot.hotstageTimeSinceIgnitionSec)) ? ` (${formatNumber(snapshot.hotstageTimeSinceIgnitionSec, 2)}s)` : ""}`
     : (snapshot.hotstageDetachReason ? `detached: ${snapshot.hotstageDetachReason}` : "inactive");
+  const spaceWeather = currentSpaceWeatherSnapshot();
+  const spaceWeatherSummary = spaceWeather
+    ? `F10.7 ${formatNumber(spaceWeather.f107, 1)} sfu | Kp ${formatNumber(spaceWeather.kp, 2)}`
+    : "n/a";
+  const spaceWeatherSourceLine = spaceWeather
+    ? `${spaceWeather.source || "n/a"}${Number.isFinite(spaceWeather.ageSeconds) ? ` (${formatNumber(spaceWeather.ageSeconds, 0)}s age)` : ""}`
+    : "n/a";
   const transferProgressPct = Number.isFinite(Number(snapshot.refuelTransferProgress))
     ? Number(snapshot.refuelTransferProgress) * 100
     : Number.NaN;
@@ -2971,6 +3194,8 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Transfer Rate", value: Number.isFinite(transferRateKgS) && transferRateKgS > 0 ? `${formatNumber(transferRateKgS, 1)} kg/s` : "n/a" },
     { label: "Transfer Rem", value: Number.isFinite(transferRemainingKg) && transferRemainingKg > 0 ? `${formatNumber(transferRemainingKg, 0)} kg` : "n/a" },
     { label: "Tanker Window", value: snapshot.refuelCanLaunchTanker ? "open" : "closed" },
+    { label: "Space Wx", value: spaceWeatherSummary },
+    { label: "Space Wx Src", value: spaceWeatherSourceLine },
     { label: "Overlap Gate", value: Number.isFinite(Number(snapshot.hotstageOverlapSeconds)) ? `${formatNumber(snapshot.hotstageOverlapSeconds, 2)} s` : "n/a" },
     { label: "Stable Ignition", value: Number.isFinite(Number(snapshot.hotstageIgnitionStableSec)) ? `${formatNumber(snapshot.hotstageIgnitionStableSec, 2)} s` : "n/a" },
     { label: "Virtual Sep", value: Number.isFinite(Number(snapshot.hotstageVirtualSeparationKm)) ? `${formatNumber(snapshot.hotstageVirtualSeparationKm, 4)} km` : "n/a" },
@@ -3995,6 +4220,13 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const telemetryBodyId = activeLaunchTelemetryBodyId();
   const snapshot = launchController.statusSnapshotForBody?.(nBodyState, telemetryBodyId, nowMs)
     || launchController.statusSnapshot();
+  const runtimeSpaceWeather = currentSpaceWeatherSnapshot();
+  if (snapshot && runtimeSpaceWeather) {
+    snapshot.spaceWeatherF107 = runtimeSpaceWeather.f107;
+    snapshot.spaceWeatherKp = runtimeSpaceWeather.kp;
+    snapshot.spaceWeatherSource = runtimeSpaceWeather.source || "";
+    snapshot.spaceWeatherAgeSeconds = runtimeSpaceWeather.ageSeconds;
+  }
   updateLegendFallbackIndicators();
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
@@ -4182,7 +4414,13 @@ function earthRelativeKinematicsForBody(bodyId) {
   const speedKmS = Math.hypot(relVel.x, relVel.y, relVel.z);
   const radialSpeedKmS =
     ((relPos.x * relVel.x) + (relPos.y * relVel.y) + (relPos.z * relVel.z)) / radiusKm;
-  const atmosphere = earthAtmosphereSampleUS1976(Math.max(0, altitudeKm));
+  const atmosphere = sampleEarthAtmosphereRuntime(
+    Math.max(0, altitudeKm),
+    {
+      relativePositionKm: relPos,
+      timestampMs: Date.now(),
+    },
+  );
   const densityKgM3 = Number(atmosphere?.densityKgM3) || 0;
   const dynamicPressurePa = densityKgM3 > 0
     ? 0.5 * densityKgM3 * Math.pow(speedKmS * 1000, 2)
@@ -6941,6 +7179,8 @@ function initializeNBodyFromSnapshot(nowMs) {
   nBodyState = {
     initialized: true,
     lastUpdateMs: nowMs,
+    simulationTimeMs: nowMs,
+    integratorAccumulatorSec: 0,
     dynamicBodies,
     staticSources,
   };
@@ -7129,6 +7369,7 @@ function oblateModelForBody(bodyId) {
 
   const j2 = Number(model?.j2);
   const j4 = Number(model?.j4);
+  const j6 = Number(model?.j6);
   const c22 = Number(model?.c22);
   const s22 = Number(model?.s22);
   let effectiveC22 = Number.isFinite(c22) ? c22 : 0;
@@ -7160,9 +7401,11 @@ function oblateModelForBody(bodyId) {
 
   const effectiveJ2 = Number.isFinite(j2) ? j2 : 0;
   const effectiveJ4 = Number.isFinite(j4) ? j4 : 0;
+  const effectiveJ6 = Number.isFinite(j6) ? j6 : 0;
   const hasNonZeroHarmonic =
     Math.abs(effectiveJ2) > 1e-20 ||
     Math.abs(effectiveJ4) > 1e-20 ||
+    Math.abs(effectiveJ6) > 1e-20 ||
     Math.abs(effectiveC22) > 1e-20 ||
     Math.abs(effectiveS22) > 1e-20;
   if (!hasNonZeroHarmonic) {
@@ -7172,6 +7415,7 @@ function oblateModelForBody(bodyId) {
   return {
     j2: effectiveJ2,
     j4: effectiveJ4,
+    j6: effectiveJ6,
     c22: effectiveC22,
     s22: effectiveS22,
     referenceRadiusKm,
@@ -7248,11 +7492,16 @@ function sourceBodyFixedAxesEclipticForBody(bodyId, pole, timestampMs = Date.now
   const body = metaById.get(bodyId);
   const spinModel = primeMeridianModelForBody(body);
   let spinAngleRad = 0;
+  let earthOrientation = null;
   if (spinModel) {
     const daysSinceJ2000 = julianDayFromUnixMs(modelTimestampMs(timestampMs)) - 2_451_545.0;
     spinAngleRad = rad(normalizeDegrees(
       spinModel.w0Deg + (spinModel.wRateDegPerDay * daysSinceJ2000),
     ));
+  }
+  if (bodyId === "earth") {
+    earthOrientation = estimateEarthOrientationParameters(timestampMs);
+    spinAngleRad += Number(earthOrientation?.dut1Rad) || 0;
   }
 
   const c = Math.cos(spinAngleRad);
@@ -7270,7 +7519,33 @@ function sourceBodyFixedAxesEclipticForBody(bodyId, pole, timestampMs = Date.now
   if (!xAxis || !yAxis) {
     return null;
   }
-  return { xAxis, yAxis };
+  if (bodyId === "earth") {
+    const adjusted = applyEarthOrientationToAxes({
+      xAxis,
+      yAxis,
+      pole: poleUnit,
+      orientation: earthOrientation,
+    });
+    return {
+      xAxis: adjusted?.xAxis || xAxis,
+      yAxis: adjusted?.yAxis || yAxis,
+      pole: adjusted?.pole || poleUnit,
+      earthOrientation: adjusted
+        ? {
+            source: adjusted.orientationSource,
+            dut1Sec: adjusted.dut1Sec,
+            xpArcsec: adjusted.xpArcsec,
+            ypArcsec: adjusted.ypArcsec,
+            precessionLongitudeArcsec: adjusted.precessionLongitudeArcsec,
+            precessionObliquityArcsec: adjusted.precessionObliquityArcsec,
+            nutationLongitudeArcsec: adjusted.nutationLongitudeArcsec,
+            nutationObliquityArcsec: adjusted.nutationObliquityArcsec,
+            lodSec: adjusted.lodSec,
+          }
+        : null,
+    };
+  }
+  return { xAxis, yAxis, pole: poleUnit };
 }
 
 function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now()) {
@@ -7293,15 +7568,18 @@ function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now())
     }
     const fixedAxes = sourceBodyFixedAxesEclipticForBody(sourceId, pole, timestampMs);
     const fallbackRadiusKm = Number(metaById.get(sourceId)?.radius_km) || 0;
+    const effectivePole = fixedAxes?.pole || pole;
     contextById.set(sourceId, {
       j2: Number(model?.j2) || 0,
       j4: Number(model?.j4) || 0,
+      j6: Number(model?.j6) || 0,
       c22: Number(model?.c22) || 0,
       s22: Number(model?.s22) || 0,
       referenceRadiusKm: Number(model?.referenceRadiusKm) || fallbackRadiusKm || 1737.4,
-      pole,
+      pole: effectivePole,
       xAxis: fixedAxes?.xAxis || null,
       yAxis: fixedAxes?.yAxis || null,
+      earthOrientation: fixedAxes?.earthOrientation || null,
       lunarMasconEnabled: useLunarMasconAxes,
     });
   }
@@ -7325,6 +7603,7 @@ function computeGravityAccelerationFromSource(
   sourceMassKg,
   sourcePos,
   oblateSourceContextById = null,
+  sourceEnvironment = null,
 ) {
   if (!(sourceMassKg > 0) || !targetPos || !sourcePos) {
     return { x: 0, y: 0, z: 0 };
@@ -7348,55 +7627,57 @@ function computeGravityAccelerationFromSource(
 
   const oblate = oblateSourceContextById?.get(sourceId);
   if (oblate) {
-    const pole = oblate.pole;
-    const poleDotRel = (pole.x * rx) + (pole.y * ry) + (pole.z * rz);
-    const u = poleDotRel * invRadius;
-    const u2 = u * u;
-    const refOverR = oblate.referenceRadiusKm * invRadius;
-    const refOverR2 = refOverR * refOverR;
+    const oblatePerturbation = computeOblateGravityPerturbationKmS2({
+      relPosKm: { x: rx, y: ry, z: rz },
+      radiusKm: radius,
+      muOverR3,
+      referenceRadiusKm: Number(oblate.referenceRadiusKm) || 0,
+      pole: oblate.pole,
+      xAxis: oblate.xAxis,
+      yAxis: oblate.yAxis,
+      j2: Number(oblate.j2) || 0,
+      j4: Number(oblate.j4) || 0,
+      j6: Number(oblate.j6) || 0,
+      c22: Number(oblate.c22) || 0,
+      s22: Number(oblate.s22) || 0,
+    });
+    ax += Number(oblatePerturbation.x) || 0;
+    ay += Number(oblatePerturbation.y) || 0;
+    az += Number(oblatePerturbation.z) || 0;
+  }
 
-    if (oblate.j2) {
-      const coeff2 = muOverR3 * oblate.j2 * refOverR2;
-      const termR2 = 1.5 * ((5 * u2) - 1);
-      const termK2 = 3 * u * radius;
-      ax += coeff2 * ((termR2 * rx) - (termK2 * pole.x));
-      ay += coeff2 * ((termR2 * ry) - (termK2 * pole.y));
-      az += coeff2 * ((termR2 * rz) - (termK2 * pole.z));
-    }
-
-    if (oblate.j4) {
-      const u3 = u2 * u;
-      const u4 = u2 * u2;
-      const refOverR4 = refOverR2 * refOverR2;
-      const coeff4 = muOverR3 * oblate.j4 * refOverR4;
-      const termR4 = (15 / 8) * ((21 * u4) - (14 * u2) + 1);
-      const termK4 = 0.5 * ((35 * u3) - (15 * u)) * radius;
-      ax += coeff4 * ((termR4 * rx) - (termK4 * pole.x));
-      ay += coeff4 * ((termR4 * ry) - (termK4 * pole.y));
-      az += coeff4 * ((termR4 * rz) - (termK4 * pole.z));
-    }
-
-    if (oblate.c22 || oblate.s22) {
-      const xAxis = oblate.xAxis;
-      const yAxis = oblate.yAxis;
-      if (xAxis && yAxis) {
-        const ux = ((xAxis.x * rx) + (xAxis.y * ry) + (xAxis.z * rz)) * invRadius;
-        const uy = ((yAxis.x * rx) + (yAxis.y * ry) + (yAxis.z * rz)) * invRadius;
-        const uz = u;
-        const c22 = oblate.c22;
-        const s22 = oblate.s22;
-        const q22 = (c22 * ((ux * ux) - (uy * uy))) + (2 * s22 * ux * uy);
-        const termX = (2 * ((c22 * ux) + (s22 * uy))) - (5 * ux * q22);
-        const termY = (2 * ((s22 * ux) - (c22 * uy))) - (5 * uy * q22);
-        const termZ = -5 * uz * q22;
-        const coeff22 = 3 * muOverR3 * refOverR2 * radius;
-        const axBody = coeff22 * termX;
-        const ayBody = coeff22 * termY;
-        const azBody = coeff22 * termZ;
-        ax += (axBody * xAxis.x) + (ayBody * yAxis.x) + (azBody * pole.x);
-        ay += (axBody * xAxis.y) + (ayBody * yAxis.y) + (azBody * pole.y);
-        az += (axBody * xAxis.z) + (ayBody * yAxis.z) + (azBody * pole.z);
+  if (EARTH_SOLID_TIDE_ENABLED && sourceId === "earth") {
+    const sourceStateLookup = typeof sourceEnvironment?.getBodyState === "function"
+      ? sourceEnvironment.getBodyState
+      : null;
+    const tideRaisingBodies = [];
+    for (const bodyId of EARTH_SOLID_TIDE_SOURCE_BODY_IDS) {
+      const bodyState = sourceStateLookup?.(bodyId);
+      const positionKm = finiteVectorKm(bodyState?.position)
+        ? bodyState.position
+        : (
+          finiteVectorKm(bodyState)
+            ? bodyState
+            : null
+        );
+      const bodyMassKg = Number(bodyState?.massKg) || bodyMassKgById(bodyId);
+      if (!positionKm || !(bodyMassKg > 0)) {
+        continue;
       }
+      tideRaisingBodies.push({ positionKm, massKg: bodyMassKg });
+    }
+    if (tideRaisingBodies.length > 0) {
+      const earthRadiusKm = Number(oblate?.referenceRadiusKm) || bodyRadiusKmById("earth") || 6378.137;
+      const tidePerturbation = computeEarthSolidTidePerturbationKmS2({
+        targetPosKm: targetPos,
+        earthPosKm: sourcePos,
+        earthRadiusKm,
+        gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+        tideRaisingBodies,
+      });
+      ax += Number(tidePerturbation.x) || 0;
+      ay += Number(tidePerturbation.y) || 0;
+      az += Number(tidePerturbation.z) || 0;
     }
   }
 
@@ -7444,6 +7725,13 @@ function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextB
   let az = 0;
   const targetPos = target.position;
 
+  const sourceEnvironment = {
+    getBodyState: (sourceId) => (
+      state?.dynamicBodies?.get(sourceId)
+      || state?.staticSources?.get(sourceId)
+      || null
+    ),
+  };
   const addSourceAcceleration = (sourceId, sourceMassKg, sourcePos) => {
     const contribution = computeGravityAccelerationFromSource(
       targetPos,
@@ -7451,6 +7739,7 @@ function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextB
       sourceMassKg,
       sourcePos,
       oblateSourceContextById,
+      sourceEnvironment,
     );
     ax += contribution.x;
     ay += contribution.y;
@@ -7541,12 +7830,12 @@ function computeNBodySolarRadiationAccelerationForTarget(state, targetId) {
   });
 }
 
-function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceContextById = null) {
+function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceContextById = null, stepNowMs = Date.now()) {
   const gravity = finiteAccelerationKmS2(
     computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById),
   );
   const atmospheric = finiteAccelerationKmS2(
-    atmosphereDynamicsController?.computeAtmosphericAccelerationKmS2(state, targetId) || { x: 0, y: 0, z: 0 },
+    atmosphereDynamicsController?.computeAtmosphericAccelerationKmS2(state, targetId, stepNowMs) || { x: 0, y: 0, z: 0 },
   );
   const thrust = launchFeatureEnabled
     ? finiteAccelerationKmS2(launchController?.externalAccelerationKmS2(targetId) || { x: 0, y: 0, z: 0 })
@@ -7580,7 +7869,7 @@ function integrateNBodyStep(state, dtSeconds, stepNowMs = Date.now(), oblateSour
 
   const accelerationStartById = new Map();
   for (const bodyId of state.dynamicBodies.keys()) {
-    const accel = computeNBodyTotalAccelerationForTarget(state, bodyId, oblateSourceContextById);
+    const accel = computeNBodyTotalAccelerationForTarget(state, bodyId, oblateSourceContextById, stepNowMs);
     accelerationStartById.set(bodyId, finiteAccelerationKmS2(accel));
   }
 
@@ -7597,7 +7886,7 @@ function integrateNBodyStep(state, dtSeconds, stepNowMs = Date.now(), oblateSour
 
   for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
     const accel = finiteAccelerationKmS2(
-      computeNBodyTotalAccelerationForTarget(state, bodyId, oblateSourceContextById),
+      computeNBodyTotalAccelerationForTarget(state, bodyId, oblateSourceContextById, stepNowMs),
     );
     bodyState.velocity.x += 0.5 * accel.x * dtSeconds;
     bodyState.velocity.y += 0.5 * accel.y * dtSeconds;
@@ -7643,15 +7932,29 @@ function updateNBodySimulation(nowMs) {
 
   if (!Number.isFinite(nBodyState.lastUpdateMs)) {
     nBodyState.lastUpdateMs = nowMs;
+    nBodyState.simulationTimeMs = nowMs;
+    nBodyState.integratorAccumulatorSec = 0;
     return;
   }
 
-  let elapsedSeconds = clamp(
-    (nowMs - nBodyState.lastUpdateMs) / 1000,
-    0,
-    N_BODY_MAX_FRAME_SECONDS,
-  );
-  if (!(elapsedSeconds > 0)) {
+  const elapsedSecondsRaw = (nowMs - nBodyState.lastUpdateMs) / 1000;
+  const elapsedSeconds = Number.isFinite(elapsedSecondsRaw)
+    ? Math.max(0, elapsedSecondsRaw)
+    : 0;
+  nBodyState.lastUpdateMs = nowMs;
+  if (!(elapsedSeconds > 0) && !((Number(nBodyState.integratorAccumulatorSec) || 0) > 1e-9)) {
+    return;
+  }
+
+  if (!Number.isFinite(nBodyState.simulationTimeMs)) {
+    nBodyState.simulationTimeMs = nowMs - (elapsedSeconds * 1000);
+  }
+  if (!Number.isFinite(nBodyState.integratorAccumulatorSec) || nBodyState.integratorAccumulatorSec < 0) {
+    nBodyState.integratorAccumulatorSec = 0;
+  }
+
+  const pendingElapsedSeconds = Math.max(0, Number(nBodyState.integratorAccumulatorSec) || 0) + elapsedSeconds;
+  if (!(pendingElapsedSeconds > 0)) {
     nBodyState.lastUpdateMs = nowMs;
     return;
   }
@@ -7663,34 +7966,34 @@ function updateNBodySimulation(nowMs) {
     : N_BODY_STEP_SECONDS;
   if (!Number.isFinite(stepSeconds) || !(stepSeconds > 1e-9)) {
     nBodyNumericWarn(`invalid integration step (${String(stepSeconds)}); skipping frame`);
-    nBodyState.lastUpdateMs = nowMs;
+    nBodyState.integratorAccumulatorSec = pendingElapsedSeconds;
     return;
   }
   const oblateSourceContextById = buildOblateSourceContextMapForNBody(nBodyState, nowMs);
   let substeps = 0;
-  let stepNowMs = nBodyState.lastUpdateMs;
-  const frameIntegrationStartMs = performance.now();
+  let stepNowMs = Number(nBodyState.simulationTimeMs) || nowMs;
+  let remainingSeconds = pendingElapsedSeconds;
   while (
-    elapsedSeconds > 1e-9
+    remainingSeconds > 1e-9
     && substeps < N_BODY_MAX_SUBSTEPS_PER_FRAME
-    && (performance.now() - frameIntegrationStartMs) < N_BODY_MAX_INTEGRATION_BUDGET_MS
   ) {
-    const dtSeconds = Math.min(stepSeconds, elapsedSeconds);
+    const dtSeconds = Math.min(stepSeconds, remainingSeconds);
     integrateNBodyStep(nBodyState, dtSeconds, stepNowMs, oblateSourceContextById);
-    elapsedSeconds -= dtSeconds;
+    remainingSeconds -= dtSeconds;
     stepNowMs += dtSeconds * 1000;
     substeps += 1;
   }
-  if (elapsedSeconds > 1e-6) {
+  nBodyState.simulationTimeMs = stepNowMs;
+  nBodyState.integratorAccumulatorSec = Math.max(0, remainingSeconds);
+  if (remainingSeconds > 1e-6) {
     const now = Date.now();
     if (now - lastNBodyBacklogWarnMs > 4000) {
       lastNBodyBacklogWarnMs = now;
       console.warn(
-        `[n-body] backlog drop: skipped ${elapsedSeconds.toFixed(3)}s after ${substeps} substeps (step=${stepSeconds}s)`,
+        `[n-body] backlog queued: ${remainingSeconds.toFixed(3)}s remaining after ${substeps} substeps (step=${stepSeconds}s)`,
       );
     }
   }
-  nBodyState.lastUpdateMs = nowMs;
 }
 
 function syncOrbitalStateFromSnapshot() {
@@ -9293,6 +9596,13 @@ function computeGravityById() {
     sourceBodies.map((source) => source.id),
     Date.now(),
   );
+  const sourceBodiesById = new Map();
+  for (const source of sourceBodies) {
+    sourceBodiesById.set(source.id, source);
+  }
+  const sourceEnvironment = {
+    getBodyState: (sourceId) => sourceBodiesById.get(sourceId) || null,
+  };
 
   const nextGravity = new Map();
   for (const target of targetBodies) {
@@ -9312,6 +9622,7 @@ function computeGravityById() {
         source.massKg,
         source,
         oblateSourceContextById,
+        sourceEnvironment,
       );
       const cax = contribution.x;
       const cay = contribution.y;
@@ -9988,21 +10299,47 @@ function updateInfoOverlay() {
   let atmospherePhysicsLine = "";
   if (physicsOverlayState.atmosphere) {
     if (meta.id === "earth") {
-      const seaLevel = earthAtmosphereSampleUS1976(0);
+      const seaLevel = sampleEarthAtmosphereRuntime(0, { timestampMs: Date.now() });
+      const spaceWeather = currentSpaceWeatherSnapshot();
+      const earthEop = currentEarthEopSnapshot();
+      const forcing = currentEnvironmentForcingSnapshot();
+      const spaceWeatherLine = spaceWeather
+        ? `Space Weather: F10.7 ${formatNumber(spaceWeather.f107, 1)} sfu | Kp ${formatNumber(spaceWeather.kp, 2)} (${spaceWeather.source || "n/a"})`
+        : "Space Weather: n/a";
+      const earthEopLine = earthEop
+        ? `Earth EOP: ${earthEop.source || "n/a"} | Records ${Math.max(0, Number(earthEop.records?.length) || 0)} | Age ${Number.isFinite(Number(earthEop.ageSeconds)) ? `${formatNumber(earthEop.ageSeconds, 0)}s` : "n/a"}`
+        : "Earth EOP: n/a";
+      const forcingLine = forcing
+        ? `Environment Forcing: ${forcing.scenario || "n/a"} (${forcing.mode || "n/a"})`
+        : "Environment Forcing: n/a";
       atmospherePhysicsLine = `
         <p class="line">Atmosphere Model: Rayleigh/Mie/Ozone scattering + US1976 layers</p>
         <p class="line">Sea Level: ρ ${formatNumber(seaLevel.densityKgM3, 4)} kg/m³ | P ${formatNumber(seaLevel.pressurePa, 2)} Pa | g ${formatNumber(seaLevel.gravityMs2, 4)} m/s²</p>
+        <p class="line">${spaceWeatherLine}</p>
+        <p class="line">${earthEopLine}</p>
+        <p class="line">${forcingLine}</p>
       `;
     } else if (hasCoords && earthCoordsForAtmosphere) {
+      const relativePositionKm = {
+        x: coords.x - earthCoordsForAtmosphere.x,
+        y: coords.y - earthCoordsForAtmosphere.y,
+        z: coords.z - earthCoordsForAtmosphere.z,
+      };
       const altitudeKm = Math.hypot(
         coords.x - earthCoordsForAtmosphere.x,
         coords.y - earthCoordsForAtmosphere.y,
         coords.z - earthCoordsForAtmosphere.z,
       ) - (Number(metaById.get("earth")?.radius_km) || 6371);
       if (altitudeKm >= 0 && altitudeKm <= 1000) {
-        const sample = earthAtmosphereSampleUS1976(altitudeKm);
+        const sample = sampleEarthAtmosphereRuntime(altitudeKm, {
+          relativePositionKm,
+          timestampMs: Date.now(),
+        });
+        const upperModelLine = sample?.upperAtmosphereModel
+          ? ` | Upper Model: ${sample.upperAtmosphereModel}${Number.isFinite(Number(sample?.exosphericTemperatureK)) ? ` | Tex ${formatNumber(sample.exosphericTemperatureK, 1)} K` : ""}`
+          : "";
         atmospherePhysicsLine = `
-          <p class="line">Earth Atmosphere @ ${formatNumber(altitudeKm, 2)} km: ρ ${formatNumber(sample.densityKgM3, 8)} kg/m³ | P ${formatNumber(sample.pressurePa, 4)} Pa | g ${formatNumber(sample.gravityMs2, 4)} m/s²</p>
+          <p class="line">Earth Atmosphere @ ${formatNumber(altitudeKm, 2)} km: ρ ${formatNumber(sample.densityKgM3, 8)} kg/m³ | P ${formatNumber(sample.pressurePa, 4)} Pa | g ${formatNumber(sample.gravityMs2, 4)} m/s²${upperModelLine}</p>
         `;
       }
     }
@@ -10053,9 +10390,22 @@ function updateInfoOverlay() {
   const runtimeMassKg = nBodyState?.dynamicBodies?.get(meta.id)?.massKg;
   const displayedMassKg = Number.isFinite(runtimeMassKg) ? runtimeMassKg : Number(meta.mass_kg);
   const isSpacecraftBody = String(meta?.body_type || "").toLowerCase() === "spacecraft";
+  const earthEopSnapshot = currentEarthEopSnapshot();
   const dynamicsDetailParts = [];
   if (OBLATE_GRAVITY_ENABLED) {
-    dynamicsDetailParts.push("J2/J4 zonal terms");
+    dynamicsDetailParts.push("J2/J4/J6 zonal terms + C22/S22");
+    dynamicsDetailParts.push(
+      (
+        earthEopSnapshot
+        && Array.isArray(earthEopSnapshot.records)
+        && earthEopSnapshot.records.length > 0
+      )
+        ? "Earth orientation corrections (data EOP UT1/xp/yp + precession/nutation)"
+        : "Earth orientation corrections (analytic UT1/xp/yp + precession/nutation)",
+    );
+  }
+  if (EARTH_SOLID_TIDE_ENABLED) {
+    dynamicsDetailParts.push("Earth solid-tide perturbations (Moon/Sun)");
   }
   if (LUNAR_MASCON_MODEL_ENABLED) {
     dynamicsDetailParts.push("lunar mascon field (for lunar-trajectory targets)");
@@ -10176,6 +10526,13 @@ function updateInfoOverlay() {
     const moonWindowAlignProjectedLine = Number.isFinite(Number(launchSnapshot?.moonDepartureAlignProjected))
       ? formatNumber(launchSnapshot.moonDepartureAlignProjected, 3)
       : "n/a";
+    const moonWindowWaitLine = Number.isFinite(Number(launchSnapshot?.moonDepartureWindowWaitSec))
+      ? formatDurationSeconds(Math.max(0, Number(launchSnapshot.moonDepartureWindowWaitSec)))
+      : "n/a";
+    const moonWindowReadyLine = launchSnapshot?.moonDepartureWindowReady ? "ready" : "wait";
+    const moonWindowLaunchClockLine = Number.isFinite(Number(launchSnapshot?.moonDepartureWindowLaunchTimeMs))
+      ? new Date(Number(launchSnapshot.moonDepartureWindowLaunchTimeMs)).toLocaleTimeString()
+      : "n/a";
     const moonTliTargetModeLine = String(launchSnapshot?.moonTliTargetMode || "").trim() || "n/a";
     const moonTliTargetMissLine = Number.isFinite(Number(launchSnapshot?.moonTliTargetMissKm))
       ? `${formatNumber(launchSnapshot.moonTliTargetMissKm, 1)} km`
@@ -10210,6 +10567,10 @@ function updateInfoOverlay() {
     const fuelBudgetFeasibleLine = launchSnapshot?.fuelBudgetFeasible === null || launchSnapshot?.fuelBudgetFeasible === undefined
       ? "n/a"
       : (launchSnapshot.fuelBudgetFeasible ? "yes" : "no");
+    const spaceWeatherSnapshot = currentSpaceWeatherSnapshot();
+    const spaceWeatherTelemetryLine = spaceWeatherSnapshot
+      ? `F10.7 ${formatNumber(spaceWeatherSnapshot.f107, 1)} sfu | Kp ${formatNumber(spaceWeatherSnapshot.kp, 2)} | Source ${spaceWeatherSnapshot.source || "n/a"}`
+      : "n/a";
     const boosterAltitudeLine = Number.isFinite(launchSnapshot?.boosterAltitudeKm)
       ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km`
       : "n/a";
@@ -10271,11 +10632,13 @@ function updateInfoOverlay() {
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
         <p class="line launch-line">Window Geo: ${moonWindowGeometryLine} | Align Now/Proj: ${moonWindowAlignNowLine} / ${moonWindowAlignProjectedLine}</p>
+        <p class="line launch-line">Launch Window: ${moonWindowReadyLine} | Best In: ${moonWindowWaitLine} | Best At: ${moonWindowLaunchClockLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
         <p class="line launch-line">Fuel Budget DV Req/Avail: ${fuelBudgetRequiredDeltaVLine} / ${fuelBudgetAvailableDeltaVLine}</p>
         <p class="line launch-line">Fuel Budget Prop Req/Avail/Margin: ${fuelBudgetRequiredPropLine} / ${fuelBudgetAvailablePropLine} / ${fuelBudgetMarginLine} | Feasible: ${fuelBudgetFeasibleLine}</p>
+        <p class="line launch-line">Space Weather: ${spaceWeatherTelemetryLine}</p>
       `;
     } else {
       selectedVehicleLines = `
@@ -10288,11 +10651,13 @@ function updateInfoOverlay() {
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
         <p class="line launch-line">Window Geo: ${moonWindowGeometryLine} | Align Now/Proj: ${moonWindowAlignNowLine} / ${moonWindowAlignProjectedLine}</p>
+        <p class="line launch-line">Launch Window: ${moonWindowReadyLine} | Best In: ${moonWindowWaitLine} | Best At: ${moonWindowLaunchClockLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
         <p class="line launch-line">Fuel Budget DV Req/Avail: ${fuelBudgetRequiredDeltaVLine} / ${fuelBudgetAvailableDeltaVLine}</p>
         <p class="line launch-line">Fuel Budget Prop Req/Avail/Margin: ${fuelBudgetRequiredPropLine} / ${fuelBudgetAvailablePropLine} / ${fuelBudgetMarginLine} | Feasible: ${fuelBudgetFeasibleLine}</p>
+        <p class="line launch-line">Space Weather: ${spaceWeatherTelemetryLine}</p>
         <p class="line launch-line">Distance Traveled: ${starshipDistanceLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">RCS: ${launchSnapshot?.rcsActive ? `active (${formatNumber((Number(launchSnapshot?.rcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot?.rcsJets) && launchSnapshot.rcsJets.length > 0 ? launchSnapshot.rcsJets.join(", ") : "n/a"}</p>

@@ -107,13 +107,20 @@ import {
 import { enforceMoonEarthAvoidanceDirection } from "./lunar/guidanceSafety.js";
 import { computeMoonRefuelRecoveryOverride } from "./lunar/refuelRecovery.js";
 import {
+  clearMoonDepartureWindowClock,
+  updateMoonDepartureWindowClock,
+} from "./lunar/moonLaunchWindowClock.js";
+import { evaluateMoonTliGoNoGo } from "./lunar/moonGoNoGoGates.js";
+import { computeMoonSurvivalRecoveryOverride } from "./lunar/moonSurvivalRecovery.js";
+import {
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_PHASES,
 } from "./lunar/constants.js";
 
 const MIN_ROCKET_MASS_KG = 500;
-const PRIMARY_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 3_600_000;
+const PRIMARY_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 2_400_000;
+const PRIMARY_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 5_000_000;
 const PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM = 145;
 const PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM = 150;
 const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
@@ -145,6 +152,9 @@ function stagePropellantCapacityKgForMissionStage(stageIndex, missionId = null) 
   const stage = stageAtIndex(stageIndex);
   const baseCapacityKg = Math.max(0, Number(stage?.propellantMassKg) || 0);
   const normalizedMissionId = normalizeMissionId(missionId);
+  if (Number(stageIndex) === 1 && normalizedMissionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO) {
+    return Math.max(baseCapacityKg, PRIMARY_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG);
+  }
   if (Number(stageIndex) === 1 && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
     return Math.max(baseCapacityKg, PRIMARY_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG);
   }
@@ -522,6 +532,11 @@ function limitThrottleByThrustAccelerationG({
   return clamp(Math.min(throttle, throttleCap), 0, 1);
 }
 
+function finiteOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 function telemetryFromState({
   gravitationalConstantKm3PerKgS2,
   earthMassKg,
@@ -614,6 +629,17 @@ function telemetryFromState({
     missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
     missionPhase: runtime.mission.phase,
     missionCompleted: Boolean(runtime.mission.completed),
+    moonDepartureWindowScore: finiteOrNull(runtime.moonDepartureWindowScore),
+    moonDepartureWindowWaitSec: finiteOrNull(runtime.moonDepartureWindowWaitSec),
+    moonDepartureWindowPhaseErrorDeg: finiteOrNull(runtime.moonDepartureWindowPhaseErrorDeg),
+    moonDepartureGeometryScore: finiteOrNull(runtime.moonDepartureGeometryScore),
+    moonDepartureAlignNow: finiteOrNull(runtime.moonDepartureAlignNow),
+    moonDepartureAlignProjected: finiteOrNull(runtime.moonDepartureAlignProjected),
+    moonEstimatedTliDeltaVKmS: finiteOrNull(runtime.moonEstimatedTliDeltaVKmS),
+    moonDepartureWindowReady: Boolean(runtime.moonDepartureWindowReady),
+    moonDepartureWindowLaunchTimeMs: Number.isFinite(Number(runtime.moonDepartureWindowLaunchTimeMs))
+      ? Number(runtime.moonDepartureWindowLaunchTimeMs)
+      : null,
     refuelRequiredFlights: Math.max(0, Number(runtime.refuel.requiredFlights) || 0),
     refuelCompletedFlights: Math.max(0, Number(runtime.refuel.completedFlights) || 0),
     refuelActiveFlights: Math.max(0, Number(runtime.refuel.activeFlights) || 0),
@@ -875,6 +901,15 @@ export function createLaunchController(options) {
     moonProjectedMissDistanceKm: null,
     moonProjectedPeriluneAltitudeKm: null,
     moonBPlaneErrorKm: null,
+    moonDepartureWindowScore: null,
+    moonDepartureWindowWaitSec: null,
+    moonDepartureWindowPhaseErrorDeg: null,
+    moonDepartureGeometryScore: null,
+    moonDepartureAlignNow: null,
+    moonDepartureAlignProjected: null,
+    moonEstimatedTliDeltaVKmS: null,
+    moonDepartureWindowReady: false,
+    moonDepartureWindowLaunchTimeMs: null,
     moonEarthGuardActive: false,
     moonBurnAttitudeGateActive: false,
     missionPhaseGateReason: "",
@@ -1444,6 +1479,57 @@ export function createLaunchController(options) {
     });
     runtime.moonEarthGuardActive = constrainedCommand.applied;
     const modeBase = String(command.mode || "navigation-system");
+    const goNoGo = evaluateMoonTliGoNoGo({
+      missionId: runtime.mission.selectedId,
+      missionPhase: navPhase,
+      commandPhase: phase,
+      requestedThrottle: phase === "powered" ? Number(command.throttle) || 0 : 0,
+      periapsisKm: Number(orbital?.periapsisKm),
+      altitudeKm: Number(orbital?.altitudeKm),
+      propellantKg: Number(runtime.stagePropellantKg),
+      missionElapsedInPhaseSec,
+      moonDepartureWindowReady: runtime.moonDepartureWindowReady,
+      moonDepartureWindowWaitSec: runtime.moonDepartureWindowWaitSec,
+      plannerConfig: NAVIGATION_DEFAULTS.planner,
+    });
+    if (goNoGo.applies && !goNoGo.go) {
+      const failures = Array.isArray(goNoGo.failures) ? goNoGo.failures : [];
+      const periapsisFailure = failures.includes("periapsis-safe");
+      const survivalRecovery = periapsisFailure
+        ? computeMoonSurvivalRecoveryOverride({
+          missionPhase: navPhase,
+          periapsisKm: Number(goNoGo?.diagnostics?.periapsisKm),
+          altitudeKm: Number(goNoGo?.diagnostics?.altitudeKm),
+          radialSpeedKmS: Number(orbital?.radialSpeedKmS),
+          prograde: tangent,
+          up,
+          availablePropellantKg: Number(runtime.stagePropellantKg),
+          reasonPrefix: goNoGo.reason,
+        })
+        : null;
+      if (survivalRecovery) {
+        const recoveryMode = constrainedCommand.applied
+          ? `${String(survivalRecovery.mode || modeBase)}+${constrainedCommand.reason}:go-no-go-survival-recovery`
+          : `${String(survivalRecovery.mode || modeBase)}:go-no-go-survival-recovery`;
+        runtime.missionPhaseGateReason = String(survivalRecovery.gateReason || goNoGo.reason);
+        return {
+          phase: "powered",
+          throttle: clamp(Number(survivalRecovery.throttle) || 0, 0, 1),
+          direction: normalize(survivalRecovery.direction || tangent, constrainedCommand.direction),
+          mode: recoveryMode,
+        };
+      }
+      runtime.missionPhaseGateReason = goNoGo.reason;
+      const holdMode = constrainedCommand.applied
+        ? `${modeBase}+${constrainedCommand.reason}:go-no-go-hold`
+        : `${modeBase}:go-no-go-hold`;
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: constrainedCommand.direction,
+        mode: holdMode,
+      };
+    }
     return {
       phase,
       throttle: phase === "powered" ? clamp(Number(command.throttle) || 0, 0, 1) : 0,
@@ -1618,6 +1704,15 @@ export function createLaunchController(options) {
     runtime.moonProjectedMissDistanceKm = null;
     runtime.moonProjectedPeriluneAltitudeKm = null;
     runtime.moonBPlaneErrorKm = null;
+    runtime.moonDepartureWindowScore = null;
+    runtime.moonDepartureWindowWaitSec = null;
+    runtime.moonDepartureWindowPhaseErrorDeg = null;
+    runtime.moonDepartureGeometryScore = null;
+    runtime.moonDepartureAlignNow = null;
+    runtime.moonDepartureAlignProjected = null;
+    runtime.moonEstimatedTliDeltaVKmS = null;
+    runtime.moonDepartureWindowReady = false;
+    runtime.moonDepartureWindowLaunchTimeMs = null;
     runtime.moonEarthGuardActive = false;
     runtime.moonBurnAttitudeGateActive = false;
     runtime.missionPhaseGateReason = "";
@@ -1674,7 +1769,7 @@ export function createLaunchController(options) {
     runtime.boosterMassModel = createMassModelState();
   }
 
-  function updateRuntimeTargetMetrics(state, relPos, relVel) {
+  function updateRuntimeTargetMetrics(state, relPos, relVel, nowMs = Date.now()) {
     const earthDistanceKm = length(relPos || { x: 0, y: 0, z: 0 });
     runtime.earthDistanceKm = Number.isFinite(earthDistanceKm) ? earthDistanceKm : null;
     runtime.earthClosingSpeedKmS = (runtime.earthDistanceKm && runtime.earthDistanceKm > 1e-9)
@@ -1697,6 +1792,7 @@ export function createLaunchController(options) {
       runtime.moonProjectedMissDistanceKm = null;
       runtime.moonProjectedPeriluneAltitudeKm = null;
       runtime.moonBPlaneErrorKm = null;
+      clearMoonDepartureWindowClock(runtime);
       return;
     }
     const moonRelPos = subtract(rocketState.position, moonState.position);
@@ -1721,6 +1817,20 @@ export function createLaunchController(options) {
     runtime.moonProjectedMissDistanceKm = Number.isFinite(projectedMissDistanceKm)
       ? projectedMissDistanceKm
       : null;
+
+    updateMoonDepartureWindowClock({
+      runtime,
+      missionId: runtime.mission.selectedId,
+      nowMs,
+      earthState: earthStateFromNBody(state),
+      moonState,
+      shipPositionKm: rocketState.position,
+      launchLatitudeDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
+      getEarthMassKg,
+      getEarthRadiusKm,
+      gravitationalConstantKm3PerKgS2,
+      padAngularRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+    });
   }
 
   function missionTargetDescriptor() {
@@ -2373,7 +2483,7 @@ export function createLaunchController(options) {
       rocketState.velocity || { x: 0, y: 0, z: 0 },
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
-    updateRuntimeTargetMetrics(state, relPos, relVel);
+    updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
     const atmosphereSample = sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
@@ -2983,6 +3093,23 @@ export function createLaunchController(options) {
       prepareBoosterStep(state, dtSeconds, nowMs);
       fleetController.prepareStep(state, dtSeconds, nowMs);
       if (runtime.phase === "idle") {
+        const earthState = earthStateFromNBody(state);
+        const rocketState = rocketStateFromNBody(state);
+        if (
+          earthState
+          && rocketState
+          && finiteVector(earthState.position)
+          && finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 })
+          && finiteVector(rocketState.position)
+          && finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+        ) {
+          const relPos = subtract(rocketState.position, earthState.position);
+          const relVel = subtract(
+            rocketState.velocity || { x: 0, y: 0, z: 0 },
+            earthState.velocity || { x: 0, y: 0, z: 0 },
+          );
+          updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
+        }
         return;
       }
       if (runtime.phase === "complete") {
@@ -3020,7 +3147,7 @@ export function createLaunchController(options) {
         rocketState.velocity || { x: 0, y: 0, z: 0 },
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
-      updateRuntimeTargetMetrics(state, relPos, relVel);
+      updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
       const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
       const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
       const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
@@ -3851,7 +3978,7 @@ export function createLaunchController(options) {
         rocketState.velocity || { x: 0, y: 0, z: 0 },
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
-      updateRuntimeTargetMetrics(state, relPosNow, relVelNow);
+      updateRuntimeTargetMetrics(state, relPosNow, relVelNow, nowMs);
       const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
       const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
       const windSample = sampleWindVectorKmS({
@@ -3974,6 +4101,17 @@ export function createLaunchController(options) {
         moonProjectedMissDistanceKm: runtime.moonProjectedMissDistanceKm,
         moonProjectedPeriluneAltitudeKm: runtime.moonProjectedPeriluneAltitudeKm,
         moonBPlaneErrorKm: runtime.moonBPlaneErrorKm,
+        moonDepartureWindowScore: finiteOrNull(runtime.moonDepartureWindowScore),
+        moonDepartureWindowWaitSec: finiteOrNull(runtime.moonDepartureWindowWaitSec),
+        moonDepartureWindowPhaseErrorDeg: finiteOrNull(runtime.moonDepartureWindowPhaseErrorDeg),
+        moonDepartureGeometryScore: finiteOrNull(runtime.moonDepartureGeometryScore),
+        moonDepartureAlignNow: finiteOrNull(runtime.moonDepartureAlignNow),
+        moonDepartureAlignProjected: finiteOrNull(runtime.moonDepartureAlignProjected),
+        moonEstimatedTliDeltaVKmS: finiteOrNull(runtime.moonEstimatedTliDeltaVKmS),
+        moonDepartureWindowReady: Boolean(runtime.moonDepartureWindowReady),
+        moonDepartureWindowLaunchTimeMs: Number.isFinite(Number(runtime.moonDepartureWindowLaunchTimeMs))
+          ? Number(runtime.moonDepartureWindowLaunchTimeMs)
+          : null,
         missionPhaseGateReason: runtime.missionPhaseGateReason || "",
         targetBodyId: targetDescriptor.bodyId,
         targetBodyName: targetDescriptor.bodyName,
@@ -4118,6 +4256,17 @@ export function createLaunchController(options) {
       moonProjectedMissDistanceKm: runtime.moonProjectedMissDistanceKm,
       moonProjectedPeriluneAltitudeKm: runtime.moonProjectedPeriluneAltitudeKm,
       moonBPlaneErrorKm: runtime.moonBPlaneErrorKm,
+      moonDepartureWindowScore: finiteOrNull(runtime.moonDepartureWindowScore),
+      moonDepartureWindowWaitSec: finiteOrNull(runtime.moonDepartureWindowWaitSec),
+      moonDepartureWindowPhaseErrorDeg: finiteOrNull(runtime.moonDepartureWindowPhaseErrorDeg),
+      moonDepartureGeometryScore: finiteOrNull(runtime.moonDepartureGeometryScore),
+      moonDepartureAlignNow: finiteOrNull(runtime.moonDepartureAlignNow),
+      moonDepartureAlignProjected: finiteOrNull(runtime.moonDepartureAlignProjected),
+      moonEstimatedTliDeltaVKmS: finiteOrNull(runtime.moonEstimatedTliDeltaVKmS),
+      moonDepartureWindowReady: Boolean(runtime.moonDepartureWindowReady),
+      moonDepartureWindowLaunchTimeMs: Number.isFinite(Number(runtime.moonDepartureWindowLaunchTimeMs))
+        ? Number(runtime.moonDepartureWindowLaunchTimeMs)
+        : null,
       missionPhaseGateReason: runtime.missionPhaseGateReason || "",
       targetBodyId: targetDescriptor.bodyId,
       targetBodyName: targetDescriptor.bodyName,
@@ -4347,6 +4496,17 @@ export function createLaunchController(options) {
       moonProjectedMissDistanceKm: finiteOrNull(runtime.moonProjectedMissDistanceKm),
       moonProjectedPeriluneAltitudeKm: finiteOrNull(runtime.moonProjectedPeriluneAltitudeKm),
       moonBPlaneErrorKm: finiteOrNull(runtime.moonBPlaneErrorKm),
+      moonDepartureWindowScore: finiteOrNull(runtime.moonDepartureWindowScore),
+      moonDepartureWindowWaitSec: finiteOrNull(runtime.moonDepartureWindowWaitSec),
+      moonDepartureWindowPhaseErrorDeg: finiteOrNull(runtime.moonDepartureWindowPhaseErrorDeg),
+      moonDepartureGeometryScore: finiteOrNull(runtime.moonDepartureGeometryScore),
+      moonDepartureAlignNow: finiteOrNull(runtime.moonDepartureAlignNow),
+      moonDepartureAlignProjected: finiteOrNull(runtime.moonDepartureAlignProjected),
+      moonEstimatedTliDeltaVKmS: finiteOrNull(runtime.moonEstimatedTliDeltaVKmS),
+      moonDepartureWindowReady: Boolean(runtime.moonDepartureWindowReady),
+      moonDepartureWindowLaunchTimeMs: Number.isFinite(Number(runtime.moonDepartureWindowLaunchTimeMs))
+        ? Number(runtime.moonDepartureWindowLaunchTimeMs)
+        : null,
       moonBurnAttitudeGateActive: Boolean(runtime.moonBurnAttitudeGateActive),
       missionPhaseGateReason: String(runtime.missionPhaseGateReason || ""),
       lastTrackedPositionKm: cloneVectorOrNull(runtime.lastTrackedPositionKm),
@@ -4449,6 +4609,17 @@ export function createLaunchController(options) {
     runtime.moonProjectedMissDistanceKm = finiteOrNull(snapshot.moonProjectedMissDistanceKm);
     runtime.moonProjectedPeriluneAltitudeKm = finiteOrNull(snapshot.moonProjectedPeriluneAltitudeKm);
     runtime.moonBPlaneErrorKm = finiteOrNull(snapshot.moonBPlaneErrorKm);
+    runtime.moonDepartureWindowScore = finiteOrNull(snapshot.moonDepartureWindowScore);
+    runtime.moonDepartureWindowWaitSec = finiteOrNull(snapshot.moonDepartureWindowWaitSec);
+    runtime.moonDepartureWindowPhaseErrorDeg = finiteOrNull(snapshot.moonDepartureWindowPhaseErrorDeg);
+    runtime.moonDepartureGeometryScore = finiteOrNull(snapshot.moonDepartureGeometryScore);
+    runtime.moonDepartureAlignNow = finiteOrNull(snapshot.moonDepartureAlignNow);
+    runtime.moonDepartureAlignProjected = finiteOrNull(snapshot.moonDepartureAlignProjected);
+    runtime.moonEstimatedTliDeltaVKmS = finiteOrNull(snapshot.moonEstimatedTliDeltaVKmS);
+    runtime.moonDepartureWindowReady = Boolean(snapshot.moonDepartureWindowReady);
+    runtime.moonDepartureWindowLaunchTimeMs = Number.isFinite(Number(snapshot.moonDepartureWindowLaunchTimeMs))
+      ? Number(snapshot.moonDepartureWindowLaunchTimeMs)
+      : null;
     runtime.moonBurnAttitudeGateActive = Boolean(snapshot.moonBurnAttitudeGateActive);
     runtime.missionPhaseGateReason = String(snapshot.missionPhaseGateReason || "");
     runtime.lastTrackedPositionKm = cloneVectorOrNull(snapshot.lastTrackedPositionKm);
