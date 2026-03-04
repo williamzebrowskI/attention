@@ -40,10 +40,6 @@ import {
 import { isFlightDockingEligible } from "./refuel/availability.js";
 import { REFUEL_TANKER_CONFIG } from "./refuel/config.js";
 import {
-  computePhaseCatchupCommand,
-  orbitalRelativeFrame,
-} from "./refuel/missionShipRendezvous.js";
-import {
   estimateMoonRoundTripFuelBudget,
   estimateOrbitalRefuelDemoFuelBudget,
 } from "./missionFuelBudget.js";
@@ -58,6 +54,7 @@ import {
   NAVIGATION_MISSION_PHASES,
 } from "../navigation_system/navigationMissionProfiles.js";
 import { planMoonMissionCommand } from "../navigation_system/planners/moonMissionPlanner.js";
+import { planRefuelRendezvousCommand } from "../navigation_system/planners/refuelRendezvousPlanner.js";
 import {
   createPlannerRuntime,
   syncPlannerRuntime,
@@ -1255,7 +1252,6 @@ export function createLaunchFleetController({
         } else {
           decisionTargetBodyId = String(target.tankerId || "refuel_tanker");
           decisionTargetBodyName = "Refuel Tanker";
-          const rendezvousFrame = orbitalRelativeFrame({ prograde, up });
           const directionToTarget = normalize(target.relativePositionKm, prograde);
           const directionHorizontal = normalize(
             subtract(directionToTarget, scale(up, dot(directionToTarget, up))),
@@ -1267,20 +1263,12 @@ export function createLaunchFleetController({
           const refuelRelativeSpeedKmS = Math.max(0, Number(target.relativeSpeedKmS) || 0);
           const refuelClosingSpeedKmS = Number(target.closingSpeedKmS);
           const targetAltitudeKm = Number(target.altitudeKm);
-          const targetRadialSpeedKmS = Number(target.radialSpeedKmS);
           const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
           const periapsisNowKm = Number(orbital?.periapsisKm);
           const apoapsisNowKm = Number(orbital?.apoapsisKm);
           const speedNowKmS = Math.max(0, Number(orbital?.speedKmS) || length(relVel));
           const circularSpeedKmS = Math.max(0.001, Number(orbital?.circularSpeedKmS) || 7.8);
           const speedExcessKmS = speedNowKmS - circularSpeedKmS;
-          const shipAltitudeKm = Math.max(0, Number(orbital?.altitudeKm) || 0);
-          const altitudeErrorKm = Number.isFinite(targetAltitudeKm)
-            ? (targetAltitudeKm - shipAltitudeKm)
-            : 0;
-          const radialSpeedErrorKmS = Number.isFinite(targetRadialSpeedKmS)
-            ? (targetRadialSpeedKmS - radialSpeedKmS)
-            : 0;
           const recoveryEnter = Number.isFinite(periapsisNowKm)
             && (periapsisNowKm < 124 || (periapsisNowKm < 138 && radialSpeedKmS < -0.0016));
           const recoveryExit = Number.isFinite(periapsisNowKm)
@@ -1349,9 +1337,11 @@ export function createLaunchFleetController({
               thresholdKmS2: Math.max(1e-8, maxRcsAccelKmS2 * 0.14),
             });
           }
+          const dockDistanceKm = Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014;
+          const dockSpeedKmS = Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045;
           if (
-            refuelDistanceKm <= ((Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014) * 1.25)
-            && refuelRelativeSpeedKmS <= ((Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045) * 1.2)
+            refuelDistanceKm <= (dockDistanceKm * 1.25)
+            && refuelRelativeSpeedKmS <= (dockSpeedKmS * 1.2)
           ) {
             requestedThrottle = 0;
             desiredDirection = prograde;
@@ -1372,88 +1362,34 @@ export function createLaunchFleetController({
               scale(prograde, -1),
             );
             guidanceMode = "navsys:orbital-refuel-speed-brake";
-          } else if (refuelDistanceKm > 15) {
-            const desiredFarClosingKmS = clamp(refuelDistanceKm / 80_000, 0.018, 0.22);
-            const closureWeak = !Number.isFinite(refuelClosingSpeedKmS)
-              || refuelClosingSpeedKmS < (desiredFarClosingKmS * 0.72);
-            if (closureWeak) {
-              const catchupCommand = computePhaseCatchupCommand({
-                targetRelativePositionKm: target.relativePositionKm,
-                targetRelativeVelocityKmS: targetMinusShipRelVel,
-                refuelDistanceKm,
-                frame: rendezvousFrame,
-                altitudeErrorKm,
-                radialSpeedErrorKmS,
-                speedExcessKmS,
-              });
-              if (catchupCommand) {
-                requestedThrottle = catchupCommand.throttle;
-                desiredDirection = catchupCommand.desiredDirection;
-                guidanceMode = catchupCommand.phaseMode === "lower"
-                  ? "navsys:orbital-refuel-phase-catchup-lower"
-                  : "navsys:orbital-refuel-phase-catchup-raise";
-              } else {
-                // Fallback should not happen under nominal telemetry, but keeps guidance robust.
-                requestedThrottle = clamp(0.08 + (refuelDistanceKm / 140_000), 0.08, 0.20);
-                desiredDirection = normalize(
-                  add(
-                    scale(prograde, 0.72),
-                    scale(directionHorizontal, 0.20),
-                  ),
-                  prograde,
-                );
-                guidanceMode = "navsys:orbital-refuel-phase-catchup";
-              }
-            } else {
-              requestedThrottle = clamp(0.12 + (refuelDistanceKm / 220), 0.12, 0.34);
-              desiredDirection = normalize(
-                add(
-                  scale(directionHorizontal, 0.78),
-                  scale(prograde, 0.22),
-                ),
-                prograde,
-              );
-              guidanceMode = "navsys:orbital-refuel-rendezvous-far";
-            }
-          } else if (refuelDistanceKm > 1.5) {
-            const velocityDampingDirection = normalize(scale(shipMinusTargetRelVel, -1), directionToTarget);
+          } else {
+            const plannerCommand = planRefuelRendezvousCommand({
+              targetVectors: {
+                tangent: prograde,
+                toRefuelTarget: target.relativePositionKm,
+                refuelTargetRelativeVelocityKmS: targetMinusShipRelVel,
+              },
+              metrics: {
+                refuelTargetDistanceKm: refuelDistanceKm,
+                refuelRelativeSpeedKmS,
+                refuelClosingSpeedKmS,
+              },
+              tangent: prograde,
+              plannerConfig: NAVIGATION_DEFAULTS.planner,
+            });
+            requestedThrottle = plannerCommand?.phase === "powered"
+              ? clamp(Number(plannerCommand?.throttle) || 0, 0, 1)
+              : 0;
             desiredDirection = normalize(
-              add(
-                scale(directionHorizontal, 0.58),
-                scale(velocityDampingDirection, 0.28),
-                scale(prograde, 0.14),
-              ),
+              plannerCommand?.direction
+                || (plannerCommand?.phase === "powered" ? directionToTarget : prograde),
               prograde,
             );
-            requestedThrottle = clamp(
-              0.028 + (refuelDistanceKm / 120) + (refuelRelativeSpeedKmS * 28),
-              0.02,
-              0.12,
-            );
-            guidanceMode = "navsys:orbital-refuel-rendezvous-mid";
-          } else {
-            const desiredClosingSpeedKmS = clamp(refuelDistanceKm * 0.00009, 0.00001, 0.00008);
-            if (
-              Number.isFinite(refuelClosingSpeedKmS)
-              && (refuelClosingSpeedKmS > (desiredClosingSpeedKmS * 1.35) || refuelRelativeSpeedKmS > 0.00028)
-            ) {
-              desiredDirection = normalize(
-                scale(shipMinusTargetRelVel, -1),
-                scale(directionToTarget, -1),
-              );
-              requestedThrottle = clamp(0.003 + (refuelRelativeSpeedKmS * 22), 0.003, 0.03);
-              guidanceMode = "navsys:orbital-refuel-brake";
-            } else {
-              desiredDirection = normalize(
-                add(
-                  scale(directionHorizontal, 0.44),
-                  scale(normalize(scale(shipMinusTargetRelVel, -1), directionToTarget), 0.42),
-                  scale(prograde, 0.14),
-                ),
-                prograde,
-              );
-              requestedThrottle = clamp(0.002 + (refuelDistanceKm * 0.01), 0.002, 0.02);
-              guidanceMode = "navsys:orbital-refuel-final-approach";
+            guidanceMode = String(plannerCommand?.mode || "navsys:orbital-refuel-await-target");
+            if (guidanceMode === "navsys:orbital-refuel-docked-hold") {
+              requestedThrottle = 0;
+              desiredDirection = prograde;
+              guidanceMode = "navsys:orbital-refuel-lock";
             }
           }
         }

@@ -16,6 +16,7 @@ import {
   circularOrbitSpeedKmS,
   orbitalStateFromRelative,
 } from "./launchGuidance.js";
+import { planRefuelRendezvousCommand } from "../navigation_system/planners/refuelRendezvousPlanner.js";
 
 const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   parkingOrbitPeriapsisMinKm: 150,
@@ -125,6 +126,24 @@ function missionOrbitTangent(relVel, up, planeNormal, pole) {
     planeNormal || normalize(cross(up, relVel), pole),
     pole,
   );
+}
+
+function missionOrbitalRefuelModeFromPlanner(mode, fallback = "orbital-refuel-hold") {
+  const modeText = String(mode || "").trim();
+  if (!modeText) {
+    return `mission-orbital-refuel-demo:${fallback}`;
+  }
+  if (modeText.startsWith("mission-orbital-refuel-demo:")) {
+    return modeText;
+  }
+  if (modeText.startsWith("navsys:")) {
+    const navSuffix = modeText.slice("navsys:".length);
+    if (navSuffix === "orbital-refuel-docked-hold") {
+      return "mission-orbital-refuel-demo:orbital-refuel-lock";
+    }
+    return `mission-orbital-refuel-demo:${navSuffix}`;
+  }
+  return `mission-orbital-refuel-demo:${modeText}`;
 }
 
 export function missionUsesSustainedOrbitReserve(runtime) {
@@ -685,83 +704,32 @@ function computeOrbitalRefuelDemoAutopilotCommand({
       && refuelDistanceKm > 0
       && toRefuelTarget
     ) {
-      const directionToTarget = normalize(toRefuelTarget, tangent);
-      const relativeVelocityToTarget = activeRefuelTarget?.relativeVelocityKmS || { x: 0, y: 0, z: 0 };
-      const targetMinusShipRelVel = relativeVelocityToTarget;
-      const shipMinusTargetRelVel = scale(targetMinusShipRelVel, -1);
-      if (
-        refuelDistanceKm <= config.refuelDockDistanceKm
-        && refuelRelativeSpeedKmS <= (config.refuelDockMaxRelativeSpeedKmS * 1.1)
-      ) {
-        return {
-          phase: "coast",
-          throttle: 0,
-          direction: tangent,
-          mode: "mission-orbital-refuel-demo:orbital-refuel-lock",
-        };
-      }
-      if (refuelDistanceKm > config.refuelFarDistanceKm) {
-        const throttle = clamp(0.12 + (refuelDistanceKm / 220), 0.12, 0.34);
-        const direction = normalize(
-          add(
-            scale(directionToTarget, 0.92),
-            scale(tangent, 0.08),
-          ),
-          directionToTarget,
-        );
-        return {
-          phase: "powered",
-          throttle,
-          direction,
-          mode: "mission-orbital-refuel-demo:orbital-refuel-rendezvous-far",
-        };
-      }
-      if (refuelDistanceKm > config.refuelMidDistanceKm) {
-        const velocityDampingDirection = normalize(scale(shipMinusTargetRelVel, -1), directionToTarget);
-        const direction = normalize(
-          add(
-            scale(directionToTarget, 0.72),
-            scale(velocityDampingDirection, 0.28),
-          ),
-          directionToTarget,
-        );
-        const throttle = clamp(
-          0.028 + (refuelDistanceKm / 120) + (refuelRelativeSpeedKmS * 28),
-          0.02,
-          0.12,
-        );
-        return {
-          phase: "powered",
-          throttle,
-          direction,
-          mode: "mission-orbital-refuel-demo:orbital-refuel-rendezvous-mid",
-        };
-      }
-      const desiredClosingSpeedKmS = clamp(refuelDistanceKm * 0.00009, 0.00001, 0.00008);
-      if (
-        Number.isFinite(refuelClosingSpeedKmS)
-        && (refuelClosingSpeedKmS > (desiredClosingSpeedKmS * 1.35) || refuelRelativeSpeedKmS > 0.00028)
-      ) {
-        const brakeDirection = normalize(scale(shipMinusTargetRelVel, -1), scale(directionToTarget, -1));
-        return {
-          phase: "powered",
-          throttle: clamp(0.003 + (refuelRelativeSpeedKmS * 22), 0.003, 0.03),
-          direction: brakeDirection,
-          mode: "mission-orbital-refuel-demo:orbital-refuel-brake",
-        };
-      }
-      const closeApproachDirection = normalize(
-        add(
-          scale(directionToTarget, 0.58),
-          scale(normalize(scale(shipMinusTargetRelVel, -1), directionToTarget), 0.42),
-        ),
-        directionToTarget,
-      );
+      const plannerCommand = planRefuelRendezvousCommand({
+        targetVectors: {
+          tangent,
+          toRefuelTarget,
+          refuelTargetRelativeVelocityKmS: activeRefuelTarget?.relativeVelocityKmS || { x: 0, y: 0, z: 0 },
+        },
+        metrics: {
+          refuelTargetDistanceKm: refuelDistanceKm,
+          refuelRelativeSpeedKmS,
+          refuelClosingSpeedKmS,
+        },
+        tangent,
+      });
+      const plannerPhase = String(plannerCommand?.phase || "").trim() === "powered"
+        ? "powered"
+        : "coast";
       return {
-        phase: "powered",
-        throttle: clamp(0.002 + (refuelDistanceKm * 0.01), 0.002, 0.02),
-        direction: closeApproachDirection,
-        mode: "mission-orbital-refuel-demo:orbital-refuel-final-approach",
+        phase: plannerPhase,
+        throttle: plannerPhase === "powered"
+          ? clamp(Number(plannerCommand?.throttle) || 0, 0, 1)
+          : 0,
+        direction: normalize(plannerCommand?.direction || tangent, tangent),
+        mode: missionOrbitalRefuelModeFromPlanner(
+          plannerCommand?.mode,
+          "orbital-refuel-hold",
+        ),
       };
     }
     runtime.mission.completed = false;
