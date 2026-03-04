@@ -28,6 +28,31 @@ export function planTliFiniteBurnCommand({
     periapsisProtectMinKm + 5,
     finite(plannerConfig.tliPeriapsisRecoverTargetKm, 155),
   );
+  const periapsisDeadbandLowKm = Math.max(
+    periapsisProtectMinKm + 1,
+    finite(plannerConfig.tliPeriapsisDeadbandLowKm, 150),
+  );
+  const periapsisDeadbandHighKm = Math.max(
+    periapsisDeadbandLowKm + 2,
+    finite(plannerConfig.tliPeriapsisDeadbandHighKm, 170),
+  );
+  const periapsisEmergencyKm = Math.max(
+    periapsisProtectMinKm - 10,
+    finite(plannerConfig.tliPeriapsisEmergencyKm, periapsisProtectMinKm),
+  );
+  const periapsisWindowSec = Math.max(
+    30,
+    finite(plannerConfig.tliPeriapsisBurnWindowSec, 260),
+  );
+  const periapsisPulsePeriodSec = Math.max(
+    6,
+    finite(plannerConfig.tliPeriapsisPulsePeriodSec, 22),
+  );
+  const periapsisPulseOnSec = clamp(
+    finite(plannerConfig.tliPeriapsisPulseOnSec, 7),
+    1.5,
+    Math.max(2.5, periapsisPulsePeriodSec - 1),
+  );
   const missionElapsedSec = Math.max(0, finite(missionElapsedInPhaseSec, 0));
   const nowSec = Number(timestampSec);
   const prevSec = Number(tliRuntime?.lastTimestampSec);
@@ -55,11 +80,34 @@ export function planTliFiniteBurnCommand({
   const interceptEnterRisk = clamp(finite(plannerConfig.tliInterceptEnterRisk, 0.28), 0.05, 1);
   const interceptExitRisk = clamp(finite(plannerConfig.tliInterceptExitRisk, 0.12), 0.02, 0.95);
   const interceptHoldMinSec = Math.max(4, finite(plannerConfig.tliInterceptModeHoldMinSec, 10));
+  const interceptWarmupSec = Math.max(0, finite(plannerConfig.tliInterceptWarmupSec, 140));
+  const interceptWarmupActive = (
+    missionElapsedSec < interceptWarmupSec
+    && Number.isFinite(periapsisKm)
+    && periapsisKm < (periapsisDeadbandHighKm + 12)
+  );
 
   const rawProtect = Number.isFinite(periapsisKm) && periapsisKm < protectEnterKm;
   const rawProtectStay = Number.isFinite(periapsisKm) && periapsisKm < protectExitKm;
-  const rawIntercept = missWorseningRisk >= interceptEnterRisk;
-  const rawInterceptStay = missWorseningRisk >= interceptExitRisk;
+  const rawProtectBand = Number.isFinite(periapsisKm) && periapsisKm < periapsisDeadbandLowKm;
+  const rawProtectBandStay = Number.isFinite(periapsisKm) && periapsisKm < periapsisDeadbandHighKm;
+  const emergencyProtect = Number.isFinite(periapsisKm) && periapsisKm <= periapsisEmergencyKm;
+  const timeToPeriapsisSec = finite(metrics.timeToPeriapsisSec, Number.NaN);
+  const timeToApoapsisSec = finite(metrics.timeToApoapsisSec, Number.NaN);
+  const nearPeriapsisWindow = Number.isFinite(timeToPeriapsisSec)
+    ? Math.abs(timeToPeriapsisSec) <= periapsisWindowSec
+    : (
+      Number.isFinite(timeToApoapsisSec)
+        ? Math.abs(timeToApoapsisSec) >= Math.max(0, (finite(metrics.orbitalPeriodSec, Number.NaN) * 0.5) - periapsisWindowSec)
+        : false
+    );
+  const protectBurnWindowAllowed = emergencyProtect || nearPeriapsisWindow;
+  const pulsePhaseSec = periapsisPulsePeriodSec > 1e-6
+    ? ((missionElapsedSec % periapsisPulsePeriodSec) + periapsisPulsePeriodSec) % periapsisPulsePeriodSec
+    : 0;
+  const protectPulseActive = pulsePhaseSec <= periapsisPulseOnSec;
+  const rawIntercept = !interceptWarmupActive && (missWorseningRisk >= interceptEnterRisk);
+  const rawInterceptStay = !interceptWarmupActive && (missWorseningRisk >= interceptExitRisk);
   let appliedMode = "targeted";
 
   if (tliRuntime && typeof tliRuntime === "object") {
@@ -67,7 +115,7 @@ export function planTliFiniteBurnCommand({
     const modeHoldSec = Math.max(0, finite(tliRuntime.modeHoldSec, 0));
     const cooldownSec = Math.max(0, finite(tliRuntime.protectCooldownSec, 0));
     if (currentMode === "periapsis-protect") {
-      if (rawProtectStay || modeHoldSec < protectHoldMinSec) {
+      if ((rawProtectBandStay || rawProtectStay || emergencyProtect) || modeHoldSec < protectHoldMinSec) {
         appliedMode = "periapsis-protect";
       } else if (rawIntercept && cooldownSec <= 1e-6) {
         appliedMode = "intercept-correct";
@@ -75,7 +123,7 @@ export function planTliFiniteBurnCommand({
         appliedMode = "targeted";
       }
     } else if (currentMode === "intercept-correct") {
-      if (rawProtect) {
+      if (rawProtectBand || rawProtect || emergencyProtect) {
         appliedMode = "periapsis-protect";
       } else if (rawInterceptStay || modeHoldSec < interceptHoldMinSec) {
         appliedMode = "intercept-correct";
@@ -83,7 +131,7 @@ export function planTliFiniteBurnCommand({
         appliedMode = "targeted";
       }
     } else {
-      if (rawProtect) {
+      if (rawProtectBand || rawProtect || emergencyProtect) {
         appliedMode = "periapsis-protect";
       } else if (rawIntercept && cooldownSec <= 1e-6) {
         appliedMode = "intercept-correct";
@@ -99,12 +147,75 @@ export function planTliFiniteBurnCommand({
       tliRuntime.mode = appliedMode;
     }
   } else {
-    appliedMode = rawProtect
+    appliedMode = (rawProtectBand || rawProtect || emergencyProtect)
       ? "periapsis-protect"
       : (rawIntercept ? "intercept-correct" : "targeted");
   }
 
   if (appliedMode === "periapsis-protect") {
+    if ((!protectBurnWindowAllowed || !protectPulseActive) && !emergencyProtect) {
+      const fallbackInterceptActive = missWorseningRisk >= interceptExitRisk;
+      const fallbackMode = fallbackInterceptActive
+        ? "navsys:tli-periapsis-window-fallback-intercept"
+        : "navsys:tli-periapsis-window-fallback-targeted";
+      const fallbackMoonBlend = clamp(
+        0.56 + (missRisk * 0.18) + (missWorseningRisk * 0.16),
+        0.45,
+        0.86,
+      );
+      const fallbackThrottle = clamp(
+        0.24 + (missRisk * 0.11) + (missWorseningRisk * 0.12),
+        0.22,
+        0.48,
+      );
+      const fallbackDirection = normalize(
+        add(
+          scale(tangent, Math.max(0.08, 1 - fallbackMoonBlend)),
+          add(
+            scale(moonDirection, fallbackMoonBlend),
+            scale(up, 0.04),
+          ),
+        ),
+        tangent,
+      );
+      return {
+        phase: "powered",
+        throttle: fallbackThrottle,
+        direction: fallbackDirection,
+        mode: fallbackMode,
+        diagnostics: {
+          requestedMode: fallbackInterceptActive
+            ? "periapsis-window-fallback-intercept"
+            : "periapsis-window-fallback-targeted",
+          appliedMode,
+          periapsisKm,
+          periapsisProtectMinKm,
+          periapsisRecoverTargetKm,
+          periapsisDeadbandLowKm,
+          periapsisDeadbandHighKm,
+          periapsisEmergencyKm,
+          protectEnterKm,
+          protectExitKm,
+          protectBurnWindowAllowed,
+          nearPeriapsisWindow,
+          protectPulseActive,
+          pulsePhaseSec,
+          periapsisWindowSec,
+          periapsisPulseOnSec,
+          periapsisPulsePeriodSec,
+          missDistanceKm: Number.isFinite(missDistanceKm) ? missDistanceKm : null,
+          missGateKm,
+          missTrendKmS,
+          missWorseningRisk,
+          interceptWarmupActive,
+          interceptWarmupSec,
+          fallbackMoonBlend,
+          fallbackThrottle,
+          timeToPeriapsisSec: Number.isFinite(timeToPeriapsisSec) ? timeToPeriapsisSec : null,
+          elapsedSec: missionElapsedSec,
+        },
+      };
+    }
     const safePeriapsisKm = Number.isFinite(periapsisKm)
       ? periapsisKm
       : periapsisProtectMinKm;
@@ -135,8 +246,19 @@ export function planTliFiniteBurnCommand({
         periapsisKm,
         periapsisProtectMinKm,
         periapsisRecoverTargetKm,
+        periapsisDeadbandLowKm,
+        periapsisDeadbandHighKm,
+        periapsisEmergencyKm,
         protectEnterKm,
         protectExitKm,
+        protectBurnWindowAllowed,
+        nearPeriapsisWindow,
+        protectPulseActive,
+        pulsePhaseSec,
+        periapsisWindowSec,
+        periapsisPulseOnSec,
+        periapsisPulsePeriodSec,
+        timeToPeriapsisSec: Number.isFinite(timeToPeriapsisSec) ? timeToPeriapsisSec : null,
         elapsedSec: missionElapsedSec,
       },
     };
@@ -216,6 +338,13 @@ export function planTliFiniteBurnCommand({
       missWorseningRisk,
       interceptEnterRisk,
       interceptExitRisk,
+      interceptWarmupActive,
+      interceptWarmupSec,
+      periapsisDeadbandLowKm,
+      periapsisDeadbandHighKm,
+      periapsisEmergencyKm,
+      protectBurnWindowAllowed,
+      nearPeriapsisWindow,
       bPlaneErrorKm: Number.isFinite(bPlaneErrorKm) ? bPlaneErrorKm : null,
       bPlaneToleranceKm,
       periluneEstimateKm: Number.isFinite(periluneEstimateKm) ? periluneEstimateKm : null,

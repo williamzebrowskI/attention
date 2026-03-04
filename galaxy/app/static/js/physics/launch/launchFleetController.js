@@ -14,8 +14,10 @@ import {
 } from "./launchMissions.js";
 import {
   add,
+  angleBetweenRadians,
   clamp,
   cross,
+  degrees,
   dot,
   length,
   rad,
@@ -23,6 +25,13 @@ import {
   scale,
   subtract,
 } from "./launchMath.js";
+import { LAUNCH_REALISM_CONFIG } from "./launchRealismConfig.js";
+import {
+  applyActuatorModel,
+  createActuatorState,
+  createMassModelState,
+  updateMassModelState,
+} from "./launchActuators.js";
 import { orbitalStateFromRelative } from "./launchGuidance.js";
 import {
   applyQAlphaSteeringLimit,
@@ -57,6 +66,10 @@ import {
   FLEET_MISSION_SHIP_ID_PREFIX,
   FLEET_MOON_TLI_DURATION_SEC,
 } from "./launchFleetConfig.js";
+import {
+  MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
+  MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
+} from "./lunar/constants.js";
 import { NAVIGATION_DEFAULTS } from "../navigation_system/navigationSystemConfig.js";
 import {
   NAVIGATION_MISSION_IDS,
@@ -82,7 +95,7 @@ const FLEET_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 1_650_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_CONSERVE_KG = 90_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_SOFT_DEFICIT_KG = -8_000;
 const FLEET_ORBITAL_REFUEL_DEMO_MARGIN_HARD_HOLD_KG = -30_000;
-const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 2_600_000;
+const FLEET_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 3_600_000;
 const FLEET_MOON_MISSION_MARGIN_CONSERVE_KG = 220_000;
 const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
 const FLEET_MOON_PAD_WINDOW_PHASE_TOLERANCE_DEG = 4.0;
@@ -112,6 +125,13 @@ const FLEET_TEI_DEPARTURE_DISTANCE_KM = 140_000;
 const FLEET_EARTH_CAPTURE_DISTANCE_KM = 180_000;
 const FLEET_EARTH_CAPTURE_APOAPSIS_MAX_KM = 75_000;
 const FLEET_EARTH_CAPTURE_PERIAPSIS_MIN_KM = 120;
+const FLEET_MOON_BURN_ATTITUDE_GATE_PHASES = new Set([
+  "tli_burn",
+  "coast_to_moon",
+  "lunar_capture",
+  "tei_burn",
+  "earth_capture",
+]);
 const FLEET_MOONWARD_TARGET_PHASES = new Set([
   "launch_to_parking",
   "orbital_refuel",
@@ -1070,6 +1090,16 @@ export function createLaunchFleetController({
     const targetOrbitPeriapsisKm = vehicleRole === "tanker"
       ? 150
       : (normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN ? 170 : 200);
+    const spawnRelPos = subtract(spawnState.position, earthState.position);
+    const spawnRelVel = subtract(
+      spawnState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const spawnUp = normalize(spawnRelPos, { x: 0, y: 0, z: 1 });
+    const spawnPrograde = normalize(spawnRelVel, spawnUp);
+    const initialBodyAxis = launchMode === "orbit_inject"
+      ? spawnPrograde
+      : spawnUp;
     vehicles.set(identity.id, {
       id: identity.id,
       sequenceNumber: identity.sequenceNumber,
@@ -1093,6 +1123,15 @@ export function createLaunchFleetController({
         : null,
       moonDepartureWindowPhaseErrorDeg: moonDepartureWindow
         ? finiteOrNull(moonDepartureWindow.phaseErrorDeg)
+        : null,
+      moonDepartureGeometryScore: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.geometryScore)
+        : null,
+      moonDepartureAlignNow: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.selectedDepartureAlignment)
+        : null,
+      moonDepartureAlignProjected: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.selectedProjectedAlignment)
         : null,
       moonEstimatedTliDeltaVKmS: moonDepartureWindow
         ? finiteOrNull(moonDepartureWindow.estimatedTliDeltaVKmS)
@@ -1131,6 +1170,9 @@ export function createLaunchFleetController({
       guidanceRequestedThrottle: 0,
       guidanceInertNoPropellant: false,
       guidanceInertReason: "",
+      stageActuator: createActuatorState(initialBodyAxis),
+      stageMassModel: createMassModelState(),
+      moonBurnAttitudeGateActive: false,
       moonEarthGuardActive: false,
       moonProjectedPeriluneAltitudeKm: null,
       moonBPlaneErrorKm: null,
@@ -1268,6 +1310,9 @@ export function createLaunchFleetController({
       vehicle.moonDepartureWindowScore = null;
       vehicle.moonDepartureWindowWaitSec = null;
       vehicle.moonDepartureWindowPhaseErrorDeg = null;
+      vehicle.moonDepartureGeometryScore = null;
+      vehicle.moonDepartureAlignNow = null;
+      vehicle.moonDepartureAlignProjected = null;
       vehicle.moonEstimatedTliDeltaVKmS = null;
     }
     if (phaseName === "tli_burn") {
@@ -1433,6 +1478,21 @@ export function createLaunchFleetController({
         );
       }
       const availablePropellantKg = Math.max(0, Number(vehicle.stagePropellantKg) || 0);
+      const stageNominalPropellantKg = Math.max(1e-6, Number(activeStage?.propellantMassKg) || 0);
+      const stagePropellantFraction = stageNominalPropellantKg > 1e-9
+        ? clamp(availablePropellantKg / stageNominalPropellantKg, 0, 1)
+        : 0;
+      vehicle.stageMassModel = updateMassModelState(
+        vehicle.stageMassModel,
+        {
+          propellantFraction: stagePropellantFraction,
+          bodyKind: stageBodyKindFromStageIndex(activeStageIndex),
+          dtSeconds: safeDtSeconds,
+        },
+      );
+      if (!vehicle.stageActuator || typeof vehicle.stageActuator !== "object") {
+        vehicle.stageActuator = createActuatorState(prograde);
+      }
       const previousDecision = {
         guidanceMode: String(vehicle.guidanceMode || vehicle.lastStep?.guidanceMode || ""),
         targetBodyId: String(vehicle.decisionTargetBodyId || ""),
@@ -1468,6 +1528,9 @@ export function createLaunchFleetController({
         vehicle.moonDepartureWindowScore = null;
         vehicle.moonDepartureWindowWaitSec = null;
         vehicle.moonDepartureWindowPhaseErrorDeg = null;
+        vehicle.moonDepartureGeometryScore = null;
+        vehicle.moonDepartureAlignNow = null;
+        vehicle.moonDepartureAlignProjected = null;
         vehicle.moonEstimatedTliDeltaVKmS = null;
         vehicle.moonTliTargetMode = "";
         vehicle.moonTliTargetMissKm = null;
@@ -1526,6 +1589,15 @@ export function createLaunchFleetController({
           vehicle.moonDepartureWindowPhaseErrorDeg = finiteOrNull(
             moonPadWindowSolve?.phaseErrorDeg ?? moonPadWindowStatus?.phaseErrorDeg,
           );
+          vehicle.moonDepartureGeometryScore = finiteOrNull(
+            moonPadWindowSolve?.geometryScore,
+          );
+          vehicle.moonDepartureAlignNow = finiteOrNull(
+            moonPadWindowSolve?.selectedDepartureAlignment,
+          );
+          vehicle.moonDepartureAlignProjected = finiteOrNull(
+            moonPadWindowSolve?.selectedProjectedAlignment,
+          );
           vehicle.moonEstimatedTliDeltaVKmS = finiteOrNull(
             moonPadWindowSolve?.estimatedTliDeltaVKmS ?? moonPadWindowStatus?.estimatedTliDeltaVKmS,
           );
@@ -1549,6 +1621,9 @@ export function createLaunchFleetController({
           vehicle.moonDepartureWindowScore = null;
           vehicle.moonDepartureWindowWaitSec = null;
           vehicle.moonDepartureWindowPhaseErrorDeg = null;
+          vehicle.moonDepartureGeometryScore = null;
+          vehicle.moonDepartureAlignNow = null;
+          vehicle.moonDepartureAlignProjected = null;
           vehicle.moonEstimatedTliDeltaVKmS = null;
         }
         if (!moonPadWindowHold) {
@@ -2011,6 +2086,17 @@ export function createLaunchFleetController({
               up,
               toMoon: toMoonVectorKm || prograde,
               toEarth: scale(relPos, -1),
+              shipEarthPositionKm: relPos,
+              shipEarthVelocityKmS: relVel,
+              moonEarthPositionKm: finiteVector(moonState?.position)
+                ? subtract(moonState.position, earthState.position)
+                : null,
+              moonEarthVelocityKmS: finiteVector(moonState?.velocity || { x: 0, y: 0, z: 0 })
+                ? subtract(
+                  moonState.velocity || { x: 0, y: 0, z: 0 },
+                  earthState.velocity || { x: 0, y: 0, z: 0 },
+                )
+                : null,
               shipMinusMoonRelativeVelocityKmS: moonRelVel || null,
               moonMinusShipRelativeVelocityKmS,
               toRefuelTarget: moonRefuelTarget?.relativePositionKm || null,
@@ -2019,6 +2105,9 @@ export function createLaunchFleetController({
             metrics: {
               apoapsisKm: Number(orbital?.apoapsisKm),
               periapsisKm: Number(orbital?.periapsisKm),
+              timeToApoapsisSec: Number(orbital?.timeToApoapsisSec),
+              timeToPeriapsisSec: Number(orbital?.timeToPeriapsisSec),
+              orbitalPeriodSec: Number(orbital?.orbitalPeriodSec),
               earthDistanceKm,
               earthRadialSpeedKmS,
               moonDistanceKm,
@@ -2239,6 +2328,53 @@ export function createLaunchFleetController({
       vehicle.guidanceInertReason = guidanceInertNoPropellant
         ? "no-propellant-for-guidance-burn"
         : "";
+      let throttleCommand = availablePropellantKg > 1e-6
+        ? requestedThrottleCommand
+        : 0;
+      let moonAttitudeGateApplied = false;
+      const moonAttitudeGateEligible = (
+        availablePropellantKg > 1e-6
+        && requestedThrottleCommand > 1e-3
+        && vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+        && FLEET_MOON_BURN_ATTITUDE_GATE_PHASES.has(String(vehicle.missionPhase || ""))
+      );
+      if (moonAttitudeGateEligible || vehicle.moonBurnAttitudeGateActive) {
+        const currentAxis = normalize(
+          vehicle.stageActuator?.directionActual || desiredDirection,
+          desiredDirection,
+        );
+        const attitudeErrorDeg = degrees(angleBetweenRadians(currentAxis, desiredDirection));
+        const gateWasActive = Boolean(vehicle.moonBurnAttitudeGateActive);
+        const shouldGate = gateWasActive
+          ? attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG
+          : attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG;
+        if (shouldGate && availablePropellantKg > 1e-6) {
+          throttleCommand = 0;
+          moonAttitudeGateApplied = true;
+        }
+      }
+      vehicle.moonBurnAttitudeGateActive = moonAttitudeGateApplied;
+      vehicle.stageActuator = applyActuatorModel(
+        vehicle.stageActuator,
+        {
+          requestedThrottle: throttleCommand,
+          requestedDirection: desiredDirection,
+          dtSeconds: safeDtSeconds,
+          config: LAUNCH_REALISM_CONFIG.actuator.stage,
+          massModel: vehicle.stageMassModel,
+        },
+      );
+      const throttleActual = availablePropellantKg > 1e-6
+        ? clamp(Number(vehicle.stageActuator?.throttleActual) || 0, 0, 1)
+        : 0;
+      const bodyAxisDirection = normalize(
+        vehicle.stageActuator?.directionActual || desiredDirection,
+        desiredDirection,
+      );
+      if (moonAttitudeGateApplied && !guidanceMode.includes("attitude-align")) {
+        guidanceMode = `${guidanceMode}+attitude-align`;
+      }
       const ambientPressurePa = Number(atmosphereSample?.pressurePa) || 0;
       const stageThrustVacuumN = Math.max(0, Number(activeStage?.thrustVacuumN) || 0);
       const stageThrustSeaLevelN = Math.max(0, Number(activeStage?.thrustSeaLevelN) || stageThrustVacuumN);
@@ -2247,8 +2383,8 @@ export function createLaunchFleetController({
         stageThrustSeaLevelN,
         ambientPressurePa,
       );
-      const thrustN = requestedThrottleCommand > 1e-6
-        ? thrustPerThrottleN * requestedThrottleCommand
+      const thrustN = throttleActual > 1e-6
+        ? thrustPerThrottleN * throttleActual
         : 0;
       const stageIspVacuumS = Math.max(1, Number(activeStage?.ispVacuumS) || 360);
       const stageIspSeaLevelS = Math.max(1, Number(activeStage?.ispSeaLevelS) || stageIspVacuumS);
@@ -2267,7 +2403,7 @@ export function createLaunchFleetController({
       const accelerationMagnitudeKmS2 = thrustN > 0
         ? (thrustN / effectiveMassKg) / 1000
         : 0;
-      const thrustAccelKmS2 = scale(desiredDirection, accelerationMagnitudeKmS2);
+      const thrustAccelKmS2 = scale(bodyAxisDirection, accelerationMagnitudeKmS2);
       const referenceAreaM2 = Math.max(
         1,
         Number(LAUNCH_VEHICLE_CONFIG?.referenceAreaM2)
@@ -2286,7 +2422,7 @@ export function createLaunchFleetController({
         relVel,
         earthPole,
         windVectorKmS: windSample.vectorKmS,
-        bodyAxisDirection: desiredDirection,
+        bodyAxisDirection,
         referenceAreaM2,
         massKg: effectiveMassKg,
         minMassKg: minRocketMassKg,
@@ -2298,7 +2434,7 @@ export function createLaunchFleetController({
       vehicle.decisionTargetBodyName = decisionTargetBodyName;
       vehicle.lastStep = {
         accelerationKmS2: totalAccelKmS2,
-        throttle: requestedThrottleCommand,
+        throttle: throttleActual,
         throttleCommand: requestedThrottleCommand,
         thrustN,
         burnRateKgS,
@@ -2319,6 +2455,10 @@ export function createLaunchFleetController({
         machNumber: aero.machNumber,
         dragCoefficient: aero.dragCoefficient,
         liftCoefficient: aero.liftCoefficient,
+        gimbalErrorDeg: Number(vehicle.stageActuator?.gimbalErrorDeg) || 0,
+        comNormalized: Number(vehicle.stageMassModel?.comNormalized) || 0,
+        inertiaNormalized: Number(vehicle.stageMassModel?.inertiaNormalized) || 1,
+        controlAuthorityScale: Number(vehicle.stageMassModel?.controlAuthorityScale) || 1,
         windSpeedKmS: windSample.speedKmS,
         windEastMS: windSample.eastMS,
         windNorthMS: windSample.northMS,
@@ -2332,7 +2472,7 @@ export function createLaunchFleetController({
           guidanceMode,
           targetBodyId: decisionTargetBodyId,
           targetBodyName: decisionTargetBodyName,
-          burnActive: requestedThrottleCommand > 1e-3 && thrustN > 1,
+          burnActive: throttleActual > 1e-3 && thrustN > 1,
         },
       );
     }
@@ -2419,6 +2559,15 @@ export function createLaunchFleetController({
         vehicle.stageIndex = stageIndex;
         const nextStage = stageProfiles[stageIndex] || stageProfiles[stageCount - 1];
         vehicle.stagePropellantKg = Math.max(0, Number(nextStage?.propellantMassKg) || 0);
+        const relPosForActuator = subtract(shipState.position, earthState.position);
+        const relVelForActuator = subtract(
+          shipState.velocity || { x: 0, y: 0, z: 0 },
+          earthState.velocity || { x: 0, y: 0, z: 0 },
+        );
+        const upForActuator = normalize(relPosForActuator, { x: 0, y: 0, z: 1 });
+        vehicle.stageActuator = createActuatorState(normalize(relVelForActuator, upForActuator));
+        vehicle.stageMassModel = createMassModelState();
+        vehicle.moonBurnAttitudeGateActive = false;
         if (typeof emitLaunchEvent === "function") {
           emitLaunchEvent("fleet_mission_stage_changed", {
             shipId: vehicle.id,
@@ -2641,6 +2790,9 @@ export function createLaunchFleetController({
         moonDepartureWindowScore: null,
         moonDepartureWindowWaitSec: null,
         moonDepartureWindowPhaseErrorDeg: null,
+        moonDepartureGeometryScore: null,
+        moonDepartureAlignNow: null,
+        moonDepartureAlignProjected: null,
         moonEstimatedTliDeltaVKmS: null,
         moonTliTargetMode: "",
         moonTliTargetMissKm: null,
@@ -2660,6 +2812,10 @@ export function createLaunchFleetController({
         guidanceRequestedThrottle: 0,
         guidanceInertNoPropellant: false,
         guidanceInertReason: "",
+        gimbalErrorDeg: null,
+        comNormalized: null,
+        inertiaNormalized: null,
+        controlAuthorityScale: null,
         fuelBudgetRequiredDeltaVKmS: null,
         fuelBudgetAvailableDeltaVKmS: null,
         fuelBudgetMinimumPropellantKg: null,
@@ -2894,10 +3050,20 @@ export function createLaunchFleetController({
         ? Number(orbital.timeToApoapsisSec)
         : null,
       throttle,
+      throttleCommand: Number(vehicle.lastStep?.throttleCommand) || throttle,
       thrustN: Number(vehicle.lastStep?.thrustN) || 0,
       burnRateKgS: Number(vehicle.lastStep?.burnRateKgS) || 0,
       dynamicPressurePa: Number(vehicle.lastStep?.dynamicPressurePa) || dynamicPressurePa,
-      throttleCommand: throttle,
+      gimbalErrorDeg: Number(vehicle.lastStep?.gimbalErrorDeg) || 0,
+      comNormalized: Number.isFinite(Number(vehicle.lastStep?.comNormalized))
+        ? Number(vehicle.lastStep.comNormalized)
+        : null,
+      inertiaNormalized: Number.isFinite(Number(vehicle.lastStep?.inertiaNormalized))
+        ? Number(vehicle.lastStep.inertiaNormalized)
+        : null,
+      controlAuthorityScale: Number.isFinite(Number(vehicle.lastStep?.controlAuthorityScale))
+        ? Number(vehicle.lastStep.controlAuthorityScale)
+        : null,
       guidanceMode,
       autopilotMode: guidanceMode,
       missionId: vehicle.missionId,
@@ -2981,6 +3147,9 @@ export function createLaunchFleetController({
       moonDepartureWindowScore: finiteOrNull(vehicle.moonDepartureWindowScore),
       moonDepartureWindowWaitSec: finiteOrNull(vehicle.moonDepartureWindowWaitSec),
       moonDepartureWindowPhaseErrorDeg: finiteOrNull(vehicle.moonDepartureWindowPhaseErrorDeg),
+      moonDepartureGeometryScore: finiteOrNull(vehicle.moonDepartureGeometryScore),
+      moonDepartureAlignNow: finiteOrNull(vehicle.moonDepartureAlignNow),
+      moonDepartureAlignProjected: finiteOrNull(vehicle.moonDepartureAlignProjected),
       moonEstimatedTliDeltaVKmS: finiteOrNull(vehicle.moonEstimatedTliDeltaVKmS),
       moonTliTargetMode: String(vehicle.moonTliTargetMode || ""),
       moonTliTargetMissKm: finiteOrNull(vehicle.moonTliTargetMissKm),

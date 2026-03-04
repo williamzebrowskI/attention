@@ -2908,6 +2908,9 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Perilune Est", value: Number.isFinite(Number(snapshot.moonProjectedPeriluneAltitudeKm)) ? `${formatNumber(snapshot.moonProjectedPeriluneAltitudeKm, 1)} km` : "n/a" },
     { label: "B-Plane Err", value: Number.isFinite(Number(snapshot.moonBPlaneErrorKm)) ? `${formatNumber(snapshot.moonBPlaneErrorKm, 1)} km` : "n/a" },
     { label: "Window Score", value: Number.isFinite(Number(snapshot.moonDepartureWindowScore)) ? `${formatNumber(Number(snapshot.moonDepartureWindowScore) * 100, 1)}%` : "n/a" },
+    { label: "Window Geo", value: Number.isFinite(Number(snapshot.moonDepartureGeometryScore)) ? `${formatNumber(Number(snapshot.moonDepartureGeometryScore) * 100, 1)}%` : "n/a" },
+    { label: "Align Now", value: Number.isFinite(Number(snapshot.moonDepartureAlignNow)) ? formatNumber(snapshot.moonDepartureAlignNow, 3) : "n/a" },
+    { label: "Align Proj", value: Number.isFinite(Number(snapshot.moonDepartureAlignProjected)) ? formatNumber(snapshot.moonDepartureAlignProjected, 3) : "n/a" },
     { label: "TLI Target", value: String(snapshot.moonTliTargetMode || "").trim() || "n/a" },
     { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
     { label: "Phase Gate", value: missionPhaseGateReason || "n/a" },
@@ -10164,6 +10167,15 @@ function updateInfoOverlay() {
     const moonWindowScoreLine = Number.isFinite(Number(launchSnapshot?.moonDepartureWindowScore))
       ? `${formatNumber(Number(launchSnapshot.moonDepartureWindowScore) * 100, 1)}%`
       : "n/a";
+    const moonWindowGeometryLine = Number.isFinite(Number(launchSnapshot?.moonDepartureGeometryScore))
+      ? `${formatNumber(Number(launchSnapshot.moonDepartureGeometryScore) * 100, 1)}%`
+      : "n/a";
+    const moonWindowAlignNowLine = Number.isFinite(Number(launchSnapshot?.moonDepartureAlignNow))
+      ? formatNumber(launchSnapshot.moonDepartureAlignNow, 3)
+      : "n/a";
+    const moonWindowAlignProjectedLine = Number.isFinite(Number(launchSnapshot?.moonDepartureAlignProjected))
+      ? formatNumber(launchSnapshot.moonDepartureAlignProjected, 3)
+      : "n/a";
     const moonTliTargetModeLine = String(launchSnapshot?.moonTliTargetMode || "").trim() || "n/a";
     const moonTliTargetMissLine = Number.isFinite(Number(launchSnapshot?.moonTliTargetMissKm))
       ? `${formatNumber(launchSnapshot.moonTliTargetMissKm, 1)} km`
@@ -10258,6 +10270,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
+        <p class="line launch-line">Window Geo: ${moonWindowGeometryLine} | Align Now/Proj: ${moonWindowAlignNowLine} / ${moonWindowAlignProjectedLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
@@ -10274,6 +10287,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
+        <p class="line launch-line">Window Geo: ${moonWindowGeometryLine} | Align Now/Proj: ${moonWindowAlignNowLine} / ${moonWindowAlignProjectedLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>

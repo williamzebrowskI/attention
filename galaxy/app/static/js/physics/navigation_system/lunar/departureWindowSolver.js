@@ -1,7 +1,9 @@
 import {
+  add,
   clamp,
   dot,
   finiteVector,
+  length,
   normalize,
   scale,
   subtract,
@@ -80,6 +82,121 @@ function launchPlanePhaseAngleRad({
     return Number.NaN;
   }
   return normalizeAngleZeroToTau(Math.atan2(y, x));
+}
+
+function launchInjectStateForPhase({
+  phaseRad = 0,
+  basis = null,
+  orbitRadiusKm = Number.NaN,
+} = {}) {
+  if (!basis || !(Number(orbitRadiusKm) > 1000)) {
+    return null;
+  }
+  const cTheta = Math.cos(Number(phaseRad) || 0);
+  const sTheta = Math.sin(Number(phaseRad) || 0);
+  const relPositionKm = add(
+    scale(basis.e1, orbitRadiusKm * cTheta),
+    scale(basis.e2, orbitRadiusKm * sTheta),
+  );
+  const relVelocityDirection = normalize(
+    add(
+      scale(basis.e1, -sTheta),
+      scale(basis.e2, cTheta),
+    ),
+    { x: 0, y: 1, z: 0 },
+  );
+  return {
+    relPositionKm,
+    relVelocityDirection,
+  };
+}
+
+function launchPlaneUnitFromPhase({
+  phaseRad = 0,
+  basis = null,
+} = {}) {
+  if (!basis) {
+    return null;
+  }
+  const cTheta = Math.cos(Number(phaseRad) || 0);
+  const sTheta = Math.sin(Number(phaseRad) || 0);
+  return normalize(
+    add(
+      scale(basis.e1, cTheta),
+      scale(basis.e2, sTheta),
+    ),
+    basis.e1,
+  );
+}
+
+function evaluateDepartureGeometryCandidate({
+  targetPhaseRad = Number.NaN,
+  basis = null,
+  orbitRadiusKm = Number.NaN,
+  moonRelPosKm = null,
+  moonPhaseRad = Number.NaN,
+  moonRateRadS = Number.NaN,
+  transferTimeSec = Number.NaN,
+} = {}) {
+  if (!Number.isFinite(Number(targetPhaseRad)) || !finiteVector(moonRelPosKm) || !basis) {
+    return null;
+  }
+  const injectState = launchInjectStateForPhase({
+    phaseRad: Number(targetPhaseRad),
+    basis,
+    orbitRadiusKm,
+  });
+  if (!injectState?.relPositionKm || !injectState?.relVelocityDirection) {
+    return null;
+  }
+  const moonFromShipNow = subtract(moonRelPosKm, injectState.relPositionKm);
+  const moonRangeNowKm = length(moonFromShipNow);
+  const moonFromShipNowDirection = normalize(moonFromShipNow, basis.e1);
+  const toMoonNowAlignment = clamp(
+    dot(injectState.relVelocityDirection, moonFromShipNowDirection),
+    -1,
+    1,
+  );
+
+  const projectedMoonPhaseRad = (
+    Number.isFinite(Number(moonPhaseRad)) && Number.isFinite(Number(moonRateRadS)) && Number.isFinite(Number(transferTimeSec))
+      ? normalizeAngleZeroToTau(Number(moonPhaseRad) + (Number(moonRateRadS) * Number(transferTimeSec)))
+      : Number.NaN
+  );
+  const projectedMoonDirection = launchPlaneUnitFromPhase({
+    phaseRad: projectedMoonPhaseRad,
+    basis,
+  });
+  const projectedMoonAlignment = projectedMoonDirection
+    ? clamp(dot(injectState.relVelocityDirection, projectedMoonDirection), -1, 1)
+    : 0;
+  const outOfPlaneFraction = clamp(
+    Math.abs(dot(moonFromShipNowDirection, basis.planeNormal)),
+    0,
+    1,
+  );
+  const planeQuality = 1 - outOfPlaneFraction;
+  const rangePenalty = clamp(
+    (Math.max(0, moonRangeNowKm - 420_000) / 220_000),
+    0,
+    1,
+  );
+  const score = clamp(
+    (((toMoonNowAlignment + 1) * 0.5) * 0.50)
+    + (((projectedMoonAlignment + 1) * 0.5) * 0.35)
+    + (planeQuality * 0.15)
+    - (rangePenalty * 0.05),
+    0,
+    1,
+  );
+  return {
+    targetPhaseRad: Number(targetPhaseRad),
+    toMoonNowAlignment,
+    projectedMoonAlignment,
+    planeQuality,
+    rangeNowKm: moonRangeNowKm,
+    score,
+  };
 }
 
 function signedPlanarAngularRateRadS({
@@ -205,9 +322,54 @@ export function solveMoonDepartureWindow({
     vector: moonRelPosKm,
     inclinationDeg,
   });
-  const targetPhaseRad = Number.isFinite(moonPhaseRad)
-    ? normalizeAngleZeroToTau(moonPhaseRad - (Math.PI * 0.5) + leadRad)
+  const nominalPhaseAheadRad = Number.isFinite(moonPhaseRad)
+    ? normalizeAngleZeroToTau(moonPhaseRad - (Math.PI * 0.5) + Math.abs(leadMagnitude))
     : Number.NaN;
+  const nominalPhaseBehindRad = Number.isFinite(moonPhaseRad)
+    ? normalizeAngleZeroToTau(moonPhaseRad - (Math.PI * 0.5) - Math.abs(leadMagnitude))
+    : Number.NaN;
+  const candidateGeometries = [
+    evaluateDepartureGeometryCandidate({
+      targetPhaseRad: nominalPhaseAheadRad,
+      basis,
+      orbitRadiusKm,
+      moonRelPosKm,
+      moonPhaseRad,
+      moonRateRadS,
+      transferTimeSec,
+    }),
+    evaluateDepartureGeometryCandidate({
+      targetPhaseRad: nominalPhaseBehindRad,
+      basis,
+      orbitRadiusKm,
+      moonRelPosKm,
+      moonPhaseRad,
+      moonRateRadS,
+      transferTimeSec,
+    }),
+  ].filter(Boolean);
+  const sortedCandidates = [...candidateGeometries]
+    .sort((a, b) => Number(b.score) - Number(a.score));
+  // For mission usability, prefer launch geometries where the Moon is in the
+  // forward hemisphere of the injected prograde track "now" and at projection time.
+  const selectedGeometry = (
+    sortedCandidates.find(
+      (candidate) => (
+        Number(candidate.toMoonNowAlignment) >= 0.10
+        && Number(candidate.projectedMoonAlignment) >= -0.05
+      ),
+    )
+    || sortedCandidates.find((candidate) => Number(candidate.toMoonNowAlignment) >= 0)
+    || sortedCandidates[0]
+    || null
+  );
+  const targetPhaseRad = selectedGeometry
+    ? Number(selectedGeometry.targetPhaseRad)
+    : (
+      Number.isFinite(moonPhaseRad)
+        ? normalizeAngleZeroToTau(moonPhaseRad - (Math.PI * 0.5) + leadRad)
+        : Number.NaN
+    );
   const currentPhaseRad = launchPlanePhaseAngleRad({
     vector: finiteVector(shipPositionKm)
       ? subtract(shipPositionKm, earthState.position)
@@ -255,7 +417,14 @@ export function solveMoonDepartureWindow({
   const scoreFromWait = Number.isFinite(waitSec)
     ? clamp(1 - (waitSec / (4 * 3600)), 0, 1)
     : 0;
-  const windowScore = clamp((scoreFromError * 0.7) + (scoreFromWait * 0.3), 0, 1);
+  const scoreFromGeometry = clamp(Number(selectedGeometry?.score) || 0, 0, 1);
+  const windowScore = clamp(
+    (scoreFromError * 0.55)
+    + (scoreFromWait * 0.25)
+    + (scoreFromGeometry * 0.2),
+    0,
+    1,
+  );
 
   return {
     valid: Number.isFinite(targetPhaseRad),
@@ -270,6 +439,16 @@ export function solveMoonDepartureWindow({
     leadAngleDeg: Number.isFinite(leadRad) ? deg(leadRad) : Number.NaN,
     estimatedTliDeltaVKmS,
     windowScore,
+    geometryScore: scoreFromGeometry,
+    selectedDepartureAlignment: selectedGeometry
+      ? Number(selectedGeometry.toMoonNowAlignment)
+      : Number.NaN,
+    selectedProjectedAlignment: selectedGeometry
+      ? Number(selectedGeometry.projectedMoonAlignment)
+      : Number.NaN,
+    selectedPlaneQuality: selectedGeometry
+      ? Number(selectedGeometry.planeQuality)
+      : Number.NaN,
     toleranceDeg,
   };
 }

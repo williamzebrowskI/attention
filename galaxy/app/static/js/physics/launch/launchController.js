@@ -113,6 +113,7 @@ import {
 } from "./lunar/constants.js";
 
 const MIN_ROCKET_MASS_KG = 500;
+const PRIMARY_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG = 3_600_000;
 const PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM = 145;
 const PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM = 150;
 const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
@@ -140,8 +141,33 @@ function stageAtIndex(stageIndex) {
   return LAUNCH_VEHICLE_CONFIG.stages[stageIndex] || null;
 }
 
-function stage2PropellantCapacityKg() {
-  return Math.max(0, Number(stageAtIndex(1)?.propellantMassKg) || 0);
+function stagePropellantCapacityKgForMissionStage(stageIndex, missionId = null) {
+  const stage = stageAtIndex(stageIndex);
+  const baseCapacityKg = Math.max(0, Number(stage?.propellantMassKg) || 0);
+  const normalizedMissionId = normalizeMissionId(missionId);
+  if (Number(stageIndex) === 1 && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return Math.max(baseCapacityKg, PRIMARY_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG);
+  }
+  return baseCapacityKg;
+}
+
+function stage2PropellantCapacityKg(missionId = null) {
+  return stagePropellantCapacityKgForMissionStage(
+    1,
+    normalizeMissionId(missionId || DEFAULT_LAUNCH_MISSION_ID),
+  );
+}
+
+function launchInitialMassKgForMission(missionId = null) {
+  const normalizedMissionId = normalizeMissionId(missionId || DEFAULT_LAUNCH_MISSION_ID);
+  const payloadMassKg = Math.max(0, Number(LAUNCH_VEHICLE_CONFIG?.payloadMassKg) || 0);
+  const stages = Array.isArray(LAUNCH_VEHICLE_CONFIG?.stages) ? LAUNCH_VEHICLE_CONFIG.stages : [];
+  const stageMassKg = stages.reduce((totalMassKg, stage, index) => (
+    totalMassKg
+      + Math.max(0, Number(stage?.dryMassKg) || 0)
+      + stagePropellantCapacityKgForMissionStage(index, normalizedMissionId)
+  ), 0);
+  return Math.max(MIN_ROCKET_MASS_KG, payloadMassKg + stageMassKg);
 }
 
 function stageReservePropellantKg(stageIndex) {
@@ -531,7 +557,7 @@ function telemetryFromState({
     : null;
   const refuelTargetPropellantKg = resolveRefuelTargetKg(
     runtime.refuel,
-    stage2PropellantCapacityKg(),
+    stage2PropellantCapacityKg(runtime?.mission?.selectedId),
   );
   const refuelFillFraction = computeRefuelFillFraction(
     runtime.stagePropellantKg,
@@ -881,7 +907,7 @@ export function createLaunchController(options) {
       contactHoldSec: 0,
     },
     refuel: refuelDefaults({
-      targetPropellantKg: stage2PropellantCapacityKg(),
+      targetPropellantKg: stage2PropellantCapacityKg(DEFAULT_LAUNCH_MISSION_ID),
     }),
     fleet: {
       nextShipSequence: 1,
@@ -1262,6 +1288,15 @@ export function createLaunchController(options) {
     const toMoonVectorKm = moonState?.position
       ? subtract(moonState.position, rocketState.position)
       : null;
+    const moonEarthPositionKm = moonState?.position
+      ? subtract(moonState.position, earthState.position)
+      : null;
+    const moonEarthVelocityKmS = moonState?.velocity
+      ? subtract(
+        moonState.velocity || { x: 0, y: 0, z: 0 },
+        earthState.velocity || { x: 0, y: 0, z: 0 },
+      )
+      : null;
     const moonMinusShipRelativeVelocityKmS = moonRelVel ? scale(moonRelVel, -1) : null;
     const moonProjectedMissDistanceKm = projectedClosestApproachDistanceKm({
       relativePositionKm: toMoonVectorKm,
@@ -1278,7 +1313,7 @@ export function createLaunchController(options) {
 
     const refuelTargetKg = resolveRefuelTargetKg(
       runtime.refuel,
-      stage2PropellantCapacityKg(),
+      stage2PropellantCapacityKg(runtime.mission.selectedId),
     );
     const refuelFillFraction = computeRefuelFillFraction(
       runtime.stagePropellantKg,
@@ -1314,6 +1349,10 @@ export function createLaunchController(options) {
         up,
         toMoon: toMoonVectorKm || tangent,
         toEarth: scale(relPos, -1),
+        shipEarthPositionKm: relPos,
+        shipEarthVelocityKmS: relVel,
+        moonEarthPositionKm,
+        moonEarthVelocityKmS,
         shipMinusMoonRelativeVelocityKmS: moonRelVel || null,
         moonMinusShipRelativeVelocityKmS,
         toRefuelTarget: nearestRefuelTarget?.relativePositionKm || null,
@@ -2372,6 +2411,10 @@ export function createLaunchController(options) {
       return false;
     }
     runtime.mission.selectedId = missionIdForLaunch;
+    const launchVehicleState = rocketStateFromNBody(state);
+    if (launchVehicleState) {
+      launchVehicleState.massKg = launchInitialMassKgForMission(runtime.mission.selectedId);
+    }
     if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
       const earthState = earthStateFromNBody(state);
       const rocketState = rocketStateFromNBody(state);
@@ -3671,7 +3714,10 @@ export function createLaunchController(options) {
           // Switch propulsion to Stage 2 immediately (hot-staging overlap). Physical detachment is handled
           // separately after a short overlap window.
           runtime.stageIndex = 1;
-          runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
+          runtime.stagePropellantKg = stagePropellantCapacityKgForMissionStage(
+            runtime.stageIndex,
+            runtime.mission.selectedId,
+          );
           runtime.coastRemainingSec = 0;
           runtime.phase = "powered";
           runtime.stageActuator = createActuatorState(
@@ -3705,7 +3751,10 @@ export function createLaunchController(options) {
             rocketState.massKg - (Number(stage.dryMassKg) || 0),
           );
           runtime.stageIndex += 1;
-          runtime.stagePropellantKg = Number(nextStage.propellantMassKg) || 0;
+          runtime.stagePropellantKg = stagePropellantCapacityKgForMissionStage(
+            runtime.stageIndex,
+            runtime.mission.selectedId,
+          );
           runtime.coastRemainingSec = Math.max(0, Number(stage.coastAfterBurnSec) || 0);
           runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
           runtime.stageActuator = createActuatorState(
@@ -4328,7 +4377,12 @@ export function createLaunchController(options) {
         telemetry: cloneJson(runtime.booster.telemetry),
         contactHoldSec: Math.max(0, finiteNumber(runtime.booster.contactHoldSec, 0)),
       },
-      refuel: cloneJson(runtime.refuel, refuelDefaults({ targetPropellantKg: stage2PropellantCapacityKg() })),
+      refuel: cloneJson(
+        runtime.refuel,
+        refuelDefaults({
+          targetPropellantKg: stage2PropellantCapacityKg(runtime.mission.selectedId),
+        }),
+      ),
       fleet: {
         nextShipSequence: Math.max(1, Math.floor(finiteNumber(runtime.fleet?.nextShipSequence, 1))),
         vehicles: fleetVehicles,
@@ -4459,7 +4513,7 @@ export function createLaunchController(options) {
     );
 
     const refuelDefaultsSnapshot = refuelDefaults({
-      targetPropellantKg: stage2PropellantCapacityKg(),
+      targetPropellantKg: stage2PropellantCapacityKg(runtime.mission.selectedId),
     });
     const incomingRefuel = snapshot.refuel && typeof snapshot.refuel === "object"
       ? cloneJson(snapshot.refuel, {})

@@ -137,6 +137,8 @@ export function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel)
   let apoapsisKm = Number.NaN;
   let periapsisKm = Number.NaN;
   let timeToApoapsisSec = Number.NaN;
+  let timeToPeriapsisSec = Number.NaN;
+  let orbitalPeriodSec = Number.NaN;
 
   if (muKm3S2 > 0 && radiusKm > 0 && h > 0) {
     if (specificEnergy < 0) {
@@ -157,6 +159,9 @@ export function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel)
           const targetM = Math.PI;
           const deltaM = normalizeAngleRadians(targetM - M);
           timeToApoapsisSec = deltaM / meanMotion;
+          const deltaMPeri = normalizeAngleRadians(-M);
+          timeToPeriapsisSec = deltaMPeri / meanMotion;
+          orbitalPeriodSec = (Math.PI * 2) / meanMotion;
         }
       }
     }
@@ -176,6 +181,8 @@ export function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel)
     apoapsisKm,
     periapsisKm,
     timeToApoapsisSec,
+    timeToPeriapsisSec,
+    orbitalPeriodSec,
     up,
     hVector,
   };
