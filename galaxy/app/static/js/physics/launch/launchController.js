@@ -105,6 +105,7 @@ import {
   NAVIGATION_SYSTEM_MODES,
 } from "../navigation_system/index.js";
 import { enforceMoonEarthAvoidanceDirection } from "./lunar/guidanceSafety.js";
+import { computeMoonRefuelRecoveryOverride } from "./lunar/refuelRecovery.js";
 import {
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
@@ -1365,6 +1366,23 @@ export function createLaunchController(options) {
     ]);
     if (runtime.stageIndex < 1 || !navDrivenMoonPhases.has(navPhase)) {
       return null;
+    }
+
+    const refuelRecoveryCommand = computeMoonRefuelRecoveryOverride({
+      missionPhase: navPhase,
+      orbital,
+      tangent,
+      up,
+    });
+    if (refuelRecoveryCommand) {
+      runtime.moonEarthGuardActive = false;
+      runtime.missionPhaseGateReason = refuelRecoveryCommand.gateReason;
+      return {
+        phase: refuelRecoveryCommand.phase,
+        throttle: clamp(Number(refuelRecoveryCommand.throttle) || 0, 0, 1),
+        direction: normalize(refuelRecoveryCommand.direction || tangent, tangent),
+        mode: String(refuelRecoveryCommand.mode || "navsys:orbital-refuel-orbit-recovery"),
+      };
     }
 
     const command = navResult?.command;
@@ -3848,6 +3866,10 @@ export function createLaunchController(options) {
     const refuelShipRcsAuthority = clamp(Number(refuelStatus.shipRcsAuthority) || 0, 0, 1);
     const refuelShipRcsJets = Array.isArray(refuelStatus.shipRcsJets) ? refuelStatus.shipRcsJets : [];
     const refuelShipRcsMode = String(refuelStatus.shipRcsMode || "");
+    const refuelDockShipAttitudeErrorDeg = Math.max(0, Number(refuelStatus.activeFlightShipAttitudeErrorDeg) || 0);
+    const refuelDockTankerAttitudeErrorDeg = Math.max(0, Number(refuelStatus.activeFlightTankerAttitudeErrorDeg) || 0);
+    const refuelDockHoldStableSec = Math.max(0, Number(refuelStatus.activeFlightDockHoldStableSec) || 0);
+    const refuelDockAbortRemainingSec = Math.max(0, Number(refuelStatus.activeFlightDockAbortRemainingSec) || 0);
     const refuelOnlineTankers = Math.max(0, Number(tankerIndicators.onlineTankers) || 0);
     const refuelAvailableTankers = Math.max(
       0,
@@ -3889,6 +3911,10 @@ export function createLaunchController(options) {
         refuelTransferRateKgS,
         refuelTransferLocked,
         refuelUndockActive,
+        refuelDockShipAttitudeErrorDeg,
+        refuelDockTankerAttitudeErrorDeg,
+        refuelDockHoldStableSec,
+        refuelDockAbortRemainingSec,
         moonDistanceKm: runtime.moonDistanceKm,
         moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
         moonRelativeSpeedKmS: runtime.moonRelativeSpeedKmS,
@@ -4029,6 +4055,10 @@ export function createLaunchController(options) {
       refuelTransferRateKgS,
       refuelTransferLocked,
       refuelUndockActive,
+      refuelDockShipAttitudeErrorDeg,
+      refuelDockTankerAttitudeErrorDeg,
+      refuelDockHoldStableSec,
+      refuelDockAbortRemainingSec,
       moonDistanceKm: runtime.moonDistanceKm,
       moonClosingSpeedKmS: runtime.moonClosingSpeedKmS,
       moonRelativeSpeedKmS: runtime.moonRelativeSpeedKmS,

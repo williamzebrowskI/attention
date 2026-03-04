@@ -124,6 +124,12 @@ export function computeRefuelFillFraction(stagePropellantKg, targetPropellantKg)
   return clamp(finiteNonNegative(stagePropellantKg) / targetKg, 0, 1);
 }
 
+function axisAlignmentErrorDeg(axisA, axisB, fallbackAxis = { x: 0, y: 0, z: 1 }) {
+  const a = normalizeFiniteAxis(axisA, fallbackAxis);
+  const b = normalizeFiniteAxis(axisB, fallbackAxis);
+  return (180 / Math.PI) * Math.acos(clamp(vectorDot(a, b), -1, 1));
+}
+
 export function computeRefuelStatus({
   runtime,
   missionIdMoonOrbitReturn,
@@ -215,6 +221,10 @@ export function computeRefuelStatus({
     activeFlightStatus: String(selectedFlight?.status || ""),
     activeFlightDistanceKm: Number(selectedFlight?.lastDistanceKm),
     activeFlightRelativeSpeedKmS: Number(selectedFlight?.lastRelativeSpeedKmS),
+    activeFlightShipAttitudeErrorDeg: Math.max(0, Number(selectedFlight?.shipAttitudeErrorDeg) || 0),
+    activeFlightTankerAttitudeErrorDeg: Math.max(0, Number(selectedFlight?.tankerDockAttitudeErrorDeg) || 0),
+    activeFlightDockHoldStableSec: Math.max(0, Number(selectedFlight?.dockHoldStableSec) || 0),
+    activeFlightDockAbortRemainingSec: Math.max(0, Number(selectedFlight?.dockAbortRemainingSec) || 0),
     transferActive,
     transferTankerId,
     transferProgress,
@@ -685,6 +695,42 @@ export function createLaunchRefuelController({
     const dockDistanceKm = Math.max(0.005, Number(config.dockDistanceKm) || 0.014);
     const dockMaxRelativeSpeedKmS = Math.max(0.00002, Number(config.dockMaxRelativeSpeedKmS) || 0.000045);
     const dockStableSeconds = Math.max(2, Number(config.dockStableSeconds) || 8);
+    const refuelFinalApproachDistanceKm = Math.max(
+      dockDistanceKm * 2.8,
+      Number(config.refuelFinalApproachDistanceKm) || 0.08,
+    );
+    const refuelRcsOnlyDistanceKm = Math.max(
+      refuelFinalApproachDistanceKm * 2.2,
+      Number(config.refuelRcsOnlyDistanceKm) || 1.2,
+    );
+    const dockHoldPointDistanceKm = Math.max(
+      dockDistanceKm * 3.5,
+      Number(config.dockHoldPointDistanceKm) || 0.065,
+    );
+    const dockHoldPointStableSec = Math.max(2, Number(config.dockHoldPointStableSec) || 10);
+    const dockHoldPointMaxRelativeSpeedKmS = Math.max(
+      dockMaxRelativeSpeedKmS * 1.35,
+      Number(config.dockHoldPointMaxRelativeSpeedKmS) || 0.000085,
+    );
+    const dockShipAttitudeMaxErrorDeg = Math.max(1, Number(config.dockShipAttitudeMaxErrorDeg) || 9);
+    const dockTankerAttitudeMaxErrorDeg = Math.max(1, Number(config.dockTankerAttitudeMaxErrorDeg) || 8);
+    const dockAbortDistanceKm = Math.max(
+      dockHoldPointDistanceKm * 1.5,
+      Number(config.dockAbortDistanceKm) || 0.22,
+    );
+    const dockAbortRelativeSpeedKmS = Math.max(
+      dockMaxRelativeSpeedKmS * 2.2,
+      Number(config.dockAbortRelativeSpeedKmS) || 0.00014,
+    );
+    const dockAbortAttitudeErrorDeg = Math.max(
+      Math.max(dockShipAttitudeMaxErrorDeg, dockTankerAttitudeMaxErrorDeg) + 2,
+      Number(config.dockAbortAttitudeErrorDeg) || 16,
+    );
+    const dockAbortDurationSec = Math.max(8, Number(config.dockAbortDurationSec) || 36);
+    const dockAbortSeparationSpeedKmS = Math.max(
+      0.00005,
+      Number(config.dockAbortSeparationSpeedKmS) || 0.00018,
+    );
     const maxDockLockOffsetKm = Math.max(
       0.02,
       (Number(STARSHIP_STACK_DIMENSIONS_KM.diameterKm) || 0.009) * 2.5,
@@ -738,6 +784,11 @@ export function createLaunchRefuelController({
       flight.shipRcsMode = "";
       flight.shipRcsAuthority = 0;
       flight.shipRcsJets = [];
+      flight.dockHoldStableSec = Math.max(0, Number(flight.dockHoldStableSec) || 0);
+      flight.dockHoldPassed = Boolean(flight.dockHoldPassed);
+      flight.dockAbortRemainingSec = Math.max(0, Number(flight.dockAbortRemainingSec) || 0);
+      flight.shipAttitudeErrorDeg = Math.max(0, Number(flight.shipAttitudeErrorDeg) || 0);
+      flight.tankerDockAttitudeErrorDeg = Math.max(0, Number(flight.tankerDockAttitudeErrorDeg) || 0);
 
       const metrics = rendezvousMetrics(rocketState, tankerState);
       if (!metrics) {
@@ -837,8 +888,10 @@ export function createLaunchRefuelController({
       );
       const statusName = String(flight.status || "");
       const isTransferingOrUndocking = statusName === "transferring" || statusName === "undocking";
+      const abortActive = (Number(flight.dockAbortRemainingSec) || 0) > 1e-6;
       const dockingEligible = isFlightDockingEligible(flight, config);
       const shouldCommandTanker = isTransferingOrUndocking
+        || abortActive
         || (String(flight.id) === activeRendezvousTankerId && dockingEligible);
       if (!shouldCommandTanker) {
         flight.status = "external_orbit";
@@ -890,9 +943,53 @@ export function createLaunchRefuelController({
         flight.shipRcsMode = "";
         flight.shipRcsAuthority = 0;
         flight.shipRcsJets = [];
+        flight.dockHoldStableSec = 0;
+        flight.dockHoldPassed = false;
+        flight.dockAbortRemainingSec = 0;
         flight.lastDistanceKm = sensedDistanceKm;
         flight.lastRelativeSpeedKmS = sensedRelativeSpeedKmS;
         flight.lastClosingSpeedKmS = sensedClosingSpeedKmS;
+        continue;
+      }
+
+      if (abortActive) {
+        const abortRemainingSec = Math.max(0, Number(flight.dockAbortRemainingSec) || 0);
+        const abortAxisKm = normalize(
+          metrics.relativePositionKm || dockLockUp,
+          dockLockUp,
+        );
+        const separationAccelKmS2 = dockAbortSeparationSpeedKmS / Math.max(dockAbortDurationSec, 1);
+        const tankerDeltaV = scale(abortAxisKm, separationAccelKmS2 * rcsDtSeconds);
+        const shipDeltaV = scale(abortAxisKm, -separationAccelKmS2 * rcsDtSeconds * 0.85);
+        if (rcsDtSeconds > 0) {
+          tankerState.velocity = add(tankerState.velocity || zeroVector, tankerDeltaV);
+          rocketState.velocity = add(rocketState.velocity || zeroVector, shipDeltaV);
+        }
+        flight.dockAbortRemainingSec = Math.max(0, abortRemainingSec - safeDtSeconds);
+        flight.dockStableSec = 0;
+        flight.dockHoldStableSec = 0;
+        flight.dockHoldPassed = false;
+        flight.status = "rendezvous";
+        flight.rcsActive = true;
+        flight.rcsMode = "rcs-dock-abort";
+        flight.rcsAuthority = clamp(flight.dockAbortRemainingSec / Math.max(dockAbortDurationSec, 1), 0.25, 1);
+        flight.rcsAccelKmS2 = separationAccelKmS2;
+        flight.rcsDeltaVKmS = vectorMagnitude(tankerDeltaV);
+        flight.rcsJets = ["aft", "dorsal"];
+        flight.shipRcsActive = true;
+        flight.shipRcsMode = "rcs-dock-abort-backaway";
+        flight.shipRcsAuthority = clamp(flight.dockAbortRemainingSec / Math.max(dockAbortDurationSec, 1), 0.2, 1);
+        flight.shipRcsJets = ["forward", "ventral"];
+        flight.lastDistanceKm = sensedDistanceKm;
+        flight.lastRelativeSpeedKmS = sensedRelativeSpeedKmS;
+        flight.lastClosingSpeedKmS = sensedClosingSpeedKmS;
+        runtime.refuel.lastAction = "dock_abort";
+        runtime.refuel.lastActionTimeSec = runtime.elapsedSeconds;
+        if (!(flight.dockAbortRemainingSec > 1e-6)) {
+          flight.dockAbortRemainingSec = 0;
+          flight.rcsMode = "rcs-dock-abort-complete";
+          flight.shipRcsMode = "rcs-dock-abort-complete";
+        }
         continue;
       }
 
@@ -1148,7 +1245,7 @@ export function createLaunchRefuelController({
       let shipRcsMode = "";
       let shipAssistAccelKmS2 = zeroVector;
       let shipAssistMaxAccelKmS2 = Math.max(0.000006, Number(config.shipDockAssistAccelKmS2) || 0.00002);
-      if (shipDistanceKm <= Math.max(1.4, dockDistanceKm * 10)) {
+      if (shipDistanceKm <= Math.max(refuelRcsOnlyDistanceKm, dockDistanceKm * 10)) {
         shipRcsMode = shipDistanceKm <= (dockDistanceKm * 3.5) ? "rcs-dock-align-fine" : "rcs-dock-align";
         let shipResponseSec = shipDistanceKm <= (dockDistanceKm * 3.5) ? 54 : 108;
         let maxShipApproachSpeedKmS = shipDistanceKm <= (dockDistanceKm * 3.5) ? 0.00007 : 0.00028;
@@ -1231,10 +1328,109 @@ export function createLaunchRefuelController({
       flight.lastDistanceKm = activeMetrics.distanceKm;
       flight.lastRelativeSpeedKmS = activeMetrics.relativeSpeedKmS;
       flight.lastClosingSpeedKmS = activeMetrics.closingSpeedKmS;
+      const shipAxisFallbackKm = normalize(rocketRelVelNow, dockLockUp);
+      const shipAxisKm = normalizeFiniteAxis(
+        runtime?.stageActuator?.directionActual
+          || runtime?.stageActuator?.directionCommand
+          || shipAxisFallbackKm,
+        shipAxisFallbackKm,
+      );
+      const tankerAxisKm = normalizeFiniteAxis(flight.attitudeAxisKm, dockLockUp);
+      const shipToTankerDirKm = normalize(shipToTankerKm, dockLockUp);
+      const tankerToShipDirKm = scale(shipToTankerDirKm, -1);
+      const shipAttitudeErrorDeg = axisAlignmentErrorDeg(shipAxisKm, shipToTankerDirKm, shipToTankerDirKm);
+      const tankerAttitudeErrorDeg = axisAlignmentErrorDeg(tankerAxisKm, tankerToShipDirKm, tankerToShipDirKm);
+      flight.shipAttitudeErrorDeg = shipAttitudeErrorDeg;
+      flight.tankerDockAttitudeErrorDeg = tankerAttitudeErrorDeg;
+
+      const nearDockingCorridor = activeMetrics.distanceKm <= Math.max(dockAbortDistanceKm, refuelRcsOnlyDistanceKm);
+      const severeAttitudeError = shipAttitudeErrorDeg > dockAbortAttitudeErrorDeg
+        || tankerAttitudeErrorDeg > dockAbortAttitudeErrorDeg;
+      const severeSpeedError = activeMetrics.relativeSpeedKmS > dockAbortRelativeSpeedKmS;
+      const severeSeparation = Number(activeMetrics.closingSpeedKmS) < -(dockAbortRelativeSpeedKmS * 0.35);
+      if (nearDockingCorridor && (severeAttitudeError || severeSpeedError || severeSeparation)) {
+        const abortReason = severeAttitudeError
+          ? "attitude_misalignment"
+          : (severeSpeedError ? "relative_speed_exceeded" : "separating_in_corridor");
+        const abortRemainingSec = dockAbortDurationSec;
+        const abortAxisKm = normalize(
+          activeMetrics.relativePositionKm || shipToTankerKm || dockLockUp,
+          dockLockUp,
+        );
+        const separationAccelKmS2 = dockAbortSeparationSpeedKmS / Math.max(dockAbortDurationSec, 1);
+        const tankerDeltaV = scale(abortAxisKm, separationAccelKmS2 * rcsDtSeconds);
+        const shipDeltaV = scale(abortAxisKm, -separationAccelKmS2 * rcsDtSeconds * 0.85);
+        if (rcsDtSeconds > 0) {
+          tankerState.velocity = add(tankerState.velocity || zeroVector, tankerDeltaV);
+          rocketState.velocity = add(rocketState.velocity || zeroVector, shipDeltaV);
+        }
+        flight.dockAbortRemainingSec = Math.max(0, abortRemainingSec - safeDtSeconds);
+        flight.dockStableSec = 0;
+        flight.dockHoldStableSec = 0;
+        flight.dockHoldPassed = false;
+        flight.status = "rendezvous";
+        flight.rcsActive = true;
+        flight.rcsMode = "rcs-dock-abort";
+        flight.rcsAuthority = 1;
+        flight.rcsAccelKmS2 = separationAccelKmS2;
+        flight.rcsDeltaVKmS = vectorMagnitude(tankerDeltaV);
+        flight.rcsJets = ["aft", "dorsal"];
+        flight.shipRcsActive = true;
+        flight.shipRcsMode = "rcs-dock-abort-backaway";
+        flight.shipRcsAuthority = 1;
+        flight.shipRcsJets = ["forward", "ventral"];
+        runtime.refuel.lastAction = "dock_abort_triggered";
+        runtime.refuel.lastActionTimeSec = runtime.elapsedSeconds;
+        emitLaunchEvent?.("refuel_docking_abort", {
+          tankerId: flight.id,
+          reason: abortReason,
+          distanceKm: Number(activeMetrics.distanceKm) || 0,
+          relativeSpeedKmS: Number(activeMetrics.relativeSpeedKmS) || 0,
+          shipAttitudeErrorDeg,
+          tankerAttitudeErrorDeg,
+        });
+        continue;
+      }
+
+      const holdPointInRange = activeMetrics.distanceKm <= dockHoldPointDistanceKm;
+      const holdPointSpeedOk = activeMetrics.relativeSpeedKmS <= dockHoldPointMaxRelativeSpeedKmS;
+      const holdPointAttitudeOk = shipAttitudeErrorDeg <= dockShipAttitudeMaxErrorDeg
+        && tankerAttitudeErrorDeg <= dockTankerAttitudeMaxErrorDeg;
+      if (holdPointInRange && holdPointSpeedOk && holdPointAttitudeOk) {
+        flight.dockHoldStableSec = Math.min(
+          dockHoldPointStableSec,
+          Math.max(0, Number(flight.dockHoldStableSec) || 0) + safeDtSeconds,
+        );
+      } else if (activeMetrics.distanceKm <= (dockHoldPointDistanceKm * 1.8)) {
+        flight.dockHoldStableSec = 0;
+        flight.dockHoldPassed = false;
+      }
+      if (!flight.dockHoldPassed && holdPointInRange) {
+        if ((Number(flight.dockHoldStableSec) || 0) + 1e-6 < dockHoldPointStableSec) {
+          flight.dockStableSec = 0;
+          flight.rcsMode = "rcs-dock-hold-point";
+          flight.shipRcsMode = flight.shipRcsActive ? "rcs-dock-hold-point" : flight.shipRcsMode;
+          continue;
+        }
+        flight.dockHoldPassed = true;
+      }
+
       const dockReady = activeMetrics.distanceKm <= dockDistanceKm
         && activeMetrics.relativeSpeedKmS <= dockMaxRelativeSpeedKmS;
       if (!dockReady) {
         flight.dockStableSec = 0;
+        continue;
+      }
+      if (!flight.dockHoldPassed) {
+        flight.dockStableSec = 0;
+        flight.rcsMode = "rcs-dock-hold-point";
+        flight.shipRcsMode = flight.shipRcsActive ? "rcs-dock-hold-point" : flight.shipRcsMode;
+        continue;
+      }
+      if (!holdPointAttitudeOk) {
+        flight.dockStableSec = 0;
+        flight.rcsMode = "rcs-dock-attitude-hold";
+        flight.shipRcsMode = flight.shipRcsActive ? "rcs-dock-attitude-hold" : flight.shipRcsMode;
         continue;
       }
       const closingSpeedAbsKmS = Math.abs(Number(activeMetrics.closingSpeedKmS) || 0);
@@ -1255,6 +1451,8 @@ export function createLaunchRefuelController({
         continue;
       }
       flight.dockStableSec = 0;
+      flight.dockHoldStableSec = 0;
+      flight.dockHoldPassed = false;
 
       const requestedTransferKg = Math.max(0, Number(flight.transferKg) || 0);
       const propellantDeficitKg = Math.max(
@@ -1300,6 +1498,9 @@ export function createLaunchRefuelController({
       flight.transferDurationSec = Math.max(30, Number(config.transferDurationSec) || 150);
       flight.transferRateKgS = plannedTransferKg / Math.max(flight.transferDurationSec, 1);
       flight.transferStartedElapsedSec = runtime.elapsedSeconds;
+      flight.dockAbortRemainingSec = 0;
+      flight.dockHoldStableSec = 0;
+      flight.dockHoldPassed = false;
       flight.lockedOffsetKm = clamp(
         Number(config.dockLockedOffsetKm) || 0,
         0,

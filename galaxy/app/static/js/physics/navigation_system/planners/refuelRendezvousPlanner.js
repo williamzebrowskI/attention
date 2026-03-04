@@ -207,11 +207,15 @@ export function planRefuelRendezvousCommand({
 
   const finalApproachDistanceKm = Math.max(
     dockDistanceKm * 2.8,
-    Number(plannerConfig?.refuelFinalApproachDistanceKm) || 0.08,
+    Number(plannerConfig?.refuelFinalApproachDistanceKm)
+      || Number(REFUEL_TANKER_CONFIG.refuelFinalApproachDistanceKm)
+      || 0.08,
   );
   const rcsOnlyDistanceKm = Math.max(
     finalApproachDistanceKm * 2.2,
-    Number(plannerConfig?.refuelRcsOnlyDistanceKm) || 1.2,
+    Number(plannerConfig?.refuelRcsOnlyDistanceKm)
+      || Number(REFUEL_TANKER_CONFIG.refuelRcsOnlyDistanceKm)
+      || 1.2,
   );
   const midDistanceKm = Math.max(
     rcsOnlyDistanceKm * 1.8,
@@ -267,7 +271,7 @@ export function planRefuelRendezvousCommand({
   if (refuelDistanceKm <= finalApproachDistanceKm) {
     return buildCommand({
       phase: "coast",
-      direction: frame.prograde,
+      direction: frame.toTarget,
       mode: "navsys:orbital-refuel-final-approach",
       rcsAssistProfile: "fine",
       rationale: "Inside final approach corridor; hold main engines off and translate with RCS only.",
@@ -283,12 +287,11 @@ export function planRefuelRendezvousCommand({
     const separating = frame.closingSpeedKmS < -(desiredClosingKmS * 1.2);
     if (separating) {
       return buildCommand({
-        phase: "powered",
-        throttle: clamp(0.008 + (Math.abs(frame.closingSpeedKmS) * 8), 0.008, 0.03),
-        direction: interceptDirection,
-        mode: "navsys:orbital-refuel-rcs-reacquire-burn",
+        phase: "coast",
+        direction: frame.toTarget,
+        mode: "navsys:orbital-refuel-rcs-reacquire",
         rcsAssistProfile: "fine",
-        rationale: "Range is close but separation is growing; apply tiny corrective burn before returning to RCS translation.",
+        rationale: "Range is close but separation is growing; hold main engines off and reacquire with RCS-only translation.",
         relative: {
           ...relativeDiagnostic,
           desiredClosingKmS,
@@ -300,7 +303,7 @@ export function planRefuelRendezvousCommand({
     }
     return buildCommand({
       phase: "coast",
-      direction: frame.prograde,
+      direction: frame.toTarget,
       mode: "navsys:orbital-refuel-rcs-translate",
       rcsAssistProfile: "fine",
       rationale: "Close approach corridor; translational closure is delegated to RCS.",

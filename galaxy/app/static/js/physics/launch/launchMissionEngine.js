@@ -75,6 +75,18 @@ const ORBITAL_REFUEL_DEMO_CONFIG = Object.freeze({
   refuelMidDistanceKm: 1.5,
   refuelDockDistanceKm: Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014,
   refuelDockMaxRelativeSpeedKmS: Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045,
+  recoveryPeriapsisHardMinKm: 130,
+  recoveryPeriapsisSoftMinKm: 142,
+  recoverySoftRadialDescendKmS: -0.0015,
+  recoveryBurnWindowSec: 600,
+  recoveryThrottleBase: 0.24,
+  recoveryThrottleMax: 0.58,
+  recoveryEmergencyAltitudeKm: 170,
+  recoveryEmergencyThrottleBase: 0.38,
+  recoveryEmergencyThrottleMax: 0.78,
+  recoveryCloseRangeDistanceKm: 20,
+  recoveryCloseRangeMaxRelativeSpeedKmS: 0.03,
+  recoveryCloseRangeMinPeriapsisKm: 138,
 });
 
 function isRefuelFlowMissionId(missionId) {
@@ -694,10 +706,83 @@ function computeOrbitalRefuelDemoAutopilotCommand({
         mode: "mission-orbital-refuel-demo:earth-orbit-hold",
       };
     }
+    const periapsisKm = Number(orbital?.periapsisKm);
+    const altitudeKm = Number(orbital?.altitudeKm);
+    const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
+    const timeToApoapsisSec = Number(orbital?.timeToApoapsisSec);
     const refuelDistanceKm = Number(activeRefuelTarget?.distanceKm);
     const refuelRelativeSpeedKmS = Math.max(0, Number(activeRefuelTarget?.relativeSpeedKmS) || 0);
     const refuelClosingSpeedKmS = Number(activeRefuelTarget?.closingSpeedKmS);
     const toRefuelTarget = activeRefuelTarget?.relativePositionKm || null;
+    const nearApoapsisForRecovery = Number.isFinite(timeToApoapsisSec)
+      && Math.abs(timeToApoapsisSec) <= Math.max(80, Number(config.recoveryBurnWindowSec) || 260);
+    const emergencyRecoveryNeeded = Number.isFinite(periapsisKm)
+      && periapsisKm < 0
+      && Number.isFinite(altitudeKm)
+      && altitudeKm < Math.max(120, Number(config.recoveryEmergencyAltitudeKm) || 170);
+    if (emergencyRecoveryNeeded) {
+      const periapsisDeficitKm = Math.max(0, Math.abs(periapsisKm));
+      const throttle = clamp(
+        (Number(config.recoveryEmergencyThrottleBase) || 0.38) + (periapsisDeficitKm / 1800),
+        Number(config.recoveryEmergencyThrottleBase) || 0.38,
+        Number(config.recoveryEmergencyThrottleMax) || 0.78,
+      );
+      const direction = normalize(
+        add(scale(tangent, 0.93), scale(up, 0.07)),
+        tangent,
+      );
+      return {
+        phase: "powered",
+        throttle,
+        direction,
+        mode: "mission-orbital-refuel-demo:orbit-recovery-emergency-burn",
+      };
+    }
+    const recoveryNeeded = Number.isFinite(periapsisKm)
+      && (
+        periapsisKm < (Number(config.recoveryPeriapsisHardMinKm) || 130)
+        || (
+          periapsisKm < (Number(config.recoveryPeriapsisSoftMinKm) || 145)
+          && radialSpeedKmS < (Number(config.recoverySoftRadialDescendKmS) || -0.0015)
+        )
+      );
+    const closeRangeRecoveryBypass = recoveryNeeded
+      && Number.isFinite(periapsisKm)
+      && periapsisKm >= (Number(config.recoveryCloseRangeMinPeriapsisKm) || 138)
+      && Number.isFinite(refuelDistanceKm)
+      && refuelDistanceKm > 0
+      && refuelDistanceKm <= (Number(config.recoveryCloseRangeDistanceKm) || 20)
+      && refuelRelativeSpeedKmS <= (Number(config.recoveryCloseRangeMaxRelativeSpeedKmS) || 0.03)
+      && (
+        !Number.isFinite(refuelClosingSpeedKmS)
+        || Math.abs(refuelClosingSpeedKmS) <= ((Number(config.recoveryCloseRangeMaxRelativeSpeedKmS) || 0.03) * 1.25)
+      )
+      && radialSpeedKmS >= -0.0035;
+    if (recoveryNeeded && !closeRangeRecoveryBypass) {
+      if (nearApoapsisForRecovery) {
+        const periapsisDeficitKm = Math.max(
+          0,
+          (Number(config.recoveryPeriapsisSoftMinKm) || 145) - periapsisKm,
+        );
+        const throttle = clamp(
+          (Number(config.recoveryThrottleBase) || 0.24) + (periapsisDeficitKm / 220),
+          Number(config.recoveryThrottleBase) || 0.24,
+          Number(config.recoveryThrottleMax) || 0.58,
+        );
+        return {
+          phase: "powered",
+          throttle,
+          direction: tangent,
+          mode: "mission-orbital-refuel-demo:orbit-recovery-burn",
+        };
+      }
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: tangent,
+        mode: "mission-orbital-refuel-demo:orbit-recovery-coast",
+      };
+    }
     if (
       !transferBusy
       && Number.isFinite(refuelDistanceKm)
@@ -717,19 +802,29 @@ function computeOrbitalRefuelDemoAutopilotCommand({
         },
         tangent,
       });
-      const plannerPhase = String(plannerCommand?.phase || "").trim() === "powered"
+      const rcsOnlyDistanceKm = Math.max(
+        Number(config.refuelMidDistanceKm) || 1.5,
+        Number(REFUEL_TANKER_CONFIG.refuelRcsOnlyDistanceKm) || 1.2,
+      );
+      const closeRangeRcsOnly = refuelDistanceKm <= rcsOnlyDistanceKm;
+      const plannerPhaseRaw = String(plannerCommand?.phase || "").trim() === "powered"
         ? "powered"
         : "coast";
+      const plannerPhase = closeRangeRcsOnly ? "coast" : plannerPhaseRaw;
+      const plannerMode = missionOrbitalRefuelModeFromPlanner(
+        plannerCommand?.mode,
+        "orbital-refuel-hold",
+      );
+      const guidanceMode = closeRangeRcsOnly && plannerPhaseRaw === "powered"
+        ? `${plannerMode}:rcs-only-final`
+        : (closeRangeRecoveryBypass ? `${plannerMode}:periapsis-guard-pass` : plannerMode);
       return {
         phase: plannerPhase,
         throttle: plannerPhase === "powered"
           ? clamp(Number(plannerCommand?.throttle) || 0, 0, 1)
           : 0,
         direction: normalize(plannerCommand?.direction || tangent, tangent),
-        mode: missionOrbitalRefuelModeFromPlanner(
-          plannerCommand?.mode,
-          "orbital-refuel-hold",
-        ),
+        mode: guidanceMode,
       };
     }
     runtime.mission.completed = false;
