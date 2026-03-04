@@ -53,6 +53,14 @@ export function createNavigationTrajectoryPlanner({
             ? Number(plannerRuntime.moon.midcourse.lastStopSec)
             : null,
         },
+        tli: {
+          mode: String(plannerRuntime.moon.tli?.mode || ""),
+          modeHoldSec: Math.max(0, Number(plannerRuntime.moon.tli?.modeHoldSec) || 0),
+          lastTimestampSec: Number.isFinite(Number(plannerRuntime.moon.tli?.lastTimestampSec))
+            ? Number(plannerRuntime.moon.tli.lastTimestampSec)
+            : null,
+          protectCooldownSec: Math.max(0, Number(plannerRuntime.moon.tli?.protectCooldownSec) || 0),
+        },
         retarget: {
           lastSolveSec: Number.isFinite(Number(plannerRuntime.moon.retarget?.lastSolveSec))
             ? Number(plannerRuntime.moon.retarget.lastSolveSec)

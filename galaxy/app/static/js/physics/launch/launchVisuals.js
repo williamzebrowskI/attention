@@ -9,6 +9,10 @@ import {
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
+const STARSHIP_NAV_BEACON_COLOR = 0xff3d2a;
+const STARSHIP_NAV_BEACON_PERIOD_SEC = 2.4;
+const STARSHIP_NAV_BEACON_MIN_ALPHA = 0.12;
+const STARSHIP_NAV_BEACON_MAX_ALPHA = 0.98;
 const MAIN_ENGINE_PLUME_SIZE_SCALE = 0.25;
 const MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE = 0.25;
 
@@ -189,6 +193,89 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
     };
   }
   return jets;
+}
+
+function createNavigationBeaconVisual(THREE, hostGroup, radius, topY) {
+  if (!THREE || !hostGroup || !(radius > 0) || !Number.isFinite(topY)) {
+    return null;
+  }
+  const group = new THREE.Group();
+  group.position.set(0, topY, 0);
+  group.renderOrder = 34;
+  group.visible = true;
+
+  const coreRadius = clamp(radius * 0.09, radius * 0.04, radius * 0.14);
+  const haloRadius = coreRadius * 2.8;
+  const coreMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(STARSHIP_NAV_BEACON_COLOR),
+    transparent: true,
+    opacity: STARSHIP_NAV_BEACON_MIN_ALPHA,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const haloMaterial = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(0xff7a56),
+    transparent: true,
+    opacity: STARSHIP_NAV_BEACON_MIN_ALPHA * 0.6,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+    side: THREE.DoubleSide,
+  });
+
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(coreRadius, 12, 12),
+    coreMaterial,
+  );
+  core.renderOrder = 35;
+  group.add(core);
+
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(haloRadius, 12, 12),
+    haloMaterial,
+  );
+  halo.scale.set(1, 0.64, 1);
+  halo.renderOrder = 34;
+  group.add(halo);
+
+  hostGroup.add(group);
+  return {
+    group,
+    core,
+    halo,
+    coreMaterial,
+    haloMaterial,
+    periodSec: STARSHIP_NAV_BEACON_PERIOD_SEC,
+    phaseOffsetSec: Math.random() * STARSHIP_NAV_BEACON_PERIOD_SEC,
+  };
+}
+
+function updateNavigationBeaconVisual(stageState) {
+  const beacon = stageState?.navigationBeacon;
+  if (!beacon?.group || !beacon?.coreMaterial || !beacon?.haloMaterial) {
+    return;
+  }
+  const periodSec = Math.max(0.2, Number(beacon.periodSec) || STARSHIP_NAV_BEACON_PERIOD_SEC);
+  const phaseOffsetSec = Number.isFinite(Number(beacon.phaseOffsetSec))
+    ? Number(beacon.phaseOffsetSec)
+    : 0;
+  const cycle = (((Date.now() / 1000) + phaseOffsetSec) % periodSec) / periodSec;
+  const blink = Math.pow(Math.max(0, Math.sin(cycle * Math.PI)), 1.8);
+  const alpha = STARSHIP_NAV_BEACON_MIN_ALPHA
+    + ((STARSHIP_NAV_BEACON_MAX_ALPHA - STARSHIP_NAV_BEACON_MIN_ALPHA) * blink);
+  const haloAlpha = clamp(alpha * 0.72, 0.05, 0.88);
+  const haloScale = 0.84 + (blink * 0.5);
+  beacon.group.visible = true;
+  beacon.coreMaterial.opacity = alpha;
+  beacon.haloMaterial.opacity = haloAlpha;
+  if (beacon.core?.scale) {
+    const coreScale = 0.92 + (blink * 0.22);
+    beacon.core.scale.set(coreScale, coreScale, coreScale);
+  }
+  if (beacon.halo?.scale) {
+    beacon.halo.scale.set(haloScale, haloScale * 0.64, haloScale);
+  }
 }
 
 function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
@@ -1151,6 +1238,12 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   );
   noseTip.position.y = shipBodyTopY + shipNoseHeight + (radius * 0.012);
   shipHullGroup.add(noseTip);
+  const navigationBeacon = createNavigationBeaconVisual(
+    THREE,
+    shipGroup,
+    radius,
+    noseTip.position.y + (radius * 0.12),
+  );
 
   const heatShieldShell = new THREE.Mesh(
     new THREE.LatheGeometry(shipHullProfile, 96),
@@ -1297,6 +1390,7 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
       shipGroup,
       fullShipCenterY,
       detachedShipCenterY,
+      navigationBeacon,
       rcsJets,
       mainEnginePlumes: {
         booster: boosterMainEnginePlume,
@@ -1489,4 +1583,5 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
   }
   updateMainEnginePlumes(stageState, stageIndex, snapshot);
   updateRcsJetVisuals(stageState, snapshot);
+  updateNavigationBeaconVisual(stageState);
 }

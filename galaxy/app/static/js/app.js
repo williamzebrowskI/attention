@@ -2478,7 +2478,7 @@ function createLegendVehicleViewPanel() {
   missionModeLabel.htmlFor = missionModeSelect.id;
   missionModeSelect.innerHTML = [
     '<option value="pad_launch">Earth Pad Launch (Booster)</option>',
-    '<option value="orbit_inject">Direct Orbit Inject (~150 km)</option>',
+    '<option value="orbit_inject">Direct Orbit Inject (~150 km, Moon ~185 km)</option>',
   ].join("");
   missionModeSelect.value = "pad_launch";
   missionModeSelect.addEventListener("change", (event) => {
@@ -2904,8 +2904,11 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Closing", value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Moon Rel V", value: Number.isFinite(moonRelativeSpeedKmS) ? `${formatNumber(moonRelativeSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Proj Miss", value: Number.isFinite(moonProjectedMissDistanceKm) ? `${formatNumber(moonProjectedMissDistanceKm, 1)} km` : "n/a" },
+    { label: "Miss Trend", value: Number.isFinite(Number(snapshot.moonProjectedMissTrendKmS)) ? `${formatNumber(snapshot.moonProjectedMissTrendKmS, 3)} km/s` : "n/a" },
     { label: "Perilune Est", value: Number.isFinite(Number(snapshot.moonProjectedPeriluneAltitudeKm)) ? `${formatNumber(snapshot.moonProjectedPeriluneAltitudeKm, 1)} km` : "n/a" },
     { label: "B-Plane Err", value: Number.isFinite(Number(snapshot.moonBPlaneErrorKm)) ? `${formatNumber(snapshot.moonBPlaneErrorKm, 1)} km` : "n/a" },
+    { label: "Window Score", value: Number.isFinite(Number(snapshot.moonDepartureWindowScore)) ? `${formatNumber(Number(snapshot.moonDepartureWindowScore) * 100, 1)}%` : "n/a" },
+    { label: "TLI Target", value: String(snapshot.moonTliTargetMode || "").trim() || "n/a" },
     { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
     { label: "Phase Gate", value: missionPhaseGateReason || "n/a" },
   ];
@@ -3562,6 +3565,11 @@ function selectedMissionLaunchMode() {
   return mode === "orbit_inject" ? "orbit_inject" : "pad_launch";
 }
 
+function missionOrbitInjectAltitudeKm(missionId) {
+  const normalized = String(missionId || "").trim().toLowerCase();
+  return normalized === "moon_orbit_return" ? 185 : 150;
+}
+
 function tankerLaunchRejectLabel(reason) {
   const key = String(reason || "").trim().toLowerCase();
   if (key === "pad_launch_only") {
@@ -3620,17 +3628,36 @@ function setupLaunchControls() {
       const selectedMissionId = legendLaunchMissionSelect?.value
         || launchController.getMissionProfile?.()?.id
         || "";
+      const missionLaunchMode = selectedMissionLaunchMode();
       if (launchController.isActive()) {
-        const missionLaunchMode = selectedMissionLaunchMode();
-        const launchResult = launchController.launchMissionShip?.(
+        let launchResult = launchController.launchMissionShip?.(
           nBodyState,
           selectedMissionId,
           Date.now(),
           {
             mode: missionLaunchMode,
-            orbitInjectAltitudeKm: 150,
+            orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
+            vehicleRole: "mission",
           },
         );
+        if (
+          launchResult?.accepted
+          && String(launchResult?.vehicleRole || "").toLowerCase() === "tanker"
+        ) {
+          if (launchResult?.shipId) {
+            launchController.removeVehicleById?.(nBodyState, launchResult.shipId, Date.now());
+          }
+          launchResult = launchController.launchMissionShip?.(
+            nBodyState,
+            selectedMissionId,
+            Date.now(),
+            {
+              mode: missionLaunchMode,
+              orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
+              vehicleRole: "mission",
+            },
+          );
+        }
         if (!launchResult?.accepted) {
           appendLaunchLogEntry("error", {
             name: "fleet_mission_ship_launch_rejected",
@@ -3642,11 +3669,16 @@ function setupLaunchControls() {
           updateLaunchControls();
           return;
         }
-        if (launchResult?.shipMeta) {
-          await ensureRuntimeCatalogBody(launchResult.shipMeta);
-        }
-        if (launchResult?.shipId) {
-          setSelected(launchResult.shipId, true);
+        if (String(launchResult?.vehicleRole || "").toLowerCase() === "tanker") {
+          appendLaunchLogEntry("error", {
+            name: "fleet_mission_ship_launch_rejected",
+            reason: "unexpected_tanker_route",
+            missionId: selectedMissionId,
+            mode: missionLaunchMode,
+          });
+          updateLaunchStatusPanel(true, "Mission launch routed to tanker path unexpectedly; launch cancelled.");
+          updateLaunchControls();
+          return;
         }
         appendLaunchLogEntry("info", {
           name: "fleet_mission_ship_launch_requested",
@@ -3655,7 +3687,95 @@ function setupLaunchControls() {
           missionPhase: launchResult.missionPhase || "",
           launchMode: launchResult.launchMode || missionLaunchMode,
           orbitInjectAltitudeKm: Number(launchResult.orbitInjectAltitudeKm) || null,
+          orbitInjectPeriapsisKm: Number(launchResult.orbitInjectPeriapsisKm) || null,
+          orbitInjectApoapsisKm: Number(launchResult.orbitInjectApoapsisKm) || null,
+          orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
         });
+        if (launchResult?.shipMeta) {
+          void ensureRuntimeCatalogBody(launchResult.shipMeta).catch((error) => {
+            console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
+          });
+        }
+        if (launchResult?.shipId) {
+          setSelected(launchResult.shipId, true);
+        }
+        updateLaunchControls();
+        updateLaunchStatusPanel(true);
+        return;
+      }
+      if (missionLaunchMode === "orbit_inject") {
+        if (selectedMissionId) {
+          launchController.setMissionProfile?.(selectedMissionId);
+        }
+        let launchResult = launchController.launchMissionShip?.(
+          nBodyState,
+          selectedMissionId,
+          Date.now(),
+          {
+            mode: missionLaunchMode,
+            orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
+            vehicleRole: "mission",
+          },
+        );
+        if (
+          launchResult?.accepted
+          && String(launchResult?.vehicleRole || "").toLowerCase() === "tanker"
+        ) {
+          if (launchResult?.shipId) {
+            launchController.removeVehicleById?.(nBodyState, launchResult.shipId, Date.now());
+          }
+          launchResult = launchController.launchMissionShip?.(
+            nBodyState,
+            selectedMissionId,
+            Date.now(),
+            {
+              mode: missionLaunchMode,
+              orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
+              vehicleRole: "mission",
+            },
+          );
+        }
+        if (!launchResult?.accepted) {
+          appendLaunchLogEntry("error", {
+            name: "fleet_mission_ship_launch_rejected",
+            reason: String(launchResult?.reason || "launch_not_allowed"),
+            missionId: selectedMissionId,
+            mode: missionLaunchMode,
+          });
+          updateLaunchStatusPanel(true, `Mission launch rejected: ${launchResult?.reason || "launch_not_allowed"}`);
+          updateLaunchControls();
+          return;
+        }
+        if (String(launchResult?.vehicleRole || "").toLowerCase() === "tanker") {
+          appendLaunchLogEntry("error", {
+            name: "fleet_mission_ship_launch_rejected",
+            reason: "unexpected_tanker_route",
+            missionId: selectedMissionId,
+            mode: missionLaunchMode,
+          });
+          updateLaunchStatusPanel(true, "Mission launch routed to tanker path unexpectedly; launch cancelled.");
+          updateLaunchControls();
+          return;
+        }
+        appendLaunchLogEntry("info", {
+          name: "fleet_mission_ship_launch_requested",
+          shipId: launchResult.shipId,
+          missionId: launchResult.missionId || selectedMissionId,
+          missionPhase: launchResult.missionPhase || "",
+          launchMode: launchResult.launchMode || missionLaunchMode,
+          orbitInjectAltitudeKm: Number(launchResult.orbitInjectAltitudeKm) || null,
+          orbitInjectPeriapsisKm: Number(launchResult.orbitInjectPeriapsisKm) || null,
+          orbitInjectApoapsisKm: Number(launchResult.orbitInjectApoapsisKm) || null,
+          orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
+        });
+        if (launchResult?.shipMeta) {
+          void ensureRuntimeCatalogBody(launchResult.shipMeta).catch((error) => {
+            console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
+          });
+        }
+        if (launchResult?.shipId) {
+          setSelected(launchResult.shipId, true);
+        }
         updateLaunchControls();
         updateLaunchStatusPanel(true);
         return;
@@ -10032,11 +10152,24 @@ function updateInfoOverlay() {
     const moonProjectedMissLine = Number.isFinite(launchSnapshot?.moonProjectedMissDistanceKm)
       ? `${formatNumber(launchSnapshot.moonProjectedMissDistanceKm, 1)} km`
       : "n/a";
+    const moonProjectedMissTrendLine = Number.isFinite(Number(launchSnapshot?.moonProjectedMissTrendKmS))
+      ? `${formatNumber(launchSnapshot.moonProjectedMissTrendKmS, 3)} km/s`
+      : "n/a";
     const moonPeriluneEstimateLine = Number.isFinite(launchSnapshot?.moonProjectedPeriluneAltitudeKm)
       ? `${formatNumber(launchSnapshot.moonProjectedPeriluneAltitudeKm, 1)} km`
       : "n/a";
     const moonBPlaneErrorLine = Number.isFinite(launchSnapshot?.moonBPlaneErrorKm)
       ? `${formatNumber(launchSnapshot.moonBPlaneErrorKm, 1)} km`
+      : "n/a";
+    const moonWindowScoreLine = Number.isFinite(Number(launchSnapshot?.moonDepartureWindowScore))
+      ? `${formatNumber(Number(launchSnapshot.moonDepartureWindowScore) * 100, 1)}%`
+      : "n/a";
+    const moonTliTargetModeLine = String(launchSnapshot?.moonTliTargetMode || "").trim() || "n/a";
+    const moonTliTargetMissLine = Number.isFinite(Number(launchSnapshot?.moonTliTargetMissKm))
+      ? `${formatNumber(launchSnapshot.moonTliTargetMissKm, 1)} km`
+      : "n/a";
+    const moonTliTargetMissGateLine = Number.isFinite(Number(launchSnapshot?.moonTliTargetMissGateKm))
+      ? `${formatNumber(launchSnapshot.moonTliTargetMissGateKm, 1)} km`
       : "n/a";
     const phaseGateReasonLine = String(launchSnapshot?.missionPhaseGateReason || "").trim() || "n/a";
     const guidanceBurnRequestedLine = Boolean(launchSnapshot?.guidanceBurnRequested) ? "yes" : "no";
@@ -10122,8 +10255,9 @@ function updateInfoOverlay() {
         <p class="line launch-line">Attitude Error: ${tankerAttitudeErrorLine} | Authority: ${tankerAttitudeAuthorityLine} | Limited: ${tankerAttitudeLimitedLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
-        <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
+        <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
+        <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
@@ -10137,8 +10271,9 @@ function updateInfoOverlay() {
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
-        <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine}</p>
+        <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
+        <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>

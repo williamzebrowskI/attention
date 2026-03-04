@@ -13,6 +13,12 @@ import {
 export function createMoonGuidanceRuntime() {
   return {
     sensorEstimate: null,
+    tli: {
+      mode: "",
+      modeHoldSec: 0,
+      lastTimestampSec: null,
+      protectCooldownSec: 0,
+    },
     midcourse: {
       active: false,
       burnSec: 0,
@@ -83,6 +89,17 @@ export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
           : null,
       };
     }
+    const tli = moonSnapshot.tli;
+    if (tli && typeof tli === "object") {
+      normalized.moon.tli = {
+        mode: String(tli.mode || ""),
+        modeHoldSec: Math.max(0, Number(tli.modeHoldSec) || 0),
+        lastTimestampSec: Number.isFinite(Number(tli.lastTimestampSec))
+          ? Number(tli.lastTimestampSec)
+          : null,
+        protectCooldownSec: Math.max(0, Number(tli.protectCooldownSec) || 0),
+      };
+    }
     const retarget = moonSnapshot.retarget;
     if (retarget && typeof retarget === "object") {
       normalized.moon.retarget = {
@@ -128,6 +145,12 @@ function resetMoonGuidanceRuntime(moonRuntime, { clearEstimate = false } = {}) {
     lastStartSec: null,
     lastStopSec: null,
   };
+  moonRuntime.tli = {
+    mode: "",
+    modeHoldSec: 0,
+    lastTimestampSec: null,
+    protectCooldownSec: 0,
+  };
   moonRuntime.retarget = {
     lastSolveSec: null,
     lastSolveReason: "",
@@ -164,6 +187,14 @@ export function syncPlannerRuntime({
     }
     if (nextMissionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
       resetMoonGuidanceRuntime(plannerRuntime.moon, { clearEstimate: true });
+    }
+    if (nextMissionPhase !== NAVIGATION_MISSION_PHASES.TLI_BURN) {
+      plannerRuntime.moon.tli = {
+        mode: "",
+        modeHoldSec: 0,
+        lastTimestampSec: null,
+        protectCooldownSec: 0,
+      };
     }
   }
   plannerRuntime.missionId = nextMissionId;

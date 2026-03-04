@@ -87,6 +87,11 @@ const ORBITAL_REFUEL_DEMO_CONFIG = Object.freeze({
   recoveryCloseRangeDistanceKm: 20,
   recoveryCloseRangeMaxRelativeSpeedKmS: 0.03,
   recoveryCloseRangeMinPeriapsisKm: 138,
+  recoveryImmediatePeriapsisBurnKm: 138,
+  recoveryImmediateAltitudeKm: 155,
+  recoveryImmediateThrottleBase: 0.24,
+  recoveryImmediateThrottleMax: 0.56,
+  recoveryImmediateUpBias: 0.16,
 });
 
 function isRefuelFlowMissionId(missionId) {
@@ -759,21 +764,56 @@ function computeOrbitalRefuelDemoAutopilotCommand({
       )
       && radialSpeedKmS >= -0.0035;
     if (recoveryNeeded && !closeRangeRecoveryBypass) {
-      if (nearApoapsisForRecovery) {
+      const immediateGuardBurn = (
+        (
+          Number.isFinite(periapsisKm)
+          && periapsisKm <= (Number(config.recoveryImmediatePeriapsisBurnKm) || 138)
+        )
+        || (
+          Number.isFinite(altitudeKm)
+          && altitudeKm <= (Number(config.recoveryImmediateAltitudeKm) || 155)
+          && radialSpeedKmS < -0.0008
+        )
+      );
+      const recoveryBurnNow = nearApoapsisForRecovery || immediateGuardBurn;
+      if (recoveryBurnNow) {
         const periapsisDeficitKm = Math.max(
           0,
           (Number(config.recoveryPeriapsisSoftMinKm) || 145) - periapsisKm,
         );
+        const guardActive = immediateGuardBurn && !nearApoapsisForRecovery;
+        const throttleBase = guardActive
+          ? (Number(config.recoveryImmediateThrottleBase) || 0.24)
+          : (Number(config.recoveryThrottleBase) || 0.24);
+        const throttleMax = guardActive
+          ? (Number(config.recoveryImmediateThrottleMax) || 0.56)
+          : (Number(config.recoveryThrottleMax) || 0.58);
         const throttle = clamp(
-          (Number(config.recoveryThrottleBase) || 0.24) + (periapsisDeficitKm / 220),
-          Number(config.recoveryThrottleBase) || 0.24,
-          Number(config.recoveryThrottleMax) || 0.58,
+          throttleBase + (periapsisDeficitKm / 220),
+          throttleBase,
+          throttleMax,
         );
+        const guardUpBias = clamp(
+          (Number(config.recoveryImmediateUpBias) || 0.16) + (Math.max(0, -radialSpeedKmS) * 18),
+          0.12,
+          0.32,
+        );
+        const direction = guardActive
+          ? normalize(
+            add(
+              scale(tangent, 1 - guardUpBias),
+              scale(up, guardUpBias),
+            ),
+            tangent,
+          )
+          : tangent;
         return {
           phase: "powered",
           throttle,
-          direction: tangent,
-          mode: "mission-orbital-refuel-demo:orbit-recovery-burn",
+          direction,
+          mode: guardActive
+            ? "mission-orbital-refuel-demo:orbit-recovery-guard-burn"
+            : "mission-orbital-refuel-demo:orbit-recovery-burn",
         };
       }
       return {

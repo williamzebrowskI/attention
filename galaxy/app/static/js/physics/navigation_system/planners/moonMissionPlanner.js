@@ -10,6 +10,7 @@ import {
 } from "../navigationMath.js";
 import { NAVIGATION_MISSION_PHASES } from "../navigationMissionProfiles.js";
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
+import { planTliFiniteBurnCommand } from "../lunar/tliFiniteBurnTargeter.js";
 import {
   projectedClosestApproachDistanceKm,
   projectedClosestApproachStateKm,
@@ -188,46 +189,18 @@ export function planMoonMissionCommand({
   }
 
   if (phase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
-    const periapsisKm = Number(metrics.periapsisKm);
-    const periapsisProtectMinKm = Math.max(80, Number(plannerConfig.tliPeriapsisProtectMinKm) || 130);
-    const periapsisRecoverTargetKm = Math.max(
-      periapsisProtectMinKm + 5,
-      Number(plannerConfig.tliPeriapsisRecoverTargetKm) || 155,
-    );
-    if (Number.isFinite(periapsisKm) && periapsisKm < periapsisRecoverTargetKm) {
-      const deficitNorm = clamp(
-        (periapsisRecoverTargetKm - periapsisKm)
-          / Math.max(1, periapsisRecoverTargetKm - periapsisProtectMinKm),
-        0,
-        1,
-      );
-      const upBias = clamp(
-        (Number(plannerConfig.tliPeriapsisProtectUpBias) || 0.24) * (0.65 + (0.35 * deficitNorm)),
-        0.1,
-        0.45,
-      );
-      return {
-        phase: "powered",
-        throttle: clamp(
-          (Number(plannerConfig.tliPeriapsisProtectThrottleMin) || 0.16) + (deficitNorm * 0.26),
-          Number(plannerConfig.tliPeriapsisProtectThrottleMin) || 0.16,
-          Number(plannerConfig.tliPeriapsisProtectThrottleMax) || 0.6,
-        ),
-        direction: normalize(add(scale(tangent, 1), scale(up, upBias)), tangent),
-        mode: "navsys:tli-periapsis-protect",
-      };
-    }
-    const moonClosingSpeedKmS = Number(metrics.moonClosingSpeedKmS);
-    const minClosingKmS = Math.max(0.001, Number(plannerConfig.moonMidcourseMinClosingSpeedKmS) || 0.02);
-    const closingDeficit = Number.isFinite(moonClosingSpeedKmS)
-      ? clamp((minClosingKmS - moonClosingSpeedKmS) / Math.max(0.01, minClosingKmS), 0, 1)
-      : 0.5;
-    return {
-      phase: "powered",
-      throttle: clamp(0.56 + (closingDeficit * 0.24), 0.52, 0.86),
-      direction: normalize(add(scale(tangent, 0.7), scale(moonDirection, 0.3)), tangent),
-      mode: "navsys:tli-burn",
-    };
+    return planTliFiniteBurnCommand({
+      targetVectors: {
+        tangent,
+        up,
+        toMoon: moonDirection,
+      },
+      metrics,
+      plannerConfig,
+      missionElapsedInPhaseSec: Number(metrics.missionPhaseElapsedSec) || 0,
+      tliRuntime: plannerRuntime?.moon?.tli || null,
+      timestampSec,
+    });
   }
 
   if (phase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON) {

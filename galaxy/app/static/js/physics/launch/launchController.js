@@ -1802,7 +1802,11 @@ export function createLaunchController(options) {
   }
 
   function launchMissionShip(state, missionId = runtime.mission.selectedId, nowMs = Date.now(), options = {}) {
-    return fleetController.launchMissionShip(state, missionId, nowMs, options);
+    const safeOptions = {
+      ...(options && typeof options === "object" ? options : {}),
+      vehicleRole: "mission",
+    };
+    return fleetController.launchMissionShip(state, missionId, nowMs, safeOptions);
   }
 
   function removeVehicleById(state, bodyId, nowMs = Date.now()) {
@@ -4744,7 +4748,9 @@ export function createLaunchController(options) {
     getMissionProfile,
     getMissionProfiles,
     isActive() {
-      return runtime.phase !== "idle" || runtime.booster.active;
+      return runtime.phase !== "idle"
+        || runtime.booster.active
+        || fleetController.hasActiveVehicles();
     },
   };
 }

@@ -4,6 +4,11 @@ import {
   NAVIGATION_MISSION_PHASES,
   normalizeFillFraction,
 } from "./navigationMissionProfiles.js";
+import { NAVIGATION_DEFAULTS } from "./navigationSystemConfig.js";
+import {
+  evaluateMoonCaptureEntryGate,
+  evaluateMoonTliExitGate,
+} from "./lunar/lunarPhaseGates.js";
 
 function finiteOr(value, fallback) {
   return Number.isFinite(Number(value)) ? Number(value) : Number(fallback);
@@ -59,21 +64,37 @@ export function evaluateMoonMissionPhase({
   }
 
   if (currentPhase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
-    const apoReached = apoapsisKm >= (profile.tliTargetApoapsisKm - profile.tliApoapsisMarginKm);
-    const energyReady = specificEnergy >= profile.tliMinSpecificEnergyKm2S2;
-    const periapsisSafe = periapsisKm >= Math.max(80, Number(profile.tliPeriapsisMinKm) || 130);
     const moonClosingSpeedKmS = finiteOr(metrics.moonClosingSpeedKmS, 0);
     const moonProjectedMissDistanceKm = finiteOr(
       metrics.moonProjectedMissDistanceKm,
       Number.POSITIVE_INFINITY,
     );
-    const interceptTrending =
-      moonClosingSpeedKmS >= (profile.midcourseMinClosingSpeedKmS * 0.65)
-      || moonProjectedMissDistanceKm <= profile.tliInterceptMissDistanceKm;
-    if (apoReached && energyReady && interceptTrending && periapsisSafe) {
+    const gate = evaluateMoonTliExitGate({
+      vehicle: {
+        phaseElapsedSec: missionElapsedInPhaseSec,
+        tliDurationSec: Number(profile?.tliDurationSec) || 520,
+        propellantKg: finiteOr(metrics?.propellantKg, 1),
+        fuelBudget: metrics?.fuelBudget && typeof metrics.fuelBudget === "object"
+          ? metrics.fuelBudget
+          : null,
+      },
+      orbital,
+      moonMetrics: {
+        closingSpeedKmS: moonClosingSpeedKmS,
+        projectedMissDistanceKm: moonProjectedMissDistanceKm,
+        projectedPeriluneAltitudeKm: finiteOr(metrics.moonProjectedPeriluneAltitudeKm, Number.NaN),
+        bPlaneErrorKm: finiteOr(metrics.moonBPlaneErrorKm, Number.NaN),
+      },
+      plannerConfig: NAVIGATION_DEFAULTS.planner,
+      minPeriapsisKm: Math.max(80, Number(profile.tliPeriapsisMinKm) || 130),
+      fallbackDurationSec: Number(profile?.tliDurationSec) || 520,
+    });
+    const apoReached = apoapsisKm >= (profile.tliTargetApoapsisKm - profile.tliApoapsisMarginKm);
+    const energyReady = specificEnergy >= profile.tliMinSpecificEnergyKm2S2;
+    if (gate.ready || (apoReached && energyReady && gate.periapsisReady)) {
       return {
         nextPhase: NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
-        reason: "tli_escape_conditions_met",
+        reason: gate.ready ? "tli_gate_ready" : "tli_escape_conditions_met",
       };
     }
     return null;
@@ -85,13 +106,23 @@ export function evaluateMoonMissionPhase({
       metrics.moonProjectedMissDistanceKm,
       Number.POSITIVE_INFINITY,
     );
+    const gate = evaluateMoonCaptureEntryGate({
+      moonMetrics: {
+        distanceKm: moonDistanceKm,
+        closingSpeedKmS: moonClosingSpeedKmS,
+        projectedMissDistanceKm: moonProjectedMissDistanceKm,
+        projectedPeriluneAltitudeKm: finiteOr(metrics.moonProjectedPeriluneAltitudeKm, Number.NaN),
+        bPlaneErrorKm: finiteOr(metrics.moonBPlaneErrorKm, Number.NaN),
+      },
+      plannerConfig: NAVIGATION_DEFAULTS.planner,
+    });
     const approachClosingValid =
       moonClosingSpeedKmS >= (profile.midcourseMinClosingSpeedKmS * 0.3)
       || moonProjectedMissDistanceKm <= (profile.tliInterceptMissDistanceKm * 0.8);
-    if (moonDistanceKm <= profile.moonApproachDistanceKm && approachClosingValid) {
+    if (gate.ready || (moonDistanceKm <= profile.moonApproachDistanceKm && approachClosingValid)) {
       return {
         nextPhase: NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
-        reason: "moon_approach_gate",
+        reason: gate.ready ? "moon_capture_gate_ready" : "moon_approach_gate",
       };
     }
     return null;

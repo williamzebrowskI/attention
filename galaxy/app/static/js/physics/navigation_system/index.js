@@ -15,3 +15,15 @@ export { createNavigationStateEstimator } from "./navigationStateEstimator.js";
 export { createNavigationTrajectoryPlanner } from "./navigationTrajectoryPlanner.js";
 export { evaluateMissionPhase, evaluateMoonMissionPhase } from "./navigationPhaseEvaluator.js";
 export { createNavigationSystem } from "./navigationSystem.js";
+export {
+  computeMoonOrbitInjectPhaseAngleRad,
+  evaluateMoonPadLaunchWindow,
+  solveMoonDepartureWindow,
+} from "./lunar/departureWindowSolver.js";
+export {
+  evaluateMoonTliExitGate,
+  evaluateMoonCaptureEntryGate,
+  describeMoonTliExitGate,
+  describeMoonCaptureEntryGate,
+} from "./lunar/lunarPhaseGates.js";
+export { planTliFiniteBurnCommand } from "./lunar/tliFiniteBurnTargeter.js";

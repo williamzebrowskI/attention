@@ -22,6 +22,10 @@
   - `moonMissionPlanner.js`: Moon mission command policy (TLI, coast, midcourse, capture).
   - `moonGuidanceState.js`: Moon guidance sensor/midcourse runtime state helpers.
   - `interceptMath.js`: Closest-approach/miss-distance math helpers.
+- `lunar/`:
+  - `departureWindowSolver.js`: Moon departure/orbit-inject window solve helpers.
+  - `tliFiniteBurnTargeter.js`: Finite-duration TLI burn command targeter.
+  - `lunarPhaseGates.js`: TLI exit and lunar-capture gate evaluation + descriptions.
 - `navigationSystem.js`:
   - High-level facade that composes estimator + evaluator + planner.
 - `index.js`:
