@@ -7,6 +7,7 @@ import {
   subtract,
 } from "../launchMath.js";
 import { REFUEL_TANKER_CONFIG } from "./config.js";
+import { computeHillRendezvousCommand } from "./relativeMotionGuidance.js";
 
 const FLEET_TRANSFER_PHASES = Object.freeze({
   IDLE: "idle",
@@ -85,6 +86,9 @@ export function ensureFleetTransferState(vehicle) {
       corridorAlignmentDeg: null,
       lastDistanceKm: null,
       lastRelativeSpeedKmS: null,
+      approachDesiredClosingKmS: null,
+      approachClosingKmS: null,
+      approachOrbitalRateRadS: null,
       lastAction: "",
       lastActionTimeSec: 0,
       targetFillFraction: 0,
@@ -115,6 +119,9 @@ export function resetFleetTransferState(vehicle) {
   transfer.corridorAlignmentDeg = null;
   transfer.lastDistanceKm = null;
   transfer.lastRelativeSpeedKmS = null;
+  transfer.approachDesiredClosingKmS = null;
+  transfer.approachClosingKmS = null;
+  transfer.approachOrbitalRateRadS = null;
   transfer.lastAction = "";
   transfer.lastActionTimeSec = 0;
   transfer.targetFillFraction = 0;
@@ -197,9 +204,10 @@ function phaseWithMode({
   }
   if (phase === FLEET_TRANSFER_PHASES.ABORTING) {
     return {
-      requestedThrottle: 0.26,
+      // Abort near docking should be RCS-led separation, not a main-engine burn.
+      requestedThrottle: 0,
       desiredDirection: scale(safeDirection, -1),
-      guidanceMode: "navsys:orbital-refuel-abort-brake",
+      guidanceMode: "navsys:orbital-refuel-abort-brake:rcs-only",
       lockTarget: true,
     };
   }
@@ -215,105 +223,28 @@ function computeApproachGuidance({
   target = null,
   prograde = null,
   directionToTarget = null,
-  distanceKm = 0,
-  relativeSpeedKmS = 0,
+  shipRelativePositionKm = null,
+  shipRelativeVelocityKmS = null,
 } = {}) {
-  const safePrograde = normalize(prograde, { x: 0, y: 1, z: 0 });
-  const toTarget = normalize(directionToTarget, safePrograde);
-  const targetRelativePositionKm = target?.relativePositionKm || { x: 0, y: 0, z: 0 };
-  const targetRelativeVelocityKmS = target?.relativeVelocityKmS || { x: 0, y: 0, z: 0 };
-  const shipMinusTargetRelVel = scale(targetRelativeVelocityKmS, -1);
-  const up = normalize({ x: 0, y: 0, z: Number(safePrograde.z) >= 0 ? 1 : -1 }, { x: 0, y: 0, z: 1 });
-  const crossTrack = normalize(
-    {
-      x: (safePrograde.y * up.z) - (safePrograde.z * up.y),
-      y: (safePrograde.z * up.x) - (safePrograde.x * up.z),
-      z: (safePrograde.x * up.y) - (safePrograde.y * up.x),
+  const guidance = computeHillRendezvousCommand({
+    targetRelativePositionKm: target?.relativePositionKm || directionToTarget,
+    targetRelativeVelocityKmS: target?.relativeVelocityKmS || {
+      x: 0,
+      y: 0,
+      z: 0,
     },
-    { x: 1, y: 0, z: 0 },
-  );
-  const alongKm = (
-    (Number(targetRelativePositionKm.x) || 0) * safePrograde.x
-    + (Number(targetRelativePositionKm.y) || 0) * safePrograde.y
-    + (Number(targetRelativePositionKm.z) || 0) * safePrograde.z
-  );
-  const radialKm = (
-    (Number(targetRelativePositionKm.x) || 0) * up.x
-    + (Number(targetRelativePositionKm.y) || 0) * up.y
-    + (Number(targetRelativePositionKm.z) || 0) * up.z
-  );
-  const crossKm = (
-    (Number(targetRelativePositionKm.x) || 0) * crossTrack.x
-    + (Number(targetRelativePositionKm.y) || 0) * crossTrack.y
-    + (Number(targetRelativePositionKm.z) || 0) * crossTrack.z
-  );
-  const distance = Math.max(0, Number(distanceKm) || 0);
-  const desiredClosingKmS = distance > 80
-    ? clamp(distance / 2200, 0.02, 0.055)
-    : (
-      distance > 20
-        ? clamp(distance / 3800, 0.005, 0.02)
-        : (
-          distance > 2
-            ? clamp(distance / 2500, 0.0008, 0.005)
-            : (
-              distance > 0.5
-                ? clamp(distance / 4000, 0.00012, 0.0009)
-                : clamp(distance / 7000, 0.00002, 0.00018)
-            )
-        )
-    );
-  const desiredShipMinusTargetRelVel = scale(toTarget, desiredClosingKmS);
-  const velocityErrorKmS = {
-    x: (Number(desiredShipMinusTargetRelVel.x) || 0) - (Number(shipMinusTargetRelVel.x) || 0),
-    y: (Number(desiredShipMinusTargetRelVel.y) || 0) - (Number(shipMinusTargetRelVel.y) || 0),
-    z: (Number(desiredShipMinusTargetRelVel.z) || 0) - (Number(shipMinusTargetRelVel.z) || 0),
-  };
-  const phasingDirection = alongKm >= 0
-    ? scale(safePrograde, -1)
-    : safePrograde;
-  const radialCorrectionDirection = radialKm >= 0
-    ? scale(up, -1)
-    : up;
-  const crossCorrectionDirection = crossKm >= 0
-    ? scale(crossTrack, -1)
-    : crossTrack;
-  const direction = normalize(
-    {
-      x: ((Number(velocityErrorKmS.x) || 0) * 0.74)
-        + (phasingDirection.x * clamp(Math.abs(alongKm) / 220, 0, 0.22))
-        + (radialCorrectionDirection.x * clamp(Math.abs(radialKm) / 180, 0, 0.13))
-        + (crossCorrectionDirection.x * clamp(Math.abs(crossKm) / 180, 0, 0.13)),
-      y: ((Number(velocityErrorKmS.y) || 0) * 0.74)
-        + (phasingDirection.y * clamp(Math.abs(alongKm) / 220, 0, 0.22))
-        + (radialCorrectionDirection.y * clamp(Math.abs(radialKm) / 180, 0, 0.13))
-        + (crossCorrectionDirection.y * clamp(Math.abs(crossKm) / 180, 0, 0.13)),
-      z: ((Number(velocityErrorKmS.z) || 0) * 0.74)
-        + (phasingDirection.z * clamp(Math.abs(alongKm) / 220, 0, 0.22))
-        + (radialCorrectionDirection.z * clamp(Math.abs(radialKm) / 180, 0, 0.13))
-        + (crossCorrectionDirection.z * clamp(Math.abs(crossKm) / 180, 0, 0.13)),
-    },
-    toTarget,
-  );
-  if (distance <= 2.0) {
-    return {
-      requestedThrottle: 0,
-      desiredDirection: direction,
-      guidanceMode: "navsys:orbital-refuel-rcs-translate",
-    };
+    shipRelativePositionKm,
+    shipRelativeVelocityKmS,
+    fallbackPrograde: prograde,
+  });
+  if (guidance) {
+    return guidance;
   }
-  const relSpeed = Math.max(0, Number(relativeSpeedKmS) || 0);
-  const velocityErrorMagKmS = Math.max(0, relSpeed - desiredClosingKmS);
-  const throttle = distance > 20
-    ? clamp(0.05 + (velocityErrorMagKmS * 2.2), 0.05, 0.22)
-    : clamp(0.03 + (velocityErrorMagKmS * 1.8), 0.03, 0.12);
-  const mode = distance > 80
-    ? "navsys:orbital-refuel-coelliptic-phasing"
-    : (distance > 8 ? "navsys:orbital-refuel-transfer-burn" : "navsys:orbital-refuel-velocity-match");
+  const fallbackDirection = normalize(directionToTarget, prograde || { x: 0, y: 1, z: 0 });
   return {
-    requestedThrottle: throttle,
-    desiredDirection: direction,
-    guidanceMode: mode,
+    requestedThrottle: 0,
+    desiredDirection: fallbackDirection,
+    guidanceMode: "navsys:orbital-refuel-await-target",
   };
 }
 
@@ -418,11 +349,19 @@ export function updateFleetTransferGuidance({
   const distanceKm = Math.max(0, Number(target.distanceKm) || 0);
   const relativeSpeedKmS = Math.max(0, Number(target.relativeSpeedKmS) || 0);
   const closingSpeedKmS = Math.max(0, Number(target.closingSpeedKmS) || 0);
+  const shipRelativePositionKm = subtract(
+    shipState.position || { x: 0, y: 0, z: 0 },
+    earthState.position || { x: 0, y: 0, z: 0 },
+  );
+  const shipRelativeVelocityKmS = subtract(
+    shipState.velocity || { x: 0, y: 0, z: 0 },
+    earthState.velocity || { x: 0, y: 0, z: 0 },
+  );
   transfer.lastDistanceKm = distanceKm;
   transfer.lastRelativeSpeedKmS = relativeSpeedKmS;
 
   const holdDistanceKm = Math.max(
-    0.3,
+    0.12,
     Number(REFUEL_TANKER_CONFIG.dockHoldPointDistanceKm) || 0.065,
   );
   const holdSpeedKmS = Math.max(0.00025, Number(REFUEL_TANKER_CONFIG.dockHoldPointMaxRelativeSpeedKmS) || 0.000085);
@@ -430,7 +369,11 @@ export function updateFleetTransferGuidance({
   const dockDistanceKm = Math.max(0.005, Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014);
   const dockSpeedKmS = Math.max(0.00002, Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045);
   const dockStableRequiredSec = Math.max(2, Number(REFUEL_TANKER_CONFIG.dockStableSeconds) || 8);
-  const abortDistanceKm = Math.max(dockDistanceKm * 2, Number(REFUEL_TANKER_CONFIG.dockAbortDistanceKm) || 0.22);
+  const abortDistanceKm = Math.max(
+    dockDistanceKm * 2,
+    Number(REFUEL_TANKER_CONFIG.dockAbortDistanceKm) || 0.22,
+    holdDistanceKm * 1.4,
+  );
   const abortRelativeSpeedKmS = Math.max(
     dockSpeedKmS * 2,
     Number(REFUEL_TANKER_CONFIG.dockAbortRelativeSpeedKmS) || 0.00014,
@@ -460,11 +403,12 @@ export function updateFleetTransferGuidance({
     || alignment.shipAlignmentDeg > abortAttitudeDeg
     || alignment.tankerAlignmentDeg > abortAttitudeDeg
   );
+  const emergencyCloseDistanceKm = Math.max(4.5, holdDistanceKm * 28);
   const emergencyOverspeed = (
-    distanceKm <= Math.max(250, holdDistanceKm * 280)
+    distanceKm <= emergencyCloseDistanceKm
     && (
-      relativeSpeedKmS > 0.08
-      || closingSpeedKmS > 0.06
+      relativeSpeedKmS > 0.008
+      || closingSpeedKmS > 0.006
     )
   );
 
@@ -549,11 +493,20 @@ export function updateFleetTransferGuidance({
       }
     }
   } else if (transfer.phase === FLEET_TRANSFER_PHASES.ABORTING) {
-    transfer.abortRemainingSec = Math.max(0, Number(transfer.abortRemainingSec) || 0);
-    if (transfer.abortRemainingSec <= 1e-6) {
+    const abortDefaultSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
+    transfer.abortRemainingSec = Math.max(
+      0,
+      (Number(transfer.abortRemainingSec) || abortDefaultSec) - safeDt,
+    );
+    const abortRecovered = (
+      distanceKm >= Math.max(holdDistanceKm * 1.25, 0.45)
+      && relativeSpeedKmS <= Math.max(holdSpeedKmS * 2.2, 0.0012)
+    );
+    if (transfer.abortRemainingSec <= 1e-6 || abortRecovered) {
       transfer.phase = FLEET_TRANSFER_PHASES.APPROACH;
       transfer.holdPointStableSec = 0;
       transfer.dockStableSec = 0;
+      transfer.abortRemainingSec = 0;
     }
   }
 
@@ -578,8 +531,8 @@ export function updateFleetTransferGuidance({
       target,
       prograde,
       directionToTarget,
-      distanceKm,
-      relativeSpeedKmS,
+      shipRelativePositionKm,
+      shipRelativeVelocityKmS,
     })
     : null;
   const mode = phaseWithMode({
@@ -591,6 +544,18 @@ export function updateFleetTransferGuidance({
     desiredDirection: approachGuidance?.desiredDirection || directionToTarget,
     directionFallback: prograde || { x: 0, y: 1, z: 0 },
   });
+  transfer.approachDesiredClosingKmS = finiteNumber(
+    approachGuidance?.diagnostics?.desiredClosingKmS,
+    null,
+  );
+  transfer.approachClosingKmS = finiteNumber(
+    approachGuidance?.diagnostics?.closingSpeedKmS,
+    null,
+  );
+  transfer.approachOrbitalRateRadS = finiteNumber(
+    approachGuidance?.diagnostics?.orbitalRateRadS,
+    null,
+  );
   return {
     ...mode,
     state: transfer,
@@ -761,16 +726,6 @@ export function advanceFleetTransferMass({
     }
   }
 
-  if (transfer.phase === FLEET_TRANSFER_PHASES.ABORTING) {
-    transfer.abortRemainingSec = Math.max(0, (Number(transfer.abortRemainingSec) || 0) - safeDt);
-    if (transfer.abortRemainingSec <= 1e-6) {
-      transfer.phase = FLEET_TRANSFER_PHASES.APPROACH;
-      transfer.holdPointStableSec = 0;
-      transfer.dockStableSec = 0;
-      transfer.lockStableSec = 0;
-    }
-  }
-
   return {
     transferActive: transfer.phase === FLEET_TRANSFER_PHASES.TRANSFERRING,
     undockActive: transfer.phase === FLEET_TRANSFER_PHASES.UNDOCKING || transfer.phase === FLEET_TRANSFER_PHASES.ABORTING,
@@ -794,6 +749,9 @@ export function fleetTransferTelemetryState(vehicle) {
     transferRateKgS: Math.max(0, Number(transfer?.transferRateKgS) || 0),
     lastAction: String(transfer?.lastAction || ""),
     lastActionTimeSec: Math.max(0, Number(transfer?.lastActionTimeSec) || 0),
+    approachDesiredClosingKmS: finiteNumber(transfer?.approachDesiredClosingKmS, null),
+    approachClosingKmS: finiteNumber(transfer?.approachClosingKmS, null),
+    approachOrbitalRateRadS: finiteNumber(transfer?.approachOrbitalRateRadS, null),
     shipAlignmentDeg: finiteNumber(transfer?.shipAlignmentDeg, null),
     tankerAlignmentDeg: finiteNumber(transfer?.tankerAlignmentDeg, null),
     corridorAlignmentDeg: finiteNumber(transfer?.corridorAlignmentDeg, null),

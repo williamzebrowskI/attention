@@ -3153,6 +3153,15 @@ export function createLaunchFleetController({
       refuelTransferProgress,
       refuelTransferRemainingKg,
       refuelTransferRateKgS,
+      refuelApproachDesiredClosingKmS: Number.isFinite(Number(transferTelemetry.approachDesiredClosingKmS))
+        ? Number(transferTelemetry.approachDesiredClosingKmS)
+        : null,
+      refuelApproachClosingKmS: Number.isFinite(Number(transferTelemetry.approachClosingKmS))
+        ? Number(transferTelemetry.approachClosingKmS)
+        : null,
+      refuelApproachOrbitalRateRadS: Number.isFinite(Number(transferTelemetry.approachOrbitalRateRadS))
+        ? Number(transferTelemetry.approachOrbitalRateRadS)
+        : null,
       refuelTransferLocked: transferActive || String(transferTelemetry.phase || "") === "docked_lock",
       refuelUndockActive: Boolean(transferTelemetry.undockActive),
       refuelFuelingActive: fuelingActiveForBody,
