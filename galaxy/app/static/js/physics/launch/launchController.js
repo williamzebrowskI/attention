@@ -125,6 +125,8 @@ const PAD_TANKER_DEPLOYMENT_MIN_PERIAPSIS_KM = 145;
 const PAD_TANKER_DEPLOYMENT_MIN_APOAPSIS_KM = 150;
 const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
 const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
+const PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM = 105;
+const PRIMARY_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA = 120;
 function fallbackAxes() {
   return {
     xAxis: { x: 1, y: 0, z: 0 },
@@ -2832,19 +2834,32 @@ export function createLaunchController(options) {
       currentEarthAxes.pole,
       windSample.vectorKmS,
     );
-    const qAlphaSteering = applyQAlphaSteeringLimit({
-      desiredDirection: direction,
-      relAirVelocityKmS,
-      dynamicPressurePa,
-      bodyKind: "booster",
-    });
+    const qAlphaActive = (
+      Number.isFinite(altitudeKm)
+      && altitudeKm <= PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM
+      && Number(dynamicPressurePa) >= PRIMARY_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA
+    );
+    const qAlphaSteering = qAlphaActive
+      ? applyQAlphaSteeringLimit({
+        desiredDirection: direction,
+        relAirVelocityKmS,
+        dynamicPressurePa,
+        bodyKind: "booster",
+      })
+      : {
+        direction: normalize(direction, { x: 0, y: 0, z: 1 }),
+        limited: false,
+        qAlphaPaRad: 0,
+      };
     direction = qAlphaSteering.direction;
     let requestedThrottle = canBurn ? clamp(Number(command.throttle) || 0, 0, 1) : 0;
-    requestedThrottle = limitThrottleByQAlpha({
-      throttle: requestedThrottle,
-      qAlphaPaRad: qAlphaSteering.qAlphaPaRad,
-      bodyKind: "booster",
-    });
+    if (qAlphaActive) {
+      requestedThrottle = limitThrottleByQAlpha({
+        throttle: requestedThrottle,
+        qAlphaPaRad: qAlphaSteering.qAlphaPaRad,
+        bodyKind: "booster",
+      });
+    }
 
     const boosterPropellantFraction = runtime.booster.initialPropellantKg > 1e-6
       ? clamp(runtime.booster.propellantKg / runtime.booster.initialPropellantKg, 0, 1)
@@ -3241,7 +3256,12 @@ export function createLaunchController(options) {
             orbital.altitudeKm <= ((Number(LAUNCH_AUTOPILOT_CONFIG.verticalAscentMaxAltitudeKm) || 0) + 2)
             || String(guidanceMode || "").includes("vertical")
           );
-        const qAlphaSteering = lowAltitudeQAlphaBypass
+        const qAlphaAtmosphereActive = (
+          Number.isFinite(orbital.altitudeKm)
+          && orbital.altitudeKm <= PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM
+          && Number(dynamicPressurePa) >= PRIMARY_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA
+        );
+        const qAlphaSteering = lowAltitudeQAlphaBypass || !qAlphaAtmosphereActive
           ? {
             direction: directionRequested,
             limited: false,
@@ -3267,7 +3287,7 @@ export function createLaunchController(options) {
           canThrust = false;
           throttleCommand = 0;
         } else {
-          if (!lowAltitudeQAlphaBypass) {
+          if (!lowAltitudeQAlphaBypass && qAlphaAtmosphereActive) {
             throttleCommand = limitThrottleByQAlpha({
               throttle: throttleCommand,
               qAlphaPaRad: qAlphaSteering.qAlphaPaRad,
