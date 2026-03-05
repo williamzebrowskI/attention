@@ -226,6 +226,31 @@ export function planRefuelRendezvousCommand({
     Number(plannerConfig?.refuelFarDistanceKm) || 60,
   );
   const desiredClosingKmS = desiredClosingSpeedKmS(refuelDistanceKm);
+  const midVelocityMatchThrottleMax = clamp(
+    Number(plannerConfig?.refuelMidVelocityMatchThrottleMax) || 0.06,
+    0.02,
+    0.18,
+  );
+  const midTransferThrottleMax = clamp(
+    Number(plannerConfig?.refuelMidTransferThrottleMax) || 0.075,
+    0.03,
+    0.2,
+  );
+  const farVelocityMatchThrottleMax = clamp(
+    Number(plannerConfig?.refuelFarVelocityMatchThrottleMax) || 0.1,
+    0.03,
+    0.24,
+  );
+  const farTransferThrottleMax = clamp(
+    Number(plannerConfig?.refuelFarTransferThrottleMax) || 0.12,
+    0.04,
+    0.3,
+  );
+  const longRangePhasingThrottleMax = clamp(
+    Number(plannerConfig?.refuelLongRangePhasingThrottleMax) || 0.14,
+    0.05,
+    0.32,
+  );
 
   const targetAheadInTrack = frame.alongKm >= 0;
   const phasingDirection = targetAheadInTrack
@@ -321,7 +346,7 @@ export function planRefuelRendezvousCommand({
     if (tooFastForMid) {
       return buildCommand({
         phase: "powered",
-        throttle: clamp(0.012 + (relativeSpeedKmS * 4.5), 0.012, 0.09),
+        throttle: clamp(0.01 + (relativeSpeedKmS * 2.8), 0.01, midVelocityMatchThrottleMax),
         direction: velocityMatchDirection,
         mode: "navsys:orbital-refuel-velocity-match",
         rcsAssistProfile: "coarse",
@@ -351,7 +376,7 @@ export function planRefuelRendezvousCommand({
     }
     return buildCommand({
       phase: "powered",
-      throttle: clamp(0.02 + (refuelDistanceKm / 220), 0.02, 0.1),
+      throttle: clamp(0.015 + (refuelDistanceKm / 360), 0.015, midTransferThrottleMax),
       direction: interceptDirection,
       mode: "navsys:orbital-refuel-transfer-burn",
       rcsAssistProfile: "coarse",
@@ -370,7 +395,11 @@ export function planRefuelRendezvousCommand({
     if (highEnergyMismatch) {
       return buildCommand({
         phase: "powered",
-        throttle: clamp(0.03 + (Math.max(0, relativeSpeedKmS - desiredClosingKmS) * 1.8), 0.03, 0.16),
+        throttle: clamp(
+          0.02 + (Math.max(0, relativeSpeedKmS - desiredClosingKmS) * 1.2),
+          0.02,
+          farVelocityMatchThrottleMax,
+        ),
         direction: velocityMatchDirection,
         mode: "navsys:orbital-refuel-velocity-match",
         rationale: "High relative energy requires velocity-matching burn before precision closure.",
@@ -398,7 +427,7 @@ export function planRefuelRendezvousCommand({
     }
     return buildCommand({
       phase: "powered",
-      throttle: clamp(0.05 + (refuelDistanceKm / 320), 0.05, 0.18),
+      throttle: clamp(0.03 + (refuelDistanceKm / 720), 0.03, farTransferThrottleMax),
       direction: normalize(
         add(
           scale(interceptDirection, 0.84),
@@ -434,7 +463,7 @@ export function planRefuelRendezvousCommand({
 
   return buildCommand({
     phase: "powered",
-    throttle: clamp(0.08 + (refuelDistanceKm / 2_400), 0.08, 0.24),
+    throttle: clamp(0.05 + (refuelDistanceKm / 5_500), 0.05, longRangePhasingThrottleMax),
     direction: longRangePhasingDirection,
     mode: "navsys:orbital-refuel-phasing-burn",
     rationale: "Long-range phasing burn: reshape orbital period first, then converge for transfer.",

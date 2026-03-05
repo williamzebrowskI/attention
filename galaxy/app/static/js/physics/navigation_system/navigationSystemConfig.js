@@ -61,6 +61,10 @@ export const NAVIGATION_DEFAULTS = Object.freeze({
     moonLambertDiffCorrGain: 0.45,
     moonLambertDiffCorrMaxDvKmS: 0.35,
     moonLambertDiffCorrEpsKmS: 0.001,
+    moonLambertTliReacquireMissFactor: 2.2,
+    moonLambertTliReacquireClosingAwayKmS: 0.02,
+    moonLambertTliReacquireMissTrendKmS: 0.08,
+    moonLambertTliReacquireThrottleCap: 0.56,
     tliPeriapsisProtectMinKm: 130,
     tliPeriapsisRecoverTargetKm: 170,
     tliPeriapsisProtectThrottleMin: 0.16,
@@ -86,6 +90,11 @@ export const NAVIGATION_DEFAULTS = Object.freeze({
     refuelFinalApproachDistanceKm: 0.08,
     refuelCoastWindowHorizonSec: 2_400,
     refuelCoastWindowDistanceScale: 0.62,
+    refuelMidVelocityMatchThrottleMax: 0.06,
+    refuelMidTransferThrottleMax: 0.075,
+    refuelFarVelocityMatchThrottleMax: 0.1,
+    refuelFarTransferThrottleMax: 0.12,
+    refuelLongRangePhasingThrottleMax: 0.14,
   }),
 });
 

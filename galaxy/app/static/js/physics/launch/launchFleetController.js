@@ -107,12 +107,20 @@ const FLEET_MOON_PAD_WINDOW_MAX_WAIT_SEC = 180;
 const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
 // Keep orbit-recovery active in refuel demos to prevent periapsis collapse/reentry.
 const FLEET_REFUEL_DEMO_BYPASS_ORBIT_RECOVERY = false;
-const FLEET_REFUEL_SPEED_BRAKE_ENTER_EXCESS_KM_S = 0.22;
-const FLEET_REFUEL_SPEED_BRAKE_EXIT_EXCESS_KM_S = 0.14;
-const FLEET_REFUEL_SPEED_BRAKE_ENTER_APO_BUFFER_KM = 300;
-const FLEET_REFUEL_SPEED_BRAKE_EXIT_APO_BUFFER_KM = 200;
-const FLEET_REFUEL_SPEED_BRAKE_MIN_HOLD_SEC = 75;
-const FLEET_REFUEL_SPEED_BRAKE_EXIT_STABLE_SEC = 18;
+const FLEET_REFUEL_SPEED_BRAKE_ENTER_EXCESS_KM_S = 0.16;
+const FLEET_REFUEL_SPEED_BRAKE_EXIT_EXCESS_KM_S = 0.09;
+const FLEET_REFUEL_SPEED_BRAKE_ENTER_APO_BUFFER_KM = 120;
+const FLEET_REFUEL_SPEED_BRAKE_EXIT_APO_BUFFER_KM = 70;
+const FLEET_REFUEL_SPEED_BRAKE_MIN_HOLD_SEC = 45;
+const FLEET_REFUEL_SPEED_BRAKE_EXIT_STABLE_SEC = 10;
+const FLEET_REFUEL_SPEED_BRAKE_HARD_APO_BUFFER_KM = 600;
+const FLEET_REFUEL_SPEED_BRAKE_PRETRIM_MIN_PERIAPSIS_KM = 172;
+const FLEET_REFUEL_SPEED_BRAKE_PRETRIM_THROTTLE_MAX = 0.2;
+const FLEET_REFUEL_PLANNER_THROTTLE_CAP = 0.14;
+const FLEET_REFUEL_PLANNER_THROTTLE_CAP_HIGH_APO = 0.08;
+const FLEET_REFUEL_PLANNER_THROTTLE_CAP_CRITICAL_APO = 0.05;
+const FLEET_REFUEL_PLANNER_HIGH_APO_BUFFER_KM = 150;
+const FLEET_REFUEL_PLANNER_CRITICAL_APO_BUFFER_KM = 260;
 const FLEET_REFUEL_RECOVERY_BURN_WINDOW_SEC = 600;
 const FLEET_REFUEL_RECOVERY_EXIT_PERIAPSIS_KM = 144;
 const FLEET_REFUEL_RECOVERY_EXIT_RADIAL_MIN_KM_S = -0.0016;
@@ -1772,11 +1780,14 @@ export function createLaunchFleetController({
             };
           }
           const brakeEnterApoGateKm = Number.isFinite(targetAltitudeKm)
-            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_ENTER_APO_BUFFER_KM, 460)
-            : 700;
+            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_ENTER_APO_BUFFER_KM, 300)
+            : 420;
           const brakeExitApoGateKm = Number.isFinite(targetAltitudeKm)
-            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_EXIT_APO_BUFFER_KM, 430)
-            : 640;
+            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_EXIT_APO_BUFFER_KM, 250)
+            : 360;
+          const brakeHardApoGateKm = Number.isFinite(targetAltitudeKm)
+            ? Math.max(targetAltitudeKm + FLEET_REFUEL_SPEED_BRAKE_HARD_APO_BUFFER_KM, 900)
+            : 1200;
           const highEnergyEnter = (
             speedExcessKmS > FLEET_REFUEL_SPEED_BRAKE_ENTER_EXCESS_KM_S
             || (
@@ -1784,6 +1795,8 @@ export function createLaunchFleetController({
               && apoapsisNowKm > brakeEnterApoGateKm
             )
           );
+          const extremeHighEnergy = Number.isFinite(apoapsisNowKm)
+            && apoapsisNowKm > brakeHardApoGateKm;
           const highEnergyExitCandidate = (
             speedExcessKmS <= FLEET_REFUEL_SPEED_BRAKE_EXIT_EXCESS_KM_S
             && (
@@ -1818,7 +1831,9 @@ export function createLaunchFleetController({
               vehicle.refuelSpeedBrakeState.stableSec = 0;
             }
           }
-          const highEnergyRisk = Boolean(vehicle.refuelSpeedBrakeState.active) || highEnergyEnter;
+          const highEnergyRisk = Boolean(vehicle.refuelSpeedBrakeState.active)
+            || highEnergyEnter
+            || extremeHighEnergy;
           let plannerRcsProfile = "";
           let plannerRcsTranslationHint = false;
           let plannerMainEngineHint = false;
@@ -1926,20 +1941,38 @@ export function createLaunchFleetController({
               guidanceMode = "navsys:orbital-refuel-orbit-recovery-coast";
             }
           } else if (highEnergyRisk && refuelDistanceKm > refuelRcsOnlyDistanceKm) {
-            // Brake retrograde near periapsis to reduce apoapsis growth; coast otherwise.
+            // Brake retrograde near periapsis to reduce apoapsis growth.
+            // In severe overflow, allow a conservative pretrim burn if periapsis stays safely high.
+            const periWindowKm = extremeHighEnergy ? 65 : 40;
             const nearPeriapsisForBrake = Number.isFinite(periapsisNowKm)
               && Number.isFinite(altitudeKm)
-              && Math.abs(altitudeKm - periapsisNowKm) <= 35;
-            if (nearPeriapsisForBrake) {
-              requestedThrottle = clamp(0.14 + Math.max(0, speedExcessKmS * 0.48), 0.14, 0.44);
+              && Math.abs(altitudeKm - periapsisNowKm) <= periWindowKm;
+            const allowPretrim = extremeHighEnergy
+              && !nearPeriapsisForBrake
+              && Number.isFinite(periapsisNowKm)
+              && periapsisNowKm >= FLEET_REFUEL_SPEED_BRAKE_PRETRIM_MIN_PERIAPSIS_KM
+              && Number.isFinite(altitudeKm)
+              && altitudeKm > (Number.isFinite(targetAltitudeKm) ? (targetAltitudeKm + 350) : 500);
+            if (nearPeriapsisForBrake || allowPretrim) {
+              const minBrakeThrottle = allowPretrim ? 0.09 : 0.14;
+              const maxBrakeThrottle = allowPretrim
+                ? FLEET_REFUEL_SPEED_BRAKE_PRETRIM_THROTTLE_MAX
+                : 0.44;
+              requestedThrottle = clamp(
+                minBrakeThrottle + Math.max(0, speedExcessKmS * (allowPretrim ? 0.22 : 0.48)),
+                minBrakeThrottle,
+                maxBrakeThrottle,
+              );
               desiredDirection = normalize(
                 add(
-                  scale(prograde, -0.9),
-                  scale(directionHorizontal, 0.1),
+                  scale(prograde, allowPretrim ? -0.96 : -0.9),
+                  scale(directionHorizontal, allowPretrim ? 0.04 : 0.1),
                 ),
                 scale(prograde, -1),
               );
-              guidanceMode = "navsys:orbital-refuel-speed-brake";
+              guidanceMode = allowPretrim
+                ? "navsys:orbital-refuel-speed-brake-pretrim"
+                : "navsys:orbital-refuel-speed-brake";
             } else {
               requestedThrottle = 0;
               desiredDirection = prograde;
@@ -1978,6 +2011,41 @@ export function createLaunchFleetController({
               guidanceMode = "navsys:orbital-refuel-lock";
             } else if (closeRangeRecoveryBypass) {
               guidanceMode = `${guidanceMode}:periapsis-guard-pass`;
+            }
+            if (
+              requestedThrottle > 1e-4
+              && refuelDistanceKm > refuelRcsOnlyDistanceKm
+            ) {
+              const apoBufferKm = Number.isFinite(apoapsisNowKm) && Number.isFinite(targetAltitudeKm)
+                ? (apoapsisNowKm - targetAltitudeKm)
+                : 0;
+              let plannerThrottleCap = FLEET_REFUEL_PLANNER_THROTTLE_CAP;
+              if (apoBufferKm > FLEET_REFUEL_PLANNER_HIGH_APO_BUFFER_KM) {
+                plannerThrottleCap = Math.min(
+                  plannerThrottleCap,
+                  FLEET_REFUEL_PLANNER_THROTTLE_CAP_HIGH_APO,
+                );
+              }
+              if (apoBufferKm > FLEET_REFUEL_PLANNER_CRITICAL_APO_BUFFER_KM) {
+                plannerThrottleCap = Math.min(
+                  plannerThrottleCap,
+                  FLEET_REFUEL_PLANNER_THROTTLE_CAP_CRITICAL_APO,
+                );
+              }
+              requestedThrottle = Math.min(requestedThrottle, plannerThrottleCap);
+              if (apoBufferKm > FLEET_REFUEL_PLANNER_CRITICAL_APO_BUFFER_KM) {
+                const plannerDirection = normalize(desiredDirection, prograde);
+                const progradeDot = dot(plannerDirection, prograde);
+                if (progradeDot > 0.25) {
+                  requestedThrottle = 0;
+                  desiredDirection = prograde;
+                  guidanceMode = "navsys:orbital-refuel-apo-clamp-coast";
+                } else if (requestedThrottle > 1e-4) {
+                  guidanceMode = `${guidanceMode}:apo-clamped`;
+                }
+              } else if (plannerThrottleCap < (FLEET_REFUEL_PLANNER_THROTTLE_CAP - 1e-4)) {
+                guidanceMode = `${guidanceMode}:throttle-clamped`;
+              }
             }
           }
           if (
@@ -2179,6 +2247,26 @@ export function createLaunchFleetController({
           vehicle.moonTliTargetMissGateKm = null;
           vehicle.moonTliTargetBPlaneKm = null;
           vehicle.moonTliTargetPeriluneKm = null;
+        }
+      }
+      if (
+        vehicle.vehicleRole !== "tanker"
+        && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      ) {
+        const survivalRecovery = computeMoonSurvivalRecoveryOverride({
+          missionPhase: vehicle.missionPhase,
+          periapsisKm: Number(orbital?.periapsisKm),
+          altitudeKm: Number(orbital?.altitudeKm),
+          radialSpeedKmS: Number(orbital?.radialSpeedKmS),
+          prograde,
+          up,
+          availablePropellantKg,
+        });
+        if (survivalRecovery) {
+          requestedThrottle = clamp(Number(survivalRecovery.throttle) || 0, 0, 1);
+          desiredDirection = normalize(survivalRecovery.direction || prograde, prograde);
+          guidanceMode = `${String(survivalRecovery.mode || "navsys:moon-survival-periapsis-recovery")}:survival-priority`;
+          vehicle.moonGoNoGoReason = String(survivalRecovery.gateReason || "");
         }
       }
 

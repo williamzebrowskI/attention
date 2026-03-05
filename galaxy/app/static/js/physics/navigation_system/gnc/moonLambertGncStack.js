@@ -644,6 +644,47 @@ export function planMoonLambertGncCommand({
       scale(predictedState.relativePositionKm, 1 / predictedMissDistanceKm),
     )
     : Number.NaN;
+  const moonClosingSpeedKmS = Number(metrics.moonClosingSpeedKmS);
+  const missTrendKmS = Number(metrics.moonProjectedMissTrendKmS);
+  const missGateKm = Math.max(
+    Number(plannerConfig?.moonMidcourseMissDistanceKm) || 95_000,
+    Number(plannerConfig?.moonCaptureGateDistanceKm) || 55_000,
+  );
+  const tliReacquireMissFactor = Math.max(
+    1.2,
+    Number(plannerConfig?.moonLambertTliReacquireMissFactor) || 2.2,
+  );
+  const tliReacquireClosingAwayKmS = Math.max(
+    0.001,
+    Number(plannerConfig?.moonLambertTliReacquireClosingAwayKmS) || 0.02,
+  );
+  const tliReacquireMissTrendKmS = Math.max(
+    0.001,
+    Number(plannerConfig?.moonLambertTliReacquireMissTrendKmS) || 0.08,
+  );
+  const tliReacquireThrottleCap = clamp(
+    Number(plannerConfig?.moonLambertTliReacquireThrottleCap) || 0.56,
+    0.18,
+    0.9,
+  );
+  const tliPeriapsisWindowSec = Math.max(
+    30,
+    Number(plannerConfig?.tliPeriapsisBurnWindowSec) || 260,
+  );
+  const timeToPeriapsisSec = Number(metrics.timeToPeriapsisSec);
+  const nearPeriapsisBurnWindow = Number.isFinite(timeToPeriapsisSec)
+    ? Math.abs(timeToPeriapsisSec) <= tliPeriapsisWindowSec
+    : false;
+  const missFarFromGate = Number.isFinite(predictedMissDistanceKm)
+    && predictedMissDistanceKm > (missGateKm * tliReacquireMissFactor);
+  const movingAwayFromMoon = Number.isFinite(moonClosingSpeedKmS)
+    && moonClosingSpeedKmS < (-tliReacquireClosingAwayKmS);
+  const missDiverging = Number.isFinite(missTrendKmS)
+    && missTrendKmS > tliReacquireMissTrendKmS;
+  const tliReacquireHold = isTli
+    && missFarFromGate
+    && (movingAwayFromMoon || missDiverging)
+    && !nearPeriapsisBurnWindow;
 
   moonRuntime.approach.projectedPeriluneAltitudeKm = Number.isFinite(predictedPeriluneAltitudeKm)
     ? predictedPeriluneAltitudeKm
@@ -680,13 +721,28 @@ export function planMoonLambertGncCommand({
     ? "navsys:gnc-lambert-tli-coast"
     : "navsys:gnc-lambert-midcourse-coast";
 
-  if (!nearApproach && deltaVNeedKmS > deadbandKmS) {
+  if (tliReacquireHold) {
+    phaseOut = "coast";
+    throttleOut = 0;
+    directionOut = makeCoastDirection({
+      toMoonDirection: toMoon,
+      tangent,
+      up,
+    });
+    mode = "navsys:gnc-lambert-tli-reacquire-window";
+  } else if (!nearApproach && deltaVNeedKmS > deadbandKmS) {
     phaseOut = "powered";
     throttleOut = clamp(deltaVNeedKmS / throttleScaleKmS, throttleMin, throttleMax);
+    if (isTli && missFarFromGate) {
+      throttleOut = Math.min(throttleOut, tliReacquireThrottleCap);
+    }
     directionOut = normalize(commandedDvKmS, directionOut);
     mode = isTli
       ? "navsys:gnc-lambert-tli-burn"
       : "navsys:gnc-lambert-midcourse-correction";
+    if (isTli && missFarFromGate) {
+      mode = `${mode}+reacquire`;
+    }
     if (length(diffCorr.correctionDvKmS) > 1e-4) {
       mode = `${mode}+diffcorr`;
     }
@@ -718,10 +774,7 @@ export function planMoonLambertGncCommand({
       requestedMode: "global-optimal-lambert-differential-gnc",
       tofSec: Number(solution.tofSec),
       missDistanceKm: Number.isFinite(predictedMissDistanceKm) ? predictedMissDistanceKm : null,
-      missGateKm: Math.max(
-        Number(plannerConfig?.moonMidcourseMissDistanceKm) || 95_000,
-        Number(plannerConfig?.moonCaptureGateDistanceKm) || 55_000,
-      ),
+      missGateKm,
       bPlaneErrorKm: Number.isFinite(predictedBPlaneErrorKm) ? predictedBPlaneErrorKm : null,
       periluneEstimateKm: Number.isFinite(predictedPeriluneAltitudeKm) ? predictedPeriluneAltitudeKm : null,
       deltaVNeedKmS: Number.isFinite(deltaVNeedKmS) ? deltaVNeedKmS : null,
@@ -732,6 +785,18 @@ export function planMoonLambertGncCommand({
       predictedClosingSpeedKmS: Number.isFinite(predictedClosingSpeedKmS)
         ? predictedClosingSpeedKmS
         : null,
+      moonClosingSpeedKmS: Number.isFinite(moonClosingSpeedKmS)
+        ? moonClosingSpeedKmS
+        : null,
+      missTrendKmS: Number.isFinite(missTrendKmS)
+        ? missTrendKmS
+        : null,
+      tliReacquireHold,
+      nearPeriapsisBurnWindow,
+      tliReacquireMissFactor,
+      tliReacquireClosingAwayKmS,
+      tliReacquireMissTrendKmS,
+      tliReacquireThrottleCap,
       solveReady: true,
     },
   };

@@ -1479,6 +1479,30 @@ export function createLaunchController(options) {
     });
     runtime.moonEarthGuardActive = constrainedCommand.applied;
     const modeBase = String(command.mode || "navigation-system");
+    const survivalRecoveryOverride = computeMoonSurvivalRecoveryOverride({
+      missionPhase: navPhase,
+      periapsisKm: Number(orbital?.periapsisKm),
+      altitudeKm: Number(orbital?.altitudeKm),
+      radialSpeedKmS: Number(orbital?.radialSpeedKmS),
+      prograde: tangent,
+      up,
+      availablePropellantKg: Number(runtime.stagePropellantKg),
+    });
+    if (survivalRecoveryOverride) {
+      const overrideMode = constrainedCommand.applied
+        ? `${String(survivalRecoveryOverride.mode || modeBase)}+${constrainedCommand.reason}:survival-priority`
+        : `${String(survivalRecoveryOverride.mode || modeBase)}:survival-priority`;
+      runtime.missionPhaseGateReason = String(survivalRecoveryOverride.gateReason || "");
+      return {
+        phase: "powered",
+        throttle: clamp(Number(survivalRecoveryOverride.throttle) || 0, 0, 1),
+        direction: normalize(
+          survivalRecoveryOverride.direction || tangent,
+          constrainedCommand.direction,
+        ),
+        mode: overrideMode,
+      };
+    }
     const goNoGo = evaluateMoonTliGoNoGo({
       missionId: runtime.mission.selectedId,
       missionPhase: navPhase,
