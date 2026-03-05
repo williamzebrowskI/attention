@@ -134,10 +134,12 @@ function runScenario({
   name,
   runtimeOptions = {},
   profileFn = null,
+  orbitalProfileFn = null,
   maxSimSeconds = 1800,
 }) {
   const runtime = makeRuntime(runtimeOptions);
   const visited = new Set();
+  const phaseFirstSeenSec = new Map();
   const initialShipPropKg = runtime.ship.stagePropellantKg;
   const initialTankerPropKg = runtime.tanker.stagePropellantKg;
 
@@ -145,6 +147,9 @@ function runScenario({
     runtime.nowSec += 1;
     const currentPhase = String(runtime.ship.refuelTransferState?.phase || PHASE.IDLE);
     const target = buildTarget(currentPhase, runtime.nowSec, profileFn);
+    const orbitalState = typeof orbitalProfileFn === "function"
+      ? (orbitalProfileFn(currentPhase, runtime.nowSec, runtime) || runtime.orbitalState)
+      : runtime.orbitalState;
 
     const mode = updateFleetTransferGuidance({
       vehicle: runtime.ship,
@@ -152,7 +157,7 @@ function runScenario({
       shipState: runtime.shipState,
       tankerState: runtime.tankerState,
       earthState: runtime.earthState,
-      orbitalState: runtime.orbitalState,
+      orbitalState,
       prograde: { x: 0, y: 1, z: 0 },
       requestedThrottle: 0,
       desiredDirection: { x: 0, y: 1, z: 0 },
@@ -178,6 +183,9 @@ function runScenario({
 
     const phaseNow = String(runtime.ship.refuelTransferState?.phase || PHASE.IDLE);
     visited.add(phaseNow);
+    if (!phaseFirstSeenSec.has(phaseNow)) {
+      phaseFirstSeenSec.set(phaseNow, runtime.nowSec);
+    }
     if (massStep.completed || phaseNow === PHASE.COMPLETE) {
       break;
     }
@@ -189,6 +197,7 @@ function runScenario({
     completed: String(runtime.ship.refuelTransferState?.phase || "") === PHASE.COMPLETE,
     simSeconds: runtime.nowSec,
     visited,
+    phaseFirstSeenSec,
     finalPhase: String(runtime.ship.refuelTransferState?.phase || PHASE.IDLE),
     shipPropellantKg: runtime.ship.stagePropellantKg,
     tankerPropellantKg: runtime.tanker.stagePropellantKg,
@@ -208,6 +217,17 @@ function assertFullDockPath(result, label) {
   assert(result.visited.has(PHASE.TRANSFERRING), `${label}: missing transferring`);
   assert(result.visited.has(PHASE.UNDOCKING), `${label}: missing undocking`);
   assert(result.visited.has(PHASE.COMPLETE), `${label}: missing complete`);
+}
+
+function firstSeenSec(result, phases = []) {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < phases.length; i += 1) {
+    const sec = Number(result.phaseFirstSeenSec.get(phases[i]));
+    if (Number.isFinite(sec)) {
+      earliest = Math.min(earliest, sec);
+    }
+  }
+  return Number.isFinite(earliest) ? earliest : Number.NaN;
 }
 
 function main() {
@@ -241,6 +261,85 @@ function main() {
         assert(
           result.tankerPropellantKg >= 149_500 && result.tankerPropellantKg <= 151_500,
           `reserve_limited: tanker should end near reserve, got ${result.tankerPropellantKg.toFixed(0)} kg`,
+        );
+      },
+    },
+    {
+      name: "edge_low_periapsis_recovery_then_dock",
+      runtimeOptions: { shipPropellantKg: 450_000, tankerPropellantKg: 1_250_000 },
+      maxSimSeconds: 2200,
+      orbitalProfileFn: (_phase, nowSec) => {
+        if (nowSec <= 180) {
+          return {
+            periapsisKm: 114,
+            apoapsisKm: 178,
+            radialSpeedKmS: 0.0008,
+            timeToApoapsisSec: 70,
+            timeToPeriapsisSec: 2500,
+            orbitalPeriodSec: 5400,
+          };
+        }
+        return {
+          periapsisKm: 150,
+          apoapsisKm: 156,
+          radialSpeedKmS: 0.0003,
+          timeToApoapsisSec: 130,
+          timeToPeriapsisSec: 2450,
+          orbitalPeriodSec: 5400,
+        };
+      },
+      verify: (result) => {
+        assertFullDockPath(result, "low_periapsis_recovery_then_dock");
+        const transferSec = firstSeenSec(result, [PHASE.PHASING, PHASE.TRANSFER, PHASE.VELOCITY]);
+        assert(
+          Number.isFinite(transferSec) && transferSec > 90,
+          `low_periapsis_recovery_then_dock: transfer started too early (${transferSec})`,
+        );
+      },
+    },
+    {
+      name: "edge_high_apoapsis_trim_then_dock",
+      runtimeOptions: { shipPropellantKg: 450_000, tankerPropellantKg: 1_250_000 },
+      maxSimSeconds: 2200,
+      profileFn: (phase, nowSec) => {
+        const base = defaultProfile(phase);
+        if ((phase === PHASE.IDLE || phase === PHASE.STABILIZE) && nowSec <= 160) {
+          return {
+            ...base,
+            distanceKm: 24,
+            relativeSpeedKmS: 0.018,
+            closingSpeedKmS: 0.0022,
+            altitudeErrorKm: 2.5,
+            radialSpeedErrorKmS: 0.001,
+          };
+        }
+        return base;
+      },
+      orbitalProfileFn: (_phase, nowSec) => {
+        if (nowSec <= 160) {
+          return {
+            periapsisKm: 149,
+            apoapsisKm: 540,
+            radialSpeedKmS: 0.0004,
+            timeToApoapsisSec: 2500,
+            timeToPeriapsisSec: 80,
+            orbitalPeriodSec: 5400,
+          };
+        }
+        return {
+          periapsisKm: 151,
+          apoapsisKm: 158,
+          radialSpeedKmS: 0.00025,
+          timeToApoapsisSec: 120,
+          timeToPeriapsisSec: 2480,
+          orbitalPeriodSec: 5400,
+        };
+      },
+      verify: (result) => {
+        assertFullDockPath(result, "high_apoapsis_trim_then_dock");
+        assert(
+          result.visited.has(PHASE.STABILIZE),
+          "high_apoapsis_trim_then_dock: missing stabilize_orbit",
         );
       },
     },
@@ -299,6 +398,45 @@ function main() {
       },
       verify: (result) => {
         assertFullDockPath(result, "off_plane_3d_alignment");
+      },
+    },
+    {
+      name: "edge_close_range_6km_track_10km_altitude_delta",
+      runtimeOptions: { shipPropellantKg: 450_000, tankerPropellantKg: 1_250_000 },
+      maxSimSeconds: 2100,
+      profileFn: (phase) => {
+        const base = defaultProfile(phase);
+        if (phase === PHASE.IDLE || phase === PHASE.STABILIZE) {
+          return {
+            ...base,
+            distanceKm: 6,
+            relativeSpeedKmS: 0.0105,
+            closingSpeedKmS: 0.0012,
+            altitudeErrorKm: 10,
+            radialSpeedErrorKmS: 0.0019,
+            relativePosXKm: 10,
+            relativePosZKm: 0.8,
+            relativeVelZKmS: -0.0005,
+          };
+        }
+        if (phase === PHASE.TRANSFER || phase === PHASE.VELOCITY) {
+          return {
+            ...base,
+            distanceKm: phase === PHASE.TRANSFER ? 2.6 : 0.32,
+            altitudeErrorKm: phase === PHASE.TRANSFER ? 2.8 : 0.28,
+            radialSpeedErrorKmS: phase === PHASE.TRANSFER ? 0.00045 : 0.00012,
+            relativePosXKm: phase === PHASE.TRANSFER ? 2.8 : 0.2,
+            relativePosZKm: phase === PHASE.TRANSFER ? 0.7 : 0.05,
+            relativeVelZKmS: phase === PHASE.TRANSFER ? -0.00012 : -0.00002,
+          };
+        }
+        if (phase === PHASE.HOLD || phase === PHASE.FINAL || phase === PHASE.LOCK || phase === PHASE.TRANSFERRING) {
+          return { ...base, relativePosXKm: 0, relativePosZKm: 0, relativeVelZKmS: 0 };
+        }
+        return base;
+      },
+      verify: (result) => {
+        assertFullDockPath(result, "close_range_6km_track_10km_altitude_delta");
       },
     },
   ];

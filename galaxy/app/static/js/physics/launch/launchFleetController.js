@@ -14,10 +14,8 @@ import {
 } from "./launchMissions.js";
 import {
   add,
-  angleBetweenRadians,
   clamp,
   cross,
-  degrees,
   dot,
   length,
   rad,
@@ -78,6 +76,7 @@ import {
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
 } from "./lunar/constants.js";
+import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 import { NAVIGATION_DEFAULTS } from "../navigation_system/navigationSystemConfig.js";
 import {
   NAVIGATION_MISSION_IDS,
@@ -1315,6 +1314,8 @@ export function createLaunchFleetController({
       stageActuator: createActuatorState(initialBodyAxis),
       stageMassModel: createMassModelState(),
       moonBurnAttitudeGateActive: false,
+      moonBurnAttitudeGateDirection: null,
+      moonBurnAttitudeGateAlignSec: 0,
       moonEarthGuardActive: false,
       moonProjectedPeriluneAltitudeKm: null,
       moonBPlaneErrorKm: null,
@@ -2358,7 +2359,6 @@ export function createLaunchFleetController({
       let throttleCommand = availablePropellantKg > 1e-6
         ? requestedThrottleCommand
         : 0;
-      let moonAttitudeGateApplied = false;
       const moonAttitudeGateEligible = (
         availablePropellantKg > 1e-6
         && requestedThrottleCommand > 1e-3
@@ -2366,22 +2366,24 @@ export function createLaunchFleetController({
         && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
         && FLEET_MOON_BURN_ATTITUDE_GATE_PHASES.has(String(vehicle.missionPhase || ""))
       );
-      if (moonAttitudeGateEligible || vehicle.moonBurnAttitudeGateActive) {
-        const currentAxis = normalize(
-          vehicle.stageActuator?.directionActual || desiredDirection,
-          desiredDirection,
-        );
-        const attitudeErrorDeg = degrees(angleBetweenRadians(currentAxis, desiredDirection));
-        const gateWasActive = Boolean(vehicle.moonBurnAttitudeGateActive);
-        const shouldGate = gateWasActive
-          ? attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG
-          : attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG;
-        if (shouldGate && availablePropellantKg > 1e-6) {
-          throttleCommand = 0;
-          moonAttitudeGateApplied = true;
-        }
+      const moonAttitudeGate = evaluateMoonBurnAttitudeGate({
+        gateEligible: moonAttitudeGateEligible,
+        gateWasActive: Boolean(vehicle.moonBurnAttitudeGateActive),
+        currentAxis: vehicle.stageActuator?.directionActual || desiredDirection,
+        desiredDirection,
+        latchedDirection: vehicle.moonBurnAttitudeGateDirection,
+        alignStableSec: vehicle.moonBurnAttitudeGateAlignSec,
+        dtSeconds: safeDtSeconds,
+        enterErrorDeg: MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
+        exitErrorDeg: MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
+      });
+      desiredDirection = moonAttitudeGate.requestedDirection;
+      if (moonAttitudeGate.throttleSuppressed && availablePropellantKg > 1e-6) {
+        throttleCommand = 0;
       }
-      vehicle.moonBurnAttitudeGateActive = moonAttitudeGateApplied;
+      vehicle.moonBurnAttitudeGateActive = moonAttitudeGate.gateActive;
+      vehicle.moonBurnAttitudeGateDirection = moonAttitudeGate.latchedDirection;
+      vehicle.moonBurnAttitudeGateAlignSec = moonAttitudeGate.alignStableSec;
       vehicle.stageActuator = applyActuatorModel(
         vehicle.stageActuator,
         {
@@ -2399,7 +2401,7 @@ export function createLaunchFleetController({
         vehicle.stageActuator?.directionActual || desiredDirection,
         desiredDirection,
       );
-      if (moonAttitudeGateApplied && !guidanceMode.includes("attitude-align")) {
+      if (moonAttitudeGate.gateActive && !guidanceMode.includes("attitude-align")) {
         guidanceMode = `${guidanceMode}+attitude-align`;
       }
       const ambientPressurePa = Number(atmosphereSample?.pressurePa) || 0;
@@ -2595,6 +2597,8 @@ export function createLaunchFleetController({
         vehicle.stageActuator = createActuatorState(normalize(relVelForActuator, upForActuator));
         vehicle.stageMassModel = createMassModelState();
         vehicle.moonBurnAttitudeGateActive = false;
+        vehicle.moonBurnAttitudeGateDirection = null;
+        vehicle.moonBurnAttitudeGateAlignSec = 0;
         if (typeof emitLaunchEvent === "function") {
           emitLaunchEvent("fleet_mission_stage_changed", {
             shipId: vehicle.id,

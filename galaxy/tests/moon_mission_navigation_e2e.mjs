@@ -451,9 +451,158 @@ function runGateHoldFailureMatrix() {
   console.log("PASS moon-nav-e2e gate-hold matrix (expected failures held at gates)");
 }
 
+function runRepeatedHoldPersistenceMatrix() {
+  function createUpdater() {
+    const nav = createNavigationSystem({
+      missionId: NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN,
+    });
+    const vectors = baseVectors();
+    let timestampSec = 0;
+    function updateOnce({ orbital, moonOrbit = null, metrics, dtSec = 60 }) {
+      timestampSec += dtSec;
+      return nav.update({
+        measurement: {
+          position: vectors.shipEarthPositionKm,
+          velocity: vectors.shipEarthVelocityKmS,
+        },
+        orbital,
+        moonOrbit,
+        metrics,
+        targetVectors: vectors,
+        timestampSec,
+      });
+    }
+    return { nav, updateOnce };
+  }
+
+  {
+    const { nav, updateOnce } = createUpdater();
+    updateOnce({
+      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      metrics: baseMetrics({ refuelFillFraction: 0.2 }),
+    });
+    updateOnce({
+      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      metrics: baseMetrics({ refuelFillFraction: 0.95 }),
+    });
+    assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN, "repeat-hold setup A: expected tli_burn");
+
+    for (let i = 0; i < 5; i += 1) {
+      const blocked = updateOnce({
+        orbital: makeOrbital({ periapsisKm: 118, apoapsisKm: 240000, specificEnergy: -0.85 }),
+        metrics: baseMetrics({
+          refuelFillFraction: 0.95,
+          moonClosingSpeedKmS: -0.015,
+          moonProjectedMissDistanceKm: 365000,
+          moonBPlaneErrorKm: 310000,
+          moonProjectedPeriluneAltitudeKm: 210000,
+        }),
+        dtSec: 90,
+      });
+      assert(
+        blocked.state.missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN,
+        `repeat-hold A.${i}: should remain in tli_burn`,
+      );
+    }
+
+    const recovered = updateOnce({
+      orbital: makeOrbital({ periapsisKm: 165, apoapsisKm: 382000, specificEnergy: -0.05 }),
+      metrics: baseMetrics({
+        refuelFillFraction: 0.95,
+        moonClosingSpeedKmS: 0.055,
+        moonProjectedMissDistanceKm: 42000,
+        moonBPlaneErrorKm: 21000,
+        moonProjectedPeriluneAltitudeKm: 125,
+      }),
+      dtSec: 120,
+    });
+    assert(
+      recovered.state.missionPhase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
+      "repeat-hold A recover: expected transition to coast_to_moon",
+    );
+  }
+
+  {
+    const { nav, updateOnce } = createUpdater();
+    updateOnce({
+      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      metrics: baseMetrics({ refuelFillFraction: 0.2 }),
+    });
+    updateOnce({
+      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      metrics: baseMetrics({ refuelFillFraction: 0.95 }),
+    });
+    updateOnce({
+      orbital: makeOrbital({ periapsisKm: 160, apoapsisKm: 382000, specificEnergy: -0.05 }),
+      metrics: baseMetrics({
+        refuelFillFraction: 0.95,
+        moonClosingSpeedKmS: 0.06,
+        moonProjectedMissDistanceKm: 45000,
+        moonBPlaneErrorKm: 22000,
+        moonProjectedPeriluneAltitudeKm: 130,
+      }),
+    });
+    updateOnce({
+      orbital: makeOrbital({ periapsisKm: 170, apoapsisKm: 392000, specificEnergy: 0.35, altitudeKm: 3000 }),
+      metrics: baseMetrics({
+        moonDistanceKm: 50000,
+        moonAltitudeKm: 48200,
+        moonClosingSpeedKmS: 0.55,
+        moonProjectedMissDistanceKm: 12000,
+        moonBPlaneErrorKm: 4500,
+        moonProjectedPeriluneAltitudeKm: 150,
+        earthDistanceKm: 130000,
+      }),
+      dtSec: 240,
+    });
+    assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_INSERTION, "repeat-hold setup B: expected lunar_insertion");
+
+    for (let i = 0; i < 4; i += 1) {
+      const held = updateOnce({
+        orbital: makeOrbital({ periapsisKm: 200, apoapsisKm: 395000, specificEnergy: 0.4, altitudeKm: 3200 }),
+        moonOrbit: makeMoonOrbit({ specificEnergy: 0.08, apoapsisKm: 52000, periapsisKm: 18, speedKmS: 2.5 }),
+        metrics: baseMetrics({
+          moonDistanceKm: 11000,
+          moonAltitudeKm: 9800,
+          moonClosingSpeedKmS: 0.16,
+          moonProjectedMissDistanceKm: 8500,
+          moonBPlaneErrorKm: 5200,
+          moonProjectedPeriluneAltitudeKm: 1500,
+        }),
+        dtSec: 180,
+      });
+      assert(
+        held.state.missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
+        `repeat-hold B.${i}: should remain in lunar_insertion`,
+      );
+    }
+
+    const captureRecovered = updateOnce({
+      orbital: makeOrbital({ periapsisKm: 200, apoapsisKm: 395000, specificEnergy: 0.4, altitudeKm: 3200 }),
+      moonOrbit: makeMoonOrbit({ specificEnergy: -0.12, apoapsisKm: 8800, periapsisKm: 125, speedKmS: 1.18 }),
+      metrics: baseMetrics({
+        moonDistanceKm: 6800,
+        moonAltitudeKm: 5050,
+        moonClosingSpeedKmS: 0.035,
+        moonProjectedMissDistanceKm: 2200,
+        moonBPlaneErrorKm: 900,
+        moonProjectedPeriluneAltitudeKm: 135,
+      }),
+      dtSec: 180,
+    });
+    assert(
+      captureRecovered.state.missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_HOLD,
+      "repeat-hold B recover: expected transition to lunar_orbit_hold",
+    );
+  }
+
+  console.log("PASS moon-nav-e2e repeated hold persistence matrix");
+}
+
 function main() {
   runNominalMoonMissionE2E();
   runGateHoldFailureMatrix();
+  runRepeatedHoldPersistenceMatrix();
 }
 
 main();

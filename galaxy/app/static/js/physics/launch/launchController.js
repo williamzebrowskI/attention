@@ -117,6 +117,7 @@ import {
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_PHASES,
 } from "./lunar/constants.js";
+import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 
 const MIN_ROCKET_MASS_KG = 500;
 const PRIMARY_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 2_400_000;
@@ -914,6 +915,8 @@ export function createLaunchController(options) {
     moonDepartureWindowLaunchTimeMs: null,
     moonEarthGuardActive: false,
     moonBurnAttitudeGateActive: false,
+    moonBurnAttitudeGateDirection: null,
+    moonBurnAttitudeGateAlignSec: 0,
     missionPhaseGateReason: "",
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
@@ -1741,6 +1744,8 @@ export function createLaunchController(options) {
     runtime.moonDepartureWindowLaunchTimeMs = null;
     runtime.moonEarthGuardActive = false;
     runtime.moonBurnAttitudeGateActive = false;
+    runtime.moonBurnAttitudeGateDirection = null;
+    runtime.moonBurnAttitudeGateAlignSec = 0;
     runtime.missionPhaseGateReason = "";
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
@@ -3275,7 +3280,7 @@ export function createLaunchController(options) {
             dynamicPressurePa,
             bodyKind,
           });
-        const steeringDirection = qAlphaSteering.direction;
+        let steeringDirection = qAlphaSteering.direction;
         const pressurePa = Number(atmo?.pressurePa) || 0;
         let throttleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
         let canThrust = Boolean(stageForStep);
@@ -3310,23 +3315,24 @@ export function createLaunchController(options) {
           && runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
           && MOON_BURN_ATTITUDE_GATE_PHASES.has(moonBurnPhase)
         );
-        let moonAttitudeGateApplied = false;
-        if (moonAttitudeGateEligible || runtime.moonBurnAttitudeGateActive) {
-          const currentAxis = normalize(
-            runtime.stageActuator?.directionActual || steeringDirection,
-            steeringDirection,
-          );
-          const attitudeErrorDeg = degrees(angleBetweenRadians(currentAxis, steeringDirection));
-          const gateWasActive = Boolean(runtime.moonBurnAttitudeGateActive);
-          const shouldGate = gateWasActive
-            ? attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG
-            : attitudeErrorDeg > MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG;
-          if (shouldGate && canThrust) {
-            throttleCommand = 0;
-            moonAttitudeGateApplied = true;
-          }
+        const moonAttitudeGate = evaluateMoonBurnAttitudeGate({
+          gateEligible: moonAttitudeGateEligible,
+          gateWasActive: Boolean(runtime.moonBurnAttitudeGateActive),
+          currentAxis: runtime.stageActuator?.directionActual || steeringDirection,
+          desiredDirection: steeringDirection,
+          latchedDirection: runtime.moonBurnAttitudeGateDirection,
+          alignStableSec: runtime.moonBurnAttitudeGateAlignSec,
+          dtSeconds,
+          enterErrorDeg: MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
+          exitErrorDeg: MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
+        });
+        steeringDirection = moonAttitudeGate.requestedDirection;
+        if (moonAttitudeGate.throttleSuppressed && canThrust) {
+          throttleCommand = 0;
         }
-        runtime.moonBurnAttitudeGateActive = moonAttitudeGateApplied;
+        runtime.moonBurnAttitudeGateActive = moonAttitudeGate.gateActive;
+        runtime.moonBurnAttitudeGateDirection = moonAttitudeGate.latchedDirection;
+        runtime.moonBurnAttitudeGateAlignSec = moonAttitudeGate.alignStableSec;
 
         runtime.stageActuator = applyActuatorModel(runtime.stageActuator, {
           requestedThrottle: canThrust ? throttleCommand : 0,
@@ -4552,6 +4558,8 @@ export function createLaunchController(options) {
         ? Number(runtime.moonDepartureWindowLaunchTimeMs)
         : null,
       moonBurnAttitudeGateActive: Boolean(runtime.moonBurnAttitudeGateActive),
+      moonBurnAttitudeGateDirection: cloneVectorOrNull(runtime.moonBurnAttitudeGateDirection),
+      moonBurnAttitudeGateAlignSec: Math.max(0, finiteNumber(runtime.moonBurnAttitudeGateAlignSec, 0)),
       missionPhaseGateReason: String(runtime.missionPhaseGateReason || ""),
       lastTrackedPositionKm: cloneVectorOrNull(runtime.lastTrackedPositionKm),
       lastSurfaceSample: cloneJson(runtime.lastSurfaceSample),
@@ -4665,6 +4673,8 @@ export function createLaunchController(options) {
       ? Number(snapshot.moonDepartureWindowLaunchTimeMs)
       : null;
     runtime.moonBurnAttitudeGateActive = Boolean(snapshot.moonBurnAttitudeGateActive);
+    runtime.moonBurnAttitudeGateDirection = cloneVectorOrNull(snapshot.moonBurnAttitudeGateDirection);
+    runtime.moonBurnAttitudeGateAlignSec = Math.max(0, finiteNumber(snapshot.moonBurnAttitudeGateAlignSec, 0));
     runtime.missionPhaseGateReason = String(snapshot.missionPhaseGateReason || "");
     runtime.lastTrackedPositionKm = cloneVectorOrNull(snapshot.lastTrackedPositionKm);
     runtime.lastSurfaceSample = cloneJson(snapshot.lastSurfaceSample);
