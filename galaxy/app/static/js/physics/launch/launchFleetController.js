@@ -263,6 +263,18 @@ function fleetMissionPhaseGateReason({
       if (transferPhase === "docked_lock") {
         return "Dock lock achieved: initializing transfer line and pressure equalization.";
       }
+      if (transferPhase === "stabilize_orbit") {
+        return "Orbit stabilization gate: securing periapsis/apoapsis and radial-rate bounds before rendezvous.";
+      }
+      if (transferPhase === "phasing") {
+        return "Phasing gate: adjusting orbital period to synchronize rendezvous timing with locked tanker.";
+      }
+      if (transferPhase === "transfer") {
+        return "Transfer gate: reducing long-range separation while holding bounded orbital geometry.";
+      }
+      if (transferPhase === "velocity_match") {
+        return "Velocity-match gate: bleeding relative speed before hold-point entry.";
+      }
       if (transferPhase === "hold_point" || transferPhase === "final_approach") {
         return "Docking hold-point active: stabilizing relative position/attitude before hard-dock.";
       }
@@ -340,6 +352,18 @@ function fleetMissionPhaseGateReason({
     }
     if (transferPhase === "docked_lock") {
       return "Moon campaign dock lock achieved: preparing propellant transfer.";
+    }
+    if (transferPhase === "stabilize_orbit") {
+      return "Moon campaign orbit stabilization gate: securing safe Earth parking geometry before rendezvous.";
+    }
+    if (transferPhase === "phasing") {
+      return "Moon campaign phasing gate: synchronizing orbital period with tanker target.";
+    }
+    if (transferPhase === "transfer") {
+      return "Moon campaign transfer gate: closing range with bounded orbital energy.";
+    }
+    if (transferPhase === "velocity_match") {
+      return "Moon campaign velocity-match gate: damping closure before hold-point entry.";
     }
     if (transferPhase === "hold_point" || transferPhase === "final_approach") {
       return "Moon campaign docking hold-point: matching attitude and closure corridor.";
@@ -1802,6 +1826,7 @@ export function createLaunchFleetController({
           shipState,
           tankerState,
           earthState,
+          orbitalState: orbital,
           prograde,
           requestedThrottle: 0,
           desiredDirection: directionToTarget,
@@ -1824,14 +1849,16 @@ export function createLaunchFleetController({
         }
         const refuelPeriapsisKm = Number(orbital?.periapsisKm);
         const refuelRadialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
+        const refuelTransferPhase = String(refuelTransferDecision?.state?.phase || "");
         if (
-          Number.isFinite(refuelPeriapsisKm)
-          && refuelPeriapsisKm < 132
-          && refuelRadialSpeedKmS < -0.0012
+          refuelTransferPhase === "stabilize_orbit"
+          && Number.isFinite(refuelPeriapsisKm)
+          && refuelPeriapsisKm < 128
+          && refuelRadialSpeedKmS < -0.0015
         ) {
           requestedThrottle = Math.max(
             requestedThrottle,
-            clamp(0.16 + ((132 - refuelPeriapsisKm) / 120), 0.16, 0.42),
+            clamp(0.14 + ((128 - refuelPeriapsisKm) / 140), 0.14, 0.42),
           );
           desiredDirection = normalize(
             add(
@@ -2020,6 +2047,7 @@ export function createLaunchFleetController({
             shipState,
             tankerState: moonRefuelTankerState,
             earthState,
+            orbitalState: orbital,
             prograde,
             requestedThrottle: 0,
             desiredDirection: moonRefuelDirection,

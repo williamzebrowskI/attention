@@ -62,41 +62,41 @@ function fromHillFrame(vector, frame) {
 function desiredClosingSpeedKmS(distanceKm) {
   const d = Math.max(0, Number(distanceKm) || 0);
   if (d > 160) {
-    return clamp(d / 55_000, 0.0018, 0.0042);
+    return clamp(d / 40_000, 0.002, 0.008);
   }
   if (d > 60) {
-    return clamp(d / 62_000, 0.001, 0.0022);
+    return clamp(d / 32_000, 0.0015, 0.005);
   }
   if (d > 20) {
-    return clamp(d / 50_000, 0.00035, 0.0011);
+    return clamp(d / 24_000, 0.0008, 0.003);
   }
   if (d > 5) {
-    return clamp(d / 42_000, 0.00008, 0.00035);
+    return clamp(d / 16_000, 0.0003, 0.0012);
   }
   if (d > 1) {
-    return clamp(d / 36_000, 0.00002, 0.00009);
+    return clamp(d / 10_000, 0.00012, 0.0007);
   }
-  return clamp(d / 40_000, 0.000005, 0.00003);
+  return clamp(d / 5_000, 0.00004, 0.0003);
 }
 
 function controllerNaturalFrequency(distanceKm) {
   const d = Math.max(0, Number(distanceKm) || 0);
   if (d > 160) {
-    return 0.00022;
+    return 0.0005;
   }
   if (d > 60) {
-    return 0.00035;
+    return 0.0008;
   }
   if (d > 20) {
-    return 0.00058;
-  }
-  if (d > 5) {
-    return 0.0009;
-  }
-  if (d > 1) {
     return 0.0012;
   }
-  return 0.0016;
+  if (d > 5) {
+    return 0.0018;
+  }
+  if (d > 1) {
+    return 0.0025;
+  }
+  return 0.0032;
 }
 
 function throttleCapForDistance(distanceKm) {
@@ -111,14 +111,14 @@ function throttleCapForDistance(distanceKm) {
     return 0.012;
   }
   if (d > 5) {
-    return 0.006;
+    return 0.008;
   }
-  return 0.0025;
+  return 0.004;
 }
 
 function guidanceModeForDistance(distanceKm) {
   const d = Math.max(0, Number(distanceKm) || 0);
-  if (d > 100) {
+  if (d > 220) {
     return "navsys:orbital-refuel-coelliptic-phasing";
   }
   if (d > 12) {
@@ -180,19 +180,22 @@ export function computeHillRendezvousCommand({
     0.01,
   );
   const wn = controllerNaturalFrequency(rangeKm);
-  const zeta = 1.05;
+  const zeta = 1.15;
   const kPos = wn * wn;
   const kVel = 2 * zeta * wn;
+  const x = safeNumber(relPosHill.x, 0);
+  const y = safeNumber(relPosHill.y, 0);
+  const z = safeNumber(relPosHill.z, 0);
+  const xDot = safeNumber(relVelHill.x, 0);
+  const yDot = safeNumber(relVelHill.y, 0);
+  const zDot = safeNumber(relVelHill.z, 0);
 
-  // Clohessy-Wiltshire compensated PD control in Hill/LVLH frame.
+  // Clohessy-Wiltshire feedback linearization around LVLH frame.
+  // relPos/relVel are ship-minus-target states in Hill axes.
   const accelHillKmS2 = {
-    x: (-kPos * relPosHill.x) - (kVel * relVelHill.x)
-      + (2 * orbitalRateRadS * relVelHill.y)
-      + (3 * orbitalRateRadS * orbitalRateRadS * relPosHill.x),
-    y: (-kPos * relPosHill.y) - (kVel * relVelHill.y)
-      - (2 * orbitalRateRadS * relVelHill.x),
-    z: (-kPos * relPosHill.z) - (kVel * relVelHill.z)
-      + (orbitalRateRadS * orbitalRateRadS * relPosHill.z),
+    x: (-kPos * x) - (kVel * xDot) + (2 * orbitalRateRadS * yDot) + (3 * orbitalRateRadS * orbitalRateRadS * x),
+    y: (-kPos * y) - (kVel * yDot) - (2 * orbitalRateRadS * xDot),
+    z: (-kPos * z) - (kVel * zDot) - (orbitalRateRadS * orbitalRateRadS * z),
   };
   const accelCommandKmS2 = fromHillFrame(accelHillKmS2, frame);
   const accelMagnitudeKmS2 = Math.max(0, length(accelCommandKmS2));
@@ -203,10 +206,13 @@ export function computeHillRendezvousCommand({
     desiredClosingKmS + 0.00025,
   );
   if (rangeKm <= 2) {
+    const rcsRequestedThrottle = clamp(accelMagnitudeKmS2 / 0.0022, 0, 0.0025);
     return {
-      requestedThrottle: 0,
+      requestedThrottle: rcsRequestedThrottle,
       desiredDirection: accelDirection,
-      guidanceMode: "navsys:orbital-refuel-rcs-translate",
+      guidanceMode: rcsRequestedThrottle > 1e-6
+        ? "navsys:orbital-refuel-rcs-translate"
+        : "navsys:orbital-refuel-velocity-match-coast",
       diagnostics: {
         desiredClosingKmS,
         closingSpeedKmS: safeNumber(closingSpeedKmS, 0),
@@ -215,14 +221,31 @@ export function computeHillRendezvousCommand({
     };
   }
   if (tooFastClosing) {
+    const excessClosingKmS = Math.max(0, safeNumber(closingSpeedKmS, 0) - desiredClosingKmS);
+    const brakeThrottleCap = rangeKm > 120
+      ? 0.03
+      : (rangeKm > 60 ? 0.02 : (rangeKm > 20 ? 0.015 : 0.01));
     const brakeDirection = normalize(
       scale(shipMinusTargetVelocityKmS, -1),
       scale(toTargetDirection, -1),
     );
+    const blendedBrakeDirection = normalize(
+      {
+        x: (brakeDirection.x * 0.82) + (accelDirection.x * 0.18),
+        y: (brakeDirection.y * 0.82) + (accelDirection.y * 0.18),
+        z: (brakeDirection.z * 0.82) + (accelDirection.z * 0.18),
+      },
+      brakeDirection,
+    );
+    const brakeThrottle = rangeKm > 8
+      ? clamp(0.0006 + (excessClosingKmS * 0.8), 0, brakeThrottleCap)
+      : 0;
     return {
-      requestedThrottle: 0,
-      desiredDirection: brakeDirection,
-      guidanceMode: "navsys:orbital-refuel-velocity-match-coast",
+      requestedThrottle: brakeThrottle,
+      desiredDirection: blendedBrakeDirection,
+      guidanceMode: brakeThrottle > 1e-6
+        ? "navsys:orbital-refuel-velocity-match-brake"
+        : "navsys:orbital-refuel-velocity-match-coast",
       diagnostics: {
         desiredClosingKmS,
         closingSpeedKmS: safeNumber(closingSpeedKmS, 0),

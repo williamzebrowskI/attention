@@ -373,6 +373,29 @@ const EARTH_LOCATION_MARKER_DOT_OPACITY_MIN = 0.46;
 const EARTH_LOCATION_MARKER_DOT_OPACITY_MAX = 0.86;
 const EARTH_LOCATION_MARKER_GLOW_OPACITY_MIN = 0.28;
 const EARTH_LOCATION_MARKER_GLOW_OPACITY_MAX = 0.72;
+const SPACECRAFT_WORLD_MARKER_ENABLED = true;
+const SPACECRAFT_WORLD_MARKER_PULSE_PERIOD_SECONDS = 2.2;
+const SPACECRAFT_WORLD_MARKER_DOT_OPACITY_MIN = 0.62;
+const SPACECRAFT_WORLD_MARKER_DOT_OPACITY_MAX = 0.98;
+const SPACECRAFT_WORLD_MARKER_GLOW_OPACITY_MIN = 0.02;
+const SPACECRAFT_WORLD_MARKER_GLOW_OPACITY_MAX = 0.16;
+const SPACECRAFT_WORLD_MARKER_SCALE_MIN = 0.00012;
+const SPACECRAFT_WORLD_MARKER_SCALE_MAX = 0.0018;
+const SPACECRAFT_WORLD_MARKER_DISTANCE_SCALE = 0.00003;
+const SPACECRAFT_WORLD_MARKER_FAR_FADE_MIN = 0.78;
+const SPACECRAFT_WORLD_MARKER_TRACKED_FADE = 0.12;
+const SPACECRAFT_WORLD_MARKER_COLORS = Object.freeze({
+  launchShipDot: 0x7dd8ff,
+  launchShipGlow: 0x98ebff,
+  boosterDot: 0xffb668,
+  boosterGlow: 0xffd7a3,
+  tankerDot: 0x58f09b,
+  tankerGlow: 0x85ffc2,
+  missionDot: 0x7ec8ff,
+  missionGlow: 0x9ad8ff,
+  defaultDot: 0xffffff,
+  defaultGlow: 0xd8e6ff,
+});
 const OBSERVATION_MODES = Object.freeze({
   BODY_LOCK: "body_lock",
   FREE: "free",
@@ -616,6 +639,38 @@ function earthLocationMarkerConfig() {
   };
 }
 
+function spacecraftWorldMarkerConfig(bodyId = "") {
+  const id = String(bodyId || "").trim();
+  if (id === LAUNCH_BOOSTER_BODY_ID) {
+    return {
+      dotColor: SPACECRAFT_WORLD_MARKER_COLORS.boosterDot,
+      glowColor: SPACECRAFT_WORLD_MARKER_COLORS.boosterGlow,
+    };
+  }
+  if (id === LAUNCH_BODY_ID) {
+    return {
+      dotColor: SPACECRAFT_WORLD_MARKER_COLORS.launchShipDot,
+      glowColor: SPACECRAFT_WORLD_MARKER_COLORS.launchShipGlow,
+    };
+  }
+  if (id.startsWith("earth_refuel_tanker_")) {
+    return {
+      dotColor: SPACECRAFT_WORLD_MARKER_COLORS.tankerDot,
+      glowColor: SPACECRAFT_WORLD_MARKER_COLORS.tankerGlow,
+    };
+  }
+  if (id.startsWith("earth_mission_ship_")) {
+    return {
+      dotColor: SPACECRAFT_WORLD_MARKER_COLORS.missionDot,
+      glowColor: SPACECRAFT_WORLD_MARKER_COLORS.missionGlow,
+    };
+  }
+  return {
+    dotColor: SPACECRAFT_WORLD_MARKER_COLORS.defaultDot,
+    glowColor: SPACECRAFT_WORLD_MARKER_COLORS.defaultGlow,
+  };
+}
+
 function getSurfaceObserverPreset(presetId = observation.surfacePresetId) {
   const base = SURFACE_OBSERVER_PRESETS[presetId];
   if (!base) {
@@ -702,6 +757,76 @@ function updateEarthLocationMarkerPulse(nowMs = Date.now()) {
     const baseGlowSize = Number(markerGroup.userData?.baseGlowSize) || 0;
     if (baseGlowSize > 0) {
       const glowScale = baseGlowSize * (0.94 + (0.10 * wave));
+      glow.scale.set(glowScale, glowScale, 1);
+    }
+  }
+}
+
+function updateSpacecraftWorldMarkers(nowMs = Date.now()) {
+  if (!THREE_NS || !SPACECRAFT_WORLD_MARKER_ENABLED || !camera?.position) {
+    return;
+  }
+  const seconds = nowMs / 1000;
+  const pulsePeriod = Math.max(SPACECRAFT_WORLD_MARKER_PULSE_PERIOD_SECONDS, 0.2);
+
+  for (const visual of bodyVisuals.values()) {
+    if (String(visual?.body?.body_type || "").toLowerCase() !== "spacecraft") {
+      continue;
+    }
+    const markerGroup = visual?.spacecraftWorldMarker;
+    if (!markerGroup) {
+      continue;
+    }
+    const dot = markerGroup.userData?.dot || null;
+    const glow = markerGroup.userData?.glow || null;
+    if (!dot || !glow) {
+      continue;
+    }
+
+    markerGroup.visible = Boolean(visual?.root?.visible);
+    if (!markerGroup.visible) {
+      continue;
+    }
+
+    const rootPos = visual.root?.position;
+    if (!rootPos || !vector3Finite(rootPos)) {
+      markerGroup.visible = false;
+      continue;
+    }
+
+    const distanceToCamera = Math.max(0, camera.position.distanceTo(rootPos));
+    const scale = clamp(
+      distanceToCamera * SPACECRAFT_WORLD_MARKER_DISTANCE_SCALE,
+      SPACECRAFT_WORLD_MARKER_SCALE_MIN,
+      SPACECRAFT_WORLD_MARKER_SCALE_MAX,
+    );
+    markerGroup.scale.set(scale, scale, scale);
+    const scaleRange = Math.max(1e-6, SPACECRAFT_WORLD_MARKER_SCALE_MAX - SPACECRAFT_WORLD_MARKER_SCALE_MIN);
+    const scaleT = clamp(
+      (scale - SPACECRAFT_WORLD_MARKER_SCALE_MIN) / scaleRange,
+      0,
+      1,
+    );
+    const farFade = SPACECRAFT_WORLD_MARKER_FAR_FADE_MIN
+      + ((1 - SPACECRAFT_WORLD_MARKER_FAR_FADE_MIN) * (1 - scaleT));
+    const isTrackedSpacecraft = String(selectedId || "") === String(visual?.body?.id || "");
+    const trackedFade = isTrackedSpacecraft ? SPACECRAFT_WORLD_MARKER_TRACKED_FADE : 1;
+    const intensity = clamp(farFade * trackedFade, 0.08, 1);
+
+    const phaseOffsetSec = Number(markerGroup.userData?.phaseOffsetSec) || 0;
+    const cycle = (((seconds + phaseOffsetSec) % pulsePeriod) / pulsePeriod) * (Math.PI * 2);
+    const wave = (Math.sin(cycle) * 0.5) + 0.5;
+
+    if (dot.material) {
+      const dotOpacity = SPACECRAFT_WORLD_MARKER_DOT_OPACITY_MIN
+        + ((SPACECRAFT_WORLD_MARKER_DOT_OPACITY_MAX - SPACECRAFT_WORLD_MARKER_DOT_OPACITY_MIN) * wave);
+      dot.material.opacity = clamp(dotOpacity * intensity, 0, 1);
+    }
+    if (glow.material) {
+      const glowOpacity = SPACECRAFT_WORLD_MARKER_GLOW_OPACITY_MIN
+        + ((SPACECRAFT_WORLD_MARKER_GLOW_OPACITY_MAX - SPACECRAFT_WORLD_MARKER_GLOW_OPACITY_MIN) * wave);
+      glow.material.opacity = clamp(glowOpacity * intensity, 0, 1);
+      const glowScale = (0.8 + (wave * 0.18)) * (isTrackedSpacecraft ? 0.8 : 1);
       glow.scale.set(glowScale, glowScale, 1);
     }
   }
@@ -5283,6 +5408,13 @@ async function createSpacecraftVisual(body) {
     );
     spinGroup.add(fallbackMesh);
   }
+  let spacecraftWorldMarker = null;
+  if (SPACECRAFT_WORLD_MARKER_ENABLED) {
+    spacecraftWorldMarker = createSpacecraftWorldMarker(body?.id);
+    if (spacecraftWorldMarker) {
+      root.add(spacecraftWorldMarker);
+    }
+  }
   if (stack?.state) {
     const initialSnapshot = typeof launchController?.statusSnapshotForBody === "function"
       ? (launchController.statusSnapshotForBody(nBodyState, body?.id, Date.now()) || null)
@@ -5319,6 +5451,7 @@ async function createSpacecraftVisual(body) {
     pickMesh: null,
     gravityArrow: null,
     locationMarker: null,
+    spacecraftWorldMarker,
     textureMode: isExternalStack ? "external_spacecraft" : "procedural_spacecraft",
     ringMode: "none",
     mapSource: isLaunchBooster
@@ -6936,6 +7069,54 @@ function createEarthLocationMarker(renderRadius, markerConfig) {
   markerGroup.userData.glow = glow;
   markerGroup.userData.baseGlowSize = glowSize;
 
+  return markerGroup;
+}
+
+function createSpacecraftWorldMarker(bodyId = "") {
+  if (!THREE_NS || !SPACECRAFT_WORLD_MARKER_ENABLED) {
+    return null;
+  }
+  const config = spacecraftWorldMarkerConfig(bodyId);
+  const markerGroup = new THREE_NS.Object3D();
+  markerGroup.visible = true;
+  markerGroup.renderOrder = 92;
+
+  const dot = new THREE_NS.Mesh(
+    new THREE_NS.SphereGeometry(1, 8, 8),
+    new THREE_NS.MeshBasicMaterial({
+      color: config.dotColor,
+      transparent: true,
+      opacity: SPACECRAFT_WORLD_MARKER_DOT_OPACITY_MAX,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  dot.scale.set(0.1, 0.1, 0.1);
+  dot.renderOrder = 93;
+  markerGroup.add(dot);
+
+  const glowTexture = getCircularGlowTexture();
+  const glow = new THREE_NS.Sprite(
+    new THREE_NS.SpriteMaterial({
+      map: glowTexture,
+      color: config.glowColor,
+      transparent: true,
+      opacity: SPACECRAFT_WORLD_MARKER_GLOW_OPACITY_MAX,
+      blending: THREE_NS.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+    }),
+  );
+  glow.scale.set(0.55, 0.55, 1);
+  glow.renderOrder = 92;
+  markerGroup.add(glow);
+
+  markerGroup.userData.dot = dot;
+  markerGroup.userData.glow = glow;
+  markerGroup.userData.phaseOffsetSec = Math.random() * SPACECRAFT_WORLD_MARKER_PULSE_PERIOD_SECONDS;
+  markerGroup.userData.baseScale = 1;
+  markerGroup.userData.bodyId = String(bodyId || "");
   return markerGroup;
 }
 
@@ -10046,6 +10227,9 @@ function animate(timestampMs = 0) {
     });
     runFrameTaskSafely("earth-marker", () => {
       updateEarthLocationMarkerPulse(nowMs);
+    });
+    runFrameTaskSafely("spacecraft-markers", () => {
+      updateSpacecraftWorldMarkers(nowMs);
     });
 
     runFrameTaskSafely("orbit-markers", () => {

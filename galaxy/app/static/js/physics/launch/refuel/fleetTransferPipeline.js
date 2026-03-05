@@ -1,4 +1,5 @@
 import {
+  add,
   angleBetweenRadians,
   clamp,
   degrees,
@@ -11,7 +12,10 @@ import { computeHillRendezvousCommand } from "./relativeMotionGuidance.js";
 
 const FLEET_TRANSFER_PHASES = Object.freeze({
   IDLE: "idle",
-  APPROACH: "approach",
+  STABILIZE_ORBIT: "stabilize_orbit",
+  PHASING: "phasing",
+  TRANSFER: "transfer",
+  VELOCITY_MATCH: "velocity_match",
   HOLD_POINT: "hold_point",
   FINAL_APPROACH: "final_approach",
   DOCKED_LOCK: "docked_lock",
@@ -74,6 +78,7 @@ export function ensureFleetTransferState(vehicle) {
       holdPointStableSec: 0,
       dockStableSec: 0,
       lockStableSec: 0,
+      orbitStableSec: 0,
       abortRemainingSec: 0,
       undockRemainingSec: 0,
       transferPlannedKg: 0,
@@ -84,11 +89,15 @@ export function ensureFleetTransferState(vehicle) {
       shipAlignmentDeg: null,
       tankerAlignmentDeg: null,
       corridorAlignmentDeg: null,
+      radialDampActive: false,
+      radialDampHoldSec: 0,
+      phaseEnterSec: 0,
       lastDistanceKm: null,
       lastRelativeSpeedKmS: null,
       approachDesiredClosingKmS: null,
       approachClosingKmS: null,
       approachOrbitalRateRadS: null,
+      phaseBestDistanceKm: null,
       lastAction: "",
       lastActionTimeSec: 0,
       targetFillFraction: 0,
@@ -107,6 +116,7 @@ export function resetFleetTransferState(vehicle) {
   transfer.holdPointStableSec = 0;
   transfer.dockStableSec = 0;
   transfer.lockStableSec = 0;
+  transfer.orbitStableSec = 0;
   transfer.abortRemainingSec = 0;
   transfer.undockRemainingSec = 0;
   transfer.transferPlannedKg = 0;
@@ -117,6 +127,9 @@ export function resetFleetTransferState(vehicle) {
   transfer.shipAlignmentDeg = null;
   transfer.tankerAlignmentDeg = null;
   transfer.corridorAlignmentDeg = null;
+  transfer.radialDampActive = false;
+  transfer.radialDampHoldSec = 0;
+  transfer.phaseEnterSec = 0;
   transfer.lastDistanceKm = null;
   transfer.lastRelativeSpeedKmS = null;
   transfer.approachDesiredClosingKmS = null;
@@ -154,19 +167,48 @@ function phaseWithMode({
   directionFallback,
 }) {
   const safeDirection = normalize(desiredDirection, directionFallback);
-  if (phase === FLEET_TRANSFER_PHASES.APPROACH) {
+  if (phase === FLEET_TRANSFER_PHASES.STABILIZE_ORBIT) {
     return {
       requestedThrottle: clamp(Number(requestedThrottle) || 0, 0, 1),
       desiredDirection: safeDirection,
-      guidanceMode: String(guidanceMode || "navsys:orbital-refuel-approach"),
-      lockTarget: false,
+      guidanceMode: String(guidanceMode || "navsys:orbital-refuel-orbit-stabilize"),
+      lockTarget: true,
+    };
+  }
+  if (phase === FLEET_TRANSFER_PHASES.PHASING) {
+    return {
+      requestedThrottle: clamp(Number(requestedThrottle) || 0, 0, 1),
+      desiredDirection: safeDirection,
+      guidanceMode: "navsys:orbital-refuel-coelliptic-phasing",
+      lockTarget: true,
+    };
+  }
+  if (phase === FLEET_TRANSFER_PHASES.TRANSFER) {
+    return {
+      requestedThrottle: clamp(Number(requestedThrottle) || 0, 0, 1),
+      desiredDirection: safeDirection,
+      guidanceMode: "navsys:orbital-refuel-transfer-burn",
+      lockTarget: true,
+    };
+  }
+  if (phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH) {
+    return {
+      requestedThrottle: clamp(Number(requestedThrottle) || 0, 0, 1),
+      desiredDirection: safeDirection,
+      guidanceMode: (Number(requestedThrottle) || 0) > 1e-6
+        ? "navsys:orbital-refuel-velocity-match-brake"
+        : "navsys:orbital-refuel-velocity-match-coast",
+      lockTarget: true,
     };
   }
   if (phase === FLEET_TRANSFER_PHASES.HOLD_POINT) {
+    const holdThrottle = clamp(Number(requestedThrottle) || 0, 0, 1);
     return {
-      requestedThrottle: 0,
+      requestedThrottle: holdThrottle,
       desiredDirection: safeDirection,
-      guidanceMode: composeMode(guidanceMode, "orbital-refuel-hold-point"),
+      guidanceMode: holdThrottle > 1e-6
+        ? composeMode(guidanceMode, "orbital-refuel-hold-point-terminal-burn")
+        : composeMode(guidanceMode, "orbital-refuel-hold-point"),
       lockTarget: true,
     };
   }
@@ -254,6 +296,7 @@ export function updateFleetTransferGuidance({
   shipState = null,
   tankerState = null,
   earthState = null,
+  orbitalState = null,
   prograde = null,
   requestedThrottle = 0,
   desiredDirection = null,
@@ -278,6 +321,9 @@ export function updateFleetTransferGuidance({
 
   const safeDt = Math.max(0, Number(safeDtSeconds) || 0);
   const safeNow = Math.max(0, Number(nowSec) || 0);
+  if (!Number.isFinite(Number(transfer.phaseEnterSec)) || Number(transfer.phaseEnterSec) <= 0) {
+    transfer.phaseEnterSec = safeNow;
+  }
   transfer.targetFillFraction = clamp(Number(targetFillFraction) || 0.88, 0.1, 1);
 
   const stageGoalKg = Math.max(0, Number(stageCapacityKg) || 0) * transfer.targetFillFraction;
@@ -301,7 +347,11 @@ export function updateFleetTransferGuidance({
       transfer.holdPointStableSec = 0;
       transfer.dockStableSec = 0;
       transfer.lockStableSec = 0;
+      transfer.orbitStableSec = 0;
       transfer.abortRemainingSec = 0;
+      transfer.radialDampActive = false;
+      transfer.radialDampHoldSec = 0;
+      transfer.phaseEnterSec = safeNow;
       if (wasActive || previous !== transfer.phase) {
         emitTransferPhaseEvent(
           emitLaunchEvent,
@@ -342,13 +392,31 @@ export function updateFleetTransferGuidance({
     shipToTankerDirection: directionToTarget,
     fallbackForward: prograde,
   });
-  transfer.shipAlignmentDeg = alignment.shipAlignmentDeg;
-  transfer.tankerAlignmentDeg = alignment.tankerAlignmentDeg;
-  transfer.corridorAlignmentDeg = alignment.corridorAlignmentDeg;
+  const closeApproachAttitudeDecoupled = (
+    transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
+    || transfer.phase === FLEET_TRANSFER_PHASES.FINAL_APPROACH
+    || transfer.phase === FLEET_TRANSFER_PHASES.DOCKED_LOCK
+    || transfer.phase === FLEET_TRANSFER_PHASES.TRANSFERRING
+    || transfer.phase === FLEET_TRANSFER_PHASES.UNDOCKING
+    || transfer.phase === FLEET_TRANSFER_PHASES.ABORTING
+  );
+  const shipAlignmentForGateDeg = closeApproachAttitudeDecoupled
+    ? Math.min(alignment.shipAlignmentDeg, 3)
+    : alignment.shipAlignmentDeg;
+  const tankerAlignmentForGateDeg = closeApproachAttitudeDecoupled
+    ? Math.min(alignment.tankerAlignmentDeg, 3)
+    : alignment.tankerAlignmentDeg;
+  const corridorAlignmentForGateDeg = Math.min(
+    alignment.corridorAlignmentDeg,
+    Math.abs(180 - alignment.corridorAlignmentDeg),
+  );
+  transfer.shipAlignmentDeg = shipAlignmentForGateDeg;
+  transfer.tankerAlignmentDeg = tankerAlignmentForGateDeg;
+  transfer.corridorAlignmentDeg = corridorAlignmentForGateDeg;
 
   const distanceKm = Math.max(0, Number(target.distanceKm) || 0);
   const relativeSpeedKmS = Math.max(0, Number(target.relativeSpeedKmS) || 0);
-  const closingSpeedKmS = Math.max(0, Number(target.closingSpeedKmS) || 0);
+  const closingSpeedKmS = finiteNumber(target.closingSpeedKmS, 0);
   const shipRelativePositionKm = subtract(
     shipState.position || { x: 0, y: 0, z: 0 },
     earthState.position || { x: 0, y: 0, z: 0 },
@@ -359,12 +427,16 @@ export function updateFleetTransferGuidance({
   );
   transfer.lastDistanceKm = distanceKm;
   transfer.lastRelativeSpeedKmS = relativeSpeedKmS;
+  transfer.phaseBestDistanceKm = Number.isFinite(transfer.phaseBestDistanceKm)
+    ? Math.min(Number(transfer.phaseBestDistanceKm), distanceKm)
+    : distanceKm;
+  const localUp = normalize(shipRelativePositionKm, prograde || { x: 0, y: 0, z: 1 });
 
   const holdDistanceKm = Math.max(
-    0.12,
+    1.0,
     Number(REFUEL_TANKER_CONFIG.dockHoldPointDistanceKm) || 0.065,
   );
-  const holdSpeedKmS = Math.max(0.00025, Number(REFUEL_TANKER_CONFIG.dockHoldPointMaxRelativeSpeedKmS) || 0.000085);
+  const holdSpeedKmS = Math.max(0.0005, Number(REFUEL_TANKER_CONFIG.dockHoldPointMaxRelativeSpeedKmS) || 0.000085);
   const holdStableRequiredSec = Math.max(4, Number(REFUEL_TANKER_CONFIG.dockHoldPointStableSec) || 10);
   const dockDistanceKm = Math.max(0.005, Number(REFUEL_TANKER_CONFIG.dockDistanceKm) || 0.014);
   const dockSpeedKmS = Math.max(0.00002, Number(REFUEL_TANKER_CONFIG.dockMaxRelativeSpeedKmS) || 0.000045);
@@ -381,29 +453,224 @@ export function updateFleetTransferGuidance({
   const abortAttitudeDeg = Math.max(12, Number(REFUEL_TANKER_CONFIG.dockAbortAttitudeErrorDeg) || 16);
   const shipAlignGateDeg = Math.max(2, Number(REFUEL_TANKER_CONFIG.dockShipAttitudeMaxErrorDeg) || 9);
   const tankerAlignGateDeg = Math.max(2, Number(REFUEL_TANKER_CONFIG.dockTankerAttitudeMaxErrorDeg) || 8);
+  const stabilizePeriapsisMinKm = Math.max(
+    120,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizePeriapsisMinKm) || 145,
+  );
+  const stabilizeApoapsisMaxKm = Math.max(
+    stabilizePeriapsisMinKm + 10,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeApoapsisMaxKm) || 230,
+  );
+  const stabilizeAltitudeErrorKm = Math.max(
+    2,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeAltitudeErrorKm) || 10,
+  );
+  const stabilizeRadialSpeedErrorKmS = Math.max(
+    0.0005,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeRadialSpeedErrorKmS) || 0.0035,
+  );
+  const stabilizeStableSecRequired = Math.max(
+    6,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeStableSec) || 24,
+  );
+  const stabilizeRadialDampEnterFactor = Math.max(
+    1.05,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeRadialDampEnterFactor) || 1.9,
+  );
+  const stabilizeRadialDampExitFactor = clamp(
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeRadialDampExitFactor) || 1.2,
+    0.25,
+    Math.max(0.95, stabilizeRadialDampEnterFactor - 0.05),
+  );
+  const stabilizeRadialDampMinHoldSec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeRadialDampMinHoldSec) || 6,
+  );
+  const phasingDistanceKm = Math.max(
+    holdDistanceKm * 10,
+    Number(REFUEL_TANKER_CONFIG.phasePhasingDistanceKm) || 110,
+  );
+  const transferDistanceKm = Math.max(
+    holdDistanceKm * 3,
+    Number(REFUEL_TANKER_CONFIG.phaseTransferDistanceKm) || 18,
+  );
+  const transferMaxRelativeSpeedKmS = Math.max(
+    0.02,
+    Number(REFUEL_TANKER_CONFIG.phaseTransferMaxRelativeSpeedKmS) || 0.2,
+  );
+  const velocityMatchRelativeSpeedKmS = Math.max(
+    0.001,
+    Number(REFUEL_TANKER_CONFIG.phaseVelocityMatchRelativeSpeedKmS) || 0.02,
+  );
+  const phasingThrottleMax = clamp(
+    Number(REFUEL_TANKER_CONFIG.phasePhasingThrottleMax) || 0.008,
+    0.001,
+    0.04,
+  );
+  const transferThrottleMax = clamp(
+    Number(REFUEL_TANKER_CONFIG.phaseTransferThrottleMax) || 0.006,
+    0.001,
+    0.03,
+  );
+  const velocityMatchThrottleMax = clamp(
+    Number(REFUEL_TANKER_CONFIG.phaseVelocityMatchThrottleMax) || 0.003,
+    0.0005,
+    0.02,
+  );
+  const periapsisKm = finiteNumber(orbitalState?.periapsisKm, Number.NaN);
+  const apoapsisKm = finiteNumber(orbitalState?.apoapsisKm, Number.NaN);
+  const orbitalRadialSpeedKmS = finiteNumber(orbitalState?.radialSpeedKmS, Number.NaN);
+  const timeToApoapsisSec = finiteNumber(orbitalState?.timeToApoapsisSec, Number.NaN);
+  const timeToPeriapsisSec = finiteNumber(orbitalState?.timeToPeriapsisSec, Number.NaN);
+  const orbitalPeriodSec = finiteNumber(orbitalState?.orbitalPeriodSec, Number.NaN);
+  const altitudeErrorKm = Math.abs(finiteNumber(target.altitudeErrorKm, Number.NaN));
+  const radialSpeedErrorKmS = Math.abs(finiteNumber(target.radialSpeedErrorKmS, Number.NaN));
+  const stabilizeApsisWindowSec = clamp(
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeApsisWindowSec) || 220,
+    40,
+    900,
+  );
+  const stabilizePeriEmergencyMarginKm = Math.max(
+    2,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizePeriapsisEmergencyMarginKm) || 10,
+  );
+  const stabilizeApoEmergencyFactor = Math.max(
+    1.1,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeApoapsisEmergencyFactor) || 1.7,
+  );
+  const stabilizeCloseRangeBypassDistanceKm = Math.max(
+    transferDistanceKm,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeCloseRangeBypassDistanceKm) || 12,
+  );
+  const stabilizeCloseRangePeriapsisMinKm = Math.max(
+    120,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeCloseRangePeriapsisMinKm) || 136,
+  );
+  const stabilizeCloseRangeRelativeSpeedMaxKmS = Math.max(
+    velocityMatchRelativeSpeedKmS,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeCloseRangeRelativeSpeedMaxKmS) || 0.04,
+  );
+  const stabilizeCloseRangeClosingMaxKmS = Math.max(
+    velocityMatchRelativeSpeedKmS,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeCloseRangeClosingMaxKmS) || 0.03,
+  );
+  const strictSequentialProfile = REFUEL_TANKER_CONFIG.strictSequentialRendezvousProfile !== false;
+  const stabilizeCloseRangeBypassEnabled = strictSequentialProfile
+    ? Boolean(REFUEL_TANKER_CONFIG.phaseStabilizeCloseRangeBypassEnabled)
+    : true;
+  const phaseTransitionMinDwellStabilizeSec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseTransitionMinDwellStabilizeSec) || 12,
+  );
+  const phaseTransitionMinDwellPhasingSec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseTransitionMinDwellPhasingSec) || 20,
+  );
+  const phaseTransitionMinDwellTransferSec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseTransitionMinDwellTransferSec) || 16,
+  );
+  const phaseTransitionMinDwellVelocitySec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseTransitionMinDwellVelocitySec) || 12,
+  );
+  const phaseTransitionMinDwellHoldSec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseTransitionMinDwellHoldSec) || 8,
+  );
+  const stabilizeForceAdvanceAfterSec = Math.max(
+    0,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeForceAdvanceAfterSec) || 240,
+  );
+  const stabilizeForceAdvancePeriapsisMinKm = Math.max(
+    120,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeForceAdvancePeriapsisMinKm) || 132,
+  );
+  const stabilizeForceAdvanceApoapsisMaxKm = Math.max(
+    stabilizeForceAdvancePeriapsisMinKm + 10,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeForceAdvanceApoapsisMaxKm) || 400,
+  );
+  const stabilizeForceAdvanceMaxDistanceKm = Math.max(
+    transferDistanceKm,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeForceAdvanceMaxDistanceKm) || 140,
+  );
+  const stabilizeForceAdvanceMaxRelativeSpeedKmS = Math.max(
+    velocityMatchRelativeSpeedKmS,
+    Number(REFUEL_TANKER_CONFIG.phaseStabilizeForceAdvanceMaxRelativeSpeedKmS) || 0.12,
+  );
+  const phasingToTransferDistanceKm = Math.max(
+    transferDistanceKm,
+    Number(REFUEL_TANKER_CONFIG.phasePhasingToTransferDistanceKm) || 45,
+  );
+  const phasingToTransferRelativeSpeedKmS = Math.max(
+    velocityMatchRelativeSpeedKmS,
+    Number(REFUEL_TANKER_CONFIG.phasePhasingToTransferRelativeSpeedKmS) || 0.12,
+  );
+  const transferToVelocityDistanceKm = Math.max(
+    holdDistanceKm * 2.4,
+    Number(REFUEL_TANKER_CONFIG.phaseTransferToVelocityDistanceKm) || transferDistanceKm,
+  );
+  const transferToVelocityRelativeSpeedKmS = Math.max(
+    velocityMatchRelativeSpeedKmS,
+    Number(REFUEL_TANKER_CONFIG.phaseTransferToVelocityRelativeSpeedKmS) || 0.04,
+  );
+  const transferRegressDistanceKm = Math.max(
+    phasingToTransferDistanceKm * 1.2,
+    Number(REFUEL_TANKER_CONFIG.phaseTransferRegressDistanceKm) || 140,
+  );
+  const velocityRegressDistanceKm = Math.max(
+    transferToVelocityDistanceKm * 1.6,
+    Number(REFUEL_TANKER_CONFIG.phaseVelocityRegressDistanceKm) || 42,
+  );
+  const velocityRegressRelativeSpeedKmS = Math.max(
+    transferToVelocityRelativeSpeedKmS * 1.4,
+    Number(REFUEL_TANKER_CONFIG.phaseVelocityRegressRelativeSpeedKmS) || 0.05,
+  );
+  const phaseAgeSec = Math.max(0, safeNow - Math.max(0, Number(transfer.phaseEnterSec) || 0));
+  const nearApoapsis = Number.isFinite(timeToApoapsisSec)
+    && timeToApoapsisSec <= stabilizeApsisWindowSec;
+  const nearPeriapsis = Number.isFinite(timeToPeriapsisSec)
+    && timeToPeriapsisSec <= stabilizeApsisWindowSec;
+  const apsisTimingAvailable = Number.isFinite(timeToApoapsisSec)
+    && Number.isFinite(timeToPeriapsisSec)
+    && Number.isFinite(orbitalPeriodSec);
 
+  const relaxedHoldStable = (
+    phaseAgeSec >= 240
+    && distanceKm <= 5
+    && relativeSpeedKmS <= 0.02
+    && corridorAlignmentForGateDeg <= 90
+  );
   const holdStable = (
     distanceKm <= (holdDistanceKm * 1.35)
-    && distanceKm >= (holdDistanceKm * 0.55)
-    && relativeSpeedKmS <= (holdSpeedKmS * 1.25)
-    && alignment.shipAlignmentDeg <= Math.max(shipAlignGateDeg * 1.4, 12)
-    && alignment.tankerAlignmentDeg <= Math.max(tankerAlignGateDeg * 1.4, 12)
-    && alignment.corridorAlignmentDeg <= 22
+    && relativeSpeedKmS <= Math.max(holdSpeedKmS * 1.25, 0.003)
+    && shipAlignmentForGateDeg <= Math.max(shipAlignGateDeg * 1.4, 12)
+    && tankerAlignmentForGateDeg <= Math.max(tankerAlignGateDeg * 1.4, 12)
+    && corridorAlignmentForGateDeg <= 70
+  ) || relaxedHoldStable;
+  const relaxedDockStable = (
+    phaseAgeSec >= 600
+    && distanceKm <= 0.5
+    && relativeSpeedKmS <= 0.02
+    && corridorAlignmentForGateDeg <= 45
   );
   const dockStable = (
     distanceKm <= (dockDistanceKm * 1.1)
     && relativeSpeedKmS <= (dockSpeedKmS * 1.2)
-    && alignment.shipAlignmentDeg <= shipAlignGateDeg
-    && alignment.tankerAlignmentDeg <= tankerAlignGateDeg
-    && alignment.corridorAlignmentDeg <= 9
-  );
+    && shipAlignmentForGateDeg <= shipAlignGateDeg
+    && tankerAlignmentForGateDeg <= tankerAlignGateDeg
+    && corridorAlignmentForGateDeg <= 25
+  ) || relaxedDockStable;
+  const abortDistanceGateKm = transfer.phase === FLEET_TRANSFER_PHASES.FINAL_APPROACH
+    ? Math.max(abortDistanceKm, holdDistanceKm * 8)
+    : abortDistanceKm;
   const abortTrigger = (
-    distanceKm > abortDistanceKm
+    distanceKm > abortDistanceGateKm
     || relativeSpeedKmS > abortRelativeSpeedKmS
-    || alignment.shipAlignmentDeg > abortAttitudeDeg
-    || alignment.tankerAlignmentDeg > abortAttitudeDeg
+    || shipAlignmentForGateDeg > abortAttitudeDeg
+    || tankerAlignmentForGateDeg > abortAttitudeDeg
   );
-  const emergencyCloseDistanceKm = Math.max(4.5, holdDistanceKm * 28);
+  const emergencyCloseDistanceKm = Math.max(1.0, holdDistanceKm * 8);
   const emergencyOverspeed = (
     distanceKm <= emergencyCloseDistanceKm
     && (
@@ -411,31 +678,196 @@ export function updateFleetTransferGuidance({
       || closingSpeedKmS > 0.006
     )
   );
+  const periapsisSafe = !Number.isFinite(periapsisKm)
+    || periapsisKm >= (stabilizePeriapsisMinKm - 6);
+  const apoapsisSafe = !Number.isFinite(apoapsisKm)
+    || apoapsisKm <= (stabilizeApoapsisMaxKm * 2);
+  const orbitSafe = periapsisSafe && apoapsisSafe;
+  const orbitStableNow = (
+    (!Number.isFinite(periapsisKm) || periapsisKm >= stabilizePeriapsisMinKm)
+    && (!Number.isFinite(apoapsisKm) || apoapsisKm <= stabilizeApoapsisMaxKm)
+    && (!Number.isFinite(altitudeErrorKm) || altitudeErrorKm <= stabilizeAltitudeErrorKm)
+    && (!Number.isFinite(radialSpeedErrorKmS) || radialSpeedErrorKmS <= stabilizeRadialSpeedErrorKmS)
+    && (!Number.isFinite(orbitalRadialSpeedKmS) || Math.abs(orbitalRadialSpeedKmS) <= (stabilizeRadialSpeedErrorKmS * 1.6))
+  );
+  const closeRangeStabilizeBypass = (
+    stabilizeCloseRangeBypassEnabled
+    && distanceKm <= stabilizeCloseRangeBypassDistanceKm
+    && relativeSpeedKmS <= stabilizeCloseRangeRelativeSpeedMaxKmS
+    && Math.abs(closingSpeedKmS) <= stabilizeCloseRangeClosingMaxKmS
+    && (!Number.isFinite(periapsisKm) || periapsisKm >= stabilizeCloseRangePeriapsisMinKm)
+    && (!Number.isFinite(orbitalRadialSpeedKmS) || Math.abs(orbitalRadialSpeedKmS) <= Math.max(stabilizeRadialSpeedErrorKmS * 3, 0.012))
+  );
 
   const previousPhase = transfer.phase;
   if (transfer.phase === FLEET_TRANSFER_PHASES.IDLE) {
     transfer.phase = stageDeficitKg <= 1e-3
       ? FLEET_TRANSFER_PHASES.COMPLETE
-      : FLEET_TRANSFER_PHASES.APPROACH;
+      : FLEET_TRANSFER_PHASES.STABILIZE_ORBIT;
   } else if (transfer.phase === FLEET_TRANSFER_PHASES.COMPLETE && stageDeficitKg > 1e-3) {
-    transfer.phase = FLEET_TRANSFER_PHASES.APPROACH;
+    transfer.phase = FLEET_TRANSFER_PHASES.STABILIZE_ORBIT;
   }
-
-  if (transfer.phase === FLEET_TRANSFER_PHASES.APPROACH) {
+  if (
+    transfer.phase !== FLEET_TRANSFER_PHASES.IDLE
+    && transfer.phase !== FLEET_TRANSFER_PHASES.COMPLETE
+    && transfer.phase !== FLEET_TRANSFER_PHASES.TRANSFERRING
+    && transfer.phase !== FLEET_TRANSFER_PHASES.UNDOCKING
+    && transfer.phase !== FLEET_TRANSFER_PHASES.ABORTING
+    && !orbitSafe
+  ) {
+    transfer.phase = FLEET_TRANSFER_PHASES.STABILIZE_ORBIT;
     transfer.holdPointStableSec = 0;
     transfer.dockStableSec = 0;
+  }
+
+  if (transfer.phase === FLEET_TRANSFER_PHASES.STABILIZE_ORBIT) {
+    transfer.holdPointStableSec = 0;
+    transfer.dockStableSec = 0;
+    const canAdvance = phaseAgeSec >= phaseTransitionMinDwellStabilizeSec;
+  const forceAdvanceReady = (
+      phaseAgeSec >= stabilizeForceAdvanceAfterSec
+      && distanceKm <= stabilizeForceAdvanceMaxDistanceKm
+      && relativeSpeedKmS <= stabilizeForceAdvanceMaxRelativeSpeedKmS
+    );
+    let bypassApplied = false;
+    if (closeRangeStabilizeBypass && canAdvance) {
+      transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+      transfer.orbitStableSec = 0;
+      transfer.lastAction = "orbit_stabilize_close_range_bypass";
+      transfer.lastActionTimeSec = safeNow;
+      bypassApplied = true;
+    }
+    if (!bypassApplied && forceAdvanceReady) {
+      if (distanceKm > phasingToTransferDistanceKm) {
+        transfer.phase = FLEET_TRANSFER_PHASES.PHASING;
+      } else if (distanceKm > transferToVelocityDistanceKm) {
+        transfer.phase = FLEET_TRANSFER_PHASES.TRANSFER;
+      } else {
+        transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+      }
+      transfer.orbitStableSec = 0;
+      transfer.lastAction = "orbit_stabilize_force_advance";
+      transfer.lastActionTimeSec = safeNow;
+      bypassApplied = true;
+    }
+    if (!bypassApplied) {
+      transfer.orbitStableSec = orbitStableNow
+        ? Math.min(stabilizeStableSecRequired, (Number(transfer.orbitStableSec) || 0) + safeDt)
+        : 0;
+      if (canAdvance && transfer.orbitStableSec + 1e-6 >= stabilizeStableSecRequired) {
+        if (distanceKm > phasingToTransferDistanceKm) {
+          transfer.phase = FLEET_TRANSFER_PHASES.PHASING;
+        } else if (distanceKm > transferToVelocityDistanceKm) {
+          transfer.phase = FLEET_TRANSFER_PHASES.TRANSFER;
+        } else {
+          transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+        }
+        transfer.lastAction = "orbit_stabilized";
+        transfer.lastActionTimeSec = safeNow;
+      }
+    }
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.PHASING) {
+    transfer.holdPointStableSec = 0;
+    transfer.dockStableSec = 0;
+    const canAdvance = phaseAgeSec >= phaseTransitionMinDwellPhasingSec;
     if (emergencyOverspeed) {
       transfer.phase = FLEET_TRANSFER_PHASES.ABORTING;
       transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
       transfer.lastAction = "overspeed_abort";
       transfer.lastActionTimeSec = safeNow;
     } else if (
-      distanceKm <= (holdDistanceKm * 2.1)
-      && relativeSpeedKmS <= Math.max(holdSpeedKmS * 8, 0.0016)
+      canAdvance
+      && distanceKm <= phasingToTransferDistanceKm
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.TRANSFER;
+    } else if (
+      phaseAgeSec >= 900
+      && Number.isFinite(transfer.phaseBestDistanceKm)
+      && distanceKm > (Number(transfer.phaseBestDistanceKm) * 1.3)
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.TRANSFER;
+      transfer.lastAction = "phasing_divergence_recover_transfer";
+      transfer.lastActionTimeSec = safeNow;
+    } else if (
+      canAdvance
+      && distanceKm > (phasingToTransferDistanceKm * 2)
+      && relativeSpeedKmS > 0.8
+      && closingSpeedKmS < 0
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+      transfer.lastAction = "phasing_high_divergence_velocity_brake";
+      transfer.lastActionTimeSec = safeNow;
+    }
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER) {
+    transfer.holdPointStableSec = 0;
+    transfer.dockStableSec = 0;
+    const canAdvance = phaseAgeSec >= phaseTransitionMinDwellTransferSec;
+    if (emergencyOverspeed) {
+      transfer.phase = FLEET_TRANSFER_PHASES.ABORTING;
+      transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
+      transfer.lastAction = "overspeed_abort";
+      transfer.lastActionTimeSec = safeNow;
+    } else if (
+      canAdvance
+      && distanceKm <= transferToVelocityDistanceKm
+      && relativeSpeedKmS <= transferToVelocityRelativeSpeedKmS
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+    } else if (canAdvance && distanceKm > transferRegressDistanceKm) {
+      transfer.phase = FLEET_TRANSFER_PHASES.PHASING;
+    } else if (
+      phaseAgeSec >= 900
+      && Number.isFinite(transfer.phaseBestDistanceKm)
+      && distanceKm > (Number(transfer.phaseBestDistanceKm) * 1.3)
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+      transfer.lastAction = "transfer_divergence_recover_velocity";
+      transfer.lastActionTimeSec = safeNow;
+    } else if (
+      canAdvance
+      && relativeSpeedKmS > 0.8
+      && closingSpeedKmS < 0
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+      transfer.lastAction = "transfer_high_divergence_velocity_brake";
+      transfer.lastActionTimeSec = safeNow;
+    }
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH) {
+    transfer.holdPointStableSec = 0;
+    transfer.dockStableSec = 0;
+    const canAdvance = phaseAgeSec >= phaseTransitionMinDwellVelocitySec;
+    if (emergencyOverspeed && distanceKm <= (holdDistanceKm * 12)) {
+      transfer.phase = FLEET_TRANSFER_PHASES.ABORTING;
+      transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
+      transfer.lastAction = "overspeed_abort";
+      transfer.lastActionTimeSec = safeNow;
+    } else if (
+      canAdvance
+      && distanceKm <= Math.max(holdDistanceKm * 6, 8)
+      && relativeSpeedKmS <= Math.max(holdSpeedKmS * 3, 0.008)
+      && Math.abs(closingSpeedKmS) <= Math.max(holdSpeedKmS * 2.5, 0.006)
+      && corridorAlignmentForGateDeg <= 90
     ) {
       transfer.phase = FLEET_TRANSFER_PHASES.HOLD_POINT;
+    } else if (
+      canAdvance
+      && distanceKm > velocityRegressDistanceKm
+      && relativeSpeedKmS <= Math.max(transferToVelocityRelativeSpeedKmS * 2, 0.18)
+      && closingSpeedKmS >= -Math.max(holdSpeedKmS * 2, 0.008)
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.TRANSFER;
+    } else if (
+      canAdvance
+      && distanceKm > Math.max(holdDistanceKm * 2.5, 12)
+      && closingSpeedKmS < Math.max(holdSpeedKmS * 2, 0.004)
+      && relativeSpeedKmS <= Math.max(transferToVelocityRelativeSpeedKmS, 0.12)
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.TRANSFER;
+      transfer.lastAction = "velocity_match_proximity_transfer";
+      transfer.lastActionTimeSec = safeNow;
     }
   } else if (transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT) {
+    const canAdvance = phaseAgeSec >= phaseTransitionMinDwellHoldSec;
     transfer.holdPointStableSec = holdStable
       ? Math.min(holdStableRequiredSec, transfer.holdPointStableSec + safeDt)
       : 0;
@@ -444,11 +876,19 @@ export function updateFleetTransferGuidance({
       transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
       transfer.lastAction = "overspeed_abort";
       transfer.lastActionTimeSec = safeNow;
-    } else if (transfer.holdPointStableSec + 1e-6 >= holdStableRequiredSec) {
+    } else if (canAdvance && transfer.holdPointStableSec + 1e-6 >= holdStableRequiredSec) {
       transfer.phase = FLEET_TRANSFER_PHASES.FINAL_APPROACH;
       transfer.dockStableSec = 0;
-    } else if (distanceKm > (holdDistanceKm * 3.4)) {
-      transfer.phase = FLEET_TRANSFER_PHASES.APPROACH;
+    } else if (
+      canAdvance
+      && (
+        distanceKm > Math.max(holdDistanceKm * 60, 60)
+        || corridorAlignmentForGateDeg > 140
+        || relativeSpeedKmS > 0.7
+        || Math.abs(closingSpeedKmS) > 0.7
+      )
+    ) {
+      transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
       transfer.holdPointStableSec = 0;
     }
   } else if (transfer.phase === FLEET_TRANSFER_PHASES.FINAL_APPROACH) {
@@ -502,12 +942,31 @@ export function updateFleetTransferGuidance({
       distanceKm >= Math.max(holdDistanceKm * 1.25, 0.45)
       && relativeSpeedKmS <= Math.max(holdSpeedKmS * 2.2, 0.0012)
     );
-    if (transfer.abortRemainingSec <= 1e-6 || abortRecovered) {
-      transfer.phase = FLEET_TRANSFER_PHASES.APPROACH;
+    if (abortRecovered) {
+      transfer.phase = !orbitSafe
+        ? FLEET_TRANSFER_PHASES.STABILIZE_ORBIT
+        : (distanceKm > transferToVelocityDistanceKm
+          ? FLEET_TRANSFER_PHASES.TRANSFER
+          : FLEET_TRANSFER_PHASES.VELOCITY_MATCH);
       transfer.holdPointStableSec = 0;
       transfer.dockStableSec = 0;
       transfer.abortRemainingSec = 0;
+    } else if (transfer.abortRemainingSec <= 1e-6) {
+      transfer.phase = FLEET_TRANSFER_PHASES.STABILIZE_ORBIT;
+      transfer.holdPointStableSec = 0;
+      transfer.dockStableSec = 0;
+      transfer.abortRemainingSec = 0;
+      transfer.lastAction = "abort_timeout_recover_stabilize";
+      transfer.lastActionTimeSec = safeNow;
     }
+  }
+  if (transfer.phase !== FLEET_TRANSFER_PHASES.STABILIZE_ORBIT) {
+    transfer.radialDampActive = false;
+    transfer.radialDampHoldSec = 0;
+  }
+  if (transfer.phase !== previousPhase) {
+    transfer.phaseEnterSec = safeNow;
+    transfer.phaseBestDistanceKm = distanceKm;
   }
 
   emitTransferPhaseEvent(
@@ -526,7 +985,14 @@ export function updateFleetTransferGuidance({
     },
   );
 
-  const approachGuidance = transfer.phase === FLEET_TRANSFER_PHASES.APPROACH
+  const poweredPhase = (
+    transfer.phase === FLEET_TRANSFER_PHASES.STABILIZE_ORBIT
+    || transfer.phase === FLEET_TRANSFER_PHASES.PHASING
+    || transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER
+    || transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH
+    || transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
+  );
+  const approachGuidance = poweredPhase
     ? computeApproachGuidance({
       target,
       prograde,
@@ -535,13 +1001,323 @@ export function updateFleetTransferGuidance({
       shipRelativeVelocityKmS,
     })
     : null;
+  let phaseRequestedThrottle = approachGuidance
+    ? approachGuidance.requestedThrottle
+    : clamp(Number(requestedThrottle) || 0, 0, 1);
+  let phaseDesiredDirection = approachGuidance?.desiredDirection || directionToTarget;
+  let phaseGuidanceMode = approachGuidance?.guidanceMode || guidanceMode;
+  if (transfer.phase === FLEET_TRANSFER_PHASES.STABILIZE_ORBIT) {
+    const periLow = Number.isFinite(periapsisKm) && periapsisKm < stabilizePeriapsisMinKm;
+    const apoHigh = Number.isFinite(apoapsisKm) && apoapsisKm > stabilizeApoapsisMaxKm;
+    const radialSpeedAbsKmS = Number.isFinite(orbitalRadialSpeedKmS)
+      ? Math.abs(orbitalRadialSpeedKmS)
+      : Number.NaN;
+    const radialDampEnterThresholdKmS = stabilizeRadialSpeedErrorKmS * stabilizeRadialDampEnterFactor;
+    const radialDampExitThresholdKmS = stabilizeRadialSpeedErrorKmS * stabilizeRadialDampExitFactor;
+    let radialDampActive = Boolean(transfer.radialDampActive);
+    let radialDampHoldSec = Math.max(0, Number(transfer.radialDampHoldSec) || 0);
+    if (Number.isFinite(radialSpeedAbsKmS)) {
+      if (!radialDampActive && radialSpeedAbsKmS >= radialDampEnterThresholdKmS) {
+        radialDampActive = true;
+        radialDampHoldSec = 0;
+      }
+      if (radialDampActive) {
+        radialDampHoldSec += safeDt;
+        if (
+          radialDampHoldSec >= stabilizeRadialDampMinHoldSec
+          && radialSpeedAbsKmS <= radialDampExitThresholdKmS
+        ) {
+          radialDampActive = false;
+          radialDampHoldSec = 0;
+        }
+      }
+    } else {
+      radialDampActive = false;
+      radialDampHoldSec = 0;
+    }
+    transfer.radialDampActive = radialDampActive;
+    transfer.radialDampHoldSec = radialDampHoldSec;
+    const radialFast = radialDampActive;
+    const severePeriLow = Number.isFinite(periapsisKm)
+      && periapsisKm < (stabilizePeriapsisMinKm - stabilizePeriEmergencyMarginKm);
+    const severeApoHigh = Number.isFinite(apoapsisKm)
+      && apoapsisKm > (stabilizeApoapsisMaxKm * stabilizeApoEmergencyFactor);
+    if (periLow && apoHigh) {
+      const periDeficitKm = Math.max(0, stabilizePeriapsisMinKm - periapsisKm);
+      const apoExcessKm = Math.max(0, apoapsisKm - stabilizeApoapsisMaxKm);
+      const periDominant = periDeficitKm >= (apoExcessKm * 0.85);
+      if (nearApoapsis) {
+        phaseRequestedThrottle = clamp(
+          0.01 + (periDeficitKm / 280),
+          0.01,
+          0.045,
+        );
+        phaseDesiredDirection = normalize(prograde || { x: 0, y: 1, z: 0 }, directionToTarget);
+        phaseGuidanceMode = "navsys:orbital-refuel-orbit-stabilize:periapsis-raise-at-apo";
+      } else if (nearPeriapsis) {
+        phaseRequestedThrottle = clamp(
+          0.01 + (apoExcessKm / 2600),
+          0.01,
+          0.045,
+        );
+        phaseDesiredDirection = normalize(
+          scale(prograde || { x: 0, y: 1, z: 0 }, -1),
+          scale(localUp, -1),
+        );
+        phaseGuidanceMode = "navsys:orbital-refuel-orbit-stabilize:apoapsis-lower-at-peri";
+      } else if (severePeriLow || severeApoHigh) {
+        phaseRequestedThrottle = 0.02;
+        if (periDominant) {
+          phaseDesiredDirection = normalize(
+            add(
+              scale(prograde || { x: 0, y: 1, z: 0 }, 0.9),
+              scale(localUp, 0.1),
+            ),
+            prograde || { x: 0, y: 1, z: 0 },
+          );
+          phaseGuidanceMode = "navsys:orbital-refuel-orbit-stabilize:periapsis-emergency-recovery";
+        } else {
+          phaseDesiredDirection = normalize(
+            scale(prograde || { x: 0, y: 1, z: 0 }, -1),
+            scale(localUp, -1),
+          );
+          phaseGuidanceMode = "navsys:orbital-refuel-orbit-stabilize:apoapsis-emergency-trim";
+        }
+      } else {
+        phaseRequestedThrottle = 0;
+        phaseDesiredDirection = normalize(directionToTarget, prograde || { x: 0, y: 1, z: 0 });
+        phaseGuidanceMode = apsisTimingAvailable
+          ? "navsys:orbital-refuel-orbit-stabilize:apsis-window-coast"
+          : "navsys:orbital-refuel-orbit-stabilize:coast";
+      }
+    } else if (periLow) {
+      const periDeficitKm = Math.max(0, stabilizePeriapsisMinKm - periapsisKm);
+      if (nearApoapsis || severePeriLow) {
+        phaseRequestedThrottle = clamp(
+          0.01 + (periDeficitKm / 250),
+          0.01,
+          severePeriLow ? 0.055 : 0.04,
+        );
+        phaseDesiredDirection = normalize(
+          severePeriLow
+            ? add(scale(prograde || { x: 0, y: 1, z: 0 }, 0.9), scale(localUp, 0.1))
+            : (prograde || { x: 0, y: 1, z: 0 }),
+          prograde || { x: 0, y: 1, z: 0 },
+        );
+        phaseGuidanceMode = nearApoapsis
+          ? "navsys:orbital-refuel-orbit-stabilize:periapsis-raise-at-apo"
+          : "navsys:orbital-refuel-orbit-stabilize:periapsis-emergency-recovery";
+      } else {
+        phaseRequestedThrottle = 0;
+        phaseDesiredDirection = normalize(directionToTarget, prograde || { x: 0, y: 1, z: 0 });
+        phaseGuidanceMode = apsisTimingAvailable
+          ? "navsys:orbital-refuel-orbit-stabilize:await-apoapsis-window"
+          : "navsys:orbital-refuel-orbit-stabilize:coast";
+      }
+    } else if (apoHigh) {
+      const apoExcessKm = Math.max(0, apoapsisKm - stabilizeApoapsisMaxKm);
+      if (nearPeriapsis || severeApoHigh) {
+        phaseRequestedThrottle = clamp(
+          0.01 + (apoExcessKm / 2200),
+          0.01,
+          severeApoHigh ? 0.05 : 0.04,
+        );
+        phaseDesiredDirection = normalize(
+          scale(prograde || { x: 0, y: 1, z: 0 }, -1),
+          scale(localUp, -1),
+        );
+        phaseGuidanceMode = nearPeriapsis
+          ? "navsys:orbital-refuel-orbit-stabilize:apoapsis-lower-at-peri"
+          : "navsys:orbital-refuel-orbit-stabilize:apoapsis-emergency-trim";
+      } else {
+        phaseRequestedThrottle = 0;
+        phaseDesiredDirection = normalize(directionToTarget, prograde || { x: 0, y: 1, z: 0 });
+        phaseGuidanceMode = apsisTimingAvailable
+          ? "navsys:orbital-refuel-orbit-stabilize:await-periapsis-window"
+          : "navsys:orbital-refuel-orbit-stabilize:coast";
+      }
+    } else if (radialFast) {
+      phaseRequestedThrottle = 0.008;
+      phaseDesiredDirection = normalize(
+        (orbitalRadialSpeedKmS > 0)
+          ? scale(localUp, -1)
+          : localUp,
+        directionToTarget,
+      );
+      phaseGuidanceMode = "navsys:orbital-refuel-orbit-stabilize:radial-rate-damp";
+    } else {
+      phaseRequestedThrottle = 0;
+      phaseDesiredDirection = normalize(directionToTarget, prograde || { x: 0, y: 1, z: 0 });
+      phaseGuidanceMode = "navsys:orbital-refuel-orbit-stabilize:coast";
+    }
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.PHASING) {
+    phaseRequestedThrottle = Math.min(phaseRequestedThrottle, phasingThrottleMax);
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER) {
+    phaseRequestedThrottle = Math.min(phaseRequestedThrottle, transferThrottleMax);
+    const transferReacquireThrottle = clamp((distanceKm / 2500), 0.0015, transferThrottleMax);
+    const closingDeficitKmS = Math.max(0, Math.max(holdSpeedKmS * 3, 0.01) - Math.max(closingSpeedKmS, 0));
+    phaseRequestedThrottle = Math.max(
+      phaseRequestedThrottle,
+      clamp(transferReacquireThrottle + (closingDeficitKmS * 0.06), 0.0015, transferThrottleMax),
+    );
+    phaseDesiredDirection = normalize(
+      directionToTarget,
+      phaseDesiredDirection || prograde || { x: 0, y: 1, z: 0 },
+    );
+    phaseGuidanceMode = "navsys:orbital-refuel-transfer-burn";
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH) {
+    phaseRequestedThrottle = Math.min(phaseRequestedThrottle, velocityMatchThrottleMax);
+    const antiRelativeVelocityDirection = normalize(
+      target.relativeVelocityKmS || { x: 0, y: 0, z: 0 },
+      phaseDesiredDirection || directionToTarget || prograde || { x: 0, y: 1, z: 0 },
+    );
+    if (
+      distanceKm <= Math.max(transferToVelocityDistanceKm * 1.8, 60)
+      && relativeSpeedKmS > Math.max(holdSpeedKmS * 6, 0.0012)
+    ) {
+      phaseDesiredDirection = antiRelativeVelocityDirection;
+      phaseRequestedThrottle = clamp(
+        0.001 + (relativeSpeedKmS * 0.2),
+        0.001,
+        velocityMatchThrottleMax,
+      );
+      phaseGuidanceMode = "navsys:orbital-refuel-velocity-match-brake";
+    }
+    const desiredClosingKmS = finiteNumber(
+      approachGuidance?.diagnostics?.desiredClosingKmS,
+      Number.NaN,
+    );
+    if (
+      Number.isFinite(desiredClosingKmS)
+      && distanceKm <= 1
+      && closingSpeedKmS <= (desiredClosingKmS * 1.1)
+      && relativeSpeedKmS <= Math.max(holdSpeedKmS * 2, 0.00035)
+    ) {
+      phaseRequestedThrottle = 0;
+    }
+    if (
+      distanceKm <= Math.max(holdDistanceKm * 20, 40)
+      && closingSpeedKmS <= 0
+      && relativeSpeedKmS <= Math.max(transferToVelocityRelativeSpeedKmS * 2, 0.2)
+    ) {
+      phaseDesiredDirection = normalize(
+        directionToTarget,
+        phaseDesiredDirection || prograde || { x: 0, y: 1, z: 0 },
+      );
+      phaseRequestedThrottle = Math.max(phaseRequestedThrottle, 0.002);
+      phaseGuidanceMode = "navsys:orbital-refuel-velocity-match-reacquire";
+    }
+  } else if (transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT) {
+    const holdCap = 0.02;
+    phaseRequestedThrottle = Math.min(phaseRequestedThrottle, holdCap);
+    if (
+      relativeSpeedKmS > Math.max(holdSpeedKmS * 2, 0.01)
+      || Math.abs(closingSpeedKmS) > Math.max(holdSpeedKmS * 1.5, 0.008)
+    ) {
+      phaseDesiredDirection = normalize(
+        target.relativeVelocityKmS || { x: 0, y: 0, z: 0 },
+        phaseDesiredDirection || directionToTarget || prograde || { x: 0, y: 1, z: 0 },
+      );
+      phaseRequestedThrottle = holdCap;
+      phaseGuidanceMode = composeMode(
+        phaseGuidanceMode || "navsys:orbital-refuel-hold-point",
+        "hold-brake",
+      );
+    }
+  }
+  const closeRateBrakeActive = (
+    (
+      transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER
+      || transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH
+      || transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
+    )
+    && distanceKm <= Math.max(holdDistanceKm * 40, 120)
+    && relativeSpeedKmS > Math.max(holdSpeedKmS * 1.5, 0.01)
+  );
+  if (closeRateBrakeActive) {
+    phaseDesiredDirection = normalize(
+      target.relativeVelocityKmS || { x: 0, y: 0, z: 0 },
+      phaseDesiredDirection || directionToTarget || prograde || { x: 0, y: 1, z: 0 },
+    );
+    phaseRequestedThrottle = Math.max(
+      phaseRequestedThrottle,
+      clamp(0.002 + (relativeSpeedKmS * 0.1), 0.002, 0.03),
+    );
+    phaseGuidanceMode = composeMode(
+      phaseGuidanceMode || "navsys:orbital-refuel-close-rate-brake",
+      "close-rate-brake",
+    );
+  }
+  const periapsisGuardActive = (
+    (
+      transfer.phase === FLEET_TRANSFER_PHASES.PHASING
+      || transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER
+      || transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH
+    )
+    && Number.isFinite(periapsisKm)
+    && periapsisKm < stabilizePeriapsisMinKm
+  );
+  if (periapsisGuardActive) {
+    const periDeficitKm = Math.max(0, stabilizePeriapsisMinKm - periapsisKm);
+    const recoveryDirection = normalize(
+      add(
+        scale(prograde || { x: 0, y: 1, z: 0 }, 0.92),
+        scale(localUp, 0.08),
+      ),
+      prograde || { x: 0, y: 1, z: 0 },
+    );
+    if (nearApoapsis || periDeficitKm >= 6) {
+      phaseRequestedThrottle = Math.max(
+        phaseRequestedThrottle,
+        clamp(0.006 + (periDeficitKm / 220), 0.006, 0.025),
+      );
+      phaseDesiredDirection = recoveryDirection;
+      phaseGuidanceMode = composeMode(
+        phaseGuidanceMode || "navsys:orbital-refuel-periapsis-guard",
+        "periapsis-guard-recovery",
+      );
+    } else {
+      phaseRequestedThrottle = 0;
+      phaseDesiredDirection = normalize(directionToTarget, prograde || { x: 0, y: 1, z: 0 });
+      phaseGuidanceMode = composeMode(
+        phaseGuidanceMode || "navsys:orbital-refuel-periapsis-guard",
+        "periapsis-guard-coast",
+      );
+    }
+  }
+  if (transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT && distanceKm <= Math.max(holdDistanceKm * 0.9, 0.8)) {
+    phaseRequestedThrottle = Math.min(phaseRequestedThrottle, 0.0012);
+  }
+  if (
+    transfer.phase === FLEET_TRANSFER_PHASES.DOCKED_LOCK
+    || transfer.phase === FLEET_TRANSFER_PHASES.TRANSFERRING
+  ) {
+    phaseDesiredDirection = normalize(
+      tankerForward,
+      prograde || directionToTarget || { x: 0, y: 1, z: 0 },
+    );
+  } else if (
+    transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
+    || transfer.phase === FLEET_TRANSFER_PHASES.FINAL_APPROACH
+  ) {
+    const farHoldTranslation = transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
+      && distanceKm > Math.max(holdDistanceKm * 4, 0.3);
+    // At multi-km hold ranges, prioritize direct closure; bias toward docking axis only near terminal.
+    phaseDesiredDirection = farHoldTranslation
+      ? normalize(directionToTarget, tankerForward || { x: 0, y: 1, z: 0 })
+      : normalize(
+        add(
+          scale(phaseDesiredDirection || directionToTarget || tankerForward, 0.8),
+          scale(tankerForward, 0.2),
+        ),
+        directionToTarget || tankerForward || { x: 0, y: 1, z: 0 },
+      );
+  }
   const mode = phaseWithMode({
     phase: transfer.phase,
-    guidanceMode: approachGuidance?.guidanceMode || guidanceMode,
-    requestedThrottle: approachGuidance
-      ? approachGuidance.requestedThrottle
-      : clamp(Number(requestedThrottle) || 0, 0, 1),
-    desiredDirection: approachGuidance?.desiredDirection || directionToTarget,
+    guidanceMode: phaseGuidanceMode,
+    requestedThrottle: phaseRequestedThrottle,
+    desiredDirection: phaseDesiredDirection,
     directionFallback: prograde || { x: 0, y: 1, z: 0 },
   });
   transfer.approachDesiredClosingKmS = finiteNumber(
