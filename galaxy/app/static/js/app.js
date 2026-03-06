@@ -67,7 +67,7 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260303g";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260306a";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -157,6 +157,15 @@ const missionControlScreenController = createMissionControlScreenController({
   },
   onTrackBody: (bodyId) => {
     return focusManagedTelemetryVehicle(bodyId, true);
+  },
+  onSelectMission: (missionId) => {
+    applyLaunchMissionSelection(missionId);
+  },
+  onSelectMissionLaunchMode: (mode) => {
+    setMissionLaunchModeSelection(mode);
+  },
+  onSelectTankerLaunchMode: (mode) => {
+    setTankerLaunchModeSelection(mode);
   },
 });
 
@@ -2815,6 +2824,7 @@ function createLegendVehicleViewPanel() {
     event.preventDefault();
     event.stopPropagation();
     markLegendInteractionGuard();
+    setMissionLaunchModeSelection(event.currentTarget?.value);
   });
   panel.appendChild(missionModeSelect);
   legendMissionLaunchModeSelect = missionModeSelect;
@@ -2838,6 +2848,7 @@ function createLegendVehicleViewPanel() {
     event.preventDefault();
     event.stopPropagation();
     markLegendInteractionGuard();
+    setTankerLaunchModeSelection(event.currentTarget?.value);
   });
   panel.appendChild(tankerModeSelect);
   legendTankerLaunchModeSelect = tankerModeSelect;
@@ -3614,10 +3625,7 @@ function updatePhysicsOverlayControls() {
   }
 }
 
-function setupLaunchMissionPicker() {
-  if (!legendLaunchMissionSelect) {
-    return;
-  }
+function buildLaunchMissionProfileCatalog() {
   const controllerProfiles = launchController?.getMissionProfiles?.() || [];
   const mergedProfileById = new Map();
   for (const profile of controllerProfiles) {
@@ -3636,7 +3644,147 @@ function setupLaunchMissionPicker() {
       mergedProfileById.set(profile.id, { ...profile });
     }
   }
-  const profiles = Array.from(mergedProfileById.values());
+  return Array.from(mergedProfileById.values());
+}
+
+function missionLaunchModeDisplayLabel(mode) {
+  return String(mode || "").trim().toLowerCase() === "orbit_inject"
+    ? "Direct Orbit Inject"
+    : "Earth Pad Launch";
+}
+
+function tankerLaunchModeDisplayLabel(mode) {
+  return String(mode || "").trim().toLowerCase() === "orbit_inject"
+    ? "Direct Orbit Inject"
+    : "Earth Pad Launch";
+}
+
+function activeSelectedMissionId() {
+  const selected = String(legendLaunchMissionSelect?.value || "").trim();
+  if (selected) {
+    return selected;
+  }
+  return String(launchController?.getMissionProfile?.()?.id || "").trim();
+}
+
+function applyLaunchMissionSelection(selectedMissionId) {
+  const selected = String(selectedMissionId || "").trim();
+  if (!selected) {
+    return null;
+  }
+  const active = Boolean(launchController?.isActive?.());
+  const profiles = buildLaunchMissionProfileCatalog();
+  const selectedProfile = profiles.find((profile) => profile.id === selected) || null;
+  const selectedName = String(selectedProfile?.name || selected || "Mission").trim() || "Mission";
+  if (legendLaunchMissionSelect && legendLaunchMissionSelect.value !== selected) {
+    legendLaunchMissionSelect.value = selected;
+  }
+  if (active) {
+    appendLaunchLogEntry("info", {
+      name: "mission_selection_staged",
+      selectedMissionId: selected,
+      selectedMissionName: selectedName,
+    });
+    updateLaunchStatusPanel(
+      true,
+      `Mission staged for next launch stack: ${selectedName}. Active mission remains unchanged.`,
+    );
+    return {
+      accepted: true,
+      staged: true,
+      id: selected,
+      name: selectedName,
+    };
+  }
+  const applied = launchController?.setMissionProfile?.(selected) || null;
+  if (!applied || String(applied.id || "") !== selected) {
+    if (legendLaunchMissionSelect && applied?.id) {
+      legendLaunchMissionSelect.value = String(applied.id);
+    }
+    appendLaunchLogEntry("error", {
+      name: "mission_selection_rejected",
+      selectedMissionId: selected,
+      resolvedMissionId: String(applied?.id || ""),
+    });
+    return {
+      accepted: false,
+      staged: false,
+      id: String(applied?.id || ""),
+      name: String(applied?.name || ""),
+    };
+  }
+  appendLaunchLogEntry("info", {
+    name: "mission_selection_changed",
+    selectedMissionId: applied.id,
+    selectedMissionName: applied.name,
+  });
+  updateLaunchStatusPanel(true, `Mission selected: ${applied.name}`);
+  return {
+    accepted: true,
+    staged: false,
+    id: String(applied.id || ""),
+    name: String(applied.name || ""),
+  };
+}
+
+function setMissionLaunchModeSelection(mode, options = {}) {
+  const resolved = String(mode || "").trim().toLowerCase() === "orbit_inject"
+    ? "orbit_inject"
+    : "pad_launch";
+  const previous = selectedMissionLaunchMode();
+  if (legendMissionLaunchModeSelect) {
+    legendMissionLaunchModeSelect.value = resolved;
+  }
+  if (!options.silent && previous !== resolved) {
+    appendLaunchLogEntry("info", {
+      name: "mission_launch_mode_changed",
+      mode: resolved,
+    });
+    updateLaunchStatusPanel(true, `Mission launch mode set: ${missionLaunchModeDisplayLabel(resolved)}.`);
+  }
+  return resolved;
+}
+
+function setTankerLaunchModeSelection(mode, options = {}) {
+  const resolved = String(mode || "").trim().toLowerCase() === "orbit_inject"
+    ? "orbit_inject"
+    : "pad_launch";
+  const previous = selectedTankerLaunchMode();
+  if (legendTankerLaunchModeSelect) {
+    legendTankerLaunchModeSelect.value = resolved;
+  }
+  if (!options.silent && previous !== resolved) {
+    appendLaunchLogEntry("info", {
+      name: "tanker_launch_mode_changed",
+      mode: resolved,
+    });
+    updateLaunchStatusPanel(true, `Tanker launch mode set: ${tankerLaunchModeDisplayLabel(resolved)}.`);
+  }
+  return resolved;
+}
+
+function missionControlMissionPickerState(snapshot = null) {
+  const profiles = buildLaunchMissionProfileCatalog();
+  const selectedMissionId = activeSelectedMissionId() || profiles[0]?.id || "";
+  const activeMissionId = snapshot?.missionId
+    ? String(snapshot.missionId)
+    : (launchController?.isActive?.() ? String(launchController?.getMissionProfile?.()?.id || "") : "");
+  return {
+    profiles,
+    selectedMissionId,
+    activeMissionId,
+    missionLaunchMode: selectedMissionLaunchMode(),
+    tankerLaunchMode: selectedTankerLaunchMode(),
+    launchActive: Boolean(launchController?.isActive?.()),
+    controllerReady: Boolean(launchController),
+  };
+}
+
+function setupLaunchMissionPicker() {
+  if (!legendLaunchMissionSelect) {
+    return;
+  }
+  const profiles = buildLaunchMissionProfileCatalog();
   const selectedProfile = launchController?.getMissionProfile?.() || null;
   const selectedId = selectedProfile?.id || "";
 
@@ -3657,43 +3805,7 @@ function setupLaunchMissionPicker() {
 
   if (legendLaunchMissionSelect.dataset.bound !== "true") {
     legendLaunchMissionSelect.addEventListener("change", () => {
-      const selected = legendLaunchMissionSelect.value;
-      const active = Boolean(launchController?.isActive?.());
-      if (active) {
-        const selectedName = String(
-          legendLaunchMissionSelect.options?.[legendLaunchMissionSelect.selectedIndex]?.textContent
-          || selected
-          || "Mission",
-        ).trim() || "Mission";
-        appendLaunchLogEntry("info", {
-          name: "mission_selection_staged",
-          selectedMissionId: selected,
-          selectedMissionName: selectedName,
-        });
-        updateLaunchStatusPanel(
-          true,
-          `Mission staged for next launch stack: ${selectedName}. Active mission remains unchanged.`,
-        );
-        return;
-      }
-      const applied = launchController?.setMissionProfile?.(selected);
-      if (!applied || String(applied.id || "") !== selected) {
-        if (applied?.id) {
-          legendLaunchMissionSelect.value = String(applied.id);
-        }
-        appendLaunchLogEntry("error", {
-          name: "mission_selection_rejected",
-          selectedMissionId: selected,
-          resolvedMissionId: String(applied?.id || ""),
-        });
-        return;
-      }
-      appendLaunchLogEntry("info", {
-        name: "mission_selection_changed",
-        selectedMissionId: applied.id,
-        selectedMissionName: applied.name,
-      });
-      updateLaunchStatusPanel(true, `Mission selected: ${applied.name}`);
+      applyLaunchMissionSelection(legendLaunchMissionSelect.value);
     });
     legendLaunchMissionSelect.dataset.bound = "true";
   }
@@ -4339,7 +4451,15 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
       ? `Launch module load error: ${launchModuleLoadError}`
       : "Launch controller unavailable.");
     updateLaunchMissionControlPanel(null, false);
-    missionControlScreenController.render(null, false, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
+    missionControlScreenController.render(
+      null,
+      false,
+      launchEventLogEntries,
+      lastLaunchEventSummary,
+      viewState,
+      fleetEntries,
+      missionControlMissionPickerState(null),
+    );
     return;
   }
   const telemetryBodyId = activeLaunchTelemetryBodyId();
@@ -4356,13 +4476,29 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
     updateLaunchMissionControlPanel(null, launchActive);
-    missionControlScreenController.render(null, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
+    missionControlScreenController.render(
+      null,
+      launchActive,
+      launchEventLogEntries,
+      lastLaunchEventSummary,
+      viewState,
+      fleetEntries,
+      missionControlMissionPickerState(null),
+    );
     return;
   }
   if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(snapshot.speedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
     updateLaunchMissionControlPanel(snapshot, launchActive);
-    missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
+    missionControlScreenController.render(
+      snapshot,
+      launchActive,
+      launchEventLogEntries,
+      lastLaunchEventSummary,
+      viewState,
+      fleetEntries,
+      missionControlMissionPickerState(snapshot),
+    );
     return;
   }
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
@@ -4422,7 +4558,15 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const trackingLine = snapshot.vehicleName ? ` | Tracking ${snapshot.vehicleName}` : "";
   launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}%${trackingLine} | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${refuelLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
   updateLaunchMissionControlPanel(snapshot, launchActive);
-  missionControlScreenController.render(snapshot, launchActive, launchEventLogEntries, lastLaunchEventSummary, viewState, fleetEntries);
+  missionControlScreenController.render(
+    snapshot,
+    launchActive,
+    launchEventLogEntries,
+    lastLaunchEventSummary,
+    viewState,
+    fleetEntries,
+    missionControlMissionPickerState(snapshot),
+  );
 }
 
 function phaseLabelForLaunch(phase) {
@@ -9136,6 +9280,9 @@ function resolveBodyLockTargetPosition(bodyId) {
   }
   const target = visual.root.position.clone();
   if (bodyId !== LAUNCH_BODY_ID || !THREE_NS) {
+    return target;
+  }
+  if (missionControlScreenController?.isVisible?.()) {
     return target;
   }
   const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);

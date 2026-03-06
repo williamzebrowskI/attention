@@ -38,12 +38,16 @@ function baseMetrics(overrides = {}) {
 function runCommand({
   phase,
   metrics = {},
+  targetVectors = {},
   plannerRuntime = createPlannerRuntime(),
   timestampSec = 0,
 }) {
   return planMoonLambertGncCommand({
     phase,
-    targetVectors: baseTargetVectors(),
+    targetVectors: {
+      ...baseTargetVectors(),
+      ...targetVectors,
+    },
     metrics: baseMetrics(metrics),
     plannerConfig: NAVIGATION_DEFAULTS.planner,
     plannerRuntime,
@@ -339,6 +343,52 @@ function testTelemetrySnapshotReacquireWindowProgression() {
   );
 }
 
+function testDepartureCommitOverridesEarlyTliHold() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "tli_burn",
+    plannerRuntime: runtime,
+    timestampSec: 25,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.19, y: 0.98, z: 0.02 },
+    },
+    metrics: {
+      missionPhaseElapsedSec: 25,
+      moonDistanceKm: 391745.7,
+      moonClosingSpeedKmS: 7.529,
+      moonProjectedMissTrendKmS: 435.286,
+      timeToPeriapsisSec: 1180,
+      departurePlanReady: true,
+      departurePlanThrottle: 0.655,
+      departurePlanBurnDurationSec: 1380,
+      departurePlanCommitWindowSec: 165,
+      departurePlanPredictedMissDistanceKm: 55123.5,
+      departurePlanPredictedPeriluneAltitudeKm: 120,
+      departurePlanBPlaneErrorKm: 38000,
+      departurePlanGeometryScore: 0.956,
+      departurePlanAlignNow: 0.978,
+    },
+  });
+  assert(result, "departure_commit_early_tli: missing result");
+  assert(result.phase === "powered", "departure_commit_early_tli: expected powered burn");
+  assert(
+    String(result.mode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
+    `departure_commit_early_tli: unexpected mode ${result.mode}`,
+  );
+  assert(
+    Number(result.throttle) > 0.6,
+    `departure_commit_early_tli: expected departure-plan throttle, got ${result.throttle}`,
+  );
+  assert(
+    Boolean(result.diagnostics?.departureCommitActive),
+    "departure_commit_early_tli: expected departure commit to be active",
+  );
+  assert(
+    !Boolean(result.diagnostics?.tliReacquireHold),
+    "departure_commit_early_tli: reacquire hold should be suppressed",
+  );
+}
+
 function main() {
   testTliReacquireHoldMovingAway();
   testTliReacquireHoldMissDivergingOnly();
@@ -348,6 +398,7 @@ function main() {
   testRuntimeDiagnosticsArePopulated();
   testTelemetrySnapshotReacquireWindowHold();
   testTelemetrySnapshotReacquireWindowProgression();
+  testDepartureCommitOverridesEarlyTliHold();
   console.log("PASS moon-gnc-conflict-e2e");
 }
 

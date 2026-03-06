@@ -34,6 +34,21 @@ class RefuelPipelineE2ETests(unittest.TestCase):
     def test_refuel_pipeline_e2e(self) -> None:
         self.assert_script_passes("refuel_pipeline_e2e.mjs")
 
+    def test_refuel_pipeline_close_range_altitude_e2e(self) -> None:
+        self.assert_script_passes("refuel_pipeline_close_range_altitude_e2e.mjs")
+
+    def test_refuel_pipeline_edge_cases_e2e(self) -> None:
+        self.assert_script_passes("refuel_pipeline_edge_cases_e2e.mjs")
+
+    def test_refuel_closedloop_e2e(self) -> None:
+        self.assert_script_passes("refuel_closedloop_e2e.mjs")
+
+    def test_refuel_controller_state_progression_e2e(self) -> None:
+        self.assert_script_passes("refuel_controller_state_progression_e2e.mjs")
+
+    def test_refuel_launch_controller_smoke(self) -> None:
+        self.assert_script_passes("refuel_launch_controller_smoke.mjs")
+
 
 if __name__ == "__main__":
     unittest.main()

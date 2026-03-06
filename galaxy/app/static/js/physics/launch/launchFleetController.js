@@ -47,6 +47,7 @@ import {
 } from "./lunar/windowTargeting.js";
 import {
   evaluateMoonPadLaunchWindow,
+  solveBestMoonOrbitInjectWindow,
   solveMoonDepartureWindow,
 } from "../navigation_system/lunar/departureWindowSolver.js";
 import {
@@ -109,6 +110,9 @@ const FLEET_MOON_MISSION_MARGIN_CRITICAL_KG = 120_000;
 const FLEET_MOON_PAD_WINDOW_PHASE_TOLERANCE_DEG = 4.0;
 const FLEET_MOON_PAD_WINDOW_MAX_ALTITUDE_KM = 2.0;
 const FLEET_MOON_PAD_WINDOW_MAX_WAIT_SEC = 180;
+const FLEET_MOON_DEPARTURE_COMMIT_WINDOW_MIN_SEC = 75;
+const FLEET_MOON_DEPARTURE_COMMIT_WINDOW_MAX_SEC = 180;
+const FLEET_MOON_DEPARTURE_COMMIT_WINDOW_FRACTION = 0.12;
 const FLEET_MOON_REFUEL_TARGET_FILL_FRACTION = 0.88;
 const FLEET_QALPHA_ACTIVE_MAX_ALTITUDE_KM = 105;
 const FLEET_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA = 120;
@@ -155,6 +159,80 @@ function finiteVector(v) {
 function finiteOrNull(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function finiteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : Number(fallback);
+}
+
+function cloneFiniteVector(vector) {
+  return finiteVector(vector)
+    ? {
+      x: finiteNumber(vector.x, 0),
+      y: finiteNumber(vector.y, 0),
+      z: finiteNumber(vector.z, 0),
+    }
+    : null;
+}
+
+function deriveMoonDepartureCommitWindowSec(burnDurationSec) {
+  const derivedDurationSec = finiteNumber(burnDurationSec, Number.NaN);
+  if (!Number.isFinite(derivedDurationSec) || !(derivedDurationSec > 0)) {
+    return FLEET_MOON_DEPARTURE_COMMIT_WINDOW_MIN_SEC;
+  }
+  return clamp(
+    derivedDurationSec * FLEET_MOON_DEPARTURE_COMMIT_WINDOW_FRACTION,
+    FLEET_MOON_DEPARTURE_COMMIT_WINDOW_MIN_SEC,
+    FLEET_MOON_DEPARTURE_COMMIT_WINDOW_MAX_SEC,
+  );
+}
+
+function assignMoonDeparturePlan(vehicle, moonDepartureWindow = null) {
+  if (!vehicle || typeof vehicle !== "object") {
+    return;
+  }
+  const burnDirection = cloneFiniteVector(moonDepartureWindow?.optimizedBurnDirection);
+  const throttle = finiteOrNull(moonDepartureWindow?.optimizedThrottle);
+  const burnDurationSec = finiteOrNull(moonDepartureWindow?.optimizedBurnDurationSec);
+  vehicle.moonDeparturePlanReady = Boolean(moonDepartureWindow?.ready);
+  vehicle.moonDeparturePlanDirectionKm = burnDirection;
+  vehicle.moonDeparturePlanThrottle = burnDirection && Number.isFinite(Number(throttle))
+    ? Number(throttle)
+    : null;
+  vehicle.moonDeparturePlanBurnDurationSec = burnDirection && Number.isFinite(Number(burnDurationSec))
+    ? Number(burnDurationSec)
+    : null;
+  vehicle.moonDeparturePlanCommitWindowSec = burnDirection
+    ? deriveMoonDepartureCommitWindowSec(burnDurationSec)
+    : null;
+  vehicle.moonDeparturePlanPredictedMissDistanceKm = finiteOrNull(
+    moonDepartureWindow?.predictedMissDistanceKm,
+  );
+  vehicle.moonDeparturePlanPredictedPeriluneAltitudeKm = finiteOrNull(
+    moonDepartureWindow?.predictedPeriluneAltitudeKm,
+  );
+  vehicle.moonDeparturePlanBPlaneErrorKm = finiteOrNull(moonDepartureWindow?.bPlaneErrorKm);
+}
+
+function geodeticLatLonDegFromRelativePosition(positionKm) {
+  if (!finiteVector(positionKm)) {
+    return {
+      latitudeDeg: Number.NaN,
+      longitudeDeg: Number.NaN,
+    };
+  }
+  const radiusKm = length(positionKm);
+  if (!(radiusKm > 1e-9)) {
+    return {
+      latitudeDeg: Number.NaN,
+      longitudeDeg: Number.NaN,
+    };
+  }
+  return {
+    latitudeDeg: (Math.asin(clamp(positionKm.z / radiusKm, -1, 1)) * 180) / Math.PI,
+    longitudeDeg: (Math.atan2(positionKm.y, positionKm.x) * 180) / Math.PI,
+  };
 }
 
 function stageBodyKindFromStageIndex(stageIndex = 0) {
@@ -932,6 +1010,7 @@ export function createLaunchFleetController({
     earthState,
     orbitAltitudeKm = 150,
     inclinationDeg = 28.5,
+    ascendingNodeRad = 0,
     phaseAngleRad = Number.NaN,
     apoapsisAltitudeKm = Number.NaN,
     spawnAtPeriapsis = false,
@@ -962,27 +1041,34 @@ export function createLaunchFleetController({
       )
       : Math.sqrt(muKm3S2 / orbitRadiusKm);
     const incRad = rad(clamp(Number(inclinationDeg) || 28.5, 0, 89.5));
+    const nodeRad = normalizeAngleZeroToTau(Number(ascendingNodeRad) || 0);
     const phaseAngle = Number.isFinite(Number(phaseAngleRad))
       ? normalizeAngleZeroToTau(Number(phaseAngleRad))
       : (Math.random() * (Math.PI * 2));
+    const cNode = Math.cos(nodeRad);
+    const sNode = Math.sin(nodeRad);
     const cTheta = Math.cos(phaseAngle);
     const sTheta = Math.sin(phaseAngle);
     const cInc = Math.cos(incRad);
     const sInc = Math.sin(incRad);
-    const relPositionKm = {
-      x: orbitRadiusKm * cTheta,
-      y: orbitRadiusKm * sTheta * cInc,
-      z: orbitRadiusKm * sTheta * sInc,
-    };
+    const e1 = { x: cNode, y: sNode, z: 0 };
+    const e2 = normalize(
+      { x: -sNode * cInc, y: cNode * cInc, z: sInc },
+      { x: -sNode, y: cNode, z: 0 },
+    );
+    const relPositionKm = add(
+      scale(e1, orbitRadiusKm * cTheta),
+      scale(e2, orbitRadiusKm * sTheta),
+    );
     const relVelocityDirection = normalize(
-      {
-        x: -sTheta,
-        y: cTheta * cInc,
-        z: cTheta * sInc,
-      },
+      add(
+        scale(e1, -sTheta),
+        scale(e2, cTheta),
+      ),
       { x: 0, y: 1, z: 0 },
     );
     const relVelocityKmS = scale(relVelocityDirection, speedAtSpawnKmS);
+    const surfaceCoordinates = geodeticLatLonDegFromRelativePosition(relPositionKm);
     return {
       position: add(earthState.position, relPositionKm),
       velocity: add(earthState.velocity || { x: 0, y: 0, z: 0 }, relVelocityKmS),
@@ -993,6 +1079,9 @@ export function createLaunchFleetController({
         : targetPeriapsisAltitudeKm,
       spawnAtPeriapsis: usePeriapsisSpawn,
       inclinationDeg: Number(inclinationDeg) || 28.5,
+      ascendingNodeRad: nodeRad,
+      latitudeDeg: surfaceCoordinates.latitudeDeg,
+      longitudeDeg: surfaceCoordinates.longitudeDeg,
       injected: true,
     };
   }
@@ -1065,7 +1154,7 @@ export function createLaunchFleetController({
         || 0
       );
     const moonDepartureWindowSeed = isMoonOrbitInject
-      ? solveMoonDepartureWindow({
+      ? solveBestMoonOrbitInjectWindow({
         earthState,
         moonState,
         inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
@@ -1074,8 +1163,14 @@ export function createLaunchFleetController({
         earthMuKm3S2,
       })
       : null;
+    const moonOrbitInjectAscendingNodeRad = moonDepartureWindowSeed
+      ? Number(moonDepartureWindowSeed.ascendingNodeRad)
+      : 0;
     const moonWindowInjectPhaseRad = moonDepartureWindowSeed
       ? Number(moonDepartureWindowSeed.targetPhaseRad)
+      : Number.NaN;
+    const moonOptimizedInjectApoapsisAltitudeKm = moonDepartureWindowSeed
+      ? Number(moonDepartureWindowSeed.optimizedApoapsisAltitudeKm)
       : Number.NaN;
     const orbitInjectPhaseAngleRad = isMoonOrbitInject
       ? (
@@ -1090,7 +1185,9 @@ export function createLaunchFleetController({
       && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN;
     const moonPeriapsisInjectApoapsisKm = Math.max(
       orbitInjectAltitudeKm + 20,
-      Number(options?.orbitInjectMoonApoapsisKm) || 220,
+      Number.isFinite(moonOptimizedInjectApoapsisAltitudeKm)
+        ? moonOptimizedInjectApoapsisAltitudeKm
+        : (Number(options?.orbitInjectMoonApoapsisKm) || 220),
     );
     const spawnState = launchMode === "orbit_inject"
       ? fleetOrbitInjectState({
@@ -1101,6 +1198,7 @@ export function createLaunchFleetController({
           : Number.NaN,
         spawnAtPeriapsis: isMoonOrbitInject,
         inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
+        ascendingNodeRad: isMoonOrbitInject ? moonOrbitInjectAscendingNodeRad : 0,
         phaseAngleRad: orbitInjectPhaseAngleRad,
       })
       : fleetPadSpawnState({
@@ -1121,6 +1219,9 @@ export function createLaunchFleetController({
           moonState,
           shipPositionKm: spawnState.position,
           inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
+          ascendingNodeRad: isMoonOrbitInject
+            ? moonOrbitInjectAscendingNodeRad
+            : 0,
           orbitAltitudeKm: orbitInjectAltitudeKm,
           earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
           earthMuKm3S2,
@@ -1276,6 +1377,47 @@ export function createLaunchFleetController({
         : null,
       moonEstimatedTliDeltaVKmS: moonDepartureWindow
         ? finiteOrNull(moonDepartureWindow.estimatedTliDeltaVKmS)
+        : null,
+      moonDepartureOptimalityScore: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.optimalityScore)
+        : null,
+      moonDepartureOptimizedApoapsisAltitudeKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.optimizedApoapsisAltitudeKm)
+        : null,
+      moonDeparturePredictedMissDistanceKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.predictedMissDistanceKm)
+        : null,
+      moonDeparturePredictedPeriluneAltitudeKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.predictedPeriluneAltitudeKm)
+        : null,
+      moonDepartureBPlaneErrorKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.bPlaneErrorKm)
+        : null,
+      moonDeparturePlanReady: Boolean(moonDepartureWindow?.ready),
+      moonDeparturePlanDirectionKm: cloneFiniteVector(moonDepartureWindow?.optimizedBurnDirection),
+      moonDeparturePlanThrottle: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.optimizedThrottle)
+        : null,
+      moonDeparturePlanBurnDurationSec: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.optimizedBurnDurationSec)
+        : null,
+      moonDeparturePlanCommitWindowSec: moonDepartureWindow
+        ? deriveMoonDepartureCommitWindowSec(moonDepartureWindow.optimizedBurnDurationSec)
+        : null,
+      moonDeparturePlanPredictedMissDistanceKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.predictedMissDistanceKm)
+        : null,
+      moonDeparturePlanPredictedPeriluneAltitudeKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.predictedPeriluneAltitudeKm)
+        : null,
+      moonDeparturePlanBPlaneErrorKm: moonDepartureWindow
+        ? finiteOrNull(moonDepartureWindow.bPlaneErrorKm)
+        : null,
+      moonDepartureAscendingNodeRad: isMoonOrbitInject
+        ? finiteOrNull(spawnState.ascendingNodeRad)
+        : null,
+      moonDepartureTargetPhaseRad: isMoonOrbitInject
+        ? finiteOrNull(moonWindowInjectPhaseRad)
         : null,
       stageIndex: launchMode === "orbit_inject" ? injectedStageIndex : 0,
       stagePropellantKg: launchMode === "orbit_inject"
@@ -1452,6 +1594,12 @@ export function createLaunchFleetController({
       vehicle.moonDepartureAlignNow = null;
       vehicle.moonDepartureAlignProjected = null;
       vehicle.moonEstimatedTliDeltaVKmS = null;
+      vehicle.moonDepartureOptimalityScore = null;
+      vehicle.moonDepartureOptimizedApoapsisAltitudeKm = null;
+      vehicle.moonDeparturePredictedMissDistanceKm = null;
+      vehicle.moonDeparturePredictedPeriluneAltitudeKm = null;
+      vehicle.moonDepartureBPlaneErrorKm = null;
+      assignMoonDeparturePlan(vehicle, null);
     }
     if (phaseName === "tli_burn") {
       vehicle.moonProjectedMissTrendKmS = null;
@@ -1672,6 +1820,12 @@ export function createLaunchFleetController({
         vehicle.moonDepartureAlignNow = null;
         vehicle.moonDepartureAlignProjected = null;
         vehicle.moonEstimatedTliDeltaVKmS = null;
+        vehicle.moonDepartureOptimalityScore = null;
+        vehicle.moonDepartureOptimizedApoapsisAltitudeKm = null;
+        vehicle.moonDeparturePredictedMissDistanceKm = null;
+        vehicle.moonDeparturePredictedPeriluneAltitudeKm = null;
+        vehicle.moonDepartureBPlaneErrorKm = null;
+        assignMoonDeparturePlan(vehicle, null);
         vehicle.moonTliTargetMode = "";
         vehicle.moonTliTargetMissKm = null;
         vehicle.moonTliTargetMissGateKm = null;
@@ -1741,6 +1895,22 @@ export function createLaunchFleetController({
           vehicle.moonEstimatedTliDeltaVKmS = finiteOrNull(
             moonPadWindowSolve?.estimatedTliDeltaVKmS ?? moonPadWindowStatus?.estimatedTliDeltaVKmS,
           );
+          vehicle.moonDepartureOptimalityScore = finiteOrNull(
+            moonPadWindowSolve?.optimalityScore,
+          );
+          vehicle.moonDepartureOptimizedApoapsisAltitudeKm = finiteOrNull(
+            moonPadWindowSolve?.optimizedApoapsisAltitudeKm,
+          );
+          vehicle.moonDeparturePredictedMissDistanceKm = finiteOrNull(
+            moonPadWindowSolve?.predictedMissDistanceKm,
+          );
+          vehicle.moonDeparturePredictedPeriluneAltitudeKm = finiteOrNull(
+            moonPadWindowSolve?.predictedPeriluneAltitudeKm,
+          );
+          vehicle.moonDepartureBPlaneErrorKm = finiteOrNull(
+            moonPadWindowSolve?.bPlaneErrorKm,
+          );
+          assignMoonDeparturePlan(vehicle, moonPadWindowSolve);
           const waitSec = Number(moonPadWindowStatus?.waitSec);
           const shortWindowWait = Number.isFinite(waitSec) && waitSec <= FLEET_MOON_PAD_WINDOW_MAX_WAIT_SEC;
           moonPadWindowHold = Boolean(
@@ -1765,6 +1935,12 @@ export function createLaunchFleetController({
           vehicle.moonDepartureAlignNow = null;
           vehicle.moonDepartureAlignProjected = null;
           vehicle.moonEstimatedTliDeltaVKmS = null;
+          vehicle.moonDepartureOptimalityScore = null;
+          vehicle.moonDepartureOptimizedApoapsisAltitudeKm = null;
+          vehicle.moonDeparturePredictedMissDistanceKm = null;
+          vehicle.moonDeparturePredictedPeriluneAltitudeKm = null;
+          vehicle.moonDepartureBPlaneErrorKm = null;
+          assignMoonDeparturePlan(vehicle, null);
         }
         if (!moonPadWindowHold) {
           const verticalHoldActive = (Number(vehicle.phaseElapsedSec) || 0) < verticalAscentHoldSec
@@ -1885,6 +2061,7 @@ export function createLaunchFleetController({
           rcsAssistMode = refuelRcsAssist.mode;
         }
       } else if (vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN && !vehicle.missionCompleted) {
+        const sunState = bodyStateFromNBody(state, "sun");
         const moonRelPos = moonState?.position
           ? subtract(shipState.position, moonState.position)
           : null;
@@ -1929,6 +2106,25 @@ export function createLaunchFleetController({
         const earthRadialSpeedKmS = earthDistanceKm > 1e-6
           ? dot(relPos, relVel) / earthDistanceKm
           : 0;
+        const sunEarthPositionKm = sunState?.position
+          ? subtract(sunState.position, earthState.position)
+          : null;
+        const sunEarthVelocityKmS = sunState?.velocity
+          ? subtract(
+            sunState.velocity || { x: 0, y: 0, z: 0 },
+            earthState.velocity || { x: 0, y: 0, z: 0 },
+          )
+          : null;
+        const stageMassKg = Math.max(
+          1,
+          Number(shipState?.massKg) || 1,
+        );
+        const engineAccelAtThrottle1KmS2 = (
+          Number(activeStage?.thrustVacuumN) > 0
+          && stageMassKg > 0
+        )
+          ? ((Number(activeStage.thrustVacuumN) / stageMassKg) / 1000)
+          : null;
         const moonRefuelTarget = vehicle.missionPhase === "orbital_refuel"
           ? selectLockedTankerTargetForVehicle(vehicle, state, shipState, earthState)
           : null;
@@ -1966,10 +2162,13 @@ export function createLaunchFleetController({
                   earthState.velocity || { x: 0, y: 0, z: 0 },
                 )
                 : null,
+              sunEarthPositionKm,
+              sunEarthVelocityKmS,
               shipMinusMoonRelativeVelocityKmS: moonRelVel || null,
               moonMinusShipRelativeVelocityKmS,
               toRefuelTarget: moonRefuelTarget?.relativePositionKm || null,
               refuelTargetRelativeVelocityKmS: moonRefuelTarget?.relativeVelocityKmS || null,
+              departurePlanBurnDirectionKm: vehicle.moonDeparturePlanDirectionKm || null,
             },
             metrics: {
               apoapsisKm: Number(orbital?.apoapsisKm),
@@ -1988,6 +2187,18 @@ export function createLaunchFleetController({
               moonProjectedMissTrendKmS,
               moonProjectedPeriluneAltitudeKm: vehicle.moonProjectedPeriluneAltitudeKm,
               moonBPlaneErrorKm: vehicle.moonBPlaneErrorKm,
+              departurePlanReady: Boolean(vehicle.moonDeparturePlanReady),
+              departurePlanThrottle: Number(vehicle.moonDeparturePlanThrottle),
+              departurePlanBurnDurationSec: Number(vehicle.moonDeparturePlanBurnDurationSec),
+              departurePlanCommitWindowSec: Number(vehicle.moonDeparturePlanCommitWindowSec),
+              departurePlanPredictedMissDistanceKm: Number(vehicle.moonDeparturePlanPredictedMissDistanceKm),
+              departurePlanPredictedPeriluneAltitudeKm: Number(vehicle.moonDeparturePlanPredictedPeriluneAltitudeKm),
+              departurePlanBPlaneErrorKm: Number(vehicle.moonDeparturePlanBPlaneErrorKm),
+              departurePlanGeometryScore: Number(vehicle.moonDepartureGeometryScore),
+              departurePlanAlignNow: Number(vehicle.moonDepartureAlignNow),
+              stageMassKg,
+              engineAccelAtThrottle1KmS2,
+              bodyId: String(vehicle.id || "fleet_launch_vehicle"),
               missionPhaseElapsedSec: Number(vehicle.phaseElapsedSec) || 0,
               refuelFillFraction: 0,
               refuelTargetDistanceKm: Number(moonRefuelTarget?.distanceKm),

@@ -90,4 +90,13 @@ export const REFUEL_TANKER_CONFIG = Object.freeze({
   phasePhasingThrottleMax: 0.0015,
   phaseTransferThrottleMax: 0.0025,
   phaseVelocityMatchThrottleMax: 0.006,
+  phaseOvershootDetectDistanceKm: 120,
+  phaseOvershootMinRangeIncreaseKm: 0.15,
+  phaseOvershootBestDistanceMarginKm: 0.5,
+  phaseOvershootRelativeSpeedMinKmS: 0.004,
+  phaseOvershootClosingMinKmS: 0.0004,
+  phaseOvershootStableSec: 8,
+  phaseOvershootExitRelativeSpeedKmS: 0.002,
+  phaseOvershootExitClosingAbsKmS: 0.0006,
+  phaseOvershootBrakeThrottleMax: 0.012,
 });

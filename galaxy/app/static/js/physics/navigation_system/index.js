@@ -26,4 +26,3 @@ export {
   describeMoonTliExitGate,
   describeMoonCaptureEntryGate,
 } from "./lunar/lunarPhaseGates.js";
-export { planTliFiniteBurnCommand } from "./lunar/tliFiniteBurnTargeter.js";

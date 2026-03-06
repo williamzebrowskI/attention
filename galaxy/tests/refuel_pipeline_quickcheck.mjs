@@ -215,11 +215,52 @@ function testRadialDampHysteresis() {
   assert(eventuallyCoast, `Expected coast after hysteresis hold, modes=${modes.join(" | ")}`);
 }
 
+function testTransferOvershootLatchesRecovery() {
+  const fixture = makeFixture();
+  const transfer = fixture.vehicle.refuelTransferState || {};
+  transfer.phase = "transfer";
+  transfer.phaseEnterSec = 1;
+  transfer.phaseBestDistanceKm = 8.9;
+  transfer.lastDistanceKm = 9.0;
+  transfer.lastClosingSpeedKmS = 0.0025;
+  fixture.vehicle.refuelTransferState = transfer;
+
+  let result = step(fixture, 20, {
+    target: {
+      distanceKm: 9.45,
+      relativeSpeedKmS: 0.018,
+      closingSpeedKmS: -0.0038,
+      relativePositionKm: { x: 0.4, y: 9.45, z: 0 },
+      relativeVelocityKmS: { x: 0, y: 0.0038, z: 0 },
+    },
+  });
+  assert(result?.state?.phase === "velocity_match", `Expected transfer overshoot to force velocity_match, got ${result?.state?.phase}`);
+  assert(result?.state?.overshootRecoveryActive === true, "Expected overshoot recovery latch to engage");
+  assert(
+    String(result?.guidanceMode || "").includes("overshoot-recovery"),
+    `Expected overshoot recovery guidance mode, got ${result?.guidanceMode}`,
+  );
+
+  for (let i = 0; i < 10; i += 1) {
+    result = step(fixture, 21 + i, {
+      target: {
+        distanceKm: 9.5,
+        relativeSpeedKmS: 0.0012,
+        closingSpeedKmS: -0.00025,
+        relativePositionKm: { x: 0.2, y: 9.5, z: 0 },
+        relativeVelocityKmS: { x: 0, y: 0.00025, z: 0 },
+      },
+    });
+  }
+  assert(result?.state?.overshootRecoveryActive === false, "Expected overshoot recovery latch to release after stable braking");
+}
+
 function main() {
   const checks = [
     ["sequential-progression", testSequentialProgression],
     ["no-phasing-skip", testNoPhasingToVelocitySkip],
     ["radial-hysteresis", testRadialDampHysteresis],
+    ["transfer-overshoot-latch", testTransferOvershootLatchesRecovery],
   ];
   for (const [name, fn] of checks) {
     fn();

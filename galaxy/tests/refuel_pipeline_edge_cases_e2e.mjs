@@ -1,6 +1,7 @@
 import {
   updateFleetTransferGuidance,
   advanceFleetTransferMass,
+  ensureFleetTransferState,
 } from "../app/static/js/physics/launch/refuel/fleetTransferPipeline.js";
 import { REFUEL_TANKER_CONFIG } from "../app/static/js/physics/launch/refuel/config.js";
 
@@ -135,9 +136,13 @@ function runScenario({
   runtimeOptions = {},
   profileFn = null,
   orbitalProfileFn = null,
+  initializeFn = null,
   maxSimSeconds = 1800,
 }) {
   const runtime = makeRuntime(runtimeOptions);
+  if (typeof initializeFn === "function") {
+    initializeFn(runtime);
+  }
   const visited = new Set();
   const phaseFirstSeenSec = new Map();
   const initialShipPropKg = runtime.ship.stagePropellantKg;
@@ -340,6 +345,192 @@ function main() {
         assert(
           result.visited.has(PHASE.STABILIZE),
           "high_apoapsis_trim_then_dock: missing stabilize_orbit",
+        );
+      },
+    },
+    {
+      name: "edge_transfer_gate_low_periapsis_below_tanker",
+      runtimeOptions: { shipPropellantKg: 450_000, tankerPropellantKg: 1_250_000 },
+      maxSimSeconds: 2400,
+      initializeFn: (runtime) => {
+        const transfer = ensureFleetTransferState(runtime.ship);
+        transfer.phase = PHASE.TRANSFER;
+        transfer.phaseEnterSec = 0;
+        transfer.targetTankerId = runtime.tanker.id;
+      },
+      profileFn: (phase, nowSec) => {
+        const base = defaultProfile(phase);
+        if (nowSec <= 180) {
+          return {
+            ...base,
+            distanceKm: 29.2,
+            relativeSpeedKmS: 0.013,
+            closingSpeedKmS: 0.0128,
+            altitudeErrorKm: 12.95,
+            radialSpeedErrorKmS: 0.0016,
+            relativePosXKm: 12.95,
+            relativeVelXKmS: 0.00015,
+          };
+        }
+        if (phase === PHASE.STABILIZE) {
+          return {
+            ...base,
+            distanceKm: 22,
+            relativeSpeedKmS: 0.009,
+            closingSpeedKmS: 0.0032,
+            altitudeErrorKm: 4.2,
+            radialSpeedErrorKmS: 0.0007,
+            relativePosXKm: 4.2,
+            relativeVelXKmS: 0.00008,
+          };
+        }
+        if (phase === PHASE.TRANSFER || phase === PHASE.VELOCITY) {
+          return {
+            ...base,
+            distanceKm: phase === PHASE.TRANSFER ? 8.5 : 0.42,
+            relativeSpeedKmS: phase === PHASE.TRANSFER ? 0.010 : 0.0018,
+            closingSpeedKmS: phase === PHASE.TRANSFER ? 0.0016 : 0.00025,
+            altitudeErrorKm: phase === PHASE.TRANSFER ? 2.3 : 0.22,
+            radialSpeedErrorKmS: phase === PHASE.TRANSFER ? 0.00035 : 0.00009,
+            relativePosXKm: phase === PHASE.TRANSFER ? 2.3 : 0.12,
+            relativeVelXKmS: phase === PHASE.TRANSFER ? 0.00006 : 0.00002,
+          };
+        }
+        if (
+          phase === PHASE.HOLD
+          || phase === PHASE.FINAL
+          || phase === PHASE.LOCK
+          || phase === PHASE.TRANSFERRING
+        ) {
+          return {
+            ...base,
+            relativePosXKm: 0,
+            relativeVelXKmS: 0,
+          };
+        }
+        return base;
+      },
+      orbitalProfileFn: (_phase, nowSec) => {
+        if (nowSec <= 180) {
+          return {
+            periapsisKm: 118.2,
+            apoapsisKm: 162.11,
+            radialSpeedKmS: 0.0006,
+            timeToApoapsisSec: 220,
+            timeToPeriapsisSec: 2400,
+            orbitalPeriodSec: 5400,
+          };
+        }
+        if (nowSec <= 360) {
+          return {
+            periapsisKm: 141,
+            apoapsisKm: 160,
+            radialSpeedKmS: 0.00045,
+            timeToApoapsisSec: 180,
+            timeToPeriapsisSec: 2450,
+            orbitalPeriodSec: 5400,
+          };
+        }
+        return {
+          periapsisKm: 150,
+          apoapsisKm: 156,
+          radialSpeedKmS: 0.00025,
+          timeToApoapsisSec: 120,
+          timeToPeriapsisSec: 2480,
+          orbitalPeriodSec: 5400,
+        };
+      },
+      verify: (result) => {
+        assert(result.completed, "transfer_gate_low_periapsis_below_tanker: scenario did not complete");
+        assert(result.visited.has(PHASE.TRANSFER), "transfer_gate_low_periapsis_below_tanker: missing transfer");
+        assert(result.visited.has(PHASE.VELOCITY), "transfer_gate_low_periapsis_below_tanker: missing velocity_match");
+        assert(result.visited.has(PHASE.HOLD), "transfer_gate_low_periapsis_below_tanker: missing hold_point");
+        assert(result.visited.has(PHASE.FINAL), "transfer_gate_low_periapsis_below_tanker: missing final_approach");
+        assert(result.visited.has(PHASE.LOCK), "transfer_gate_low_periapsis_below_tanker: missing docked_lock");
+        assert(result.visited.has(PHASE.TRANSFERRING), "transfer_gate_low_periapsis_below_tanker: missing transferring");
+        assert(result.visited.has(PHASE.UNDOCKING), "transfer_gate_low_periapsis_below_tanker: missing undocking");
+        assert(result.visited.has(PHASE.COMPLETE), "transfer_gate_low_periapsis_below_tanker: missing complete");
+        const velocitySec = Number(result.phaseFirstSeenSec.get(PHASE.VELOCITY));
+        assert(
+          Number.isFinite(velocitySec) && velocitySec < 900,
+          `transfer_gate_low_periapsis_below_tanker: should not remain trapped before velocity match (${velocitySec})`,
+        );
+      },
+    },
+    {
+      name: "edge_transfer_overshoot_recover_then_dock",
+      runtimeOptions: { shipPropellantKg: 450_000, tankerPropellantKg: 1_250_000 },
+      maxSimSeconds: 2200,
+      initializeFn: (runtime) => {
+        const transfer = ensureFleetTransferState(runtime.ship);
+        transfer.phase = PHASE.TRANSFER;
+        transfer.phaseEnterSec = 0;
+        transfer.targetTankerId = runtime.tanker.id;
+        transfer.phaseBestDistanceKm = 7.8;
+        transfer.lastDistanceKm = 8.0;
+        transfer.lastClosingSpeedKmS = 0.0032;
+      },
+      profileFn: (phase, nowSec) => {
+        const base = defaultProfile(phase);
+        if (nowSec <= 60) {
+          return {
+            ...base,
+            distanceKm: 8.6,
+            relativeSpeedKmS: 0.019,
+            closingSpeedKmS: -0.0042,
+            altitudeErrorKm: 0.8,
+            radialSpeedErrorKmS: 0.0005,
+            relativePosXKm: 0.8,
+          };
+        }
+        if (phase === PHASE.VELOCITY && nowSec <= 220) {
+          return {
+            ...base,
+            distanceKm: 8.9,
+            relativeSpeedKmS: 0.0014,
+            closingSpeedKmS: -0.00022,
+            altitudeErrorKm: 0.35,
+            radialSpeedErrorKmS: 0.00008,
+            relativePosXKm: 0.35,
+          };
+        }
+        if (phase === PHASE.TRANSFER) {
+          return {
+            ...base,
+            distanceKm: 5.2,
+            relativeSpeedKmS: 0.006,
+            closingSpeedKmS: 0.0008,
+            altitudeErrorKm: 0.22,
+            radialSpeedErrorKmS: 0.00008,
+            relativePosXKm: 0.22,
+          };
+        }
+        if (
+          phase === PHASE.HOLD
+          || phase === PHASE.FINAL
+          || phase === PHASE.LOCK
+          || phase === PHASE.TRANSFERRING
+        ) {
+          return {
+            ...base,
+            relativePosXKm: 0,
+            relativeVelXKmS: 0,
+          };
+        }
+        return base;
+      },
+      verify: (result) => {
+        assert(result.completed, "transfer_overshoot_recover_then_dock: scenario did not complete");
+        assert(result.visited.has(PHASE.VELOCITY), "transfer_overshoot_recover_then_dock: missing velocity_match");
+        assert(result.visited.has(PHASE.HOLD), "transfer_overshoot_recover_then_dock: missing hold_point");
+        assert(result.visited.has(PHASE.FINAL), "transfer_overshoot_recover_then_dock: missing final_approach");
+        assert(result.visited.has(PHASE.LOCK), "transfer_overshoot_recover_then_dock: missing docked_lock");
+        assert(result.visited.has(PHASE.TRANSFERRING), "transfer_overshoot_recover_then_dock: missing transferring");
+        assert(result.visited.has(PHASE.UNDOCKING), "transfer_overshoot_recover_then_dock: missing undocking");
+        const velocitySec = Number(result.phaseFirstSeenSec.get(PHASE.VELOCITY));
+        assert(
+          Number.isFinite(velocitySec) && velocitySec <= 5,
+          `transfer_overshoot_recover_then_dock: should brake into velocity_match immediately (${velocitySec})`,
         );
       },
     },

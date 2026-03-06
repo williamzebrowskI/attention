@@ -1296,6 +1296,8 @@ export function createLaunchController(options) {
     }
 
     const moonState = bodyStateFromNBody(state, "moon");
+    const sunState = bodyStateFromNBody(state, "sun");
+    const activeStage = stageAtIndex(runtime.stageIndex);
     const moonMassKg = Number(getBodyMassKg?.("moon")) || Number(moonState?.massKg) || 7.342e22;
     const moonRadiusKm = Number(getBodyRadiusKm?.("moon")) || 1737.4;
     const moonMuKm3S2 = gravitationalConstantKm3PerKgS2 * moonMassKg;
@@ -1337,6 +1339,15 @@ export function createLaunchController(options) {
         earthState.velocity || { x: 0, y: 0, z: 0 },
       )
       : null;
+    const sunEarthPositionKm = sunState?.position
+      ? subtract(sunState.position, earthState.position)
+      : null;
+    const sunEarthVelocityKmS = sunState?.velocity
+      ? subtract(
+        sunState.velocity || { x: 0, y: 0, z: 0 },
+        earthState.velocity || { x: 0, y: 0, z: 0 },
+      )
+      : null;
     const moonMinusShipRelativeVelocityKmS = moonRelVel ? scale(moonRelVel, -1) : null;
     const moonProjectedMissDistanceKm = projectedClosestApproachDistanceKm({
       relativePositionKm: toMoonVectorKm,
@@ -1360,6 +1371,16 @@ export function createLaunchController(options) {
       refuelTargetKg,
     );
     const tangent = normalize(relVel, up);
+    const stageMassKg = Math.max(
+      MIN_ROCKET_MASS_KG,
+      Number(rocketState?.massKg) || MIN_ROCKET_MASS_KG,
+    );
+    const engineAccelAtThrottle1KmS2 = (
+      Number(activeStage?.thrustVacuumN) > 0
+      && stageMassKg > 0
+    )
+      ? ((Number(activeStage.thrustVacuumN) / stageMassKg) / 1000)
+      : null;
     const navResult = primaryNavigationSystem.update({
       measurement: {
         position: rocketState.position || { x: 0, y: 0, z: 0 },
@@ -1379,6 +1400,9 @@ export function createLaunchController(options) {
         moonRelativeSpeedKmS,
         moonCircularSpeedKmS,
         moonProjectedMissDistanceKm,
+        stageMassKg,
+        engineAccelAtThrottle1KmS2,
+        bodyId: String(rocketState?.id || "primary_launch_vehicle"),
         refuelFillFraction,
         refuelTargetDistanceKm: Number(nearestRefuelTarget?.distanceKm),
         refuelRelativeSpeedKmS: Number(nearestRefuelTarget?.relativeSpeedKmS),
@@ -1393,6 +1417,8 @@ export function createLaunchController(options) {
         shipEarthVelocityKmS: relVel,
         moonEarthPositionKm,
         moonEarthVelocityKmS,
+        sunEarthPositionKm,
+        sunEarthVelocityKmS,
         shipMinusMoonRelativeVelocityKmS: moonRelVel || null,
         moonMinusShipRelativeVelocityKmS,
         toRefuelTarget: nearestRefuelTarget?.relativePositionKm || null,
@@ -2136,13 +2162,10 @@ export function createLaunchController(options) {
   function launchRefuelTanker(state, nowMs = Date.now(), options = {}) {
     const requestedModeRaw = String(options?.mode || "pad_launch").trim().toLowerCase();
     const requestedMode = requestedModeRaw === "orbit_inject" ? "orbit_inject" : "pad_launch";
-    const launchStackIdle = runtime.phase === "idle" && !runtime.booster.active;
-    if (runtime.pendingPadTankerLaunch?.active) {
-      return {
-        accepted: false,
-        reason: "tanker_pad_launch_already_active",
-      };
-    }
+    const pendingPadTankerLaunchActive = Boolean(runtime.pendingPadTankerLaunch?.active);
+    const launchStackIdle = runtime.phase === "idle"
+      && !runtime.booster.active
+      && !pendingPadTankerLaunchActive;
     if (requestedMode === "orbit_inject") {
       const orbitInject = refuelController.launchDirectOrbitTanker?.(state, nowMs);
       if (!orbitInject?.accepted) {
@@ -2192,14 +2215,14 @@ export function createLaunchController(options) {
       emitLaunchEvent("refuel_tanker_fleet_launch_requested", {
         tankerId: identity.id,
         sequenceNumber: identity.sequenceNumber,
-        mode: "pad_fleet_launch",
+        mode: pendingPadTankerLaunchActive ? "pad_fleet_launch_while_pad_pending" : "pad_fleet_launch",
       });
       return {
         accepted: true,
         tankerId: identity.id,
         tankerMeta: fleetLaunch.shipMeta
           || tankerMetaForId(identity.id, identity.sequenceNumber, null, LAUNCH_REFUEL_TANKER_METAS[0] || null),
-        mode: "pad_fleet_launch",
+        mode: pendingPadTankerLaunchActive ? "pad_fleet_launch_while_pad_pending" : "pad_fleet_launch",
         pending: false,
         launchKind: "tanker-pad-fleet",
       };

@@ -30,6 +30,7 @@ export function createNavigationSystem({
   const planner = createNavigationTrajectoryPlanner({
     mode: runtime.mode,
     plannerConfig: plannerOptions,
+    estimatorConfig: estimatorOptions,
   });
 
   function setMode(nextMode) {

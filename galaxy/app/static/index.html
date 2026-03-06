@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260303e" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260306a" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -80,78 +80,154 @@
     <section id="mission-control-screen" class="mission-control-screen" aria-hidden="true">
       <div class="mission-control-shell">
         <header class="mission-control-header">
-          <button id="mission-control-back-button" class="mission-control-back-button" type="button">Back To Main View</button>
-          <div class="mission-control-header-copy">
-            <p class="mission-control-kicker">Starship Flight Ops</p>
-            <h2 class="mission-control-title">Mission Control</h2>
-            <p id="mission-control-subtitle" class="mission-control-subtitle">Waiting for telemetry.</p>
+          <div class="mission-control-header-row">
+            <button id="mission-control-back-button" class="mission-control-back-button" type="button">Return To Flight View</button>
+            <div class="mission-control-header-copy">
+              <p class="mission-control-kicker">Orbital Flight Operations</p>
+              <h2 class="mission-control-title">Mission Control Console</h2>
+              <p id="mission-control-subtitle" class="mission-control-subtitle">Waiting for telemetry.</p>
+            </div>
+            <div id="mission-control-header-status" class="mission-control-header-status" aria-live="polite"></div>
           </div>
+          <div id="mission-control-command-strip" class="mission-control-command-strip" aria-live="polite"></div>
         </header>
         <main class="mission-control-content">
+          <section class="mission-control-block mission-control-ops-block">
+            <div class="mission-control-ops-grid">
+              <div class="mission-control-ops-column">
+                <div class="mission-control-panel-header">
+                  <div class="mission-control-panel-heading">
+                    <p class="mission-control-panel-kicker">Flight Director</p>
+                    <h3>Executive Brief</h3>
+                  </div>
+                </div>
+                <div id="mission-control-ops-alerts" class="mission-control-ops-alerts"></div>
+              </div>
+              <div class="mission-control-ops-column mission-control-assignment-column">
+                <div class="mission-control-panel-header">
+                  <div class="mission-control-panel-heading">
+                    <p class="mission-control-panel-kicker">Mission Assignment</p>
+                    <h3>Quick Select</h3>
+                  </div>
+                </div>
+                <div id="mission-control-mission-picker" class="mission-control-mission-picker"></div>
+              </div>
+            </div>
+          </section>
+          <section class="mission-control-block mission-control-director-block">
+            <div class="mission-control-panel-header">
+              <div class="mission-control-panel-heading">
+                <p class="mission-control-panel-kicker">Flight Director</p>
+                <h3>Command Net</h3>
+              </div>
+            </div>
+            <div id="mission-control-subsystems" class="mission-control-subsystems"></div>
+          </section>
           <section class="mission-control-block mission-control-view-block">
-            <div class="mission-control-view-header">
-              <h3>Live Vehicle View</h3>
+            <div class="mission-control-panel-header mission-control-view-panel-header">
+              <div class="mission-control-panel-heading">
+                <p class="mission-control-panel-kicker">Tracking Network</p>
+                <h3>Live Vehicle View</h3>
+              </div>
               <div class="mission-control-view-buttons">
                 <button id="mission-control-view-starship" class="mission-control-view-button" type="button">Starship</button>
                 <button id="mission-control-view-booster" class="mission-control-view-button" type="button">Booster</button>
               </div>
             </div>
-            <div class="mission-control-live-viewport" aria-hidden="true">
-              <canvas id="mission-control-live-feed-canvas" class="mission-control-live-feed-canvas"></canvas>
-              <div id="mission-control-vehicle-overlay" class="mission-control-vehicle-overlay starship-mode" aria-hidden="true">
-                <svg class="mission-control-vehicle-svg" viewBox="0 0 220 620" role="presentation" focusable="false">
-                  <g class="mission-control-vehicle-hull mission-control-vehicle-hull-starship">
-                    <path
-                      class="mission-control-hull-shell"
-                      d="M110 38 C138 78 148 131 148 188 L148 472 C148 518 129 556 110 584 C91 556 72 518 72 472 L72 188 C72 131 82 78 110 38 Z"
-                    />
-                    <rect class="mission-control-hull-fin" x="48" y="414" width="20" height="78" rx="8" />
-                    <rect class="mission-control-hull-fin" x="152" y="414" width="20" height="78" rx="8" />
-                  </g>
-                  <g class="mission-control-vehicle-hull mission-control-vehicle-hull-booster">
-                    <path
-                      class="mission-control-hull-shell"
-                      d="M110 54 C140 90 154 148 154 206 L154 486 C154 530 132 566 110 592 C88 566 66 530 66 486 L66 206 C66 148 80 90 110 54 Z"
-                    />
-                    <rect class="mission-control-hull-fin" x="44" y="438" width="24" height="86" rx="8" />
-                    <rect class="mission-control-hull-fin" x="152" y="438" width="24" height="86" rx="8" />
-                  </g>
+            <p id="mission-control-view-status" class="mission-control-view-status">Vehicle views unavailable in current scene.</p>
+            <div class="mission-control-view-grid">
+              <div class="mission-control-live-viewport" aria-hidden="true">
+                <video
+                  id="mission-control-live-feed-video"
+                  class="mission-control-live-feed-video"
+                  autoplay
+                  muted
+                  playsinline
+                ></video>
+                <canvas id="mission-control-live-feed-canvas" class="mission-control-live-feed-canvas"></canvas>
+                <div class="mission-control-live-hud">
+                  <span id="mission-control-live-tag-top-left" class="mission-control-live-tag mission-control-live-tag-top-left">TX-01</span>
+                  <span id="mission-control-live-tag-top-right" class="mission-control-live-tag mission-control-live-tag-top-right">OPS CAM</span>
+                  <span id="mission-control-live-tag-bottom-left" class="mission-control-live-tag mission-control-live-tag-bottom-left">TRACK LOCK</span>
+                  <span id="mission-control-live-tag-bottom-right" class="mission-control-live-tag mission-control-live-tag-bottom-right">HUD ACTIVE</span>
+                  <div class="mission-control-live-reticle" aria-hidden="true"></div>
+                </div>
+                <div id="mission-control-vehicle-overlay" class="mission-control-vehicle-overlay starship-mode" aria-hidden="true">
+                  <svg class="mission-control-vehicle-svg" viewBox="0 0 220 620" role="presentation" focusable="false">
+                    <g class="mission-control-vehicle-hull mission-control-vehicle-hull-starship">
+                      <path
+                        class="mission-control-hull-shell"
+                        d="M110 38 C138 78 148 131 148 188 L148 472 C148 518 129 556 110 584 C91 556 72 518 72 472 L72 188 C72 131 82 78 110 38 Z"
+                      />
+                      <rect class="mission-control-hull-fin" x="48" y="414" width="20" height="78" rx="8" />
+                      <rect class="mission-control-hull-fin" x="152" y="414" width="20" height="78" rx="8" />
+                    </g>
+                    <g class="mission-control-vehicle-hull mission-control-vehicle-hull-booster">
+                      <path
+                        class="mission-control-hull-shell"
+                        d="M110 54 C140 90 154 148 154 206 L154 486 C154 530 132 566 110 592 C88 566 66 530 66 486 L66 206 C66 148 80 90 110 54 Z"
+                      />
+                      <rect class="mission-control-hull-fin" x="44" y="438" width="24" height="86" rx="8" />
+                      <rect class="mission-control-hull-fin" x="152" y="438" width="24" height="86" rx="8" />
+                    </g>
 
-                  <g class="mission-control-vehicle-nodes">
-                    <circle class="mission-control-engine-node" data-part="main-engine" cx="90" cy="546" r="10" />
-                    <circle class="mission-control-engine-node" data-part="main-engine" cx="110" cy="556" r="11" />
-                    <circle class="mission-control-engine-node" data-part="main-engine" cx="130" cy="546" r="10" />
+                    <g class="mission-control-vehicle-nodes">
+                      <circle class="mission-control-engine-node" data-part="main-engine" cx="90" cy="546" r="10" />
+                      <circle class="mission-control-engine-node" data-part="main-engine" cx="110" cy="556" r="11" />
+                      <circle class="mission-control-engine-node" data-part="main-engine" cx="130" cy="546" r="10" />
 
-                    <circle class="mission-control-thruster-node" data-part="forward" cx="110" cy="102" r="7" />
-                    <circle class="mission-control-thruster-node" data-part="aft" cx="110" cy="506" r="7" />
-                    <circle class="mission-control-thruster-node" data-part="dorsal" cx="110" cy="236" r="7" />
-                    <circle class="mission-control-thruster-node" data-part="ventral" cx="110" cy="312" r="7" />
-                    <circle class="mission-control-thruster-node" data-part="port" cx="62" cy="274" r="7" />
-                    <circle class="mission-control-thruster-node" data-part="starboard" cx="158" cy="274" r="7" />
-                  </g>
-                </svg>
+                      <circle class="mission-control-thruster-node" data-part="forward" cx="110" cy="102" r="7" />
+                      <circle class="mission-control-thruster-node" data-part="aft" cx="110" cy="506" r="7" />
+                      <circle class="mission-control-thruster-node" data-part="dorsal" cx="110" cy="236" r="7" />
+                      <circle class="mission-control-thruster-node" data-part="ventral" cx="110" cy="312" r="7" />
+                      <circle class="mission-control-thruster-node" data-part="port" cx="62" cy="274" r="7" />
+                      <circle class="mission-control-thruster-node" data-part="starboard" cx="158" cy="274" r="7" />
+                    </g>
+                  </svg>
+                </div>
               </div>
+              <div id="mission-control-live-metrics" class="mission-control-live-metrics" aria-live="polite"></div>
             </div>
           </section>
           <section class="mission-control-block mission-control-fleet-block">
-            <h3>Fleet Operations</h3>
+            <div class="mission-control-panel-header">
+              <div class="mission-control-panel-heading">
+                <p class="mission-control-panel-kicker">Fleet Board</p>
+                <h3>Fleet Operations</h3>
+              </div>
+            </div>
             <div id="mission-control-fleet" class="mission-control-fleet"></div>
           </section>
           <section class="mission-control-block mission-control-overview-block">
-            <h3>Flight Overview</h3>
+            <div class="mission-control-panel-header">
+              <div class="mission-control-panel-heading">
+                <p class="mission-control-panel-kicker">Systems Telemetry</p>
+                <h3>Flight Overview</h3>
+              </div>
+            </div>
             <div id="mission-control-overview" class="mission-control-overview-grid"></div>
           </section>
           <section class="mission-control-block mission-control-sequence-block">
-            <h3>Mission Sequence</h3>
+            <div class="mission-control-panel-header">
+              <div class="mission-control-panel-heading">
+                <p class="mission-control-panel-kicker">Execution Timeline</p>
+                <h3>Mission Sequence</h3>
+              </div>
+            </div>
             <ol id="mission-control-sequence" class="mission-control-sequence-list"></ol>
           </section>
           <section class="mission-control-block mission-control-events-block">
-            <h3>Terminal Timeline</h3>
-            <pre id="mission-control-events" class="mission-control-events-log"></pre>
+            <div class="mission-control-panel-header">
+              <div class="mission-control-panel-heading">
+                <p class="mission-control-panel-kicker">CAPCOM Log</p>
+                <h3>Terminal Timeline</h3>
+              </div>
+            </div>
+            <div id="mission-control-events" class="mission-control-events-log" aria-live="polite"></div>
           </section>
         </main>
       </div>
     </section>
-    <script type="module" src="/static/js/app.js?v=20260303av"></script>
+    <script type="module" src="/static/js/app.js?v=20260306a"></script>
   </body>
 </html>

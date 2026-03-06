@@ -1,43 +1,84 @@
-import {
-  add,
-  clamp,
-  finiteVector,
-  normalize,
-  scale,
-} from "../navigationMath.js";
+import { finiteVector } from "../navigationMath.js";
 import {
   NAVIGATION_MISSION_IDS,
   NAVIGATION_MISSION_PHASES,
 } from "../navigationMissionProfiles.js";
+import { createMoonNavigationFilterState } from "../lunar/moonStateFilter.js";
+
+function finiteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : Number(fallback);
+}
+
+function cloneVector(vector, fallback = { x: 0, y: 0, z: 0 }) {
+  return finiteVector(vector)
+    ? {
+      x: finiteNumber(vector.x, fallback.x),
+      y: finiteNumber(vector.y, fallback.y),
+      z: finiteNumber(vector.z, fallback.z),
+    }
+    : { ...fallback };
+}
+
+function createMoonGncRuntime() {
+  return {
+    lastSolveSec: null,
+    lastSolveReason: "",
+    lastCommandMode: "",
+    solution: null,
+    predictedMissDistanceKm: null,
+    predictedPeriluneAltitudeKm: null,
+    bPlaneErrorKm: null,
+    deltaVNeedKmS: null,
+  };
+}
+
+function normalizeMoonGncSolution(solution = null) {
+  if (!solution || typeof solution !== "object") {
+    return null;
+  }
+  return {
+    cost: Number.isFinite(Number(solution.cost)) ? Number(solution.cost) : null,
+    throttle: Number.isFinite(Number(solution.throttle)) ? Number(solution.throttle) : 0,
+    deltaVNeedKmS: Number.isFinite(Number(solution.deltaVNeedKmS)) ? Number(solution.deltaVNeedKmS) : null,
+    burnDurationSec: Number.isFinite(Number(solution.burnDurationSec)) ? Number(solution.burnDurationSec) : null,
+    burnDirection: cloneVector(solution.burnDirection, { x: 0, y: 1, z: 0 }),
+    predictedMissDistanceKm: Number.isFinite(Number(solution.predictedMissDistanceKm))
+      ? Number(solution.predictedMissDistanceKm)
+      : null,
+    predictedPeriluneAltitudeKm: Number.isFinite(Number(solution.predictedPeriluneAltitudeKm))
+      ? Number(solution.predictedPeriluneAltitudeKm)
+      : null,
+    bPlaneErrorKm: Number.isFinite(Number(solution.bPlaneErrorKm)) ? Number(solution.bPlaneErrorKm) : null,
+    closestClosingSpeedKmS: Number.isFinite(Number(solution.closestClosingSpeedKmS))
+      ? Number(solution.closestClosingSpeedKmS)
+      : null,
+    propagation: {
+      durationSec: Number.isFinite(Number(solution.propagation?.durationSec))
+        ? Number(solution.propagation.durationSec)
+        : null,
+      closestClosingSpeedKmS: Number.isFinite(Number(solution.propagation?.closestClosingSpeedKmS))
+        ? Number(solution.propagation.closestClosingSpeedKmS)
+        : null,
+    },
+  };
+}
+
+function createMoonApproachRuntime() {
+  return {
+    projectedPeriluneAltitudeKm: null,
+    corridorErrorKm: null,
+    bPlaneErrorKm: null,
+    timeToClosestSec: null,
+    lastDecision: "",
+  };
+}
 
 export function createMoonGuidanceRuntime() {
   return {
-    sensorEstimate: null,
-    tli: {
-      mode: "",
-      modeHoldSec: 0,
-      lastTimestampSec: null,
-      protectCooldownSec: 0,
-    },
-    midcourse: {
-      active: false,
-      burnSec: 0,
-      stableSec: 0,
-      cooldownSec: 0,
-      lastStartSec: null,
-      lastStopSec: null,
-    },
-    retarget: {
-      lastSolveSec: null,
-      lastSolveReason: "",
-    },
-    approach: {
-      projectedPeriluneAltitudeKm: null,
-      corridorErrorKm: null,
-      bPlaneErrorKm: null,
-      timeToClosestSec: null,
-      lastDecision: "",
-    },
+    filter: createMoonNavigationFilterState(),
+    gnc: createMoonGncRuntime(),
+    approach: createMoonApproachRuntime(),
     lastTimestampSec: null,
   };
 }
@@ -50,6 +91,63 @@ export function createPlannerRuntime() {
   };
 }
 
+function normalizeMoonFilterSnapshot(filterSnapshot = null) {
+  const normalized = createMoonNavigationFilterState();
+  if (!filterSnapshot || typeof filterSnapshot !== "object") {
+    return normalized;
+  }
+  if (filterSnapshot.estimate && typeof filterSnapshot.estimate === "object") {
+    const positionKm = cloneVector(filterSnapshot.estimate.positionKm);
+    const velocityKmS = cloneVector(filterSnapshot.estimate.velocityKmS);
+    normalized.estimate = {
+      positionKm,
+      velocityKmS,
+    };
+  }
+  const covariance = filterSnapshot.covariance;
+  if (covariance && typeof covariance === "object") {
+    normalized.covariance = {
+      px: Math.max(1e-12, finiteNumber(covariance.px, normalized.covariance.px)),
+      py: Math.max(1e-12, finiteNumber(covariance.py, normalized.covariance.py)),
+      pz: Math.max(1e-12, finiteNumber(covariance.pz, normalized.covariance.pz)),
+      vx: Math.max(1e-14, finiteNumber(covariance.vx, normalized.covariance.vx)),
+      vy: Math.max(1e-14, finiteNumber(covariance.vy, normalized.covariance.vy)),
+      vz: Math.max(1e-14, finiteNumber(covariance.vz, normalized.covariance.vz)),
+    };
+  }
+  normalized.lastTimestampSec = Number.isFinite(Number(filterSnapshot.lastTimestampSec))
+    ? Number(filterSnapshot.lastTimestampSec)
+    : null;
+  normalized.lastControlAccelKmS2 = cloneVector(filterSnapshot.lastControlAccelKmS2);
+  if (filterSnapshot.lastMeasurement && typeof filterSnapshot.lastMeasurement === "object") {
+    normalized.lastMeasurement = {
+      ...filterSnapshot.lastMeasurement,
+      rangeKm: Number.isFinite(Number(filterSnapshot.lastMeasurement.rangeKm))
+        ? Number(filterSnapshot.lastMeasurement.rangeKm)
+        : null,
+      rangeRateKmS: Number.isFinite(Number(filterSnapshot.lastMeasurement.rangeRateKmS))
+        ? Number(filterSnapshot.lastMeasurement.rangeRateKmS)
+        : null,
+      moonLosErrorDeg: Number.isFinite(Number(filterSnapshot.lastMeasurement.moonLosErrorDeg))
+        ? Number(filterSnapshot.lastMeasurement.moonLosErrorDeg)
+        : null,
+      positionResidualKm: Number.isFinite(Number(filterSnapshot.lastMeasurement.positionResidualKm))
+        ? Number(filterSnapshot.lastMeasurement.positionResidualKm)
+        : null,
+      velocityResidualKmS: Number.isFinite(Number(filterSnapshot.lastMeasurement.velocityResidualKmS))
+        ? Number(filterSnapshot.lastMeasurement.velocityResidualKmS)
+        : null,
+      positionSigmaKm: Number.isFinite(Number(filterSnapshot.lastMeasurement.positionSigmaKm))
+        ? Number(filterSnapshot.lastMeasurement.positionSigmaKm)
+        : null,
+      velocitySigmaKmS: Number.isFinite(Number(filterSnapshot.lastMeasurement.velocitySigmaKmS))
+        ? Number(filterSnapshot.lastMeasurement.velocitySigmaKmS)
+        : null,
+    };
+  }
+  return normalized;
+}
+
 export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
   const normalized = createPlannerRuntime();
   if (!nextSnapshot || typeof nextSnapshot !== "object") {
@@ -59,54 +157,22 @@ export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
   normalized.missionPhase = String(nextSnapshot.missionPhase || "");
   const moonSnapshot = nextSnapshot.moon;
   if (moonSnapshot && typeof moonSnapshot === "object") {
-    const sensor = moonSnapshot.sensorEstimate;
-    if (
-      sensor
-      && Number.isFinite(Number(sensor.distanceKm))
-      && Number.isFinite(Number(sensor.closingSpeedKmS))
-      && Number.isFinite(Number(sensor.projectedMissDistanceKm))
-      && finiteVector(sensor.direction)
-    ) {
-      normalized.moon.sensorEstimate = {
-        distanceKm: Number(sensor.distanceKm),
-        closingSpeedKmS: Number(sensor.closingSpeedKmS),
-        projectedMissDistanceKm: Number(sensor.projectedMissDistanceKm),
-        direction: normalize(sensor.direction, { x: 0, y: 1, z: 0 }),
-      };
-    }
-    const midcourse = moonSnapshot.midcourse;
-    if (midcourse && typeof midcourse === "object") {
-      normalized.moon.midcourse = {
-        active: Boolean(midcourse.active),
-        burnSec: Math.max(0, Number(midcourse.burnSec) || 0),
-        stableSec: Math.max(0, Number(midcourse.stableSec) || 0),
-        cooldownSec: Math.max(0, Number(midcourse.cooldownSec) || 0),
-        lastStartSec: Number.isFinite(Number(midcourse.lastStartSec))
-          ? Number(midcourse.lastStartSec)
+    normalized.moon.filter = normalizeMoonFilterSnapshot(moonSnapshot.filter);
+    const gnc = moonSnapshot.gnc;
+    if (gnc && typeof gnc === "object") {
+      normalized.moon.gnc = {
+        lastSolveSec: Number.isFinite(Number(gnc.lastSolveSec)) ? Number(gnc.lastSolveSec) : null,
+        lastSolveReason: String(gnc.lastSolveReason || ""),
+        lastCommandMode: String(gnc.lastCommandMode || ""),
+        solution: normalizeMoonGncSolution(gnc.solution),
+        predictedMissDistanceKm: Number.isFinite(Number(gnc.predictedMissDistanceKm))
+          ? Number(gnc.predictedMissDistanceKm)
           : null,
-        lastStopSec: Number.isFinite(Number(midcourse.lastStopSec))
-          ? Number(midcourse.lastStopSec)
+        predictedPeriluneAltitudeKm: Number.isFinite(Number(gnc.predictedPeriluneAltitudeKm))
+          ? Number(gnc.predictedPeriluneAltitudeKm)
           : null,
-      };
-    }
-    const tli = moonSnapshot.tli;
-    if (tli && typeof tli === "object") {
-      normalized.moon.tli = {
-        mode: String(tli.mode || ""),
-        modeHoldSec: Math.max(0, Number(tli.modeHoldSec) || 0),
-        lastTimestampSec: Number.isFinite(Number(tli.lastTimestampSec))
-          ? Number(tli.lastTimestampSec)
-          : null,
-        protectCooldownSec: Math.max(0, Number(tli.protectCooldownSec) || 0),
-      };
-    }
-    const retarget = moonSnapshot.retarget;
-    if (retarget && typeof retarget === "object") {
-      normalized.moon.retarget = {
-        lastSolveSec: Number.isFinite(Number(retarget.lastSolveSec))
-          ? Number(retarget.lastSolveSec)
-          : null,
-        lastSolveReason: String(retarget.lastSolveReason || ""),
+        bPlaneErrorKm: Number.isFinite(Number(gnc.bPlaneErrorKm)) ? Number(gnc.bPlaneErrorKm) : null,
+        deltaVNeedKmS: Number.isFinite(Number(gnc.deltaVNeedKmS)) ? Number(gnc.deltaVNeedKmS) : null,
       };
     }
     const approach = moonSnapshot.approach;
@@ -127,43 +193,23 @@ export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
         lastDecision: String(approach.lastDecision || ""),
       };
     }
-    const lastTs = Number(moonSnapshot.lastTimestampSec);
-    normalized.moon.lastTimestampSec = Number.isFinite(lastTs) ? lastTs : null;
+    normalized.moon.lastTimestampSec = Number.isFinite(Number(moonSnapshot.lastTimestampSec))
+      ? Number(moonSnapshot.lastTimestampSec)
+      : null;
   }
   return normalized;
 }
 
-function resetMoonGuidanceRuntime(moonRuntime, { clearEstimate = false } = {}) {
+function resetMoonGuidanceRuntime(moonRuntime, { clearFilter = false } = {}) {
   if (!moonRuntime || typeof moonRuntime !== "object") {
     return;
   }
-  moonRuntime.midcourse = {
-    active: false,
-    burnSec: 0,
-    stableSec: 0,
-    cooldownSec: 0,
-    lastStartSec: null,
-    lastStopSec: null,
-  };
-  moonRuntime.tli = {
-    mode: "",
-    modeHoldSec: 0,
-    lastTimestampSec: null,
-    protectCooldownSec: 0,
-  };
-  moonRuntime.retarget = {
-    lastSolveSec: null,
-    lastSolveReason: "",
-  };
-  moonRuntime.approach = {
-    projectedPeriluneAltitudeKm: null,
-    corridorErrorKm: null,
-    bPlaneErrorKm: null,
-    timeToClosestSec: null,
-    lastDecision: "",
-  };
-  if (clearEstimate) {
-    moonRuntime.sensorEstimate = null;
+  moonRuntime.gnc = createMoonGncRuntime();
+  moonRuntime.approach = createMoonApproachRuntime();
+  if (clearFilter || !moonRuntime.filter || typeof moonRuntime.filter !== "object") {
+    moonRuntime.filter = createMoonNavigationFilterState();
+  } else {
+    moonRuntime.filter.lastControlAccelKmS2 = { x: 0, y: 0, z: 0 };
   }
 }
 
@@ -182,82 +228,12 @@ export function syncPlannerRuntime({
   if (missionChanged) {
     plannerRuntime.moon = createMoonGuidanceRuntime();
   } else if (phaseChanged) {
-    if (nextMissionPhase !== NAVIGATION_MISSION_PHASES.COAST_TO_MOON) {
-      resetMoonGuidanceRuntime(plannerRuntime.moon, { clearEstimate: false });
-    }
     if (nextMissionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
-      resetMoonGuidanceRuntime(plannerRuntime.moon, { clearEstimate: true });
-    }
-    if (nextMissionPhase !== NAVIGATION_MISSION_PHASES.TLI_BURN) {
-      plannerRuntime.moon.tli = {
-        mode: "",
-        modeHoldSec: 0,
-        lastTimestampSec: null,
-        protectCooldownSec: 0,
-      };
+      resetMoonGuidanceRuntime(plannerRuntime.moon, { clearFilter: true });
+    } else if (nextMissionPhase !== NAVIGATION_MISSION_PHASES.COAST_TO_MOON) {
+      resetMoonGuidanceRuntime(plannerRuntime.moon, { clearFilter: false });
     }
   }
   plannerRuntime.missionId = nextMissionId;
   plannerRuntime.missionPhase = nextMissionPhase;
-}
-
-export function updateMoonSensorEstimate({
-  moonRuntime,
-  rawMeasurement,
-  timestampSec,
-  plannerConfig,
-} = {}) {
-  if (!moonRuntime || !rawMeasurement || !Number.isFinite(Number(rawMeasurement.distanceKm))) {
-    return null;
-  }
-  const rawDirection = finiteVector(rawMeasurement.direction)
-    ? normalize(rawMeasurement.direction, { x: 0, y: 1, z: 0 })
-    : null;
-  if (!rawDirection || !Number.isFinite(Number(rawMeasurement.closingSpeedKmS))) {
-    return null;
-  }
-  const raw = {
-    distanceKm: Number(rawMeasurement.distanceKm),
-    closingSpeedKmS: Number(rawMeasurement.closingSpeedKmS),
-    projectedMissDistanceKm: Number.isFinite(Number(rawMeasurement.projectedMissDistanceKm))
-      ? Number(rawMeasurement.projectedMissDistanceKm)
-      : Number(rawMeasurement.distanceKm),
-    direction: rawDirection,
-  };
-  const nowSec = Number(timestampSec);
-  const prevSec = Number(moonRuntime.lastTimestampSec);
-  const dtSec = Number.isFinite(nowSec) && Number.isFinite(prevSec)
-    ? Math.max(0, nowSec - prevSec)
-    : 0;
-  moonRuntime.lastTimestampSec = Number.isFinite(nowSec) ? nowSec : moonRuntime.lastTimestampSec;
-  if (!moonRuntime.sensorEstimate) {
-    moonRuntime.sensorEstimate = {
-      distanceKm: raw.distanceKm,
-      closingSpeedKmS: raw.closingSpeedKmS,
-      projectedMissDistanceKm: raw.projectedMissDistanceKm,
-      direction: raw.direction,
-    };
-    return moonRuntime.sensorEstimate;
-  }
-  const tauSec = Math.max(1, Number(plannerConfig?.sensorTimeConstantSec) || 24);
-  const alpha = clamp(dtSec / (tauSec + dtSec), 0.04, 0.82);
-  const previous = moonRuntime.sensorEstimate;
-  const previousDirection = finiteVector(previous.direction)
-    ? normalize(previous.direction, raw.direction)
-    : raw.direction;
-  moonRuntime.sensorEstimate = {
-    distanceKm: Number(previous.distanceKm) + ((raw.distanceKm - Number(previous.distanceKm)) * alpha),
-    closingSpeedKmS: Number(previous.closingSpeedKmS) + ((raw.closingSpeedKmS - Number(previous.closingSpeedKmS)) * alpha),
-    projectedMissDistanceKm:
-      Number(previous.projectedMissDistanceKm)
-      + ((raw.projectedMissDistanceKm - Number(previous.projectedMissDistanceKm)) * alpha),
-    direction: normalize(
-      add(
-        scale(previousDirection, 1 - alpha),
-        scale(raw.direction, alpha),
-      ),
-      raw.direction,
-    ),
-  };
-  return moonRuntime.sensorEstimate;
 }

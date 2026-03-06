@@ -94,10 +94,14 @@ export function ensureFleetTransferState(vehicle) {
       phaseEnterSec: 0,
       lastDistanceKm: null,
       lastRelativeSpeedKmS: null,
+      lastClosingSpeedKmS: null,
       approachDesiredClosingKmS: null,
       approachClosingKmS: null,
       approachOrbitalRateRadS: null,
       phaseBestDistanceKm: null,
+      overshootRecoveryActive: false,
+      overshootRecoveryStableSec: 0,
+      overshootRecoveryDistanceKm: null,
       lastAction: "",
       lastActionTimeSec: 0,
       targetFillFraction: 0,
@@ -132,12 +136,37 @@ export function resetFleetTransferState(vehicle) {
   transfer.phaseEnterSec = 0;
   transfer.lastDistanceKm = null;
   transfer.lastRelativeSpeedKmS = null;
+  transfer.lastClosingSpeedKmS = null;
   transfer.approachDesiredClosingKmS = null;
   transfer.approachClosingKmS = null;
   transfer.approachOrbitalRateRadS = null;
+  transfer.phaseBestDistanceKm = null;
+  transfer.overshootRecoveryActive = false;
+  transfer.overshootRecoveryStableSec = 0;
+  transfer.overshootRecoveryDistanceKm = null;
   transfer.lastAction = "";
   transfer.lastActionTimeSec = 0;
   transfer.targetFillFraction = 0;
+}
+
+function clearOvershootRecoveryState(transfer) {
+  if (!transfer || typeof transfer !== "object") {
+    return;
+  }
+  transfer.overshootRecoveryActive = false;
+  transfer.overshootRecoveryStableSec = 0;
+  transfer.overshootRecoveryDistanceKm = null;
+}
+
+function activateOvershootRecoveryState(transfer, safeNow, distanceKm, action = "overshoot_recovery_engaged") {
+  if (!transfer || typeof transfer !== "object") {
+    return;
+  }
+  transfer.overshootRecoveryActive = true;
+  transfer.overshootRecoveryStableSec = 0;
+  transfer.overshootRecoveryDistanceKm = finiteNumber(distanceKm, null);
+  transfer.lastAction = action;
+  transfer.lastActionTimeSec = safeNow;
 }
 
 function deriveAlignmentDeg({
@@ -187,17 +216,18 @@ function phaseWithMode({
     return {
       requestedThrottle: clamp(Number(requestedThrottle) || 0, 0, 1),
       desiredDirection: safeDirection,
-      guidanceMode: "navsys:orbital-refuel-transfer-burn",
+      guidanceMode: String(guidanceMode || "navsys:orbital-refuel-transfer-burn"),
       lockTarget: true,
     };
   }
   if (phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH) {
+    const velocityMode = (Number(requestedThrottle) || 0) > 1e-6
+      ? "navsys:orbital-refuel-velocity-match-brake"
+      : "navsys:orbital-refuel-velocity-match-coast";
     return {
       requestedThrottle: clamp(Number(requestedThrottle) || 0, 0, 1),
       desiredDirection: safeDirection,
-      guidanceMode: (Number(requestedThrottle) || 0) > 1e-6
-        ? "navsys:orbital-refuel-velocity-match-brake"
-        : "navsys:orbital-refuel-velocity-match-coast",
+      guidanceMode: String(guidanceMode || velocityMode),
       lockTarget: true,
     };
   }
@@ -351,6 +381,7 @@ export function updateFleetTransferGuidance({
       transfer.abortRemainingSec = 0;
       transfer.radialDampActive = false;
       transfer.radialDampHoldSec = 0;
+      clearOvershootRecoveryState(transfer);
       transfer.phaseEnterSec = safeNow;
       if (wasActive || previous !== transfer.phase) {
         emitTransferPhaseEvent(
@@ -417,6 +448,9 @@ export function updateFleetTransferGuidance({
   const distanceKm = Math.max(0, Number(target.distanceKm) || 0);
   const relativeSpeedKmS = Math.max(0, Number(target.relativeSpeedKmS) || 0);
   const closingSpeedKmS = finiteNumber(target.closingSpeedKmS, 0);
+  const previousDistanceKm = finiteNumber(transfer.lastDistanceKm, Number.NaN);
+  const previousClosingSpeedKmS = finiteNumber(transfer.lastClosingSpeedKmS, Number.NaN);
+  const previousPhaseBestDistanceKm = finiteNumber(transfer.phaseBestDistanceKm, Number.NaN);
   const shipRelativePositionKm = subtract(
     shipState.position || { x: 0, y: 0, z: 0 },
     earthState.position || { x: 0, y: 0, z: 0 },
@@ -427,8 +461,9 @@ export function updateFleetTransferGuidance({
   );
   transfer.lastDistanceKm = distanceKm;
   transfer.lastRelativeSpeedKmS = relativeSpeedKmS;
-  transfer.phaseBestDistanceKm = Number.isFinite(transfer.phaseBestDistanceKm)
-    ? Math.min(Number(transfer.phaseBestDistanceKm), distanceKm)
+  transfer.lastClosingSpeedKmS = closingSpeedKmS;
+  transfer.phaseBestDistanceKm = Number.isFinite(previousPhaseBestDistanceKm)
+    ? Math.min(Number(previousPhaseBestDistanceKm), distanceKm)
     : distanceKm;
   const localUp = normalize(shipRelativePositionKm, prograde || { x: 0, y: 0, z: 1 });
 
@@ -614,6 +649,43 @@ export function updateFleetTransferGuidance({
     velocityMatchRelativeSpeedKmS,
     Number(REFUEL_TANKER_CONFIG.phaseTransferToVelocityRelativeSpeedKmS) || 0.04,
   );
+  const overshootDetectDistanceKm = Math.max(
+    transferToVelocityDistanceKm,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootDetectDistanceKm) || 120,
+  );
+  const overshootMinRangeIncreaseKm = Math.max(
+    0.05,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootMinRangeIncreaseKm) || 0.15,
+  );
+  const overshootBestDistanceMarginKm = Math.max(
+    0.05,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootBestDistanceMarginKm) || 0.5,
+  );
+  const overshootRelativeSpeedMinKmS = Math.max(
+    holdSpeedKmS * 2,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootRelativeSpeedMinKmS) || 0.004,
+  );
+  const overshootClosingMinKmS = Math.max(
+    holdSpeedKmS * 0.5,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootClosingMinKmS) || 0.0004,
+  );
+  const overshootStableSecRequired = Math.max(
+    2,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootStableSec) || 8,
+  );
+  const overshootExitRelativeSpeedKmS = Math.max(
+    holdSpeedKmS,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootExitRelativeSpeedKmS) || 0.002,
+  );
+  const overshootExitClosingAbsKmS = Math.max(
+    holdSpeedKmS * 0.5,
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootExitClosingAbsKmS) || 0.0006,
+  );
+  const overshootBrakeThrottleMax = clamp(
+    Number(REFUEL_TANKER_CONFIG.phaseOvershootBrakeThrottleMax) || 0.012,
+    0.001,
+    0.03,
+  );
   const transferRegressDistanceKm = Math.max(
     phasingToTransferDistanceKm * 1.2,
     Number(REFUEL_TANKER_CONFIG.phaseTransferRegressDistanceKm) || 140,
@@ -698,8 +770,60 @@ export function updateFleetTransferGuidance({
     && (!Number.isFinite(periapsisKm) || periapsisKm >= stabilizeCloseRangePeriapsisMinKm)
     && (!Number.isFinite(orbitalRadialSpeedKmS) || Math.abs(orbitalRadialSpeedKmS) <= Math.max(stabilizeRadialSpeedErrorKmS * 3, 0.012))
   );
-
   const previousPhase = transfer.phase;
+  const overshootCandidatePhase = (
+    transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER
+    || transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH
+    || transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
+  );
+  const rangeIncreasing = Number.isFinite(previousDistanceKm)
+    && distanceKm > (previousDistanceKm + overshootMinRangeIncreaseKm);
+  const passedBestApproach = Number.isFinite(previousPhaseBestDistanceKm)
+    && previousPhaseBestDistanceKm <= overshootDetectDistanceKm
+    && distanceKm > (previousPhaseBestDistanceKm + overshootBestDistanceMarginKm);
+  const closureReversed = (
+    closingSpeedKmS <= -overshootClosingMinKmS
+    || (
+      Number.isFinite(previousClosingSpeedKmS)
+      && previousClosingSpeedKmS >= overshootClosingMinKmS
+      && closingSpeedKmS <= 0
+    )
+  );
+  const overshootDetected = (
+    overshootCandidatePhase
+    && rangeIncreasing
+    && passedBestApproach
+    && closureReversed
+    && relativeSpeedKmS >= overshootRelativeSpeedMinKmS
+  );
+  if (overshootDetected) {
+    transfer.phase = FLEET_TRANSFER_PHASES.VELOCITY_MATCH;
+    transfer.holdPointStableSec = 0;
+    transfer.dockStableSec = 0;
+    activateOvershootRecoveryState(
+      transfer,
+      safeNow,
+      distanceKm,
+      "overshoot_recovery_velocity_cancel",
+    );
+  }
+  let overshootRecoveryReleased = false;
+  if (transfer.overshootRecoveryActive) {
+    const overshootRecoveryStable = (
+      relativeSpeedKmS <= overshootExitRelativeSpeedKmS
+      && Math.abs(closingSpeedKmS) <= overshootExitClosingAbsKmS
+    );
+    transfer.overshootRecoveryStableSec = overshootRecoveryStable
+      ? Math.min(
+        overshootStableSecRequired,
+        (Number(transfer.overshootRecoveryStableSec) || 0) + safeDt,
+      )
+      : 0;
+    if (transfer.overshootRecoveryStableSec + 1e-6 >= overshootStableSecRequired) {
+      clearOvershootRecoveryState(transfer);
+      overshootRecoveryReleased = true;
+    }
+  }
   if (transfer.phase === FLEET_TRANSFER_PHASES.IDLE) {
     transfer.phase = stageDeficitKg <= 1e-3
       ? FLEET_TRANSFER_PHASES.COMPLETE
@@ -718,6 +842,7 @@ export function updateFleetTransferGuidance({
     transfer.phase = FLEET_TRANSFER_PHASES.STABILIZE_ORBIT;
     transfer.holdPointStableSec = 0;
     transfer.dockStableSec = 0;
+    clearOvershootRecoveryState(transfer);
   }
 
   if (transfer.phase === FLEET_TRANSFER_PHASES.STABILIZE_ORBIT) {
@@ -841,6 +966,10 @@ export function updateFleetTransferGuidance({
       transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
       transfer.lastAction = "overspeed_abort";
       transfer.lastActionTimeSec = safeNow;
+      clearOvershootRecoveryState(transfer);
+    } else if (transfer.overshootRecoveryActive && !overshootRecoveryReleased) {
+      transfer.lastAction = "overshoot_recovery_holding_velocity_match";
+      transfer.lastActionTimeSec = safeNow;
     } else if (
       canAdvance
       && distanceKm <= Math.max(holdDistanceKm * 6, 8)
@@ -876,6 +1005,7 @@ export function updateFleetTransferGuidance({
       transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
       transfer.lastAction = "overspeed_abort";
       transfer.lastActionTimeSec = safeNow;
+      clearOvershootRecoveryState(transfer);
     } else if (canAdvance && transfer.holdPointStableSec + 1e-6 >= holdStableRequiredSec) {
       transfer.phase = FLEET_TRANSFER_PHASES.FINAL_APPROACH;
       transfer.dockStableSec = 0;
@@ -900,6 +1030,7 @@ export function updateFleetTransferGuidance({
       transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
       transfer.lastAction = emergencyOverspeed ? "overspeed_abort" : "abort";
       transfer.lastActionTimeSec = safeNow;
+      clearOvershootRecoveryState(transfer);
     } else if (transfer.dockStableSec + 1e-6 >= dockStableRequiredSec) {
       transfer.phase = FLEET_TRANSFER_PHASES.DOCKED_LOCK;
       transfer.lockStableSec = 0;
@@ -912,6 +1043,7 @@ export function updateFleetTransferGuidance({
       transfer.abortRemainingSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
       transfer.lastAction = "lock_abort";
       transfer.lastActionTimeSec = safeNow;
+      clearOvershootRecoveryState(transfer);
     } else {
       transfer.lockStableSec = Math.max(0, Number(transfer.lockStableSec) || 0) + safeDt;
       if ((Number(transfer.lockStableSec) || 0) >= 1.5) {
@@ -933,6 +1065,7 @@ export function updateFleetTransferGuidance({
       }
     }
   } else if (transfer.phase === FLEET_TRANSFER_PHASES.ABORTING) {
+    clearOvershootRecoveryState(transfer);
     const abortDefaultSec = Math.max(8, Number(REFUEL_TANKER_CONFIG.dockAbortDurationSec) || 36);
     transfer.abortRemainingSec = Math.max(
       0,
@@ -963,6 +1096,12 @@ export function updateFleetTransferGuidance({
   if (transfer.phase !== FLEET_TRANSFER_PHASES.STABILIZE_ORBIT) {
     transfer.radialDampActive = false;
     transfer.radialDampHoldSec = 0;
+  }
+  if (
+    transfer.phase !== FLEET_TRANSFER_PHASES.TRANSFER
+    && transfer.phase !== FLEET_TRANSFER_PHASES.VELOCITY_MATCH
+  ) {
+    clearOvershootRecoveryState(transfer);
   }
   if (transfer.phase !== previousPhase) {
     transfer.phaseEnterSec = safeNow;
@@ -1199,6 +1338,7 @@ export function updateFleetTransferGuidance({
       distanceKm <= Math.max(holdDistanceKm * 20, 40)
       && closingSpeedKmS <= 0
       && relativeSpeedKmS <= Math.max(transferToVelocityRelativeSpeedKmS * 2, 0.2)
+      && !transfer.overshootRecoveryActive
     ) {
       phaseDesiredDirection = normalize(
         directionToTarget,
@@ -1225,12 +1365,35 @@ export function updateFleetTransferGuidance({
       );
     }
   }
+  if (transfer.overshootRecoveryActive && transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH) {
+    phaseDesiredDirection = normalize(
+      target.relativeVelocityKmS || { x: 0, y: 0, z: 0 },
+      phaseDesiredDirection || scale(directionToTarget, -1) || prograde || { x: 0, y: 1, z: 0 },
+    );
+    const overshootBrakeThrottle = clamp(
+      0.0015
+        + (Math.max(0, relativeSpeedKmS - overshootExitRelativeSpeedKmS) * 0.18)
+        + (Math.max(0, Math.abs(closingSpeedKmS) - overshootExitClosingAbsKmS) * 0.22),
+      0.0015,
+      Math.min(overshootBrakeThrottleMax, velocityMatchThrottleMax),
+    );
+    phaseRequestedThrottle = (
+      relativeSpeedKmS <= overshootExitRelativeSpeedKmS
+      && Math.abs(closingSpeedKmS) <= overshootExitClosingAbsKmS
+    )
+      ? 0
+      : Math.max(phaseRequestedThrottle, overshootBrakeThrottle);
+    phaseGuidanceMode = phaseRequestedThrottle > 1e-6
+      ? "navsys:orbital-refuel-overshoot-recovery-brake"
+      : "navsys:orbital-refuel-overshoot-recovery-coast";
+  }
   const closeRateBrakeActive = (
     (
       transfer.phase === FLEET_TRANSFER_PHASES.TRANSFER
       || transfer.phase === FLEET_TRANSFER_PHASES.VELOCITY_MATCH
       || transfer.phase === FLEET_TRANSFER_PHASES.HOLD_POINT
     )
+    && !transfer.overshootRecoveryActive
     && distanceKm <= Math.max(holdDistanceKm * 40, 120)
     && relativeSpeedKmS > Math.max(holdSpeedKmS * 1.5, 0.01)
   );
@@ -1525,6 +1688,8 @@ export function fleetTransferTelemetryState(vehicle) {
     transferRateKgS: Math.max(0, Number(transfer?.transferRateKgS) || 0),
     lastAction: String(transfer?.lastAction || ""),
     lastActionTimeSec: Math.max(0, Number(transfer?.lastActionTimeSec) || 0),
+    overshootRecoveryActive: Boolean(transfer?.overshootRecoveryActive),
+    overshootRecoveryStableSec: Math.max(0, Number(transfer?.overshootRecoveryStableSec) || 0),
     approachDesiredClosingKmS: finiteNumber(transfer?.approachDesiredClosingKmS, null),
     approachClosingKmS: finiteNumber(transfer?.approachClosingKmS, null),
     approachOrbitalRateRadS: finiteNumber(transfer?.approachOrbitalRateRadS, null),

@@ -11,6 +11,7 @@ const MOON_RADIUS_KM = 1737.4;
 const EARTH_MU_KM3_S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * EARTH_MASS_KG;
 const STAGE2_PROPELLANT_KG = 5_000_000;
 const STAGE2_DRY_MASS_KG = 120_000;
+const EARLY_COMMIT_ELAPSED_SEC = 25;
 const HOLD_ELAPSED_SEC = 323;
 const BURN_ELAPSED_SEC = 430;
 const NOW_MS = Date.UTC(2026, 2, 5, 12, 0, 0);
@@ -260,6 +261,57 @@ function testFleetControllerTelemetryScenarioProgression() {
   );
 }
 
+function testFleetControllerOrbitInjectDepartureCommit() {
+  const state = makeState();
+  seedWorld(state);
+  const { controller, runtime } = createFleetHarness();
+  const launch = controller.launchMissionShip(
+    state,
+    LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,
+    NOW_MS,
+    { mode: "orbit_inject" },
+  );
+  assert(launch.accepted, `fleet departure commit: launch rejected (${launch.reason || "unknown"})`);
+  const shipId = launch.shipId;
+  const vehicle = runtime.fleet.vehicles.get(shipId);
+  assert(vehicle, "fleet departure commit: missing fleet vehicle");
+  assert(
+    vehicle.moonDeparturePlanDirectionKm
+      && Number.isFinite(Number(vehicle.moonDeparturePlanThrottle))
+      && Number.isFinite(Number(vehicle.moonDeparturePlanCommitWindowSec)),
+    "fleet departure commit: missing stored departure plan",
+  );
+  const shipState = state.dynamicBodies.get(shipId);
+  assert(shipState, "fleet departure commit: missing ship state");
+  shipState.massKg = STAGE2_DRY_MASS_KG + STAGE2_PROPELLANT_KG;
+  vehicle.stageIndex = 1;
+  vehicle.stagePropellantKg = STAGE2_PROPELLANT_KG;
+  vehicle.missionPhase = "tli_burn";
+  vehicle.elapsedSeconds = EARLY_COMMIT_ELAPSED_SEC;
+  vehicle.phaseElapsedSec = EARLY_COMMIT_ELAPSED_SEC;
+
+  controller.prepareStep(state, 1, NOW_MS + (EARLY_COMMIT_ELAPSED_SEC * 1000));
+  const snapshot = controller.statusSnapshotForBody({
+    state,
+    bodyId: shipId,
+    nowMs: NOW_MS + (EARLY_COMMIT_ELAPSED_SEC * 1000),
+    baseSnapshot: {},
+  });
+  assertApprox(snapshot.altitudeKm, 185.0, 1.0, "fleet departure commit: starting altitude");
+  assert(
+    String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
+    `fleet departure commit: expected early departure burn mode, got ${snapshot.guidanceMode}`,
+  );
+  assert(
+    Number(snapshot.guidanceRequestedThrottle) > 0.5,
+    `fleet departure commit: expected positive early throttle, got ${snapshot.guidanceRequestedThrottle}`,
+  );
+  assert(
+    snapshot.guidanceBurnRequested === true,
+    "fleet departure commit: expected burn request during departure commit",
+  );
+}
+
 function testPrimaryLaunchControllerConflictProgression() {
   const state = makeState();
   seedWorld(state);
@@ -282,12 +334,12 @@ function testPrimaryLaunchControllerConflictProgression() {
   controller.prepareStep(state, 1, NOW_MS);
   const holdSnapshot = controller.statusSnapshotForBody(state, shipId, NOW_MS);
   assert(
-    String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
-    `primary telemetry progression: expected public controller hold mode, got ${holdSnapshot.guidanceMode}`,
+    String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
+    `primary telemetry progression: expected public controller departure-commit burn, got ${holdSnapshot.guidanceMode}`,
   );
   assert(
-    Number(holdSnapshot.guidanceRequestedThrottle) === 0,
-    `primary telemetry progression: expected zero requested throttle in hold, got ${holdSnapshot.guidanceRequestedThrottle}`,
+    Number(holdSnapshot.guidanceRequestedThrottle) > 0.5,
+    `primary telemetry progression: expected positive requested throttle during departure commit, got ${holdSnapshot.guidanceRequestedThrottle}`,
   );
 
   seedConflictFrame({
@@ -309,6 +361,7 @@ function testPrimaryLaunchControllerConflictProgression() {
 }
 
 function main() {
+  testFleetControllerOrbitInjectDepartureCommit();
   testFleetControllerTelemetryScenarioProgression();
   testPrimaryLaunchControllerConflictProgression();
   console.log("PASS moon-controller-conflict-e2e");

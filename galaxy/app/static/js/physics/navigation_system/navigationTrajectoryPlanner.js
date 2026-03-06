@@ -1,7 +1,6 @@
 import { NAVIGATION_MISSION_IDS } from "./navigationMissionProfiles.js";
 import {
   NAVIGATION_DEFAULTS,
-  NAVIGATION_SYSTEM_MODES,
   normalizeNavigationMode,
 } from "./navigationSystemConfig.js";
 import { planEarthOrbitHoldCommand } from "./planners/earthOrbitHoldPlanner.js";
@@ -12,9 +11,109 @@ import {
 } from "./planners/moonGuidanceState.js";
 import { planMoonMissionCommand } from "./planners/moonMissionPlanner.js";
 
+function snapshotMoonFilter(filter = null) {
+  if (!filter || typeof filter !== "object") {
+    return null;
+  }
+  return {
+    estimate: filter.estimate
+      ? {
+        positionKm: {
+          x: Number(filter.estimate.positionKm?.x) || 0,
+          y: Number(filter.estimate.positionKm?.y) || 0,
+          z: Number(filter.estimate.positionKm?.z) || 0,
+        },
+        velocityKmS: {
+          x: Number(filter.estimate.velocityKmS?.x) || 0,
+          y: Number(filter.estimate.velocityKmS?.y) || 0,
+          z: Number(filter.estimate.velocityKmS?.z) || 0,
+        },
+      }
+      : null,
+    covariance: {
+      px: Number(filter.covariance?.px) || 0,
+      py: Number(filter.covariance?.py) || 0,
+      pz: Number(filter.covariance?.pz) || 0,
+      vx: Number(filter.covariance?.vx) || 0,
+      vy: Number(filter.covariance?.vy) || 0,
+      vz: Number(filter.covariance?.vz) || 0,
+    },
+    lastTimestampSec: Number.isFinite(Number(filter.lastTimestampSec))
+      ? Number(filter.lastTimestampSec)
+      : null,
+    lastMeasurement: filter.lastMeasurement ? { ...filter.lastMeasurement } : null,
+    lastControlAccelKmS2: {
+      x: Number(filter.lastControlAccelKmS2?.x) || 0,
+      y: Number(filter.lastControlAccelKmS2?.y) || 0,
+      z: Number(filter.lastControlAccelKmS2?.z) || 0,
+    },
+  };
+}
+
+function snapshotMoonGnc(gnc = null) {
+  if (!gnc || typeof gnc !== "object") {
+    return null;
+  }
+  return {
+    lastSolveSec: Number.isFinite(Number(gnc.lastSolveSec)) ? Number(gnc.lastSolveSec) : null,
+    lastSolveReason: String(gnc.lastSolveReason || ""),
+    lastCommandMode: String(gnc.lastCommandMode || ""),
+    solution: gnc.solution
+      ? {
+        cost: Number.isFinite(Number(gnc.solution.cost)) ? Number(gnc.solution.cost) : null,
+        throttle: Number.isFinite(Number(gnc.solution.throttle)) ? Number(gnc.solution.throttle) : 0,
+        deltaVNeedKmS: Number.isFinite(Number(gnc.solution.deltaVNeedKmS))
+          ? Number(gnc.solution.deltaVNeedKmS)
+          : null,
+        burnDurationSec: Number.isFinite(Number(gnc.solution.burnDurationSec))
+          ? Number(gnc.solution.burnDurationSec)
+          : null,
+        burnDirection: gnc.solution.burnDirection
+          ? {
+            x: Number(gnc.solution.burnDirection.x) || 0,
+            y: Number(gnc.solution.burnDirection.y) || 0,
+            z: Number(gnc.solution.burnDirection.z) || 0,
+          }
+          : null,
+        predictedMissDistanceKm: Number.isFinite(Number(gnc.solution.predictedMissDistanceKm))
+          ? Number(gnc.solution.predictedMissDistanceKm)
+          : null,
+        predictedPeriluneAltitudeKm: Number.isFinite(Number(gnc.solution.predictedPeriluneAltitudeKm))
+          ? Number(gnc.solution.predictedPeriluneAltitudeKm)
+          : null,
+        bPlaneErrorKm: Number.isFinite(Number(gnc.solution.bPlaneErrorKm))
+          ? Number(gnc.solution.bPlaneErrorKm)
+          : null,
+        closestClosingSpeedKmS: Number.isFinite(Number(gnc.solution.closestClosingSpeedKmS))
+          ? Number(gnc.solution.closestClosingSpeedKmS)
+          : null,
+        propagation: gnc.solution.propagation
+          ? {
+            durationSec: Number.isFinite(Number(gnc.solution.propagation.durationSec))
+              ? Number(gnc.solution.propagation.durationSec)
+              : null,
+            closestClosingSpeedKmS: Number.isFinite(Number(gnc.solution.propagation.closestClosingSpeedKmS))
+              ? Number(gnc.solution.propagation.closestClosingSpeedKmS)
+              : null,
+          }
+          : null,
+      }
+      : null,
+    predictedMissDistanceKm: Number.isFinite(Number(gnc.predictedMissDistanceKm))
+      ? Number(gnc.predictedMissDistanceKm)
+      : null,
+    predictedPeriluneAltitudeKm: Number.isFinite(Number(gnc.predictedPeriluneAltitudeKm))
+      ? Number(gnc.predictedPeriluneAltitudeKm)
+      : null,
+    bPlaneErrorKm: Number.isFinite(Number(gnc.bPlaneErrorKm)) ? Number(gnc.bPlaneErrorKm) : null,
+    deltaVNeedKmS: Number.isFinite(Number(gnc.deltaVNeedKmS)) ? Number(gnc.deltaVNeedKmS) : null,
+  };
+}
+
 export function createNavigationTrajectoryPlanner({
   mode = NAVIGATION_DEFAULTS.mode,
   plannerConfig = NAVIGATION_DEFAULTS.planner,
+  estimatorConfig = NAVIGATION_DEFAULTS.estimator,
 } = {}) {
   let currentMode = normalizeNavigationMode(mode);
   let plannerRuntime = createPlannerRuntime();
@@ -29,44 +128,8 @@ export function createNavigationTrajectoryPlanner({
       missionId: plannerRuntime.missionId,
       missionPhase: plannerRuntime.missionPhase,
       moon: {
-        sensorEstimate: plannerRuntime.moon.sensorEstimate
-          ? {
-            distanceKm: Number(plannerRuntime.moon.sensorEstimate.distanceKm) || 0,
-            closingSpeedKmS: Number(plannerRuntime.moon.sensorEstimate.closingSpeedKmS) || 0,
-            projectedMissDistanceKm: Number(plannerRuntime.moon.sensorEstimate.projectedMissDistanceKm) || 0,
-            direction: {
-              x: Number(plannerRuntime.moon.sensorEstimate.direction?.x) || 0,
-              y: Number(plannerRuntime.moon.sensorEstimate.direction?.y) || 0,
-              z: Number(plannerRuntime.moon.sensorEstimate.direction?.z) || 0,
-            },
-          }
-          : null,
-        midcourse: {
-          active: Boolean(plannerRuntime.moon.midcourse.active),
-          burnSec: Math.max(0, Number(plannerRuntime.moon.midcourse.burnSec) || 0),
-          stableSec: Math.max(0, Number(plannerRuntime.moon.midcourse.stableSec) || 0),
-          cooldownSec: Math.max(0, Number(plannerRuntime.moon.midcourse.cooldownSec) || 0),
-          lastStartSec: Number.isFinite(Number(plannerRuntime.moon.midcourse.lastStartSec))
-            ? Number(plannerRuntime.moon.midcourse.lastStartSec)
-            : null,
-          lastStopSec: Number.isFinite(Number(plannerRuntime.moon.midcourse.lastStopSec))
-            ? Number(plannerRuntime.moon.midcourse.lastStopSec)
-            : null,
-        },
-        tli: {
-          mode: String(plannerRuntime.moon.tli?.mode || ""),
-          modeHoldSec: Math.max(0, Number(plannerRuntime.moon.tli?.modeHoldSec) || 0),
-          lastTimestampSec: Number.isFinite(Number(plannerRuntime.moon.tli?.lastTimestampSec))
-            ? Number(plannerRuntime.moon.tli.lastTimestampSec)
-            : null,
-          protectCooldownSec: Math.max(0, Number(plannerRuntime.moon.tli?.protectCooldownSec) || 0),
-        },
-        retarget: {
-          lastSolveSec: Number.isFinite(Number(plannerRuntime.moon.retarget?.lastSolveSec))
-            ? Number(plannerRuntime.moon.retarget.lastSolveSec)
-            : null,
-          lastSolveReason: String(plannerRuntime.moon.retarget?.lastSolveReason || ""),
-        },
+        filter: snapshotMoonFilter(plannerRuntime.moon.filter),
+        gnc: snapshotMoonGnc(plannerRuntime.moon.gnc),
         approach: {
           projectedPeriluneAltitudeKm: Number.isFinite(Number(plannerRuntime.moon.approach?.projectedPeriluneAltitudeKm))
             ? Number(plannerRuntime.moon.approach.projectedPeriluneAltitudeKm)
@@ -132,29 +195,19 @@ export function createNavigationTrajectoryPlanner({
         targetVectors,
         metrics,
         plannerConfig,
+        estimatorConfig,
         plannerRuntime,
         timestampSec,
       })
       : planEarthOrbitHoldCommand({ targetVectors });
 
-    if (currentMode === NAVIGATION_SYSTEM_MODES.PREDICTIVE_OPTIMIZER) {
-      return {
-        ...baselineCommand,
-        mode: `${baselineCommand.mode}+predictive-fallback`,
-        diagnostics: {
-          optimizerReady: false,
-          plannerMode: currentMode,
-          note: "Predictive optimizer scaffold exists but is not yet active.",
-          moonPlanner: normalizedMissionId === NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN
-            ? snapshot().moon
-            : null,
-        },
-      };
-    }
     return {
       ...baselineCommand,
       diagnostics: {
-        optimizerReady: false,
+        ...(baselineCommand?.diagnostics && typeof baselineCommand.diagnostics === "object"
+          ? baselineCommand.diagnostics
+          : {}),
+        optimizerReady: true,
         plannerMode: currentMode,
         moonPlanner: normalizedMissionId === NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN
           ? snapshot().moon
