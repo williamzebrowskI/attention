@@ -277,6 +277,77 @@ function applyVerticalHoldSteering({
   };
 }
 
+function applyHotstageTargetShaping({
+  runtime,
+  orbital,
+  up,
+  direction,
+  throttle,
+  config,
+} = {}) {
+  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
+  if (Number(runtime?.stageIndex) !== 0) {
+    return { direction, throttle, active: false };
+  }
+
+  const nominalElapsedSec = Math.max(0, Number(guidance.hotstageNominalElapsedSec) || 0);
+  const minElapsedSec = Math.max(0, Number(guidance.hotstageMinElapsedSec) || 0);
+  const maxElapsedSec = Math.max(minElapsedSec, Number(guidance.hotstageMaxElapsedSec) || minElapsedSec);
+  const activationLeadSec = clamp(
+    Math.max(20, nominalElapsedSec - minElapsedSec),
+    20,
+    55,
+  );
+  const elapsedSec = Math.max(0, Number(runtime?.elapsedSeconds) || 0);
+  const timeToNominalSec = nominalElapsedSec - elapsedSec;
+  if (!(timeToNominalSec <= activationLeadSec && elapsedSec <= maxElapsedSec)) {
+    return { direction, throttle, active: false };
+  }
+
+  const altitudeKm = Math.max(0, Number(orbital?.altitudeKm) || 0);
+  const speedKmS = Math.max(0, Number(orbital?.speedKmS) || 0);
+  const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
+  const nominalAltitudeKm = Math.max(1, Number(guidance.hotstageNominalAltitudeKm) || 70);
+  const nominalSpeedKmS = Math.max(0.1, Number(guidance.hotstageNominalSpeedKmS) || 1.9);
+
+  // Shape the late Stage 1 climb toward the intended Starship-style hot-stage point.
+  const predictedAltitudeKm = altitudeKm + (Math.max(-0.02, radialSpeedKmS) * Math.max(0, timeToNominalSec));
+  const altitudeErrorKm = nominalAltitudeKm - predictedAltitudeKm;
+  const speedErrorKmS = nominalSpeedKmS - speedKmS;
+  const altitudeAssist = clamp(altitudeErrorKm / nominalAltitudeKm, -0.18, 0.24);
+  const speedAssist = clamp(speedErrorKmS / nominalSpeedKmS, -0.14, 0.18);
+  const upWeight = clamp((altitudeAssist * 0.72) + (speedAssist * 0.28), -0.10, 0.22);
+  const shapedDirection = Math.abs(upWeight) > 1e-6
+    ? normalize(add(scale(direction, 1), scale(up, upWeight)), direction)
+    : direction;
+
+  let throttleScale = 1;
+  if (speedErrorKmS < -0.05 && altitudeErrorKm < -2) {
+    throttleScale -= clamp(
+      ((-speedErrorKmS / 0.45) * 0.08) + ((-altitudeErrorKm / 35) * 0.04),
+      0,
+      0.12,
+    );
+  } else if (speedErrorKmS > 0.08 || altitudeErrorKm > 3) {
+    throttleScale += clamp(
+      ((speedErrorKmS / 0.35) * 0.05) + ((altitudeErrorKm / 30) * 0.05),
+      0,
+      0.10,
+    );
+  }
+  const shapedThrottle = clamp(
+    throttle * throttleScale,
+    0.68,
+    Number(config?.ascentMaxThrottle) || 1,
+  );
+
+  return {
+    direction: shapedDirection,
+    throttle: shapedThrottle,
+    active: true,
+  };
+}
+
 export function throttleForState(stageIndex, elapsedSeconds, dynamicPressurePa = 0) {
   const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
   if (stageIndex !== 0) {
@@ -519,6 +590,20 @@ export function computeAutopilotCommand({
     );
     throttle = Math.max(throttle, clamp(0.9 + (descentSeverity * 0.1), 0.9, 1));
     mode = "autopilot-climb-guard";
+  }
+
+  const hotstageShaping = applyHotstageTargetShaping({
+    runtime,
+    orbital,
+    up,
+    direction,
+    throttle,
+    config,
+  });
+  direction = hotstageShaping.direction;
+  throttle = hotstageShaping.throttle;
+  if (hotstageShaping.active && !mode.includes("hotstage-target")) {
+    mode = `${mode}+hotstage-target`;
   }
 
   const coastApoapsisGateKm = Math.max(
