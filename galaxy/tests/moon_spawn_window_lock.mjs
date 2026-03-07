@@ -6,6 +6,10 @@ import {
 } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 import {
+  MOON_ORBIT_INJECT_DEPARTURE_NODE_SAMPLES,
+  MOON_ORBIT_INJECT_DEPARTURE_SEARCH_PROFILE,
+} from "../app/static/js/physics/launch/lunar/constants.js";
+import {
   solveBestMoonOrbitInjectWindow,
   solveMoonDepartureWindow,
 } from "../app/static/js/physics/navigation_system/lunar/departureWindowSolver.js";
@@ -154,7 +158,7 @@ function launchMoonInjectScenario({ moonPositionKm, moonVelocityKmS }) {
 }
 
 function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
-  const solved = solveMoonDepartureWindow({
+  const liveWindow = solveMoonDepartureWindow({
     earthState: state.staticSources.get("earth"),
     moonState: state.staticSources.get("moon"),
     shipPositionKm: shipState.position,
@@ -165,30 +169,24 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
     earthMuKm3S2: EARTH_MU_KM3_S2,
     padAngularRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   });
-  assert(solved.valid, `${label}: window solve invalid`);
+  assert(liveWindow.valid, `${label}: window solve invalid`);
   assert(
-    Boolean(vehicle.moonDepartureWindowReady) === Boolean(solved.ready),
-    `${label}: stored window-ready flag should match solve result`,
+    Boolean(vehicle.moonDeparturePlanReady),
+    `${label}: expected stored direct-inject departure plan to be ready`,
   );
   assert(
-    Boolean(vehicle.moonDeparturePlanReady) === Boolean(solved.ready),
-    `${label}: stored departure plan readiness should match solve readiness`,
+    Boolean(vehicle.moonDepartureWindowReady) === Boolean(vehicle.moonDeparturePlanReady),
+    `${label}: direct inject window-ready flag should track stored departure plan readiness`,
   );
-  if (solved.ready) {
+  assert(
+    !Number.isFinite(Number(vehicle.moonDepartureWindowWaitSec))
+      || Number(vehicle.moonDepartureWindowWaitSec) <= 1,
+    `${label}: direct inject should not carry a meaningful launch-window wait, got ${vehicle.moonDepartureWindowWaitSec}`,
+  );
+  if (!liveWindow.ready) {
     assert(
-      !Number.isFinite(Number(solved.phaseErrorDeg))
-        || Math.abs(Number(solved.phaseErrorDeg)) <= Number(solved.toleranceDeg) + 1e-6,
-      `${label}: ready spawn phase should be within tolerance, got ${solved.phaseErrorDeg} deg`,
-    );
-    assert(
-      !Number.isFinite(Number(vehicle.moonDepartureWindowWaitSec))
-        || Number(vehicle.moonDepartureWindowWaitSec) <= 1,
-      `${label}: ready window should not have a meaningful wait, got ${vehicle.moonDepartureWindowWaitSec}`,
-    );
-  } else {
-    assert(
-      !Boolean(solved.corridorAccepted) || !Boolean(solved.phaseReady),
-      `${label}: unready solve should fail phase or corridor acceptance`,
+      Boolean(liveWindow.corridorAccepted) && !Boolean(liveWindow.phaseReady),
+      `${label}: expected live direct-inject window mismatch to be a phase-only offset, got ${liveWindow.reason}`,
     );
   }
   assert(
@@ -199,6 +197,15 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
   );
   assert(Number.isFinite(Number(vehicle.launchLongitudeDeg)), `${label}: launch longitude missing`);
   assert(Number.isFinite(Number(vehicle.launchLatitudeDeg)), `${label}: launch latitude missing`);
+  const stage2 = LAUNCH_VEHICLE_CONFIG.stages[1] || {};
+  const spacecraftMassKg = Math.max(30_000, Number(stage2.dryMassKg) || 120_000)
+    + Math.max(5_000_000, Number(stage2.propellantMassKg) || 1_200_000);
+  const engineAccelAtThrottle1KmS2 = (
+    Math.max(0, Number(stage2.thrustVacuumN) || Number(stage2.thrustSeaLevelN) || 0) > 0
+    && spacecraftMassKg > 0
+  )
+    ? ((Math.max(0, Number(stage2.thrustVacuumN) || Number(stage2.thrustSeaLevelN) || 0) / spacecraftMassKg) / 1000)
+    : Number.NaN;
   const optimized = solveBestMoonOrbitInjectWindow({
     earthState: state.staticSources.get("earth"),
     moonState: state.staticSources.get("moon"),
@@ -206,6 +213,10 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
     orbitAltitudeKm: Number(launch.orbitInjectAltitudeKm) || 185,
     earthRadiusKm: EARTH_RADIUS_KM,
     earthMuKm3S2: EARTH_MU_KM3_S2,
+    searchProfile: MOON_ORBIT_INJECT_DEPARTURE_SEARCH_PROFILE,
+    nodeSamples: MOON_ORBIT_INJECT_DEPARTURE_NODE_SAMPLES,
+    spacecraftMassKg,
+    engineAccelAtThrottle1KmS2,
   });
   assert(optimized.valid, `${label}: optimized window solve invalid`);
   assert(
@@ -237,6 +248,10 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
       && Number(optimized.predictedPeriluneAltitudeKm) < 2_000_000
       && Number(optimized.bPlaneErrorKm) < 2_000_000,
     `${label}: optimizer propagated metrics should stay bounded, got miss=${optimized.predictedMissDistanceKm}, perilune=${optimized.predictedPeriluneAltitudeKm}, bPlane=${optimized.bPlaneErrorKm}`,
+  );
+  assert(
+    Boolean(vehicle.moonDeparturePlanReady) === Boolean(optimized.ready),
+    `${label}: stored departure plan readiness should match optimized direct-inject solve`,
   );
   const expectedInjectedApoapsisKm = Math.max(
     Number(launch.orbitInjectAltitudeKm) + 20,

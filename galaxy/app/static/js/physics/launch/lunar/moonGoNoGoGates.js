@@ -47,6 +47,7 @@ export function evaluateMoonTliGoNoGo({
   minAltitudeKm = 120,
   minPropellantKg = 1,
   maxWindowHoldSec = 300,
+  ignoreWindowReady = false,
 } = {}) {
   const normalizedMissionId = String(missionId || "").trim();
   const normalizedMissionPhase = normalizePhaseText(missionPhase);
@@ -89,7 +90,11 @@ export function evaluateMoonTliGoNoGo({
   const propellantFloorKg = Math.max(0.01, finiteNumber(minPropellantKg, 1));
   const windowHoldLimitSec = Math.max(10, finiteNumber(maxWindowHoldSec, 300));
   const shortWindowWait = Number.isFinite(windowWaitSec) && windowWaitSec > 1 && windowWaitSec <= windowHoldLimitSec;
+  const windowRemainingSec = Number.isFinite(windowWaitSec)
+    ? Math.max(0, Math.ceil(windowWaitSec - phaseElapsedSec))
+    : null;
   const shouldWindowHold = windowReady === false && shortWindowWait && phaseElapsedSec < windowWaitSec;
+  const bypassWindowReady = Boolean(ignoreWindowReady);
   const corridor = evaluateMoonDepartureCorridor({
     predictedMissDistanceKm: departurePredictedMissDistanceKm,
     predictedPeriluneAltitudeKm: departurePredictedPeriluneAltitudeKm,
@@ -128,12 +133,18 @@ export function evaluateMoonTliGoNoGo({
   }
   addCheck(
     "window-ready",
-    !shouldWindowHold,
-    `holding for launch window (${Math.max(0, Math.ceil(windowWaitSec - phaseElapsedSec))}s remaining)`,
+    bypassWindowReady || windowReady !== false,
+    shouldWindowHold
+      ? `holding for launch window (${windowRemainingSec}s remaining)`
+      : (
+        Number.isFinite(windowWaitSec) && windowWaitSec > 1
+          ? `launch window not ready (${Math.max(1, Math.ceil(windowWaitSec))}s until ready)`
+          : "launch window not ready"
+      ),
   );
   addCheck(
     "departure-corridor",
-    windowReady !== false && (!corridorMetricsAvailable || corridor.accepted),
+    !corridorMetricsAvailable || corridor.accepted,
     corridorMetricsAvailable
       ? `departure corridor not acceptable (${corridor.reason})`
       : "departure corridor not acceptable",
@@ -171,6 +182,7 @@ export function evaluateMoonTliGoNoGo({
         ? finiteNumber(fuelBudget.marginKg, null)
         : null,
       windowReady,
+      windowReadyBypassed: bypassWindowReady,
       windowWaitSec: Number.isFinite(windowWaitSec) ? windowWaitSec : null,
       windowHoldLimitSec,
       departureCorridorAccepted: corridorMetricsAvailable ? corridor.accepted : null,

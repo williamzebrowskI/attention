@@ -301,6 +301,28 @@ function chooseMoonDepartureDiagnosticsSource(vehicle = null) {
   return chooseMoonDeparturePlanSource(planned, live) || planned || live;
 }
 
+function isMoonDirectInjectDeparturePlanAccepted(vehicle = null) {
+  return Boolean(
+    vehicle
+      && typeof vehicle === "object"
+      && vehicle.vehicleRole !== "tanker"
+      && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      && vehicle.launchMode === "orbit_inject"
+      && vehicle.missionPhase === "tli_burn"
+      && vehicle.moonDeparturePlanReady,
+  );
+}
+
+function normalizeMoonDirectInjectWindowState(vehicle = null) {
+  if (!isMoonDirectInjectDeparturePlanAccepted(vehicle)) {
+    return false;
+  }
+  vehicle.moonDepartureWindowReady = true;
+  vehicle.moonDepartureWindowWaitSec = null;
+  vehicle.moonDepartureCorridorAccepted = true;
+  return true;
+}
+
 function resolveMoonTliTelemetryMetrics(vehicle = null, fallback = {}, options = {}) {
   const fallbackMissKm = finiteOrNull(fallback?.predictedMissDistanceKm);
   const fallbackPeriluneKm = finiteOrNull(fallback?.predictedPeriluneAltitudeKm);
@@ -2143,6 +2165,7 @@ export function createLaunchFleetController({
       let rcsAssistMode = "";
       let rcsAssistAuthority = 0;
       let rcsAssistJets = [];
+      const directInjectWindowBypass = normalizeMoonDirectInjectWindowState(vehicle);
       let decisionTargetBodyId = "earth";
       let decisionTargetBodyName = "Earth";
       let orbitalRefuelTarget = null;
@@ -2749,8 +2772,14 @@ export function createLaunchFleetController({
           missionElapsedInPhaseSec: Number(vehicle.phaseElapsedSec) || 0,
           moonDepartureWindowReady: vehicle.moonPadWindowStatus
             ? Boolean(vehicle.moonPadWindowStatus.ready)
-            : Boolean(moonDepartureGateSource?.ready ?? vehicle.moonDepartureWindowReady),
-          moonDepartureWindowWaitSec: vehicle.moonDepartureWindowWaitSec,
+            : (
+              directInjectWindowBypass
+                ? true
+                : Boolean(moonDepartureGateSource?.ready ?? vehicle.moonDepartureWindowReady)
+            ),
+          moonDepartureWindowWaitSec: directInjectWindowBypass
+            ? null
+            : vehicle.moonDepartureWindowWaitSec,
           departurePredictedMissDistanceKm: moonDepartureGateSource
             ? Number(moonDepartureGateSource.predictedMissDistanceKm)
             : Number(vehicle.moonTliTargetMissKm),
@@ -2764,6 +2793,7 @@ export function createLaunchFleetController({
           minPeriapsisKm: FLEET_TLI_PERIAPSIS_PROTECT_MIN_KM,
           minAltitudeKm: FLEET_TLI_GO_NOGO_MIN_ALTITUDE_KM,
           minPropellantKg: 1,
+          ignoreWindowReady: directInjectWindowBypass,
         });
         if (moonGoNoGo.applies) {
           vehicle.moonGoNoGoStatus = moonGoNoGo.status;
