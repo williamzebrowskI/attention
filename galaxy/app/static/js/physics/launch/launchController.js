@@ -231,6 +231,43 @@ function stage2HotStagingThrottleCap(timeSinceIgnitionSec) {
   return 0.20 + (0.70 * ramp);
 }
 
+function evaluateHotstageRealismEnvelope(runtime, rocketState, earthState, earthRadiusKmValue = 0) {
+  const relPos = subtract(
+    rocketState?.position || { x: 0, y: 0, z: 0 },
+    earthState?.position || { x: 0, y: 0, z: 0 },
+  );
+  const relVel = subtract(
+    rocketState?.velocity || { x: 0, y: 0, z: 0 },
+    earthState?.velocity || { x: 0, y: 0, z: 0 },
+  );
+  const altitudeKm = Math.max(0, length(relPos) - Math.max(0, Number(earthRadiusKmValue) || 0));
+  const speedKmS = length(relVel);
+  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
+  const elapsedSec = Math.max(0, Number(runtime?.elapsedSeconds) || 0);
+  const minElapsedSec = Math.max(0, Number(guidance.hotstageMinElapsedSec) || 0);
+  const maxElapsedSec = Math.max(minElapsedSec, Number(guidance.hotstageMaxElapsedSec) || minElapsedSec);
+  const minAltitudeKm = Math.max(0, Number(guidance.hotstageMinAltitudeKm) || 0);
+  const maxAltitudeKm = Math.max(minAltitudeKm, Number(guidance.hotstageMaxAltitudeKm) || minAltitudeKm);
+  const minSpeedKmS = Math.max(0, Number(guidance.hotstageMinSpeedKmS) || 0);
+  const maxSpeedKmS = Math.max(minSpeedKmS, Number(guidance.hotstageMaxSpeedKmS) || minSpeedKmS);
+  return {
+    elapsedSec,
+    altitudeKm,
+    speedKmS,
+    nominalElapsedSec: Math.max(minElapsedSec, Number(guidance.hotstageNominalElapsedSec) || minElapsedSec),
+    nominalAltitudeKm: Math.max(minAltitudeKm, Number(guidance.hotstageNominalAltitudeKm) || minAltitudeKm),
+    nominalSpeedKmS: Math.max(minSpeedKmS, Number(guidance.hotstageNominalSpeedKmS) || minSpeedKmS),
+    withinEnvelope: (
+      elapsedSec >= minElapsedSec
+      && elapsedSec <= maxElapsedSec
+      && altitudeKm >= minAltitudeKm
+      && altitudeKm <= maxAltitudeKm
+      && speedKmS >= minSpeedKmS
+      && speedKmS <= maxSpeedKmS
+    ),
+  };
+}
+
 function bodyDirectionFromLatLon(axes, latitudeDeg, longitudeDeg) {
   const lat = rad(latitudeDeg);
   const lon = rad(longitudeDeg);
@@ -3970,6 +4007,12 @@ export function createLaunchController(options) {
             0,
             stageReservePropellantKg(0),
           );
+          const hotstageEnvelope = evaluateHotstageRealismEnvelope(
+            runtime,
+            rocketState,
+            earthState,
+            earthRadiusKm,
+          );
 
           runtime.hotstage = startHotstageSequence(runtime.hotstage, {
             elapsedSeconds: runtime.elapsedSeconds,
@@ -3994,6 +4037,13 @@ export function createLaunchController(options) {
           emitLaunchEvent("hotstage_ignition", {
             boosterReservePropellantKg,
             overlapSeconds: runtime.hotstage.overlapSeconds,
+            elapsedSec: hotstageEnvelope.elapsedSec,
+            altitudeKm: hotstageEnvelope.altitudeKm,
+            speedKmS: hotstageEnvelope.speedKmS,
+            nominalElapsedSec: hotstageEnvelope.nominalElapsedSec,
+            nominalAltitudeKm: hotstageEnvelope.nominalAltitudeKm,
+            nominalSpeedKmS: hotstageEnvelope.nominalSpeedKmS,
+            realismEnvelopeSatisfied: hotstageEnvelope.withinEnvelope,
           });
         } else {
           rocketState.massKg = Math.max(
@@ -4078,6 +4128,12 @@ export function createLaunchController(options) {
       ) {
         const detachReason = hotstageGate.timeoutExceeded ? "timeout-failsafe" : "state-gated-ready";
         const ignitionStableSec = hotstageGate.ignitionStableSec;
+        const hotstageEnvelope = evaluateHotstageRealismEnvelope(
+          runtime,
+          rocketState,
+          earthState,
+          earthRadiusKm,
+        );
         const boosterStage = stageAtIndex(0);
         const separatedBooster = createSeparatedBoosterState({
           state,
@@ -4105,6 +4161,9 @@ export function createLaunchController(options) {
           ignitionStableThrustN: hotstageGate.ignitionStableThrustN,
           virtualSeparationKm: hotstageGate.virtualSeparationKm,
           requiredSeparationKm: hotstageGate.requiredSeparationKm,
+          altitudeKm: hotstageEnvelope.altitudeKm,
+          speedKmS: hotstageEnvelope.speedKmS,
+          realismEnvelopeSatisfied: hotstageEnvelope.withinEnvelope,
           boosterCreated: Boolean(separatedBooster),
         });
       }

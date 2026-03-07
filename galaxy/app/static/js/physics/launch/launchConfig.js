@@ -109,6 +109,18 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
     verticalHoldCorrectionGain: 0.85,
     verticalHoldMaxTiltDeg: 7.0,
     boosterLandingReservePropellantKg: 320_000,
+    // Starship-style hot staging is expected high in the atmosphere, roughly around
+    // the 3-minute mark and near the 70 km band. Keep this as an explicit realism
+    // envelope so the launch profile does not silently drift away from that regime.
+    hotstageNominalElapsedSec: 185,
+    hotstageMinElapsedSec: 165,
+    hotstageMaxElapsedSec: 205,
+    hotstageNominalAltitudeKm: 70,
+    hotstageMinAltitudeKm: 60,
+    hotstageMaxAltitudeKm: 85,
+    hotstageNominalSpeedKmS: 1.9,
+    hotstageMinSpeedKmS: 1.6,
+    hotstageMaxSpeedKmS: 2.4,
   }),
   stages: Object.freeze([
     Object.freeze({
