@@ -3156,11 +3156,17 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const dynamicPressureKPa = Number.isFinite(Number(snapshot.dynamicPressurePa))
     ? Number(snapshot.dynamicPressurePa) / 1000
     : Number.NaN;
-  const targetEtaSeconds = Number.isFinite(Number(snapshot.targetDistanceKm))
-    && Number.isFinite(Number(snapshot.targetClosingSpeedKmS))
-    && Number(snapshot.targetClosingSpeedKmS) > 1e-6
-    ? (Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS))
-    : Number.NaN;
+  const targetEtaSeconds = Number.isFinite(Number(snapshot.targetEtaSeconds))
+    ? Number(snapshot.targetEtaSeconds)
+    : (
+      Number.isFinite(Number(snapshot.targetDistanceKm))
+      && Number.isFinite(Number(snapshot.targetClosingSpeedKmS))
+      && Number(snapshot.targetClosingSpeedKmS) > 1e-6
+        ? (Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS))
+        : Number.NaN
+    );
+  const targetRateLabel = String(snapshot.targetRateLabel || "Closing").trim() || "Closing";
+  const targetEtaLabel = String(snapshot.targetEtaLabel || "ETA").trim() || "ETA";
   const moonRelativeSpeedKmS = Number(snapshot.moonRelativeSpeedKmS);
   const moonProjectedMissDistanceKm = Number(snapshot.moonProjectedMissDistanceKm);
   const moonWindowWaitSec = Number(snapshot.moonDepartureWindowWaitSec);
@@ -3251,7 +3257,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Circular", value: Number.isFinite(Number(snapshot.circularSpeedKmS)) ? `${formatNumber(snapshot.circularSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Target Body", value: targetBodyLabel },
     { label: "Target Dist", value: Number.isFinite(Number(snapshot.targetDistanceKm)) ? `${formatNumber(snapshot.targetDistanceKm, 1)} km` : "n/a" },
-    { label: "Closing", value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
+    { label: targetRateLabel, value: Number.isFinite(Number(snapshot.targetClosingSpeedKmS)) ? `${formatNumber(snapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Moon Rel V", value: Number.isFinite(moonRelativeSpeedKmS) ? `${formatNumber(moonRelativeSpeedKmS, 4)} km/s` : "n/a" },
     { label: "Proj Miss", value: Number.isFinite(moonProjectedMissDistanceKm) ? `${formatNumber(moonProjectedMissDistanceKm, 1)} km` : "n/a" },
     { label: "Miss Trend", value: Number.isFinite(Number(snapshot.moonProjectedMissTrendKmS)) ? `${formatNumber(snapshot.moonProjectedMissTrendKmS, 3)} km/s` : "n/a" },
@@ -3265,7 +3271,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Window Ready", value: moonWindowReadyLabel },
     { label: "Best Launch", value: moonWindowLaunchClockLabel },
     { label: "TLI Target", value: String(snapshot.moonTliTargetMode || "").trim() || "n/a" },
-    { label: "ETA", value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
+    { label: targetEtaLabel, value: Number.isFinite(targetEtaSeconds) ? formatDurationSeconds(targetEtaSeconds) : "n/a" },
     { label: "Phase Gate", value: missionPhaseGateReason || "n/a" },
   ];
 
@@ -4548,11 +4554,15 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const targetBodyLabel = launchTargetLabel(targetBodyName, targetBodyId);
   const targetDistanceKm = Number(snapshot.targetDistanceKm);
   const targetClosingSpeedKmS = Number(snapshot.targetClosingSpeedKmS);
-  const targetEtaSeconds = Number.isFinite(targetDistanceKm) && Number.isFinite(targetClosingSpeedKmS) && targetClosingSpeedKmS > 1e-6
-    ? (targetDistanceKm / targetClosingSpeedKmS)
-    : null;
+  const targetEtaSeconds = Number.isFinite(Number(snapshot.targetEtaSeconds))
+    ? Number(snapshot.targetEtaSeconds)
+    : (Number.isFinite(targetDistanceKm) && Number.isFinite(targetClosingSpeedKmS) && targetClosingSpeedKmS > 1e-6
+      ? (targetDistanceKm / targetClosingSpeedKmS)
+      : null);
+  const targetRateLabel = String(snapshot.targetRateLabel || "Closing").trim() || "Closing";
+  const targetEtaLabel = String(snapshot.targetEtaLabel || "ETA").trim() || "ETA";
   const targetLine = Number.isFinite(targetDistanceKm)
-    ? ` | Target ${targetBodyLabel || "Body"} ${formatNumber(targetDistanceKm, 1)} km${Number.isFinite(targetClosingSpeedKmS) ? ` (${formatNumber(targetClosingSpeedKmS, 4)} km/s)` : ""}${Number.isFinite(targetEtaSeconds) ? ` ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
+    ? ` | Target ${targetBodyLabel || "Body"} ${formatNumber(targetDistanceKm, 1)} km${Number.isFinite(targetClosingSpeedKmS) ? ` (${targetRateLabel} ${formatNumber(targetClosingSpeedKmS, 4)} km/s)` : ""}${Number.isFinite(targetEtaSeconds) ? ` ${targetEtaLabel} ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
     : "";
   const eventAgeSeconds = lastLaunchEventTimestampUtc
     ? Math.max(0, (Date.now() - Date.parse(lastLaunchEventTimestampUtc)) / 1000)
@@ -10829,9 +10839,13 @@ function updateInfoOverlay() {
     const targetClosingLine = Number.isFinite(targetClosingRawKmS)
       ? `${formatNumber(targetClosingRawKmS, 4)} km/s`
       : "n/a";
-    const targetEtaSeconds = Number.isFinite(targetDistanceRawKm) && Number.isFinite(targetClosingRawKmS) && targetClosingRawKmS > 1e-6
-      ? (targetDistanceRawKm / targetClosingRawKmS)
-      : null;
+    const targetEtaSeconds = Number.isFinite(Number(launchSnapshot?.targetEtaSeconds))
+      ? Number(launchSnapshot.targetEtaSeconds)
+      : (Number.isFinite(targetDistanceRawKm) && Number.isFinite(targetClosingRawKmS) && targetClosingRawKmS > 1e-6
+        ? (targetDistanceRawKm / targetClosingRawKmS)
+        : null);
+    const targetRateLabel = String(launchSnapshot?.targetRateLabel || "Closing").trim() || "Closing";
+    const targetEtaLabel = String(launchSnapshot?.targetEtaLabel || "ETA").trim() || "ETA";
     const targetEtaLine = Number.isFinite(targetEtaSeconds)
       ? formatDurationSeconds(targetEtaSeconds)
       : "n/a";
@@ -10963,7 +10977,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">RCS Orbit Correction: ${tankerRcsOrbitCorrectionLine} | Accel: ${tankerRcsOrbitAccelLine}</p>
         <p class="line launch-line">Attitude Error: ${tankerAttitudeErrorLine} | Authority: ${tankerAttitudeAuthorityLine} | Limited: ${tankerAttitudeLimitedLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
-        <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+        <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | ${targetRateLabel}: ${targetClosingLine} | ${targetEtaLabel}: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -10982,7 +10996,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
-        <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | Closing: ${targetClosingLine} | ETA: ${targetEtaLine}</p>
+        <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | ${targetRateLabel}: ${targetClosingLine} | ${targetEtaLabel}: ${targetEtaLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -11036,7 +11050,7 @@ function updateInfoOverlay() {
        <p class="line launch-line">Altitude Above Terrain: ${Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
        <p class="line launch-line">Local Terrain Elevation: ${Number.isFinite(launchSnapshot.terrainElevationKm) ? `${formatNumber(launchSnapshot.terrainElevationKm, 3)} km` : "n/a"} | Lat/Lon: ${Number.isFinite(launchSnapshot.latitudeDeg) && Number.isFinite(launchSnapshot.longitudeDeg) ? `${formatNumber(launchSnapshot.latitudeDeg, 4)}°, ${formatNumber(launchSnapshot.longitudeDeg, 4)}°` : "n/a"}</p>
        <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
-       <p class="line launch-line">Target Body: ${launchTargetLabel(launchSnapshot.targetBodyName, launchSnapshot.targetBodyId)} | Distance: ${Number.isFinite(launchSnapshot.targetDistanceKm) ? `${formatNumber(launchSnapshot.targetDistanceKm, 1)} km` : "n/a"} | Closing: ${Number.isFinite(launchSnapshot.targetClosingSpeedKmS) ? `${formatNumber(launchSnapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Target Body: ${launchTargetLabel(launchSnapshot.targetBodyName, launchSnapshot.targetBodyId)} | Distance: ${Number.isFinite(launchSnapshot.targetDistanceKm) ? `${formatNumber(launchSnapshot.targetDistanceKm, 1)} km` : "n/a"} | ${String(launchSnapshot.targetRateLabel || "Closing").trim() || "Closing"}: ${Number.isFinite(launchSnapshot.targetClosingSpeedKmS) ? `${formatNumber(launchSnapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a"}${Number.isFinite(Number(launchSnapshot.targetEtaSeconds)) ? ` | ${String(launchSnapshot.targetEtaLabel || "ETA").trim() || "ETA"}: ${formatDurationSeconds(Number(launchSnapshot.targetEtaSeconds))}` : ""}</p>
        <p class="line launch-line">Booster Phase: ${launchSnapshot.boosterPhase || "n/a"} | Guidance: ${launchSnapshot.boosterGuidanceMode || "n/a"} | Landed: ${launchSnapshot.boosterLanded ? "yes" : "no"}</p>
        <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed: ${Number.isFinite(launchSnapshot.boosterSpeedKmS) ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}${Number.isFinite(launchSnapshot.boosterFuelFraction) ? ` (${formatNumber(launchSnapshot.boosterFuelFraction * 100, 1)}% remaining)` : ""}</p>

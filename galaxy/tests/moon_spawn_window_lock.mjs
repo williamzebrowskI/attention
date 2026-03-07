@@ -160,7 +160,7 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
     shipPositionKm: shipState.position,
     inclinationDeg: MOON_TEST_INCLINATION_DEG,
     ascendingNodeRad: Number(vehicle.moonDepartureAscendingNodeRad),
-    orbitAltitudeKm: 185,
+    orbitAltitudeKm: Number(launch.orbitInjectAltitudeKm) || 185,
     earthRadiusKm: EARTH_RADIUS_KM,
     earthMuKm3S2: EARTH_MU_KM3_S2,
     padAngularRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
@@ -203,7 +203,7 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
     earthState: state.staticSources.get("earth"),
     moonState: state.staticSources.get("moon"),
     inclinationDeg: MOON_TEST_INCLINATION_DEG,
-    orbitAltitudeKm: 185,
+    orbitAltitudeKm: Number(launch.orbitInjectAltitudeKm) || 185,
     earthRadiusKm: EARTH_RADIUS_KM,
     earthMuKm3S2: EARTH_MU_KM3_S2,
   });
@@ -238,11 +238,15 @@ function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
       && Number(optimized.bPlaneErrorKm) < 2_000_000,
     `${label}: optimizer propagated metrics should stay bounded, got miss=${optimized.predictedMissDistanceKm}, perilune=${optimized.predictedPeriluneAltitudeKm}, bPlane=${optimized.bPlaneErrorKm}`,
   );
+  const expectedInjectedApoapsisKm = Math.max(
+    Number(launch.orbitInjectAltitudeKm) + 20,
+    Number(optimized.optimizedApoapsisAltitudeKm),
+  );
   assertApprox(
     launch.orbitInjectApoapsisKm,
-    optimized.optimizedApoapsisAltitudeKm,
+    expectedInjectedApoapsisKm,
     1.0,
-    `${label}: injected apoapsis should follow optimizer`,
+    `${label}: injected apoapsis should follow optimizer with inject-floor clamp`,
   );
 }
 

@@ -1622,13 +1622,17 @@ export function createMissionControlScreenController(options = {}) {
     const targetBodyLabel = String(snapshot.targetBodyName || snapshot.targetBodyId || "").trim() || "n/a";
     const targetDistanceKm = finiteNumberOrNull(snapshot.targetDistanceKm);
     const targetClosingSpeedKmS = finiteNumberOrNull(snapshot.targetClosingSpeedKmS);
-    const targetEtaSeconds = (
-      targetDistanceKm !== null
-      && targetClosingSpeedKmS !== null
-      && targetClosingSpeedKmS > 1e-6
-    )
-      ? (targetDistanceKm / targetClosingSpeedKmS)
-      : null;
+    const targetEtaSeconds = Number.isFinite(Number(snapshot.targetEtaSeconds))
+      ? Number(snapshot.targetEtaSeconds)
+      : (
+        targetDistanceKm !== null
+        && targetClosingSpeedKmS !== null
+        && targetClosingSpeedKmS > 1e-6
+      )
+        ? (targetDistanceKm / targetClosingSpeedKmS)
+        : null;
+    const targetRateLabel = String(snapshot.targetRateLabel || "Closing").trim() || "Closing";
+    const targetEtaLabel = String(snapshot.targetEtaLabel || "ETA").trim() || "ETA";
     const flightRules = flightRuleState({
       snapshot,
       guidanceInertNoPropellant,
@@ -1803,7 +1807,7 @@ export function createMissionControlScreenController(options = {}) {
           title: "Target Watch",
           detail: `${targetBodyLabel}${targetDistanceKm !== null ? ` | ${formatNumber(targetDistanceKm, 1)} km` : ""}`,
           meta: targetClosingSpeedKmS !== null
-            ? `Closing ${formatNumber(targetClosingSpeedKmS, 4)} km/s${targetEtaSeconds !== null ? ` | ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
+            ? `${targetRateLabel} ${formatNumber(targetClosingSpeedKmS, 4)} km/s${targetEtaSeconds !== null ? ` | ${targetEtaLabel} ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
             : "No closing solution.",
           tone: targetDistanceKm !== null && targetDistanceKm < 5 ? "nominal" : "info",
         };
@@ -1891,7 +1895,7 @@ export function createMissionControlScreenController(options = {}) {
           label: "Target",
           value: targetBodyLabel,
           meta: targetDistanceKm !== null
-            ? `${formatNumber(targetDistanceKm, 1)} km${targetEtaSeconds !== null ? ` | ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
+            ? `${formatNumber(targetDistanceKm, 1)} km${targetEtaSeconds !== null ? ` | ${targetEtaLabel} ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
             : "No target distance solution.",
           tone: targetDistanceKm !== null && targetDistanceKm < 1 ? "nominal" : "info",
         }),
@@ -1932,7 +1936,7 @@ export function createMissionControlScreenController(options = {}) {
           label: "Target",
           value: targetBodyLabel,
           meta: targetDistanceKm !== null
-            ? `${formatNumber(targetDistanceKm, 1)} km${targetEtaSeconds !== null ? ` | ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
+            ? `${formatNumber(targetDistanceKm, 1)} km${targetEtaSeconds !== null ? ` | ${targetEtaLabel} ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
             : "No range solution.",
           tone: targetBodyLabel === "n/a" ? "info" : "nominal",
         }),

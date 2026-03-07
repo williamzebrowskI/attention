@@ -34,6 +34,31 @@ const EARTH_MU_KM3_S2 = 398600.4418;
 const DEFAULT_MOON_RADIUS_KM = 1737.4;
 const DEFAULT_EARTH_RADIUS_KM = 6371;
 
+function cross(a, b) {
+  return {
+    x: ((a?.y || 0) * (b?.z || 0)) - ((a?.z || 0) * (b?.y || 0)),
+    y: ((a?.z || 0) * (b?.x || 0)) - ((a?.x || 0) * (b?.z || 0)),
+    z: ((a?.x || 0) * (b?.y || 0)) - ((a?.y || 0) * (b?.x || 0)),
+  };
+}
+
+function combineBasis({
+  primaryDir,
+  radialDir,
+  normalDir,
+  primaryWeight = 1,
+  radialWeight = 0,
+  normalWeight = 0,
+}) {
+  return normalize(
+    add(
+      scale(primaryDir, primaryWeight),
+      add(scale(radialDir, radialWeight), scale(normalDir, normalWeight)),
+    ),
+    primaryDir,
+  );
+}
+
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : Number(fallback);

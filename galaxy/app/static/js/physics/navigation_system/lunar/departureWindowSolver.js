@@ -43,6 +43,7 @@ const GLOBAL_THROTTLE_MAX = 1.0;
 const GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2 = 0.0055;
 const GLOBAL_TARGET_PERILUNE_ALTITUDE_KM = 120;
 const GLOBAL_EARTH_SAFETY_MIN_ALTITUDE_KM = 130;
+const GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC = 6 * 3600;
 const STATIC_WINDOW_CACHE = new Map();
 const FAST_PHASE_SAMPLES = 18;
 const FAST_APOAPSIS_OFFSETS_KM = [0, 24, 52, 88, 132];
@@ -386,11 +387,14 @@ function cheapCandidateGeometry({
     ? signedRateRadS
     : ((Math.PI * 2) / DEFAULT_MOON_ORBIT_PERIOD_SEC);
   const shipRadiusKm = length(candidateState.relPositionKm);
-  const transferTimeSec = nominalTransferTimeSec({
+  const nominalTransferSec = nominalTransferTimeSec({
     startRadiusKm: shipRadiusKm,
     targetRadiusKm: length(moonRelPosKm),
     earthMuKm3S2,
   });
+  const transferTimeSec = Number.isFinite(nominalTransferSec)
+    ? (nominalTransferSec + GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC)
+    : Number.NaN;
   const projectedMoonRelPos = finiteVector(moonRelVelKmS) && Number.isFinite(transferTimeSec)
     ? add(moonRelPosKm, scale(moonRelVelKmS, transferTimeSec))
     : moonRelPosKm;

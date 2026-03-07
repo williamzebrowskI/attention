@@ -1,4 +1,8 @@
 import { clamp } from "./navigationMath.js";
+import {
+  MOON_PARKING_ORBIT_APOAPSIS_KM,
+  MOON_PARKING_ORBIT_PERIAPSIS_KM,
+} from "../launch/lunar/constants.js";
 
 export const NAVIGATION_MISSION_IDS = Object.freeze({
   EARTH_ORBIT_HOLD: "earth_orbit_hold",
@@ -19,8 +23,8 @@ export const NAVIGATION_MISSION_PHASES = Object.freeze({
 });
 
 export const DEFAULT_MOON_MISSION_PROFILE = Object.freeze({
-  parkingOrbitPeriapsisMinKm: 150,
-  parkingOrbitApoapsisMinKm: 180,
+  parkingOrbitPeriapsisMinKm: MOON_PARKING_ORBIT_PERIAPSIS_KM,
+  parkingOrbitApoapsisMinKm: MOON_PARKING_ORBIT_APOAPSIS_KM,
   refuelTargetFillFraction: 0.88,
   tliTargetApoapsisKm: 382_000,
   tliApoapsisMarginKm: 3_000,

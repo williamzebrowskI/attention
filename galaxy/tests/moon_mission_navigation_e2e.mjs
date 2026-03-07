@@ -3,6 +3,13 @@ import {
   NAVIGATION_MISSION_IDS,
   NAVIGATION_MISSION_PHASES,
 } from "../app/static/js/physics/navigation_system/index.js";
+import {
+  MOON_PARKING_ORBIT_APOAPSIS_KM,
+  MOON_PARKING_ORBIT_PERIAPSIS_KM,
+} from "../app/static/js/physics/launch/lunar/constants.js";
+
+const MOON_READY_APOAPSIS_KM = MOON_PARKING_ORBIT_APOAPSIS_KM + 20;
+const MOON_READY_PERIAPSIS_KM = MOON_PARKING_ORBIT_PERIAPSIS_KM;
 
 function assert(condition, message) {
   if (!condition) {
@@ -149,7 +156,12 @@ function runNominalMoonMissionE2E() {
   step({
     label: "parking-ready-transition",
     expectedPhase: NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL,
-    orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 220, specificEnergy: -1.2, altitudeKm: 190 }),
+    orbital: makeOrbital({
+      periapsisKm: MOON_READY_PERIAPSIS_KM,
+      apoapsisKm: MOON_READY_APOAPSIS_KM,
+      specificEnergy: -1.2,
+      altitudeKm: MOON_PARKING_ORBIT_PERIAPSIS_KM + 10,
+    }),
     metrics: baseMetrics({ refuelFillFraction: 0.2 }),
   });
 
@@ -157,7 +169,12 @@ function runNominalMoonMissionE2E() {
   step({
     label: "refuel-hold",
     expectedPhase: NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL,
-    orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1, altitudeKm: 200 }),
+    orbital: makeOrbital({
+      periapsisKm: MOON_READY_PERIAPSIS_KM,
+      apoapsisKm: MOON_READY_APOAPSIS_KM,
+      specificEnergy: -1.1,
+      altitudeKm: MOON_PARKING_ORBIT_PERIAPSIS_KM + 15,
+    }),
     metrics: baseMetrics({ refuelFillFraction: 0.45 }),
   });
 
@@ -165,7 +182,12 @@ function runNominalMoonMissionE2E() {
   step({
     label: "refuel-complete-transition",
     expectedPhase: NAVIGATION_MISSION_PHASES.TLI_BURN,
-    orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1, altitudeKm: 200 }),
+    orbital: makeOrbital({
+      periapsisKm: MOON_READY_PERIAPSIS_KM,
+      apoapsisKm: MOON_READY_APOAPSIS_KM,
+      specificEnergy: -1.1,
+      altitudeKm: MOON_PARKING_ORBIT_PERIAPSIS_KM + 15,
+    }),
     metrics: baseMetrics({ refuelFillFraction: 0.9 }),
   });
 
@@ -392,11 +414,19 @@ function runGateHoldFailureMatrix() {
 
   // Move into tli_burn quickly.
   updateOnce({
-    orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+    orbital: makeOrbital({
+      periapsisKm: MOON_READY_PERIAPSIS_KM,
+      apoapsisKm: MOON_READY_APOAPSIS_KM,
+      specificEnergy: -1.1,
+    }),
     metrics: baseMetrics({ refuelFillFraction: 0.2 }),
   });
   updateOnce({
-    orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+    orbital: makeOrbital({
+      periapsisKm: MOON_READY_PERIAPSIS_KM,
+      apoapsisKm: MOON_READY_APOAPSIS_KM,
+      specificEnergy: -1.1,
+    }),
     metrics: baseMetrics({ refuelFillFraction: 0.95 }),
   });
   assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN, "matrix setup: expected tli_burn");
@@ -478,11 +508,19 @@ function runRepeatedHoldPersistenceMatrix() {
   {
     const { nav, updateOnce } = createUpdater();
     updateOnce({
-      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      orbital: makeOrbital({
+        periapsisKm: MOON_READY_PERIAPSIS_KM,
+        apoapsisKm: MOON_READY_APOAPSIS_KM,
+        specificEnergy: -1.1,
+      }),
       metrics: baseMetrics({ refuelFillFraction: 0.2 }),
     });
     updateOnce({
-      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      orbital: makeOrbital({
+        periapsisKm: MOON_READY_PERIAPSIS_KM,
+        apoapsisKm: MOON_READY_APOAPSIS_KM,
+        specificEnergy: -1.1,
+      }),
       metrics: baseMetrics({ refuelFillFraction: 0.95 }),
     });
     assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN, "repeat-hold setup A: expected tli_burn");
@@ -525,11 +563,19 @@ function runRepeatedHoldPersistenceMatrix() {
   {
     const { nav, updateOnce } = createUpdater();
     updateOnce({
-      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      orbital: makeOrbital({
+        periapsisKm: MOON_READY_PERIAPSIS_KM,
+        apoapsisKm: MOON_READY_APOAPSIS_KM,
+        specificEnergy: -1.1,
+      }),
       metrics: baseMetrics({ refuelFillFraction: 0.2 }),
     });
     updateOnce({
-      orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 230, specificEnergy: -1.1 }),
+      orbital: makeOrbital({
+        periapsisKm: MOON_READY_PERIAPSIS_KM,
+        apoapsisKm: MOON_READY_APOAPSIS_KM,
+        specificEnergy: -1.1,
+      }),
       metrics: baseMetrics({ refuelFillFraction: 0.95 }),
     });
     updateOnce({

@@ -11,12 +11,23 @@ const SUN_MASS_KG = 1.9885e30;
 const NOW_MS = Date.UTC(2026, 2, 5, 12, 0, 0);
 const EARTH_MU_KM3_S2 = G_KM3_KG_S2 * EARTH_MASS_KG;
 const STEP_SEC = 20;
-const END_SEC = 900;
+const END_SEC = 2000;
 
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function assertApprox(actual, expected, tolerance, message) {
+  const actualNumber = Number(actual);
+  const expectedNumber = Number(expected);
+  assert(
+    Number.isFinite(actualNumber)
+      && Number.isFinite(expectedNumber)
+      && Math.abs(actualNumber - expectedNumber) <= tolerance,
+    `${message}: expected ${expectedNumber} +/- ${tolerance}, got ${actualNumber}`,
+  );
 }
 
 function stageAtIndex(index) {
@@ -117,7 +128,7 @@ function main() {
     NOW_MS,
     { mode: "orbit_inject" },
   );
-  assert(launch.accepted, `moon_post_tli_departure_hold: launch rejected (${launch.reason || "unknown"})`);
+  assert(launch.accepted, `moon_coast_departure_hold_planned_eta: launch rejected (${launch.reason || "unknown"})`);
 
   const shipId = launch.shipId;
   let snapshot = null;
@@ -136,37 +147,50 @@ function main() {
     });
   }
 
-  assert(snapshot, "moon_post_tli_departure_hold: missing final snapshot");
+  const vehicle = runtime.fleet.vehicles.get(shipId);
+  assert(snapshot, "moon_coast_departure_hold_planned_eta: missing final snapshot");
+  assert(vehicle, "moon_coast_departure_hold_planned_eta: missing vehicle runtime");
   assert(
     String(snapshot.missionPhase || "") === "coast_to_moon",
-    `moon_post_tli_departure_hold: expected coast_to_moon by ${END_SEC}s, got ${snapshot?.missionPhase}`,
+    `moon_coast_departure_hold_planned_eta: expected coast_to_moon, got ${snapshot?.missionPhase}`,
   );
   assert(
-    String(snapshot.guidanceMode || "").includes("midcourse-coast"),
-    `moon_post_tli_departure_hold: expected early coast hold, got ${snapshot.guidanceMode}`,
+    String(snapshot.guidanceMode || "").includes("departure-hold"),
+    `moon_coast_departure_hold_planned_eta: expected departure-hold guidance, got ${snapshot.guidanceMode}`,
   );
   assert(
-    Number(snapshot.guidanceRequestedThrottle) === 0,
-    `moon_post_tli_departure_hold: expected zero requested throttle in early coast hold, got ${snapshot.guidanceRequestedThrottle}`,
+    snapshot.targetEtaSource === "planned-transfer",
+    `moon_coast_departure_hold_planned_eta: expected planned-transfer ETA source, got ${snapshot.targetEtaSource}`,
   );
   assert(
-    Number(snapshot.throttle) === 0,
-    `moon_post_tli_departure_hold: expected zero applied throttle in early coast hold, got ${snapshot.throttle}`,
+    snapshot.targetRateLabel === "Approach",
+    `moon_coast_departure_hold_planned_eta: expected approach label, got ${snapshot.targetRateLabel}`,
+  );
+  assert(
+    snapshot.targetEtaLabel === "Plan ETA",
+    `moon_coast_departure_hold_planned_eta: expected plan ETA label, got ${snapshot.targetEtaLabel}`,
+  );
+  const expectedRemainingSec = Number(vehicle.moonDeparturePlanTransferTimeSec) - (
+    Number(vehicle.elapsedSeconds) - Number(vehicle.moonDeparturePlanTransitStartElapsedSec)
+  );
+  assertApprox(
+    snapshot.targetEtaSeconds,
+    Math.max(0, expectedRemainingSec),
+    STEP_SEC + 1,
+    "moon_coast_departure_hold_planned_eta: planned ETA should follow preserved transfer time",
+  );
+  const instantaneousEtaSec = Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS);
+  assert(
+    Number.isFinite(instantaneousEtaSec)
+      && instantaneousEtaSec > (Number(snapshot.targetEtaSeconds) * 2),
+    `moon_coast_departure_hold_planned_eta: expected instantaneous ETA to diverge materially from planned ETA, got instant ${instantaneousEtaSec}, planned ${snapshot.targetEtaSeconds}`,
   );
   assert(
     Number(snapshot.moonProjectedMissDistanceKm) < 20_000,
-    `moon_post_tli_departure_hold: expected preserved departure miss band, got ${snapshot.moonProjectedMissDistanceKm}`,
-  );
-  assert(
-    snapshot.moonProjectedMissTrendKmS === null,
-    `moon_post_tli_departure_hold: expected preserved departure hold to suppress miss trend, got ${snapshot.moonProjectedMissTrendKmS}`,
-  );
-  assert(
-    Number(snapshot.moonBPlaneErrorKm) < 10_000,
-    `moon_post_tli_departure_hold: expected preserved B-plane band, got ${snapshot.moonBPlaneErrorKm}`,
+    `moon_coast_departure_hold_planned_eta: expected preserved miss band, got ${snapshot.moonProjectedMissDistanceKm}`,
   );
 
-  console.log("PASS moon-post-tli-departure-hold-e2e");
+  console.log("PASS moon-coast-departure-hold-planned-eta-e2e");
   process.exit(0);
 }
 

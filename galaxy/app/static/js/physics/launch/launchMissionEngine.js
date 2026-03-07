@@ -17,10 +17,14 @@ import {
   orbitalStateFromRelative,
 } from "./launchGuidance.js";
 import { planRefuelRendezvousCommand } from "../navigation_system/planners/refuelRendezvousPlanner.js";
+import {
+  MOON_PARKING_ORBIT_APOAPSIS_KM,
+  MOON_PARKING_ORBIT_PERIAPSIS_KM,
+} from "./lunar/constants.js";
 
 const MOON_RETURN_MISSION_CONFIG = Object.freeze({
-  parkingOrbitPeriapsisMinKm: 150,
-  parkingOrbitApoapsisMinKm: 180,
+  parkingOrbitPeriapsisMinKm: MOON_PARKING_ORBIT_PERIAPSIS_KM,
+  parkingOrbitApoapsisMinKm: MOON_PARKING_ORBIT_APOAPSIS_KM,
   orbitalRefuelTargetFraction: 0.88,
   orbitalRefuelMinFlights: 2,
   tliTargetApoapsisKm: 382_000,

@@ -521,6 +521,10 @@ export function computeAutopilotCommand({
     mode = "autopilot-climb-guard";
   }
 
+  const coastApoapsisGateKm = Math.max(
+    config.circularizationMinAltitudeKm,
+    targetAltitudeSafe * (targetAltitudeSafe > 350 ? 0.95 : 0.75),
+  );
   const shouldCoastToApoapsis =
     (
       apoDefined
@@ -529,7 +533,9 @@ export function computeAutopilotCommand({
       && orbital.altitudeKm >= Math.max(config.ascentCoastMinAltitudeKm || 0, 0)
     )
     || (
-      orbital.altitudeKm >= config.circularizationMinAltitudeKm
+      apoDefined
+      && apoapsisKm >= coastApoapsisGateKm
+      && orbital.altitudeKm >= config.circularizationMinAltitudeKm
       && tangentialSpeedKmS >= (targetCircularSpeedKmS * 0.9)
       && radialSpeedKmS > -0.01
     );

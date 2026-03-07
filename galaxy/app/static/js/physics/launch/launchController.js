@@ -116,6 +116,7 @@ import {
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_PHASES,
+  MOON_PARKING_ORBIT_APOAPSIS_KM,
 } from "./lunar/constants.js";
 import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 
@@ -822,6 +823,14 @@ function safeMissionProfile(missionId) {
   return missionProfileById(normalizeMissionId(missionId));
 }
 
+function missionTargetOrbitAltitudeKm(missionId) {
+  const normalized = normalizeMissionId(missionId);
+  if (normalized === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return Math.max(120, Number(MOON_PARKING_ORBIT_APOAPSIS_KM) || 500);
+  }
+  return Math.max(80, Number(LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm) || 250);
+}
+
 function defaultMissionPhaseForProfileId(missionId) {
   return defaultMissionPhaseForProfileIdModel(missionId);
 }
@@ -920,7 +929,7 @@ export function createLaunchController(options) {
     lastError: "",
     autopilotEnabled: Boolean(LAUNCH_AUTOPILOT_CONFIG.enabled),
     autopilotMode: "idle",
-    targetOrbitAltitudeKm: Number(LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm) || 250,
+    targetOrbitAltitudeKm: missionTargetOrbitAltitudeKm(DEFAULT_LAUNCH_MISSION_ID),
     launchPlaneNormal: null,
     boosterDistanceKm: 0,
     starshipDistanceKm: 0,
@@ -2623,11 +2632,15 @@ export function createLaunchController(options) {
     const missionIdForLaunch = normalizeMissionId(
       options?.missionIdOverride || runtime.mission.selectedId,
     );
+    const requestedTargetOrbitAltitudeKm = Number(options?.targetOrbitAltitudeKm);
     const preserveRefuelTankers = options?.preserveRefuelTankers !== false;
     if (!resetToPad(state, nowMs, { clearRefuelTankers: !preserveRefuelTankers })) {
       return false;
     }
     runtime.mission.selectedId = missionIdForLaunch;
+    runtime.targetOrbitAltitudeKm = Number.isFinite(requestedTargetOrbitAltitudeKm)
+      ? Math.max(80, requestedTargetOrbitAltitudeKm)
+      : missionTargetOrbitAltitudeKm(missionIdForLaunch);
     const launchVehicleState = rocketStateFromNBody(state);
     if (launchVehicleState) {
       launchVehicleState.massKg = surfaceLaunchInitialMassKgForMission(runtime.mission.selectedId);
@@ -4513,6 +4526,7 @@ export function createLaunchController(options) {
     const previousMissionPhase = runtime.mission.phase;
     const normalized = normalizeMissionId(missionId);
     runtime.mission.selectedId = normalized;
+    runtime.targetOrbitAltitudeKm = missionTargetOrbitAltitudeKm(normalized);
     runtime.mission.completed = false;
     runtime.missionPhaseGateReason = "";
     runtime.moonProjectedPeriluneAltitudeKm = null;
