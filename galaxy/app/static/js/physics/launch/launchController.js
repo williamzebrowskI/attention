@@ -116,9 +116,14 @@ import {
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_PHASES,
+  MOON_ORBIT_INJECT_ALTITUDE_KM,
   MOON_PARKING_ORBIT_APOAPSIS_KM,
 } from "./lunar/constants.js";
 import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
+import {
+  canUseMoonDepartureSolveWorker,
+  requestMoonDepartureSolvePromise,
+} from "../navigation_system/lunar/moonDepartureSolveWorkerClient.js";
 
 const MIN_ROCKET_MASS_KG = 500;
 const PRIMARY_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 2_400_000;
@@ -2102,11 +2107,95 @@ export function createLaunchController(options) {
     return indicators;
   }
 
+  function buildMoonOrbitInjectLaunchSolvePayload(state, missionId, options = {}) {
+    const safeOptions = options && typeof options === "object" ? options : {};
+    const normalizedMissionId = normalizeMissionId(missionId);
+    const launchMode = String(safeOptions.mode || "pad_launch").trim().toLowerCase() === "orbit_inject"
+      ? "orbit_inject"
+      : "pad_launch";
+    if (
+      launchMode !== "orbit_inject"
+      || normalizedMissionId !== LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      || String(safeOptions.vehicleRole || "mission").trim().toLowerCase() === "tanker"
+    ) {
+      return null;
+    }
+    const earthState = earthStateFromNBody(state);
+    const moonState = bodyStateFromNBody(state, "moon");
+    if (
+      !earthState
+      || !moonState
+      || !finiteVector(earthState.position)
+      || !finiteVector(moonState.position)
+    ) {
+      return null;
+    }
+    const requestedOrbitInjectAltitudeKm = Number(safeOptions.orbitInjectAltitudeKm);
+    const orbitAltitudeKm = Number.isFinite(requestedOrbitInjectAltitudeKm)
+      ? Math.max(120, requestedOrbitInjectAltitudeKm)
+      : MOON_ORBIT_INJECT_ALTITUDE_KM;
+    const stage2 = stageAtIndex(1);
+    const stage2DryMassKg = Math.max(30_000, Number(stage2?.dryMassKg) || 120_000);
+    const stage2PropellantMassKg = Math.max(
+      PRIMARY_MOON_MISSION_STAGE2_MIN_PROPELLANT_KG,
+      Number(stage2?.propellantMassKg) || 1_200_000,
+    );
+    const requestedInjectStagePropellantKg = Number(safeOptions.orbitInjectStagePropellantKg);
+    const orbitInjectStagePropellantKg = Number.isFinite(requestedInjectStagePropellantKg)
+      ? clamp(requestedInjectStagePropellantKg, 0, stage2PropellantMassKg)
+      : stage2PropellantMassKg;
+    const stage2ThrustVacuumN = Math.max(
+      0,
+      Number(stage2?.thrustVacuumN) || Number(stage2?.thrustSeaLevelN) || 0,
+    );
+    const spacecraftMassKg = stage2DryMassKg + orbitInjectStagePropellantKg;
+    const engineAccelAtThrottle1KmS2 = (
+      stage2ThrustVacuumN > 0
+      && spacecraftMassKg > 0
+    )
+      ? ((stage2ThrustVacuumN / spacecraftMassKg) / 1000)
+      : null;
+    const earthMuKm3S2 = Number(gravitationalConstantKm3PerKgS2)
+      * (
+        Number(getEarthMassKg?.())
+        || Number(earthState.massKg)
+        || 0
+      );
+    return {
+      earthState,
+      moonState,
+      inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
+      orbitAltitudeKm,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthMuKm3S2,
+      engineAccelAtThrottle1KmS2,
+      spacecraftMassKg,
+    };
+  }
+
   function launchMissionShip(state, missionId = runtime.mission.selectedId, nowMs = Date.now(), options = {}) {
     const safeOptions = {
       ...(options && typeof options === "object" ? options : {}),
       vehicleRole: "mission",
     };
+    return fleetController.launchMissionShip(state, missionId, nowMs, safeOptions);
+  }
+
+  async function launchMissionShipAsync(state, missionId = runtime.mission.selectedId, nowMs = Date.now(), options = {}) {
+    const safeOptions = {
+      ...(options && typeof options === "object" ? options : {}),
+      vehicleRole: "mission",
+    };
+    const moonOrbitInjectPayload = buildMoonOrbitInjectLaunchSolvePayload(state, missionId, safeOptions);
+    if (moonOrbitInjectPayload && canUseMoonDepartureSolveWorker()) {
+      const workerResponse = await requestMoonDepartureSolvePromise({
+        type: "solveMoonOrbitInjectWindowForLaunch",
+        payload: moonOrbitInjectPayload,
+      });
+      if (!workerResponse?.error && workerResponse?.solution) {
+        safeOptions.moonDepartureWindowSeed = workerResponse.solution;
+      }
+    }
     return fleetController.launchMissionShip(state, missionId, nowMs, safeOptions);
   }
 
@@ -5163,6 +5252,7 @@ export function createLaunchController(options) {
     resetToPad,
     startLaunch,
     launchMissionShip,
+    launchMissionShipAsync,
     removeVehicleById,
     launchRefuelTanker,
     prepareStep,

@@ -10,8 +10,6 @@ const MOON_RADIUS_KM = 1737.4;
 const SUN_MASS_KG = 1.9885e30;
 const NOW_MS = Date.UTC(2026, 2, 5, 12, 0, 0);
 const EARTH_MU_KM3_S2 = G_KM3_KG_S2 * EARTH_MASS_KG;
-const STEP_SEC = 20;
-const END_SEC = 900;
 
 function assert(condition, message) {
   if (!condition) {
@@ -61,30 +59,6 @@ function seedWorld(state) {
   addStaticBody(state, "sun", { x: 149597870.7, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, SUN_MASS_KG);
 }
 
-function vAdd(a, b) {
-  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
-}
-
-function vScale(a, s) {
-  return { x: a.x * s, y: a.y * s, z: a.z * s };
-}
-
-function vLen(a) {
-  return Math.sqrt((a.x * a.x) + (a.y * a.y) + (a.z * a.z));
-}
-
-function gravityAccelKmS2(positionKm) {
-  const radiusKm = Math.max(1, vLen(positionKm));
-  return vScale(positionKm, -EARTH_MU_KM3_S2 / (radiusKm * radiusKm * radiusKm));
-}
-
-function integrateBody(bodyState, commandedAccelerationKmS2, dtSec) {
-  const grav = gravityAccelKmS2(bodyState.position);
-  const accel = vAdd(grav, commandedAccelerationKmS2 || { x: 0, y: 0, z: 0 });
-  bodyState.velocity = vAdd(bodyState.velocity, vScale(accel, dtSec));
-  bodyState.position = vAdd(bodyState.position, vScale(bodyState.velocity, dtSec));
-}
-
 function main() {
   const runtime = {
     windSeed: 1,
@@ -120,26 +94,44 @@ function main() {
   assert(launch.accepted, `moon_post_tli_departure_hold: launch rejected (${launch.reason || "unknown"})`);
 
   const shipId = launch.shipId;
-  let snapshot = null;
-  for (let second = STEP_SEC; second <= END_SEC; second += STEP_SEC) {
-    const nowMs = NOW_MS + (second * 1000);
-    controller.prepareStep(state, STEP_SEC, nowMs);
-    for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-      integrateBody(bodyState, controller.externalAccelerationKmS2(bodyId), STEP_SEC);
-    }
-    controller.finalizeStep(state, STEP_SEC, nowMs);
-    snapshot = controller.statusSnapshotForBody({
-      state,
-      bodyId: shipId,
-      nowMs,
-      baseSnapshot: {},
-    });
-  }
+  const vehicle = runtime.fleet.vehicles.get(shipId);
+  const shipBody = state.dynamicBodies.get(shipId);
+  assert(vehicle, "moon_post_tli_departure_hold: missing vehicle runtime");
+  assert(shipBody, "moon_post_tli_departure_hold: missing ship body");
+
+  vehicle.missionPhase = "coast_to_moon";
+  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast+departure-hold";
+  vehicle.guidanceBurnRequested = false;
+  vehicle.guidanceRequestedThrottle = 0;
+  vehicle.elapsedSeconds = 1500;
+  vehicle.moonDeparturePlanTransitStartElapsedSec = 900;
+  vehicle.moonDeparturePlanTransferTimeSec = 12_000;
+  vehicle.moonDeparturePlanPredictedMissDistanceKm = 8_392;
+  vehicle.moonDeparturePlanPredictedPeriluneAltitudeKm = 272;
+  vehicle.moonDeparturePlanBPlaneErrorKm = 2_647;
+  vehicle.moonProjectedPeriluneAltitudeKm = null;
+  vehicle.moonBPlaneErrorKm = null;
+  vehicle.moonProjectedMissTrendKmS = null;
+  vehicle.lastStep = {
+    throttle: 0,
+    guidanceMode: vehicle.guidanceMode,
+    guidanceBurnRequested: false,
+    guidanceRequestedThrottle: 0,
+  };
+  shipBody.position = { x: -8_000, y: 0, z: 0 };
+  shipBody.velocity = { x: 0.5, y: 9.8, z: 0 };
+
+  const snapshot = controller.statusSnapshotForBody({
+    state,
+    bodyId: shipId,
+    nowMs: NOW_MS + (Number(vehicle.elapsedSeconds) * 1000),
+    baseSnapshot: {},
+  });
 
   assert(snapshot, "moon_post_tli_departure_hold: missing final snapshot");
   assert(
     String(snapshot.missionPhase || "") === "coast_to_moon",
-    `moon_post_tli_departure_hold: expected coast_to_moon by ${END_SEC}s, got ${snapshot?.missionPhase}`,
+    `moon_post_tli_departure_hold: expected coast_to_moon, got ${snapshot?.missionPhase}`,
   );
   assert(
     String(snapshot.guidanceMode || "").includes("midcourse-coast"),

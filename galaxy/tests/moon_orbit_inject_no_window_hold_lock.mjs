@@ -77,6 +77,20 @@ function main() {
     launch.accepted,
     `moon_orbit_inject_no_window_hold_lock: launch rejected (${launch.reason || "unknown"})`,
   );
+  const initialSnapshot = controller.statusSnapshotForBody(state, launch.shipId, NOW_MS);
+  assert(initialSnapshot, "moon_orbit_inject_no_window_hold_lock: missing initial snapshot");
+  assert(
+    String(initialSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn"),
+    `moon_orbit_inject_no_window_hold_lock: expected injected ship to start in TLI guidance, got ${initialSnapshot.guidanceMode}`,
+  );
+  assert(
+    !String(initialSnapshot.guidanceMode || "").includes("ballistic-hold"),
+    `moon_orbit_inject_no_window_hold_lock: injected ship should not start in ballistic hold (${initialSnapshot.guidanceMode})`,
+  );
+  assert(
+    String(launch.shipMeta?.description || "").includes("Orbit-injected"),
+    `moon_orbit_inject_no_window_hold_lock: expected direct-inject metadata, got ${launch.shipMeta?.description}`,
+  );
   controller.prepareStep(state, 1, NOW_MS + 1000);
   const snapshot = controller.statusSnapshotForBody(state, launch.shipId, NOW_MS + 1000);
   assert(snapshot, "moon_orbit_inject_no_window_hold_lock: missing snapshot");
@@ -111,6 +125,7 @@ function main() {
     `moon_orbit_inject_no_window_hold_lock: unexpected TLI hold reason (${snapshot.missionPhaseGateReason})`,
   );
   console.log("PASS moon-orbit-inject-no-window-hold-lock");
+  process.exit(0);
 }
 
 main();

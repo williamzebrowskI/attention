@@ -43,6 +43,7 @@ const GLOBAL_THROTTLE_MAX = 1.0;
 const GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2 = 0.0055;
 const GLOBAL_TARGET_PERILUNE_ALTITUDE_KM = 120;
 const GLOBAL_EARTH_SAFETY_MIN_ALTITUDE_KM = 130;
+const GLOBAL_MIN_LUNAR_LEAD_RESERVE_SEC = 4 * 3600;
 const GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC = 6 * 3600;
 const STATIC_WINDOW_CACHE = new Map();
 const FAST_PHASE_SAMPLES = 18;
@@ -54,6 +55,8 @@ const FAST_DV_OFFSETS_KM_S = [-0.08, 0, 0.12];
 const FAST_RADIAL_OFFSETS = [-0.04, 0, 0.05];
 const FAST_NORMAL_OFFSETS = [-0.03, 0, 0.03];
 const FAST_PRIMARY_DIRECTION_BLEND_WEIGHTS = [0.9, 0.82, 0.74];
+const FAST_TRANSFER_RESERVE_OFFSETS_SEC = [0];
+const HYBRID_TRANSFER_RESERVE_OFFSETS_SEC = [-2 * 3600, -1 * 3600, 0, 1 * 3600, 2 * 3600];
 
 function departureSolverProfile(searchProfile = "fast") {
   const mode = String(searchProfile || "fast").trim().toLowerCase();
@@ -75,6 +78,7 @@ function departureSolverProfile(searchProfile = "fast") {
       dvOffsetsKmS: FAST_DV_OFFSETS_KM_S,
       radialOffsets: FAST_RADIAL_OFFSETS,
       normalOffsets: FAST_NORMAL_OFFSETS,
+      transferReserveOffsetsSec: HYBRID_TRANSFER_RESERVE_OFFSETS_SEC,
     };
   }
   if (mode === "normal" || mode === "full") {
@@ -95,6 +99,7 @@ function departureSolverProfile(searchProfile = "fast") {
       dvOffsetsKmS: GLOBAL_DV_OFFSETS_KM_S,
       radialOffsets: GLOBAL_RADIAL_OFFSETS,
       normalOffsets: GLOBAL_NORMAL_OFFSETS,
+      transferReserveOffsetsSec: FAST_TRANSFER_RESERVE_OFFSETS_SEC,
     };
   }
   if (mode === "aggressive") {
@@ -115,6 +120,7 @@ function departureSolverProfile(searchProfile = "fast") {
       dvOffsetsKmS: GLOBAL_DV_OFFSETS_KM_S,
       radialOffsets: GLOBAL_RADIAL_OFFSETS,
       normalOffsets: GLOBAL_NORMAL_OFFSETS,
+      transferReserveOffsetsSec: FAST_TRANSFER_RESERVE_OFFSETS_SEC,
     };
   }
   return {
@@ -134,12 +140,25 @@ function departureSolverProfile(searchProfile = "fast") {
     dvOffsetsKmS: FAST_DV_OFFSETS_KM_S,
     radialOffsets: FAST_RADIAL_OFFSETS,
     normalOffsets: FAST_NORMAL_OFFSETS,
+    transferReserveOffsetsSec: FAST_TRANSFER_RESERVE_OFFSETS_SEC,
   };
 }
 
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : Number(fallback);
+}
+
+function totalPlanTimeSec({
+  burnDurationSec = Number.NaN,
+  transferTimeSec = Number.NaN,
+} = {}) {
+  const burnSec = Math.max(0, finiteNumber(burnDurationSec, Number.NaN));
+  const transferSec = Math.max(0, finiteNumber(transferTimeSec, Number.NaN));
+  if (!Number.isFinite(burnSec) || !Number.isFinite(transferSec)) {
+    return Number.NaN;
+  }
+  return burnSec + transferSec;
 }
 
 function cloneVector(vector) {
@@ -381,6 +400,7 @@ function cheapCandidateGeometry({
   periapsisAltitudeKm = 185,
   apoapsisAltitudeKm = 220,
   phaseRad = 0,
+  transferReserveSec = GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC,
 } = {}) {
   const candidateState = buildOrbitCandidateState({
     earthState,
@@ -412,8 +432,12 @@ function cheapCandidateGeometry({
     targetRadiusKm: length(moonRelPosKm),
     earthMuKm3S2,
   });
+  const resolvedTransferReserveSec = Math.max(
+    GLOBAL_MIN_LUNAR_LEAD_RESERVE_SEC,
+    finiteNumber(transferReserveSec, GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC),
+  );
   const transferTimeSec = Number.isFinite(nominalTransferSec)
-    ? (nominalTransferSec + GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC)
+    ? (nominalTransferSec + resolvedTransferReserveSec)
     : Number.NaN;
   const projectedMoonRelPos = finiteVector(moonRelVelKmS) && Number.isFinite(transferTimeSec)
     ? add(moonRelPosKm, scale(moonRelVelKmS, transferTimeSec))
@@ -437,6 +461,7 @@ function cheapCandidateGeometry({
   return {
     ...candidateState,
     transferTimeSec,
+    transferReserveSec: resolvedTransferReserveSec,
     alignNow,
     alignProjected,
     planeQuality,
@@ -527,6 +552,81 @@ function chooseBetterEvaluatedCandidate(currentBest, candidateBest) {
   }
   const currentCorridorScore = Number(currentEvaluated.corridorScore);
   const candidateCorridorScore = Number(candidateEvaluated.corridorScore);
+  if (
+    Boolean(currentEvaluated.corridorAccepted)
+    && Boolean(candidateEvaluated.corridorAccepted)
+  ) {
+    const corridorScoreGap = (
+      Number.isFinite(candidateCorridorScore) && Number.isFinite(currentCorridorScore)
+        ? Math.abs(candidateCorridorScore - currentCorridorScore)
+        : Number.POSITIVE_INFINITY
+    );
+    const currentMissKm = Number(currentEvaluated.predictedMissDistanceKm);
+    const candidateMissKm = Number(candidateEvaluated.predictedMissDistanceKm);
+    const currentBPlaneKm = Number(currentEvaluated.bPlaneErrorKm);
+    const candidateBPlaneKm = Number(candidateEvaluated.bPlaneErrorKm);
+    const currentPeriluneErrorKm = Math.abs(
+      (Number(currentEvaluated.predictedPeriluneAltitudeKm) || GLOBAL_TARGET_PERILUNE_ALTITUDE_KM)
+      - GLOBAL_TARGET_PERILUNE_ALTITUDE_KM,
+    );
+    const candidatePeriluneErrorKm = Math.abs(
+      (Number(candidateEvaluated.predictedPeriluneAltitudeKm) || GLOBAL_TARGET_PERILUNE_ALTITUDE_KM)
+      - GLOBAL_TARGET_PERILUNE_ALTITUDE_KM,
+    );
+    const candidateMateriallyBetterQuality = (
+      (Number.isFinite(candidateMissKm) && Number.isFinite(currentMissKm) && candidateMissKm < (currentMissKm - 1_500))
+      || (Number.isFinite(candidateBPlaneKm) && Number.isFinite(currentBPlaneKm) && candidateBPlaneKm < (currentBPlaneKm - 1_500))
+      || (
+        Number.isFinite(candidatePeriluneErrorKm)
+        && Number.isFinite(currentPeriluneErrorKm)
+        && candidatePeriluneErrorKm < (currentPeriluneErrorKm - 1_000)
+      )
+    );
+    if (candidateMateriallyBetterQuality) {
+      return candidateBest;
+    }
+    const currentMateriallyBetterQuality = (
+      (Number.isFinite(candidateMissKm) && Number.isFinite(currentMissKm) && candidateMissKm > (currentMissKm + 1_500))
+      || (Number.isFinite(candidateBPlaneKm) && Number.isFinite(currentBPlaneKm) && candidateBPlaneKm > (currentBPlaneKm + 1_500))
+      || (
+        Number.isFinite(candidatePeriluneErrorKm)
+        && Number.isFinite(currentPeriluneErrorKm)
+        && candidatePeriluneErrorKm > (currentPeriluneErrorKm + 1_000)
+      )
+    );
+    if (currentMateriallyBetterQuality) {
+      return currentBest;
+    }
+    const comparableQuality = corridorScoreGap <= 0.035;
+    if (comparableQuality) {
+      const currentTimeToCoastSec = Number(currentEvaluated.planTimeToCoastSec);
+      const candidateTimeToCoastSec = Number(candidateEvaluated.planTimeToCoastSec);
+      if (
+        Number.isFinite(candidateTimeToCoastSec)
+        && Number.isFinite(currentTimeToCoastSec)
+      ) {
+        if (candidateTimeToCoastSec < (currentTimeToCoastSec - 15)) {
+          return candidateBest;
+        }
+        if (candidateTimeToCoastSec > (currentTimeToCoastSec + 15)) {
+          return currentBest;
+        }
+      }
+      const currentPlanTotalSec = Number(currentEvaluated.planTotalTimeSec);
+      const candidatePlanTotalSec = Number(candidateEvaluated.planTotalTimeSec);
+      if (
+        Number.isFinite(candidatePlanTotalSec)
+        && Number.isFinite(currentPlanTotalSec)
+      ) {
+        if (candidatePlanTotalSec < (currentPlanTotalSec - 120)) {
+          return candidateBest;
+        }
+        if (candidatePlanTotalSec > (currentPlanTotalSec + 120)) {
+          return currentBest;
+        }
+      }
+    }
+  }
   if (Number.isFinite(candidateCorridorScore) && Number.isFinite(currentCorridorScore)) {
     if (candidateCorridorScore > (currentCorridorScore + 1e-6)) {
       return candidateBest;
@@ -692,6 +792,16 @@ function evaluateApproximateDepartureCandidate({
     moonRelVelKmS,
   });
   const coastEntryAlignment01 = clamp((((Number(coastEntryAlignment) || 0) + 1) * 0.5), 0, 1);
+  const planTimeToCoastSec = Math.max(0, Number(burnDurationSec) || 0);
+  const planTransferTimeSec = Number(candidate.transferTimeSec);
+  const planTotalTimeSec = totalPlanTimeSec({
+    burnDurationSec: planTimeToCoastSec,
+    transferTimeSec: planTransferTimeSec,
+  });
+  const timePenalty = (
+    ((planTimeToCoastSec / 3600) * 4_500)
+    + ((planTransferTimeSec / 3600) * 325)
+  );
   const corridorPenalty = corridor.accepted
     ? 0
     : (
@@ -710,6 +820,7 @@ function evaluateApproximateDepartureCandidate({
       + (deltaVNeedKmS * 450)
       + ((1 - alignProjected01) * 5_000)
       + ((1 - coastEntryAlignment01) * 16_000)
+      + timePenalty
     ),
     throttle,
     burnDurationSec,
@@ -726,6 +837,9 @@ function evaluateApproximateDepartureCandidate({
       + (Number(corridor.bPlaneResidualKm) || 0)
       + (Number(corridor.periluneResidualKm) || 0)
     ),
+    planTimeToCoastSec,
+    planTransferTimeSec,
+    planTotalTimeSec,
     safetyAltitudeKm: Number(candidate.periapsisAltitudeKm),
     projectedAlignment,
     coastEntryAlignment,
@@ -879,6 +993,16 @@ function evaluatePropagatedDepartureCandidate({
             ),
           });
           const coastEntryAlignment01 = clamp((((Number(coastEntryAlignment) || 0) + 1) * 0.5), 0, 1);
+          const planTimeToCoastSec = Math.max(0, Number(burnDurationSec) || 0);
+          const planTransferTimeSec = Number(candidate.transferTimeSec);
+          const planTotalTimeSec = totalPlanTimeSec({
+            burnDurationSec: planTimeToCoastSec,
+            transferTimeSec: planTransferTimeSec,
+          });
+          const timePenalty = (
+            ((planTimeToCoastSec / 3600) * 5_000)
+            + ((planTransferTimeSec / 3600) * 350)
+          );
           const cost = (
             predictedMissDistanceKm
             + (Math.abs(predictedPeriluneAltitudeKm - targetPeriluneAltitudeKm) * 0.85)
@@ -890,6 +1014,7 @@ function evaluatePropagatedDepartureCandidate({
             + (deltaVNeedKmS * 650)
             + (Math.abs(1 - tangentWeight) * 1_500)
             + ((1 - coastEntryAlignment01) * 18_000)
+            + timePenalty
           );
           const evaluated = {
             cost,
@@ -904,6 +1029,9 @@ function evaluatePropagatedDepartureCandidate({
             corridorScore: corridor.score,
             corridorReason: corridor.reason,
             corridorResidualTotalKm,
+            planTimeToCoastSec,
+            planTransferTimeSec,
+            planTotalTimeSec,
             safetyAltitudeKm,
             projectedAlignment,
             coastEntryAlignment,
@@ -1206,6 +1334,9 @@ function buildSolvedDepartureWindowResult({
       : Number.NaN,
     selectedPlaneQuality: Number(selected.planeQuality),
     optimizedApoapsisAltitudeKm: Number(selected.apoapsisAltitudeKm),
+    optimizedTransferReserveSec: Number.isFinite(Number(selected.transferReserveSec))
+      ? Number(selected.transferReserveSec)
+      : Number.NaN,
     predictedMissDistanceKm: Number.isFinite(Number(evaluated?.predictedMissDistanceKm))
       ? Number(evaluated.predictedMissDistanceKm)
       : Number.NaN,
@@ -1224,6 +1355,12 @@ function buildSolvedDepartureWindowResult({
       : Number.NaN,
     optimizedBurnDurationSec: Number.isFinite(Number(evaluated?.burnDurationSec))
       ? Number(evaluated.burnDurationSec)
+      : Number.NaN,
+    optimizedTimeToCoastSec: Number.isFinite(Number(evaluated?.planTimeToCoastSec))
+      ? Number(evaluated.planTimeToCoastSec)
+      : Number.NaN,
+    optimizedPlanTotalTimeSec: Number.isFinite(Number(evaluated?.planTotalTimeSec))
+      ? Number(evaluated.planTotalTimeSec)
       : Number.NaN,
     optimizedBurnDirection: cloneVector(evaluated?.burnDirection),
     departureCost: Number.isFinite(baseCost) ? baseCost : Number.NaN,
@@ -1403,6 +1540,16 @@ function evaluateSinglePropagatedDepartureCandidate({
   const safetyPenalty = safetyAccepted
     ? 0
     : (2_500_000 + (safetyRiskKm * 25_000));
+  const planTimeToCoastSec = Math.max(0, Number(approx.burnDurationSec) || 0);
+  const planTransferTimeSec = Number(candidate.transferTimeSec);
+  const planTotalTimeSec = totalPlanTimeSec({
+    burnDurationSec: planTimeToCoastSec,
+    transferTimeSec: planTransferTimeSec,
+  });
+  const timePenalty = (
+    ((planTimeToCoastSec / 3600) * 5_000)
+    + ((planTransferTimeSec / 3600) * 350)
+  );
   return {
     ...approx,
     cost: (
@@ -1414,6 +1561,7 @@ function evaluateSinglePropagatedDepartureCandidate({
       + closingPenalty
       + escapePenalty
       + safetyPenalty
+      + timePenalty
     ),
     predictedMissDistanceKm,
     predictedPeriluneAltitudeKm,
@@ -1427,6 +1575,9 @@ function evaluateSinglePropagatedDepartureCandidate({
       + (Number(corridor.periluneResidualKm) || 0)
       + safetyRiskKm
     ),
+    planTimeToCoastSec,
+    planTransferTimeSec,
+    planTotalTimeSec,
     safetyAltitudeKm,
   };
 }
@@ -1500,6 +1651,9 @@ function solveHybridMoonOrbitInjectWindow({
   const phaseSamples = Math.max(8, Math.round(Number(profile.phaseSamples) || FAST_PHASE_SAMPLES));
   const nodeStepRad = (Math.PI * 2) / sampleCount;
   const phaseStepRad = (Math.PI * 2) / phaseSamples;
+  const transferReserveOffsetsSec = Array.isArray(profile.transferReserveOffsetsSec) && profile.transferReserveOffsetsSec.length
+    ? profile.transferReserveOffsetsSec
+    : FAST_TRANSFER_RESERVE_OFFSETS_SEC;
   let best = null;
   let finalists = [];
   for (let nodeIndex = 0; nodeIndex < sampleCount; nodeIndex += 1) {
@@ -1511,43 +1665,46 @@ function solveHybridMoonOrbitInjectWindow({
           Number(orbitAltitudeKm) || 185,
           (Number(orbitAltitudeKm) || 185) + profile.apoapsisOffsetsKm[apoIndex],
         );
-        const cheap = cheapCandidateGeometry({
-          earthState,
-          moonRelPosKm,
-          moonRelVelKmS,
-          earthMuKm3S2,
-          earthRadiusKm,
-          inclinationDeg,
-          ascendingNodeRad,
-          periapsisAltitudeKm: orbitAltitudeKm,
-          apoapsisAltitudeKm,
-          phaseRad,
-        });
-        if (!cheap) {
-          continue;
+        for (let reserveIndex = 0; reserveIndex < transferReserveOffsetsSec.length; reserveIndex += 1) {
+          const cheap = cheapCandidateGeometry({
+            earthState,
+            moonRelPosKm,
+            moonRelVelKmS,
+            earthMuKm3S2,
+            earthRadiusKm,
+            inclinationDeg,
+            ascendingNodeRad,
+            periapsisAltitudeKm: orbitAltitudeKm,
+            apoapsisAltitudeKm,
+            phaseRad,
+            transferReserveSec: GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC + transferReserveOffsetsSec[reserveIndex],
+          });
+          if (!cheap) {
+            continue;
+          }
+          const evaluated = evaluateSinglePropagatedDepartureCandidate({
+            sources,
+            spacecraft,
+            earthState,
+            moonRelPosKm,
+            moonRelVelKmS,
+            candidate: cheap,
+            nominalDeltaVKmS,
+            earthSafetyMinAltitudeKm: hybridEarthSafetyMinAltitudeKm,
+            engineAccelAtThrottle1KmS2,
+          });
+          if (!evaluated) {
+            continue;
+          }
+          const candidateBest = {
+            ascendingNodeRad,
+            cheap,
+            evaluated,
+            coarseScore: scoreEvaluatedDepartureCandidate(evaluated),
+          };
+          best = chooseBetterEvaluatedCandidate(best, candidateBest);
+          finalists = insertTopScoredCandidate(finalists, candidateBest, profile.nodeFinalistCount);
         }
-        const evaluated = evaluateSinglePropagatedDepartureCandidate({
-          sources,
-          spacecraft,
-          earthState,
-          moonRelPosKm,
-          moonRelVelKmS,
-          candidate: cheap,
-          nominalDeltaVKmS,
-          earthSafetyMinAltitudeKm: hybridEarthSafetyMinAltitudeKm,
-          engineAccelAtThrottle1KmS2,
-        });
-        if (!evaluated) {
-          continue;
-        }
-        const candidateBest = {
-          ascendingNodeRad,
-          cheap,
-          evaluated,
-          coarseScore: scoreEvaluatedDepartureCandidate(evaluated),
-        };
-        best = chooseBetterEvaluatedCandidate(best, candidateBest);
-        finalists = insertTopScoredCandidate(finalists, candidateBest, profile.nodeFinalistCount);
       }
     }
   }
@@ -1567,45 +1724,132 @@ function solveHybridMoonOrbitInjectWindow({
     const refineNodeOffsets = [-nodeStepRad / 4, -nodeStepRad / 8, 0, nodeStepRad / 8, nodeStepRad / 4];
     const refinePhaseOffsets = [-phaseStepRad / 4, -phaseStepRad / 8, 0, phaseStepRad / 8, phaseStepRad / 4];
     const refineApoOffsetsKm = [-24, -12, 0, 12, 24];
+    const refineReserveOffsetsSec = [-3600, -1800, 0, 1800, 3600];
     for (let nodeOffsetIndex = 0; nodeOffsetIndex < refineNodeOffsets.length; nodeOffsetIndex += 1) {
       for (let phaseOffsetIndex = 0; phaseOffsetIndex < refinePhaseOffsets.length; phaseOffsetIndex += 1) {
         for (let apoOffsetIndex = 0; apoOffsetIndex < refineApoOffsetsKm.length; apoOffsetIndex += 1) {
-          const ascendingNodeRad = normalizeAngleZeroToTau(baseNodeRad + refineNodeOffsets[nodeOffsetIndex]);
-          const cheap = cheapCandidateGeometry({
-            earthState,
-            moonRelPosKm,
-            moonRelVelKmS,
-            earthMuKm3S2,
-            earthRadiusKm,
-            inclinationDeg,
-            ascendingNodeRad,
-            periapsisAltitudeKm: orbitAltitudeKm,
-            apoapsisAltitudeKm: Math.max(
-              Number(orbitAltitudeKm) || 185,
-              baseApoapsisAltitudeKm + refineApoOffsetsKm[apoOffsetIndex],
-            ),
-            phaseRad: normalizeAngleZeroToTau(basePhaseRad + refinePhaseOffsets[phaseOffsetIndex]),
-          });
-          if (!cheap) {
-            continue;
+          for (let reserveOffsetIndex = 0; reserveOffsetIndex < refineReserveOffsetsSec.length; reserveOffsetIndex += 1) {
+            const ascendingNodeRad = normalizeAngleZeroToTau(baseNodeRad + refineNodeOffsets[nodeOffsetIndex]);
+            const cheap = cheapCandidateGeometry({
+              earthState,
+              moonRelPosKm,
+              moonRelVelKmS,
+              earthMuKm3S2,
+              earthRadiusKm,
+              inclinationDeg,
+              ascendingNodeRad,
+              periapsisAltitudeKm: orbitAltitudeKm,
+              apoapsisAltitudeKm: Math.max(
+                Number(orbitAltitudeKm) || 185,
+                baseApoapsisAltitudeKm + refineApoOffsetsKm[apoOffsetIndex],
+              ),
+              phaseRad: normalizeAngleZeroToTau(basePhaseRad + refinePhaseOffsets[phaseOffsetIndex]),
+              transferReserveSec: finiteNumber(
+                Number(finalist?.cheap?.transferReserveSec) + refineReserveOffsetsSec[reserveOffsetIndex],
+                GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC,
+              ),
+            });
+            if (!cheap) {
+              continue;
+            }
+            const evaluated = evaluateSinglePropagatedDepartureCandidate({
+              sources,
+              spacecraft,
+              earthState,
+              moonRelPosKm,
+              moonRelVelKmS,
+              candidate: cheap,
+              nominalDeltaVKmS,
+              earthSafetyMinAltitudeKm: hybridEarthSafetyMinAltitudeKm,
+              engineAccelAtThrottle1KmS2,
+            });
+            best = chooseBetterEvaluatedCandidate(best, evaluated ? {
+              ascendingNodeRad,
+              cheap,
+              evaluated,
+            } : null);
           }
-          const evaluated = evaluateSinglePropagatedDepartureCandidate({
-            sources,
-            spacecraft,
-            earthState,
-            moonRelPosKm,
-            moonRelVelKmS,
-            candidate: cheap,
-            nominalDeltaVKmS,
-            earthSafetyMinAltitudeKm: hybridEarthSafetyMinAltitudeKm,
-            engineAccelAtThrottle1KmS2,
-          });
-          best = chooseBetterEvaluatedCandidate(best, evaluated ? {
-            ascendingNodeRad,
-            cheap,
-            evaluated,
-          } : null);
         }
+      }
+    }
+  }
+
+  if (best?.cheap) {
+    const finalNodeOffsetsRad = [
+      rad(-5),
+      rad(-2.5),
+      0,
+      rad(2.5),
+      rad(5),
+    ];
+    const finalPhaseOffsetsRad = [
+      rad(-10),
+      rad(-5),
+      0,
+      rad(5),
+      rad(10),
+    ];
+    const finalReserveOffsetsSec = [-3600, -1800, 0, 1800, 3600];
+    for (let pass = 0; pass < 2; pass += 1) {
+      const centerNodeRad = Number(best?.ascendingNodeRad);
+      const centerPhaseRad = Number(best?.cheap?.phaseRad);
+      const centerApoapsisAltitudeKm = Number(best?.cheap?.apoapsisAltitudeKm);
+      const centerTransferReserveSec = Number(best?.cheap?.transferReserveSec);
+      if (
+        !Number.isFinite(centerNodeRad)
+        || !Number.isFinite(centerPhaseRad)
+        || !Number.isFinite(centerApoapsisAltitudeKm)
+        || !Number.isFinite(centerTransferReserveSec)
+      ) {
+        break;
+      }
+      let improved = false;
+      for (let nodeOffsetIndex = 0; nodeOffsetIndex < finalNodeOffsetsRad.length; nodeOffsetIndex += 1) {
+        for (let phaseOffsetIndex = 0; phaseOffsetIndex < finalPhaseOffsetsRad.length; phaseOffsetIndex += 1) {
+          for (let reserveOffsetIndex = 0; reserveOffsetIndex < finalReserveOffsetsSec.length; reserveOffsetIndex += 1) {
+            const ascendingNodeRad = normalizeAngleZeroToTau(centerNodeRad + finalNodeOffsetsRad[nodeOffsetIndex]);
+            const cheap = cheapCandidateGeometry({
+              earthState,
+              moonRelPosKm,
+              moonRelVelKmS,
+              earthMuKm3S2,
+              earthRadiusKm,
+              inclinationDeg,
+              ascendingNodeRad,
+              periapsisAltitudeKm: orbitAltitudeKm,
+              apoapsisAltitudeKm: centerApoapsisAltitudeKm,
+              phaseRad: normalizeAngleZeroToTau(centerPhaseRad + finalPhaseOffsetsRad[phaseOffsetIndex]),
+              transferReserveSec: centerTransferReserveSec + finalReserveOffsetsSec[reserveOffsetIndex],
+            });
+            if (!cheap) {
+              continue;
+            }
+            const evaluated = evaluateSinglePropagatedDepartureCandidate({
+              sources,
+              spacecraft,
+              earthState,
+              moonRelPosKm,
+              moonRelVelKmS,
+              candidate: cheap,
+              nominalDeltaVKmS,
+              earthSafetyMinAltitudeKm: hybridEarthSafetyMinAltitudeKm,
+              engineAccelAtThrottle1KmS2,
+            });
+            const candidateBest = evaluated ? {
+              ascendingNodeRad,
+              cheap,
+              evaluated,
+            } : null;
+            const preferred = chooseBetterEvaluatedCandidate(best, candidateBest);
+            if (preferred === candidateBest) {
+              best = candidateBest;
+              improved = true;
+            }
+          }
+        }
+      }
+      if (!improved) {
+        break;
       }
     }
   }
@@ -1835,6 +2079,155 @@ export function solveMoonDepartureWindow({
   };
 }
 
+export function evaluateMoonOrbitInjectLocation({
+  earthState = null,
+  moonState = null,
+  inclinationDeg = 28.5,
+  ascendingNodeRad = 0,
+  orbitAltitudeKm = 185,
+  apoapsisAltitudeKm = Number.NaN,
+  phaseRad = 0,
+  earthRadiusKm = DEFAULT_EARTH_RADIUS_KM,
+  earthMuKm3S2 = Number.NaN,
+  searchProfile = "fast",
+  transferReserveSec = GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC,
+  engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
+  spacecraftMassKg = 1_250_000,
+} = {}) {
+  if (!finiteVector(earthState?.position) || !finiteVector(moonState?.position)) {
+    return {
+      valid: false,
+      ready: false,
+      reason: "missing-state",
+    };
+  }
+
+  const periapsisAltitudeKm = Math.max(120, Number(orbitAltitudeKm) || 185);
+  const evaluatedApoapsisAltitudeKm = Number.isFinite(Number(apoapsisAltitudeKm))
+    ? Math.max(periapsisAltitudeKm, Number(apoapsisAltitudeKm))
+    : periapsisAltitudeKm;
+  const normalizedNodeRad = normalizeAngleZeroToTau(Number(ascendingNodeRad) || 0);
+  const normalizedPhaseRad = normalizeAngleZeroToTau(Number(phaseRad) || 0);
+  const profile = departureSolverProfile(searchProfile);
+  const moonRelPosKm = subtract(moonState.position, earthState.position);
+  const moonRelVelKmS = finiteVector(moonState?.velocity) && finiteVector(earthState?.velocity)
+    ? subtract(moonState.velocity, earthState.velocity)
+    : { x: 0, y: 0, z: 0 };
+  const candidate = cheapCandidateGeometry({
+    earthState,
+    moonRelPosKm,
+    moonRelVelKmS,
+    earthMuKm3S2,
+    earthRadiusKm,
+    inclinationDeg,
+    ascendingNodeRad: normalizedNodeRad,
+    periapsisAltitudeKm,
+    apoapsisAltitudeKm: evaluatedApoapsisAltitudeKm,
+    phaseRad: normalizedPhaseRad,
+    transferReserveSec,
+  });
+  if (!candidate) {
+    return {
+      valid: false,
+      ready: false,
+      reason: "candidate-unavailable",
+      ascendingNodeRad: normalizedNodeRad,
+      phaseRad: normalizedPhaseRad,
+      periapsisAltitudeKm,
+      apoapsisAltitudeKm: evaluatedApoapsisAltitudeKm,
+    };
+  }
+
+  const orbitRadiusKm = Math.max(1000, Number(earthRadiusKm) || DEFAULT_EARTH_RADIUS_KM) + periapsisAltitudeKm;
+  const nominalTransferSec = nominalTransferTimeSec({
+    startRadiusKm: orbitRadiusKm,
+    targetRadiusKm: length(moonRelPosKm),
+    earthMuKm3S2,
+  });
+  const nominalDeltaVKmS = nominalTliDeltaVEstimateKmS({
+    orbitRadiusKm,
+    targetRadiusKm: length(moonRelPosKm),
+    earthMuKm3S2,
+  });
+  const sources = profile.approximate
+    ? null
+    : buildMoonGuidanceSourceModel({
+      targetVectors: {
+        moonEarthPositionKm: moonRelPosKm,
+        moonEarthVelocityKmS: moonRelVelKmS,
+      },
+      metrics: {
+        earthMassKg: Number(earthMuKm3S2) > 0
+          ? (Number(earthMuKm3S2) / 6.67430e-20)
+          : DEFAULT_EARTH_MASS_KG,
+        earthRadiusKm,
+        moonMassKg: Number(moonState?.massKg) || DEFAULT_MOON_MASS_KG,
+        moonRadiusKm: DEFAULT_MOON_RADIUS_KM,
+      },
+      plannerConfig: {
+        moonClosedLoopPropagationStepSec: GLOBAL_PROPAGATION_STEP_SEC,
+      },
+    });
+  const spacecraft = profile.approximate
+    ? null
+    : {
+      bodyId: "moon_inject_location_probe",
+      massKg: Math.max(1, finiteNumber(spacecraftMassKg, 1_250_000)),
+      radiusKm: 0.0045,
+      reflectivityCoeff: 1.45,
+    };
+  const evaluated = profile.mode === "hybrid"
+    ? evaluateSinglePropagatedDepartureCandidate({
+      sources,
+      spacecraft,
+      earthState,
+      moonRelPosKm,
+      moonRelVelKmS,
+      candidate,
+      nominalDeltaVKmS,
+      engineAccelAtThrottle1KmS2,
+    })
+    : profile.approximate
+    ? evaluateApproximateDepartureCandidate({
+      earthState,
+      moonRelPosKm,
+      moonRelVelKmS,
+      candidate,
+      nominalDeltaVKmS,
+      engineAccelAtThrottle1KmS2,
+    })
+    : evaluatePropagatedDepartureCandidate({
+      sources,
+      spacecraft,
+      candidate,
+      nominalDeltaVKmS,
+      dvOffsetsKmS: profile.dvOffsetsKmS,
+      radialOffsets: profile.radialOffsets,
+      normalOffsets: profile.normalOffsets,
+      engineAccelAtThrottle1KmS2,
+    });
+  const solved = buildSolvedDepartureWindowResult({
+    selected: candidate,
+    evaluated,
+    moonRelPosKm,
+    inclinationDeg,
+    ascendingNodeRad: normalizedNodeRad,
+    nominalTransferSec,
+    nominalDeltaVKmS,
+  });
+  return {
+    ...solved,
+    ascendingNodeRad: normalizedNodeRad,
+    phaseRad: normalizedPhaseRad,
+    periapsisAltitudeKm,
+    apoapsisAltitudeKm: evaluatedApoapsisAltitudeKm,
+    spawnPositionKm: cloneVector(candidate.positionKm),
+    spawnVelocityKmS: cloneVector(candidate.velocityKmS),
+    transferReserveSec: Number(candidate.transferReserveSec),
+    evaluationMode: profile.approximate ? "approximate" : "propagated",
+  };
+}
+
 export function solveBestMoonOrbitInjectWindow({
   nodeSamples = null,
   searchProfile = "fast",
@@ -2046,4 +2439,77 @@ export function evaluateMoonPadLaunchWindow(options = {}) {
     optimizedApoapsisAltitudeKm: solved.optimizedApoapsisAltitudeKm,
     optimizerMode: solved.optimizerMode,
   };
+}
+
+function moonOrbitInjectWindowLaunchScore(window = null) {
+  if (!window || typeof window !== "object") {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return (
+    (Boolean(window.valid) ? 1_000_000 : 0)
+    + (Boolean(window.corridorAccepted) ? 100_000 : 0)
+    + (Boolean(window.ready) ? 10_000 : 0)
+    + (clamp(Number(window.corridorScore) || 0, 0, 1) * 1_000)
+    + (clamp(Number(window.windowScore) || 0, 0, 1) * 500)
+    + (clamp(Number(window.optimalityScore) || 0, 0, 1) * 250)
+    + (clamp(Number(window.geometryScore) || 0, 0, 1) * 100)
+  );
+}
+
+export function solveMoonOrbitInjectWindowForLaunch({
+  earthState = null,
+  moonState = null,
+  inclinationDeg = 28.5,
+  orbitAltitudeKm = 500,
+  earthRadiusKm = DEFAULT_EARTH_RADIUS_KM,
+  earthMuKm3S2 = Number.NaN,
+  engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
+  spacecraftMassKg = 1_250_000,
+  nodeSamples = 24,
+  searchProfile = "hybrid",
+} = {}) {
+  const attempts = [
+    {
+      nodeSamples,
+      searchProfile,
+    },
+    {
+      nodeSamples: Math.max(Number(nodeSamples) || 0, 36),
+      searchProfile: "hybrid",
+    },
+    {
+      nodeSamples: Math.max(72, (Number(nodeSamples) || 0) * 3),
+      searchProfile: "full",
+    },
+    {
+      nodeSamples: Math.max(96, (Number(nodeSamples) || 0) * 4),
+      searchProfile: "aggressive",
+    },
+  ];
+  let bestWindow = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const solved = solveBestMoonOrbitInjectWindow({
+      earthState,
+      moonState,
+      inclinationDeg,
+      orbitAltitudeKm,
+      earthRadiusKm,
+      earthMuKm3S2,
+      engineAccelAtThrottle1KmS2,
+      spacecraftMassKg,
+      nodeSamples: attempt.nodeSamples,
+      searchProfile: attempt.searchProfile,
+    });
+    const score = moonOrbitInjectWindowLaunchScore(solved);
+    if (score > bestScore) {
+      bestScore = score;
+      bestWindow = solved;
+    }
+    if (solved?.valid && solved?.ready && solved?.corridorAccepted) {
+      return solved;
+    }
+  }
+  return bestWindow;
 }

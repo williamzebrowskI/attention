@@ -2818,7 +2818,7 @@ function createLegendVehicleViewPanel() {
   missionModeLabel.htmlFor = missionModeSelect.id;
   missionModeSelect.innerHTML = [
     '<option value="pad_launch">Earth Pad Launch (Booster)</option>',
-    `<option value="orbit_inject">Direct Orbit Inject (~150 km, Moon ~${MOON_ORBIT_INJECT_ALTITUDE_KM} km)</option>`,
+    `<option value="orbit_inject">Direct Orbit Inject (Dynamic Moon TLI, ~${MOON_ORBIT_INJECT_ALTITUDE_KM} km)</option>`,
   ].join("");
   missionModeSelect.value = "pad_launch";
   missionModeSelect.addEventListener("change", (event) => {
@@ -4068,6 +4068,49 @@ function tankerLaunchRejectLabel(reason) {
   return key || "launch_not_allowed";
 }
 
+function missionLaunchRejectLabel(reason) {
+  const key = String(reason || "").trim().toLowerCase();
+  if (key === "orbit_inject_window_unavailable") {
+    return "Moon direct inject is not in a valid immediate departure window right now.";
+  }
+  if (key === "orbit_inject_seed_incomplete") {
+    return "Moon direct inject solution was incomplete, so the launch was cancelled.";
+  }
+  if (key === "orbit_inject_unavailable") {
+    return "Orbit inject is currently unavailable.";
+  }
+  if (key === "spawn_pad_unavailable") {
+    return "Earth pad launch is currently unavailable.";
+  }
+  if (key === "earth_state_unavailable") {
+    return "Earth state unavailable for launch.";
+  }
+  if (key === "earth_gravity_unavailable") {
+    return "Earth gravity model unavailable for launch.";
+  }
+  return key || "launch_not_allowed";
+}
+
+function isAsyncMoonOrbitInjectLaunch(missionId, launchMode) {
+  return String(missionId || "").trim().toLowerCase() === "moon_orbit_return"
+    && String(launchMode || "").trim().toLowerCase() === "orbit_inject"
+    && typeof launchController?.launchMissionShipAsync === "function";
+}
+
+async function requestMissionShipLaunch(state, missionId, launchMode, launchOptions = {}) {
+  const options = {
+    ...(launchOptions && typeof launchOptions === "object" ? launchOptions : {}),
+    mode: launchMode,
+    orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(missionId),
+    vehicleRole: "mission",
+  };
+  if (isAsyncMoonOrbitInjectLaunch(missionId, launchMode)) {
+    updateLaunchStatusPanel(true, "Computing best Moon inject window...");
+    return launchController.launchMissionShipAsync(state, missionId, Date.now(), options);
+  }
+  return launchController.launchMissionShip?.(state, missionId, Date.now(), options);
+}
+
 function setupLaunchControls() {
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
@@ -4102,15 +4145,10 @@ function setupLaunchControls() {
         || "";
       const missionLaunchMode = selectedMissionLaunchMode();
       if (launchController.isActive()) {
-        let launchResult = launchController.launchMissionShip?.(
+        let launchResult = await requestMissionShipLaunch(
           nBodyState,
           selectedMissionId,
-          Date.now(),
-          {
-            mode: missionLaunchMode,
-            orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
-            vehicleRole: "mission",
-          },
+          missionLaunchMode,
         );
         if (
           launchResult?.accepted
@@ -4119,25 +4157,21 @@ function setupLaunchControls() {
           if (launchResult?.shipId) {
             launchController.removeVehicleById?.(nBodyState, launchResult.shipId, Date.now());
           }
-          launchResult = launchController.launchMissionShip?.(
+          launchResult = await requestMissionShipLaunch(
             nBodyState,
             selectedMissionId,
-            Date.now(),
-            {
-              mode: missionLaunchMode,
-              orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
-              vehicleRole: "mission",
-            },
+            missionLaunchMode,
           );
         }
         if (!launchResult?.accepted) {
+          const rejectLabel = missionLaunchRejectLabel(launchResult?.reason);
           appendLaunchLogEntry("error", {
             name: "fleet_mission_ship_launch_rejected",
             reason: String(launchResult?.reason || "launch_not_allowed"),
             missionId: selectedMissionId,
             mode: missionLaunchMode,
           });
-          updateLaunchStatusPanel(true, `Additional mission launch rejected: ${launchResult?.reason || "launch_not_allowed"}`);
+          updateLaunchStatusPanel(true, `Additional mission launch rejected: ${rejectLabel}`);
           updateLaunchControls();
           return;
         }
@@ -4179,15 +4213,10 @@ function setupLaunchControls() {
         if (selectedMissionId) {
           launchController.setMissionProfile?.(selectedMissionId);
         }
-        let launchResult = launchController.launchMissionShip?.(
+        let launchResult = await requestMissionShipLaunch(
           nBodyState,
           selectedMissionId,
-          Date.now(),
-          {
-            mode: missionLaunchMode,
-            orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
-            vehicleRole: "mission",
-          },
+          missionLaunchMode,
         );
         if (
           launchResult?.accepted
@@ -4196,25 +4225,21 @@ function setupLaunchControls() {
           if (launchResult?.shipId) {
             launchController.removeVehicleById?.(nBodyState, launchResult.shipId, Date.now());
           }
-          launchResult = launchController.launchMissionShip?.(
+          launchResult = await requestMissionShipLaunch(
             nBodyState,
             selectedMissionId,
-            Date.now(),
-            {
-              mode: missionLaunchMode,
-              orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
-              vehicleRole: "mission",
-            },
+            missionLaunchMode,
           );
         }
         if (!launchResult?.accepted) {
+          const rejectLabel = missionLaunchRejectLabel(launchResult?.reason);
           appendLaunchLogEntry("error", {
             name: "fleet_mission_ship_launch_rejected",
             reason: String(launchResult?.reason || "launch_not_allowed"),
             missionId: selectedMissionId,
             mode: missionLaunchMode,
           });
-          updateLaunchStatusPanel(true, `Mission launch rejected: ${launchResult?.reason || "launch_not_allowed"}`);
+          updateLaunchStatusPanel(true, `Mission launch rejected: ${rejectLabel}`);
           updateLaunchControls();
           return;
         }
