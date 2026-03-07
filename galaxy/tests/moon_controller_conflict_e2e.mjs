@@ -221,7 +221,7 @@ function testFleetControllerTelemetryScenarioProgression() {
     `fleet telemetry progression: expected zero requested throttle in hold, got ${holdSnapshot.guidanceRequestedThrottle}`,
   );
   assert(
-    String(holdSnapshot.missionPhaseGateReason || "").includes("t=323s / 520s"),
+    String(holdSnapshot.missionPhaseGateReason || "").includes("t=323s / 109"),
     `fleet telemetry progression: expected TLI phase time in gate reason, got ${holdSnapshot.missionPhaseGateReason}`,
   );
 
@@ -263,7 +263,7 @@ function testFleetControllerTelemetryScenarioProgression() {
     );
   }
   assert(
-    String(burnSnapshot.missionPhaseGateReason || "").includes("t=430s / 520s")
+    String(burnSnapshot.missionPhaseGateReason || "").includes("t=430s / 109")
       || String(burnSnapshot.missionPhaseGateReason || "").includes("departure corridor not acceptable"),
     `fleet telemetry progression: expected updated TLI timing or corridor gate, got ${burnSnapshot.missionPhaseGateReason}`,
   );

@@ -69,6 +69,7 @@ import {
   estimateOrbitalRefuelDemoFuelBudget,
 } from "./missionFuelBudget.js";
 import {
+  MOON_BURN_ATTITUDE_GATE_PHASES,
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
 } from "./lunar/constants.js";
@@ -116,13 +117,7 @@ const FLEET_TEI_DEPARTURE_DISTANCE_KM = 140_000;
 const FLEET_EARTH_CAPTURE_DISTANCE_KM = 180_000;
 const FLEET_EARTH_CAPTURE_APOAPSIS_MAX_KM = 75_000;
 const FLEET_EARTH_CAPTURE_PERIAPSIS_MIN_KM = 120;
-const FLEET_MOON_BURN_ATTITUDE_GATE_PHASES = new Set([
-  "tli_burn",
-  "coast_to_moon",
-  "lunar_capture",
-  "tei_burn",
-  "earth_capture",
-]);
+const FLEET_MOON_BURN_ATTITUDE_GATE_PHASES = MOON_BURN_ATTITUDE_GATE_PHASES;
 const FLEET_MOONWARD_TARGET_PHASES = new Set([
   "launch_to_parking",
   "orbital_refuel",
@@ -2503,7 +2498,10 @@ export function createLaunchFleetController({
       if (
         vehicle.vehicleRole !== "tanker"
         && vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
-        && vehicle.missionPhase !== "tli_burn"
+        && (
+          vehicle.missionPhase !== "tli_burn"
+          || Boolean(vehicle.moonSurvivalRecoveryActive)
+        )
       ) {
         const survivalRecovery = computeMoonSurvivalRecoveryOverride({
           missionPhase: vehicle.missionPhase,
