@@ -1802,6 +1802,10 @@ export function createLaunchFleetController({
       vehicle.refuelTargetLockAcquiredSec = 0;
       resetFleetTransferState(vehicle);
     }
+    const preserveMoonDeparturePlan = (
+      vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      && (phaseName === "tli_burn" || phaseName === "coast_to_moon")
+    );
     if (phaseName !== "launch_to_parking") {
       vehicle.moonPadWindowStatus = null;
       vehicle.moonPadWindowEnabled = false;
@@ -1812,7 +1816,9 @@ export function createLaunchFleetController({
       vehicle.moonDepartureAlignNow = null;
       vehicle.moonDepartureAlignProjected = null;
       vehicle.moonEstimatedTliDeltaVKmS = null;
-      assignMoonDeparturePlan(vehicle, null);
+      if (!preserveMoonDeparturePlan) {
+        assignMoonDeparturePlan(vehicle, null);
+      }
     }
     if (phaseName === "tli_burn") {
       vehicle.moonProjectedMissTrendKmS = null;

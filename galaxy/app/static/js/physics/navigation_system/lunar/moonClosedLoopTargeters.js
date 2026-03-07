@@ -591,6 +591,13 @@ export function planMoonClosedLoopMissionCommand({
     && Number.isFinite(departurePlanBurnDurationSec)
     && missionPhaseElapsedSec <= departurePlanBurnDurationSec
   );
+  const departurePlanCoastRescueActive = (
+    phaseName === "coast_to_moon"
+    && departurePlanCorridorAcceptable
+    && finiteVector(departurePlanDirection)
+    && Number.isFinite(missionPhaseElapsedSec)
+    && missionPhaseElapsedSec <= (3 * 3600)
+  );
   const solvePlannerConfig = departurePlanParityWindowActive
     ? {
       ...plannerConfig,
@@ -709,6 +716,21 @@ export function planMoonClosedLoopMissionCommand({
         Math.max(20_000, departurePlanBPlaneErrorKm * 8),
       )
     );
+    const departurePlanCoastDiagnosticsCollapse = (
+      departurePlanCoastRescueActive
+      && best.predictedMissDistanceKm > Math.max(
+        missGateKm * 2.5,
+        Math.max(50_000, departurePlanPredictedMissDistanceKm * 10),
+      )
+      && best.predictedPeriluneAltitudeKm > Math.max(
+        25_000,
+        departurePlanPredictedPeriluneAltitudeKm + 60_000,
+      )
+      && best.bPlaneErrorKm > Math.max(
+        Math.max(100, finiteNumber(plannerConfig.moonBPlaneToleranceKm, 6_000)) * 5,
+        Math.max(25_000, departurePlanBPlaneErrorKm * 10),
+      )
+    );
     const departurePlanDominates = (
       departurePlanBurnLockActive
       || (
@@ -716,6 +738,7 @@ export function planMoonClosedLoopMissionCommand({
         && departurePlanDiagnosticsScore <= (bestDiagnosticsScore * 0.55)
       )
       || departurePlanRescueActive
+      || departurePlanCoastDiagnosticsCollapse
     );
     const missFarFromGate = best.predictedMissDistanceKm > (missGateKm * 2.1);
     const movingAwayFromMoon = moonClosingSpeedKmS < -0.02;
@@ -774,18 +797,25 @@ export function planMoonClosedLoopMissionCommand({
           departurePlanDirection,
         )
         : departurePlanDirection;
-      command = {
-        phase: "powered",
-        throttle: clamp(
-          departurePlanThrottle,
-          finiteNumber(plannerConfig.moonClosedLoopThrottleMin, 0.08),
-          finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
-        ),
-        direction: blendedDepartureDirection,
-        mode: departureCommitActive
-          ? "navsys:gnc-lambert-tli-burn+departure-commit+diffcorr"
-          : "navsys:gnc-lambert-tli-burn+seed-lock+diffcorr",
-      };
+      command = departurePlanCoastDiagnosticsCollapse
+        ? {
+          phase: "coast",
+          throttle: 0,
+          direction: normalize(add(scale(toMoon, 0.82), scale(tangent, 0.18)), toMoon),
+          mode: "navsys:gnc-lambert-midcourse-coast+departure-hold",
+        }
+        : {
+          phase: "powered",
+          throttle: clamp(
+            departurePlanThrottle,
+            finiteNumber(plannerConfig.moonClosedLoopThrottleMin, 0.08),
+            finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
+          ),
+          direction: blendedDepartureDirection,
+          mode: departureCommitActive
+            ? "navsys:gnc-lambert-tli-burn+departure-commit+diffcorr"
+            : "navsys:gnc-lambert-tli-burn+seed-lock+diffcorr",
+        };
     } else if (tliReacquireHold) {
       command = {
         phase: "coast",
