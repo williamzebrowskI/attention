@@ -55,6 +55,9 @@ class RefuelPipelineE2ETests(unittest.TestCase):
     def test_moon_pad_launch_refuel_unlock_e2e(self) -> None:
         self.assert_script_passes("moon_pad_launch_refuel_unlock_e2e.mjs")
 
+    def test_launch_reset_clears_fleet_state(self) -> None:
+        self.assert_script_passes("launch_reset_clears_fleet_state.mjs")
+
 
 if __name__ == "__main__":
     unittest.main()

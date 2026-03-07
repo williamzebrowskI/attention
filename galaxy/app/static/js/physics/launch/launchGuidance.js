@@ -134,6 +134,7 @@ export function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel)
 
   let semimajorKm = Number.NaN;
   let eccentricity = Number.NaN;
+  let semiLatusRectumKm = Number.NaN;
   let apoapsisKm = Number.NaN;
   let periapsisKm = Number.NaN;
   let timeToApoapsisSec = Number.NaN;
@@ -141,13 +142,16 @@ export function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel)
   let orbitalPeriodSec = Number.NaN;
 
   if (muKm3S2 > 0 && radiusKm > 0 && h > 0) {
+    eccentricity = Math.sqrt(
+      Math.max(0, 1 + ((2 * specificEnergy * h * h) / (muKm3S2 * muKm3S2))),
+    );
+    semiLatusRectumKm = (h * h) / muKm3S2;
+    if (Number.isFinite(eccentricity) && Number.isFinite(semiLatusRectumKm) && eccentricity >= 0) {
+      periapsisKm = (semiLatusRectumKm / Math.max(1e-9, 1 + eccentricity)) - earthRadiusKm;
+    }
     if (specificEnergy < 0) {
       semimajorKm = -muKm3S2 / (2 * specificEnergy);
-      eccentricity = Math.sqrt(
-        Math.max(0, 1 + ((2 * specificEnergy * h * h) / (muKm3S2 * muKm3S2))),
-      );
       apoapsisKm = (semimajorKm * (1 + eccentricity)) - earthRadiusKm;
-      periapsisKm = (semimajorKm * (1 - eccentricity)) - earthRadiusKm;
       if (eccentricity > 1e-8 && eccentricity < 0.99999 && semimajorKm > 0) {
         const sqrtMuA = Math.sqrt(muKm3S2 * semimajorKm);
         const cosE = clamp((1 - (radiusKm / semimajorKm)) / eccentricity, -1, 1);
@@ -178,6 +182,7 @@ export function orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel)
     specificEnergy,
     semimajorKm,
     eccentricity,
+    semiLatusRectumKm,
     apoapsisKm,
     periapsisKm,
     timeToApoapsisSec,

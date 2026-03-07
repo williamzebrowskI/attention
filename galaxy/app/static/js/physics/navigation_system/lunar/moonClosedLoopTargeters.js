@@ -583,6 +583,14 @@ export function planMoonClosedLoopMissionCommand({
       || departureSeedTrack.velocityErrorKmS > departureSeedTrackHardVelocityToleranceKmS
     )
   );
+  const departurePlanBurnLockActive = (
+    phaseName === "tli_burn"
+    && departurePlanCorridorAcceptable
+    && finiteVector(departurePlanDirection)
+    && Number.isFinite(missionPhaseElapsedSec)
+    && Number.isFinite(departurePlanBurnDurationSec)
+    && missionPhaseElapsedSec <= departurePlanBurnDurationSec
+  );
   const solvePlannerConfig = departurePlanParityWindowActive
     ? {
       ...plannerConfig,
@@ -702,7 +710,8 @@ export function planMoonClosedLoopMissionCommand({
       )
     );
     const departurePlanDominates = (
-      (
+      departurePlanBurnLockActive
+      || (
         departurePlanParityWindowActive
         && departurePlanDiagnosticsScore <= (bestDiagnosticsScore * 0.55)
       )

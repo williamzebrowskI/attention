@@ -109,9 +109,12 @@ export function evaluateMoonTliExitGate({
     DEFAULT_MOON_MISSION_PROFILE.tliMinSpecificEnergyKm2S2,
     -0.28,
   );
+  const escapeTrajectory = Number.isFinite(specificEnergyKm2S2)
+    ? specificEnergyKm2S2 >= 0
+    : false;
   const apoapsisReady = Number.isFinite(apoapsisKm)
     ? apoapsisKm >= departureApoapsisGateKm
-    : false;
+    : escapeTrajectory;
   const specificEnergyReady = Number.isFinite(specificEnergyKm2S2)
     ? specificEnergyKm2S2 >= departureSpecificEnergyGateKm2S2
     : false;
@@ -171,6 +174,7 @@ export function evaluateMoonTliExitGate({
     departureApoapsisGateKm,
     specificEnergyKm2S2,
     departureSpecificEnergyGateKm2S2,
+    escapeTrajectory,
     fuelBudgetFeasible,
     fuelBudgetMarginKg,
     projectedMissDistanceKm,
@@ -253,10 +257,13 @@ export function describeMoonTliExitGate(gate = {}) {
   const fuelMarginLabel = Number.isFinite(gate.fuelBudgetMarginKg)
     ? ` (${formatMassKg(gate.fuelBudgetMarginKg)})`
     : "";
+  const earthDepartureLabel = gate.escapeTrajectory
+    ? `Earth escape trajectory vs apo gate ${formatKm(gate.departureApoapsisGateKm)} [${gateStatusLabel(Boolean(gate.apoapsisReady))}].`
+    : `Earth apo ${formatKm(gate.apoapsisKm)} vs gate ${formatKm(gate.departureApoapsisGateKm)} [${gateStatusLabel(Boolean(gate.apoapsisReady))}].`;
   return [
     `Awaiting TLI gate: t=${Math.round(Math.max(0, finiteOr(gate.phaseElapsedSec, 0)))}s / ${Math.round(Math.max(0, finiteOr(gate.tliDurationSec, 0)))}s.`,
     `Periapsis ${formatKm(gate.periapsisKm)} vs min ${formatKm(gate.periapsisMinKm)} [${gateStatusLabel(Boolean(gate.periapsisReady))}].`,
-    `Earth apo ${formatKm(gate.apoapsisKm)} vs gate ${formatKm(gate.departureApoapsisGateKm)} [${gateStatusLabel(Boolean(gate.apoapsisReady))}].`,
+    earthDepartureLabel,
     `Specific energy ${formatSpecificEnergy(gate.specificEnergyKm2S2)} vs gate ${formatSpecificEnergy(gate.departureSpecificEnergyGateKm2S2)} [${gateStatusLabel(Boolean(gate.specificEnergyReady))}].`,
     `Miss ${formatKm(gate.projectedMissDistanceKm)} vs gate ${formatKm(gate.projectedMissGateKm)} [${gateStatusLabel(Boolean(gate.missReady))}].`,
     `B-plane ${formatKm(gate.bPlaneErrorKm)} vs gate ${formatKm(gate.bPlaneGateKm)} [${gateStatusLabel(Boolean(gate.bPlaneReady))}].`,

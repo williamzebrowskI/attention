@@ -72,6 +72,7 @@ import {
   MOON_BURN_ATTITUDE_GATE_PHASES,
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
+  MOON_ORBIT_INJECT_ALTITUDE_KM,
 } from "./lunar/constants.js";
 import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 import { NAVIGATION_DEFAULTS } from "../navigation_system/navigationSystemConfig.js";
@@ -1302,7 +1303,7 @@ export function createLaunchFleetController({
       vehicleRole !== "tanker"
       && normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
     )
-      ? 185
+      ? MOON_ORBIT_INJECT_ALTITUDE_KM
       : 150;
     const orbitInjectAltitudeKm = Number.isFinite(requestedOrbitInjectAltitudeKm)
       ? Math.max(120, requestedOrbitInjectAltitudeKm)
@@ -2641,8 +2642,8 @@ export function createLaunchFleetController({
           const survivalRecovery = periapsisFailure
               ? computeMoonSurvivalRecoveryOverride({
                 missionPhase: vehicle.missionPhase,
-                periapsisKm: Number(moonGoNoGo?.diagnostics?.periapsisKm),
-                altitudeKm: Number(moonGoNoGo?.diagnostics?.altitudeKm),
+                periapsisKm: moonGoNoGo?.diagnostics?.periapsisKm,
+                altitudeKm: moonGoNoGo?.diagnostics?.altitudeKm,
                 radialSpeedKmS: Number(orbital?.radialSpeedKmS),
                 prograde,
                 up,

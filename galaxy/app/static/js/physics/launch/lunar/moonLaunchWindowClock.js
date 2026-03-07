@@ -1,7 +1,8 @@
 import { LAUNCH_MISSION_IDS } from "../launchMissions.js";
 import { solveMoonDepartureWindow } from "../../navigation_system/lunar/departureWindowSolver.js";
+import { MOON_ORBIT_INJECT_ALTITUDE_KM } from "./constants.js";
 
-export const PRIMARY_MOON_WINDOW_REFERENCE_ORBIT_ALTITUDE_KM = 185;
+export const PRIMARY_MOON_WINDOW_REFERENCE_ORBIT_ALTITUDE_KM = MOON_ORBIT_INJECT_ALTITUDE_KM;
 
 function finiteOrNull(value) {
   const numeric = Number(value);

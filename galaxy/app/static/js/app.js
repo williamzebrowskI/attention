@@ -67,6 +67,7 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
+import { MOON_ORBIT_INJECT_ALTITUDE_KM } from "./physics/launch/lunar/constants.js";
 import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260306b";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
@@ -2817,7 +2818,7 @@ function createLegendVehicleViewPanel() {
   missionModeLabel.htmlFor = missionModeSelect.id;
   missionModeSelect.innerHTML = [
     '<option value="pad_launch">Earth Pad Launch (Booster)</option>',
-    '<option value="orbit_inject">Direct Orbit Inject (~150 km, Moon ~185 km)</option>',
+    `<option value="orbit_inject">Direct Orbit Inject (~150 km, Moon ~${MOON_ORBIT_INJECT_ALTITUDE_KM} km)</option>`,
   ].join("");
   missionModeSelect.value = "pad_launch";
   missionModeSelect.addEventListener("change", (event) => {
@@ -4032,7 +4033,7 @@ function selectedMissionLaunchMode() {
 
 function missionOrbitInjectAltitudeKm(missionId) {
   const normalized = String(missionId || "").trim().toLowerCase();
-  return normalized === "moon_orbit_return" ? 185 : 150;
+  return normalized === "moon_orbit_return" ? MOON_ORBIT_INJECT_ALTITUDE_KM : 150;
 }
 
 function tankerLaunchRejectLabel(reason) {
@@ -4294,8 +4295,12 @@ function setupLaunchControls() {
         updateLaunchStatusPanel(true, "Reset unavailable until startup seed is ready.");
         return;
       }
-      launchController.resetToPad(nBodyState, Date.now());
+      launchController.resetToPad(nBodyState, Date.now(), { clearFleetVehicles: true });
       resetLaunchTrajectoryPath();
+      if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+        setObservationMode(OBSERVATION_MODES.BODY_LOCK);
+      }
+      setSelected(LAUNCH_BODY_ID, true);
       appendLaunchLogEntry("info", {
         name: "launch_reset_requested",
       });
@@ -7511,7 +7516,7 @@ function initializeNBodyFromSnapshot(nowMs) {
   };
   if (launchFeatureEnabled) {
     launchController?.ensureRocketInNBody(nBodyState, nowMs);
-    launchController?.resetToPad(nBodyState, nowMs);
+    launchController?.resetToPad(nBodyState, nowMs, { clearFleetVehicles: true });
   }
 }
 

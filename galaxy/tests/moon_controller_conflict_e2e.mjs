@@ -2,6 +2,7 @@ import { createLaunchController } from "../app/static/js/physics/launch/launchCo
 import { createLaunchFleetController } from "../app/static/js/physics/launch/launchFleetController.js";
 import { LAUNCH_VEHICLE_CONFIG } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
+import { MOON_ORBIT_INJECT_ALTITUDE_KM } from "../app/static/js/physics/launch/lunar/constants.js";
 
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;
@@ -209,19 +210,19 @@ function testFleetControllerTelemetryScenarioProgression() {
   assertApprox(holdSnapshot.altitudeKm, 185.56, 0.25, "fleet telemetry progression: hold altitude");
   assertApprox(holdSnapshot.speedKmS, 7.8075, 0.01, "fleet telemetry progression: hold speed");
   assert(
-    String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
-    `fleet telemetry progression: expected reacquire-window hold, got ${holdSnapshot.guidanceMode}`,
+    String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+seed-lock"),
+    `fleet telemetry progression: expected stored departure-plan lock, got ${holdSnapshot.guidanceMode}`,
   );
   assert(
-    holdSnapshot.guidanceBurnRequested === false,
-    "fleet telemetry progression: hold should not request burn",
+    holdSnapshot.guidanceBurnRequested === true,
+    "fleet telemetry progression: stored departure-plan lock should request burn",
   );
   assert(
-    Number(holdSnapshot.guidanceRequestedThrottle) === 0,
-    `fleet telemetry progression: expected zero requested throttle in hold, got ${holdSnapshot.guidanceRequestedThrottle}`,
+    Number(holdSnapshot.guidanceRequestedThrottle) > 0.5,
+    `fleet telemetry progression: expected strong requested throttle under stored departure-plan lock, got ${holdSnapshot.guidanceRequestedThrottle}`,
   );
   assert(
-    String(holdSnapshot.missionPhaseGateReason || "").includes("t=323s / 109"),
+    String(holdSnapshot.missionPhaseGateReason || "").includes("t=323s / "),
     `fleet telemetry progression: expected TLI phase time in gate reason, got ${holdSnapshot.missionPhaseGateReason}`,
   );
 
@@ -245,8 +246,9 @@ function testFleetControllerTelemetryScenarioProgression() {
   );
   if (Number(burnSnapshot.guidanceRequestedThrottle) > 0.4) {
     assert(
-      String(burnSnapshot.guidanceMode || "").includes("+reacquire"),
-      `fleet telemetry progression: expected reacquire tag during burn, got ${burnSnapshot.guidanceMode}`,
+      String(burnSnapshot.guidanceMode || "").includes("+reacquire")
+        || String(burnSnapshot.guidanceMode || "").includes("+seed-lock"),
+      `fleet telemetry progression: expected stored-plan or reacquire-tagged powered burn, got ${burnSnapshot.guidanceMode}`,
     );
     assert(
       burnSnapshot.guidanceBurnRequested === true,
@@ -263,7 +265,7 @@ function testFleetControllerTelemetryScenarioProgression() {
     );
   }
   assert(
-    String(burnSnapshot.missionPhaseGateReason || "").includes("t=430s / 109")
+    String(burnSnapshot.missionPhaseGateReason || "").includes("t=430s / ")
       || String(burnSnapshot.missionPhaseGateReason || "").includes("departure corridor not acceptable"),
     `fleet telemetry progression: expected updated TLI timing or corridor gate, got ${burnSnapshot.missionPhaseGateReason}`,
   );
@@ -305,7 +307,12 @@ function testFleetControllerOrbitInjectDepartureCommit() {
     nowMs: NOW_MS + (EARLY_COMMIT_ELAPSED_SEC * 1000),
     baseSnapshot: {},
   });
-  assertApprox(snapshot.altitudeKm, 185.0, 1.0, "fleet departure commit: starting altitude");
+  assertApprox(
+    snapshot.altitudeKm,
+    MOON_ORBIT_INJECT_ALTITUDE_KM,
+    1.0,
+    "fleet departure commit: starting altitude",
+  );
   if (vehicle.moonDeparturePlanReady) {
     assert(
       String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),

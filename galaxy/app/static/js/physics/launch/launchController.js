@@ -1854,6 +1854,27 @@ export function createLaunchController(options) {
     runtime.boosterMassModel = createMassModelState();
   }
 
+  function clearFleetVehiclesFromState(state) {
+    const dynamicBodies = state?.dynamicBodies;
+    if (dynamicBodies && typeof dynamicBodies.keys === "function") {
+      for (const bodyId of dynamicBodies.keys()) {
+        const id = String(bodyId || "");
+        if (!id || id === LAUNCH_BODY_ID || id === LAUNCH_BOOSTER_BODY_ID) {
+          continue;
+        }
+        if (isManagedLaunchBodyId(id)) {
+          dynamicBodies.delete(id);
+        }
+      }
+    }
+    if (!runtime.fleet || typeof runtime.fleet !== "object") {
+      runtime.fleet = { nextShipSequence: 1, vehicles: new Map() };
+      return;
+    }
+    runtime.fleet.vehicles = new Map();
+    runtime.fleet.nextShipSequence = 1;
+  }
+
   function updateRuntimeTargetMetrics(state, relPos, relVel, nowMs = Date.now()) {
     const earthDistanceKm = length(relPos || { x: 0, y: 0, z: 0 });
     runtime.earthDistanceKm = Number.isFinite(earthDistanceKm) ? earthDistanceKm : null;
@@ -2508,8 +2529,12 @@ export function createLaunchController(options) {
   }
 
   function resetToPad(state, nowMs = Date.now(), options = {}) {
-    const clearRefuelTankers = options?.clearRefuelTankers !== false;
+    const clearFleetVehicles = options?.clearFleetVehicles === true;
+    const clearRefuelTankers = clearFleetVehicles || options?.clearRefuelTankers !== false;
     clearBoosterFromState(state);
+    if (clearFleetVehicles) {
+      clearFleetVehiclesFromState(state);
+    }
     if (clearRefuelTankers) {
       refuelController.clearRefuelTankersFromState(state);
     }

@@ -56,7 +56,7 @@ export const NAVIGATION_DEFAULTS = Object.freeze({
     moonClosedLoopPropagationStepSec: 90,
     moonClosedLoopThrottleDvScaleKmS: 1.15,
     moonClosedLoopThrottleMin: 0.08,
-    moonClosedLoopThrottleMax: 0.78,
+    moonClosedLoopThrottleMax: 1.0,
     moonClosedLoopReacquireThrottleCap: 0.56,
     moonClosedLoopCapturePredictSec: 6 * 3600,
     moonClosedLoopCaptureStepSec: 90,
