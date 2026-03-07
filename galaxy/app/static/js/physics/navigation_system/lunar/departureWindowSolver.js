@@ -434,6 +434,55 @@ function combineBasis({ primaryDir, radialDir, normalDir, radialWeight = 0, norm
   );
 }
 
+function estimateCoastEntryAlignment({
+  candidate = null,
+  burnDirection = null,
+  throttle = Number.NaN,
+  burnDurationSec = Number.NaN,
+  engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
+  earthState = null,
+  moonRelPosKm = null,
+  moonRelVelKmS = null,
+} = {}) {
+  if (
+    !candidate
+    || !finiteVector(candidate.positionKm)
+    || !finiteVector(candidate.velocityKmS)
+    || !finiteVector(burnDirection)
+    || !finiteVector(earthState?.position)
+    || !finiteVector(moonRelPosKm)
+  ) {
+    return Number.NaN;
+  }
+  const durationSec = Math.max(0, finiteNumber(burnDurationSec, Number.NaN));
+  if (!Number.isFinite(durationSec)) {
+    return Number.NaN;
+  }
+  const accelKmS2 = Math.max(0, finiteNumber(throttle, 0))
+    * Math.max(0, finiteNumber(engineAccelAtThrottle1KmS2, GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2));
+  const estimatedShipPositionKm = add(
+    add(
+      candidate.positionKm,
+      scale(candidate.velocityKmS, durationSec),
+    ),
+    scale(burnDirection, 0.5 * accelKmS2 * durationSec * durationSec),
+  );
+  const estimatedShipVelocityKmS = add(
+    candidate.velocityKmS,
+    scale(burnDirection, accelKmS2 * durationSec),
+  );
+  const projectedMoonRelPosKm = finiteVector(moonRelVelKmS)
+    ? add(moonRelPosKm, scale(moonRelVelKmS, durationSec))
+    : moonRelPosKm;
+  const projectedMoonPositionKm = add(earthState.position, projectedMoonRelPosKm);
+  const directionToMoonAtCoastEntry = normalize(
+    subtract(projectedMoonPositionKm, estimatedShipPositionKm),
+    burnDirection,
+  );
+  const coastVelocityDirection = normalize(estimatedShipVelocityKmS, burnDirection);
+  return clamp(dot(coastVelocityDirection, directionToMoonAtCoastEntry), -1, 1);
+}
+
 function chooseBetterEvaluatedCandidate(currentBest, candidateBest) {
   if (!candidateBest?.evaluated) {
     return currentBest;
@@ -483,6 +532,15 @@ function chooseBetterEvaluatedCandidate(currentBest, candidateBest) {
   const currentAlignment = Number(currentEvaluated.projectedAlignment);
   const candidateAlignment = Number(candidateEvaluated.projectedAlignment);
   if (Number.isFinite(candidateAlignment) && Number.isFinite(currentAlignment) && candidateAlignment > currentAlignment) {
+    return candidateBest;
+  }
+  const currentCoastEntryAlignment = Number(currentEvaluated.coastEntryAlignment);
+  const candidateCoastEntryAlignment = Number(candidateEvaluated.coastEntryAlignment);
+  if (
+    Number.isFinite(candidateCoastEntryAlignment)
+    && Number.isFinite(currentCoastEntryAlignment)
+    && candidateCoastEntryAlignment > currentCoastEntryAlignment
+  ) {
     return candidateBest;
   }
   return currentBest;
@@ -603,6 +661,17 @@ function evaluateApproximateDepartureCandidate({
     Math.max(0.0002, finiteNumber(engineAccelAtThrottle1KmS2, GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2)),
     throttle,
   );
+  const coastEntryAlignment = estimateCoastEntryAlignment({
+    candidate,
+    burnDirection,
+    throttle,
+    burnDurationSec,
+    engineAccelAtThrottle1KmS2,
+    earthState,
+    moonRelPosKm,
+    moonRelVelKmS,
+  });
+  const coastEntryAlignment01 = clamp((((Number(coastEntryAlignment) || 0) + 1) * 0.5), 0, 1);
   const corridorPenalty = corridor.accepted
     ? 0
     : (
@@ -620,6 +689,7 @@ function evaluateApproximateDepartureCandidate({
       + corridorPenalty
       + (deltaVNeedKmS * 450)
       + ((1 - alignProjected01) * 5_000)
+      + ((1 - coastEntryAlignment01) * 16_000)
     ),
     throttle,
     burnDurationSec,
@@ -638,6 +708,7 @@ function evaluateApproximateDepartureCandidate({
     ),
     safetyAltitudeKm: Number(candidate.periapsisAltitudeKm),
     projectedAlignment,
+    coastEntryAlignment,
   };
 }
 
@@ -770,6 +841,24 @@ function evaluatePropagatedDepartureCandidate({
           ) + (
             Number(corridor.periluneResidualKm) || 0
           );
+          const projectedAlignment = finiteVector(closestMoonRelPos)
+            ? clamp(dot(burnDirection, normalize(closestMoonRelPos, burnDirection)), -1, 1)
+            : candidate.alignProjected;
+          const coastEntryAlignment = estimateCoastEntryAlignment({
+            candidate,
+            burnDirection,
+            throttle,
+            burnDurationSec,
+            engineAccelAtThrottle1KmS2,
+            earthState: sources?.earth,
+            moonRelPosKm: subtract(sources?.moon?.positionKm || { x: 0, y: 0, z: 0 }, sources?.earth?.positionKm || { x: 0, y: 0, z: 0 }),
+            moonRelVelKmS: (
+              finiteVector(sources?.moon?.velocityKmS) && finiteVector(sources?.earth?.velocityKmS)
+                ? subtract(sources.moon.velocityKmS, sources.earth.velocityKmS)
+                : { x: 0, y: 0, z: 0 }
+            ),
+          });
+          const coastEntryAlignment01 = clamp((((Number(coastEntryAlignment) || 0) + 1) * 0.5), 0, 1);
           const cost = (
             predictedMissDistanceKm
             + (Math.abs(predictedPeriluneAltitudeKm - targetPeriluneAltitudeKm) * 0.85)
@@ -780,10 +869,8 @@ function evaluatePropagatedDepartureCandidate({
             + corridorPenalty
             + (deltaVNeedKmS * 650)
             + (Math.abs(1 - tangentWeight) * 1_500)
+            + ((1 - coastEntryAlignment01) * 18_000)
           );
-          const projectedAlignment = finiteVector(closestMoonRelPos)
-            ? clamp(dot(burnDirection, normalize(closestMoonRelPos, burnDirection)), -1, 1)
-            : candidate.alignProjected;
           const evaluated = {
             cost,
             throttle,
@@ -799,6 +886,7 @@ function evaluatePropagatedDepartureCandidate({
             corridorResidualTotalKm,
             safetyAltitudeKm,
             projectedAlignment,
+            coastEntryAlignment,
             propagation,
           };
           const preferred = chooseBetterEvaluatedCandidate(
@@ -1074,6 +1162,9 @@ function buildStaticWindowSolve({
     selectedProjectedAlignment: Number.isFinite(Number(evaluated?.projectedAlignment))
       ? Number(evaluated.projectedAlignment)
       : Number(selected.alignProjected),
+    selectedCoastEntryAlignment: Number.isFinite(Number(evaluated?.coastEntryAlignment))
+      ? Number(evaluated.coastEntryAlignment)
+      : Number.NaN,
     selectedPlaneQuality: Number(selected.planeQuality),
     optimizedApoapsisAltitudeKm: Number(selected.apoapsisAltitudeKm),
     predictedMissDistanceKm: Number.isFinite(Number(evaluated?.predictedMissDistanceKm))
@@ -1224,6 +1315,7 @@ export function solveMoonDepartureWindow({
       geometryScore: Number.NaN,
       selectedDepartureAlignment: Number.NaN,
       selectedProjectedAlignment: Number.NaN,
+      selectedCoastEntryAlignment: Number.NaN,
       selectedPlaneQuality: Number.NaN,
       toleranceDeg: Math.max(0.1, Number(phaseToleranceDeg) || 3.5),
       optimizerMode: "global-nbody-optimal-departure",
@@ -1332,6 +1424,7 @@ export function solveMoonDepartureWindow({
     geometryScore: Number(staticWindow?.geometryScore),
     selectedDepartureAlignment: Number(staticWindow?.selectedDepartureAlignment),
     selectedProjectedAlignment: Number(staticWindow?.selectedProjectedAlignment),
+    selectedCoastEntryAlignment: Number(staticWindow?.selectedCoastEntryAlignment),
     selectedPlaneQuality: Number(staticWindow?.selectedPlaneQuality),
     optimizedApoapsisAltitudeKm: Number(staticWindow?.optimizedApoapsisAltitudeKm),
     predictedMissDistanceKm: finiteNumber(staticWindow?.predictedMissDistanceKm, Number.NaN),

@@ -82,6 +82,11 @@ function main() {
       && Number(injectSolve.transferTimeSec) >= (nominalTransferSec + CONSERVATIVE_MARGIN_FLOOR_SEC),
     `moon_window_conservative_lead_lock: inject transfer time should include conservative lead margin, got ${injectSolve.transferTimeSec}, nominal ${nominalTransferSec}`,
   );
+  assert(
+    Number.isFinite(Number(injectSolve.selectedCoastEntryAlignment))
+      && Number(injectSolve.selectedCoastEntryAlignment) >= 0.75,
+    `moon_window_conservative_lead_lock: inject solve should preserve strong coast-entry alignment, got ${injectSolve.selectedCoastEntryAlignment}`,
+  );
 
   const padSolve = solveMoonDepartureWindow({
     earthState,
@@ -99,6 +104,11 @@ function main() {
     Number.isFinite(Number(padSolve.transferTimeSec))
       && Number(padSolve.transferTimeSec) >= (nominalTransferSec + CONSERVATIVE_MARGIN_FLOOR_SEC),
     `moon_window_conservative_lead_lock: pad transfer time should include conservative lead margin, got ${padSolve.transferTimeSec}, nominal ${nominalTransferSec}`,
+  );
+  assert(
+    Number.isFinite(Number(padSolve.selectedCoastEntryAlignment))
+      && Number(padSolve.selectedCoastEntryAlignment) >= 0.68,
+    `moon_window_conservative_lead_lock: pad solve should preserve strong coast-entry alignment, got ${padSolve.selectedCoastEntryAlignment}`,
   );
 
   console.log("PASS moon-window-conservative-lead-lock");
