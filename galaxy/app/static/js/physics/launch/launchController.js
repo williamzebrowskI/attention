@@ -164,6 +164,22 @@ function stagePropellantCapacityKgForMissionStage(stageIndex, missionId = null) 
   return baseCapacityKg;
 }
 
+function surfaceLaunchStagePropellantCapacityKgForMissionStage(stageIndex, missionId = null) {
+  const stage = stageAtIndex(stageIndex);
+  const baseCapacityKg = Math.max(0, Number(stage?.propellantMassKg) || 0);
+  if (Number(stageIndex) !== 1) {
+    return baseCapacityKg;
+  }
+  const normalizedMissionId = normalizeMissionId(missionId);
+  if (
+    normalizedMissionId === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO
+    || normalizedMissionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+  ) {
+    return baseCapacityKg;
+  }
+  return baseCapacityKg;
+}
+
 function stage2PropellantCapacityKg(missionId = null) {
   return stagePropellantCapacityKgForMissionStage(
     1,
@@ -179,6 +195,18 @@ function launchInitialMassKgForMission(missionId = null) {
     totalMassKg
       + Math.max(0, Number(stage?.dryMassKg) || 0)
       + stagePropellantCapacityKgForMissionStage(index, normalizedMissionId)
+  ), 0);
+  return Math.max(MIN_ROCKET_MASS_KG, payloadMassKg + stageMassKg);
+}
+
+function surfaceLaunchInitialMassKgForMission(missionId = null) {
+  const normalizedMissionId = normalizeMissionId(missionId || DEFAULT_LAUNCH_MISSION_ID);
+  const payloadMassKg = Math.max(0, Number(LAUNCH_VEHICLE_CONFIG?.payloadMassKg) || 0);
+  const stages = Array.isArray(LAUNCH_VEHICLE_CONFIG?.stages) ? LAUNCH_VEHICLE_CONFIG.stages : [];
+  const stageMassKg = stages.reduce((totalMassKg, stage, index) => (
+    totalMassKg
+      + Math.max(0, Number(stage?.dryMassKg) || 0)
+      + surfaceLaunchStagePropellantCapacityKgForMissionStage(index, normalizedMissionId)
   ), 0);
   return Math.max(MIN_ROCKET_MASS_KG, payloadMassKg + stageMassKg);
 }
@@ -2577,7 +2605,7 @@ export function createLaunchController(options) {
     runtime.mission.selectedId = missionIdForLaunch;
     const launchVehicleState = rocketStateFromNBody(state);
     if (launchVehicleState) {
-      launchVehicleState.massKg = launchInitialMassKgForMission(runtime.mission.selectedId);
+      launchVehicleState.massKg = surfaceLaunchInitialMassKgForMission(runtime.mission.selectedId);
     }
     if (runtime.mission.selectedId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
       const earthState = earthStateFromNBody(state);
@@ -3914,7 +3942,7 @@ export function createLaunchController(options) {
           // Switch propulsion to Stage 2 immediately (hot-staging overlap). Physical detachment is handled
           // separately after a short overlap window.
           runtime.stageIndex = 1;
-          runtime.stagePropellantKg = stagePropellantCapacityKgForMissionStage(
+          runtime.stagePropellantKg = surfaceLaunchStagePropellantCapacityKgForMissionStage(
             runtime.stageIndex,
             runtime.mission.selectedId,
           );

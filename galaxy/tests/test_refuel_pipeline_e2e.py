@@ -49,6 +49,12 @@ class RefuelPipelineE2ETests(unittest.TestCase):
     def test_refuel_launch_controller_smoke(self) -> None:
         self.assert_script_passes("refuel_launch_controller_smoke.mjs")
 
+    def test_booster_surface_launch_smoke(self) -> None:
+        self.assert_script_passes("booster_surface_launch_smoke.mjs")
+
+    def test_moon_pad_launch_refuel_unlock_e2e(self) -> None:
+        self.assert_script_passes("moon_pad_launch_refuel_unlock_e2e.mjs")
+
 
 if __name__ == "__main__":
     unittest.main()

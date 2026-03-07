@@ -1,4 +1,7 @@
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
+import { DEFAULT_MOON_MISSION_PROFILE } from "../navigationMissionProfiles.js";
+
+const DEFAULT_MOON_TLI_DURATION_SEC = 520;
 
 function finiteOr(value, fallback = Number.NaN) {
   const numeric = Number(value);
@@ -29,6 +32,18 @@ function formatMassKg(value, digits = 0) {
   return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} kg`;
 }
 
+function formatSpecificEnergy(value, digits = 3) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "n/a";
+  }
+  return `${numeric.toFixed(Math.max(0, Number(digits) || 0))} km^2/s^2`;
+}
+
+function gateStatusLabel(flag, passLabel = "go", holdLabel = "hold") {
+  return flag ? passLabel : holdLabel;
+}
+
 function plannerThresholds(plannerConfig = NAVIGATION_DEFAULTS.planner) {
   return {
     minClosingKmS: Math.max(0.001, finiteOr(plannerConfig?.moonMidcourseMinClosingSpeedKmS, 0.02)),
@@ -55,13 +70,18 @@ export function evaluateMoonTliExitGate({
   moonMetrics = {},
   plannerConfig = NAVIGATION_DEFAULTS.planner,
   minPeriapsisKm = 130,
-  fallbackDurationSec = 520,
 } = {}) {
   const thresholds = plannerThresholds(plannerConfig);
-  const tliDurationSec = Math.max(60, finiteOr(vehicle?.tliDurationSec, fallbackDurationSec));
+  const tliDurationCandidateSec = finiteOr(
+    vehicle?.tliDurationSec,
+    finiteOr(vehicle?.moonDeparturePlanBurnDurationSec, DEFAULT_MOON_TLI_DURATION_SEC),
+  );
+  const tliDurationSec = Math.max(60, tliDurationCandidateSec);
   const tliTimeoutSec = Math.max(tliDurationSec + 360, tliDurationSec * 1.75);
   const phaseElapsedSec = Math.max(0, finiteOr(vehicle?.phaseElapsedSec, 0));
   const periapsisKm = finiteOr(orbital?.periapsisKm, Number.NaN);
+  const apoapsisKm = finiteOr(orbital?.apoapsisKm, Number.NaN);
+  const specificEnergyKm2S2 = finiteOr(orbital?.specificEnergy, Number.NaN);
   const propellantKg = Math.max(0, finiteOr(vehicle?.propellantKg, 0));
 
   const fuelBudget = vehicle?.fuelBudget && typeof vehicle.fuelBudget === "object"
@@ -78,6 +98,24 @@ export function evaluateMoonTliExitGate({
   const durationReady = phaseElapsedSec >= tliDurationSec;
   const timeoutReady = phaseElapsedSec >= tliTimeoutSec;
   const periapsisReady = Number.isFinite(periapsisKm) ? periapsisKm >= Number(minPeriapsisKm) : false;
+  const departureApoapsisGateKm = Math.max(
+    10_000,
+    finiteOr(
+      DEFAULT_MOON_MISSION_PROFILE.tliTargetApoapsisKm - DEFAULT_MOON_MISSION_PROFILE.tliApoapsisMarginKm,
+      379_000,
+    ),
+  );
+  const departureSpecificEnergyGateKm2S2 = finiteOr(
+    DEFAULT_MOON_MISSION_PROFILE.tliMinSpecificEnergyKm2S2,
+    -0.28,
+  );
+  const apoapsisReady = Number.isFinite(apoapsisKm)
+    ? apoapsisKm >= departureApoapsisGateKm
+    : false;
+  const specificEnergyReady = Number.isFinite(specificEnergyKm2S2)
+    ? specificEnergyKm2S2 >= departureSpecificEnergyGateKm2S2
+    : false;
+  const earthDepartureReady = apoapsisReady && specificEnergyReady;
   const fuelReady = fuelBudgetFeasible;
   const propellantDepleted = propellantKg <= 1e-3;
 
@@ -114,6 +152,7 @@ export function evaluateMoonTliExitGate({
 
   const ready =
     periapsisReady
+    && earthDepartureReady
     && fuelReady
     && (
       propellantDepleted
@@ -128,6 +167,10 @@ export function evaluateMoonTliExitGate({
     phaseElapsedSec,
     periapsisKm,
     periapsisMinKm: Number(minPeriapsisKm),
+    apoapsisKm,
+    departureApoapsisGateKm,
+    specificEnergyKm2S2,
+    departureSpecificEnergyGateKm2S2,
     fuelBudgetFeasible,
     fuelBudgetMarginKg,
     projectedMissDistanceKm,
@@ -141,7 +184,14 @@ export function evaluateMoonTliExitGate({
     closingMinKmS: thresholds.minClosingKmS * 0.5,
     durationReady,
     timeoutReady,
+    closingReady,
+    missReady,
+    bPlaneReady,
+    periluneReady,
     periapsisReady,
+    apoapsisReady,
+    specificEnergyReady,
+    earthDepartureReady,
     fuelReady,
     propellantDepleted,
     trajectoryReady,
@@ -205,10 +255,12 @@ export function describeMoonTliExitGate(gate = {}) {
     : "";
   return [
     `Awaiting TLI gate: t=${Math.round(Math.max(0, finiteOr(gate.phaseElapsedSec, 0)))}s / ${Math.round(Math.max(0, finiteOr(gate.tliDurationSec, 0)))}s.`,
-    `Periapsis ${formatKm(gate.periapsisKm)} >= ${formatKm(gate.periapsisMinKm)}.`,
-    `Miss ${formatKm(gate.projectedMissDistanceKm)} <= ${formatKm(gate.projectedMissGateKm)}.`,
-    `B-plane ${formatKm(gate.bPlaneErrorKm)} <= ${formatKm(gate.bPlaneGateKm)}.`,
-    `Perilune est ${formatKm(gate.projectedPeriluneAltitudeKm)}.`,
+    `Periapsis ${formatKm(gate.periapsisKm)} vs min ${formatKm(gate.periapsisMinKm)} [${gateStatusLabel(Boolean(gate.periapsisReady))}].`,
+    `Earth apo ${formatKm(gate.apoapsisKm)} vs gate ${formatKm(gate.departureApoapsisGateKm)} [${gateStatusLabel(Boolean(gate.apoapsisReady))}].`,
+    `Specific energy ${formatSpecificEnergy(gate.specificEnergyKm2S2)} vs gate ${formatSpecificEnergy(gate.departureSpecificEnergyGateKm2S2)} [${gateStatusLabel(Boolean(gate.specificEnergyReady))}].`,
+    `Miss ${formatKm(gate.projectedMissDistanceKm)} vs gate ${formatKm(gate.projectedMissGateKm)} [${gateStatusLabel(Boolean(gate.missReady))}].`,
+    `B-plane ${formatKm(gate.bPlaneErrorKm)} vs gate ${formatKm(gate.bPlaneGateKm)} [${gateStatusLabel(Boolean(gate.bPlaneReady))}].`,
+    `Perilune est ${formatKm(gate.projectedPeriluneAltitudeKm)} vs band ${formatKm(gate.projectedPeriluneFloorKm)}-${formatKm(gate.projectedPeriluneCeilingKm)} [${gateStatusLabel(Boolean(gate.periluneReady))}].`,
     `Fuel budget ${fuelBudgetLabel}${fuelMarginLabel}.`,
   ].join(" ");
 }
@@ -222,4 +274,3 @@ export function describeMoonCaptureEntryGate(gate = {}) {
     `Perilune est ${formatKm(gate.projectedPeriluneAltitudeKm)} <= ${formatKm(gate.projectedPeriluneCeilingKm)}.`,
   ].join(" ");
 }
-

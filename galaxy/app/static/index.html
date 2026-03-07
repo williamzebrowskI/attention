@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260306a" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260306b" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -91,51 +91,41 @@
           </div>
           <div id="mission-control-command-strip" class="mission-control-command-strip" aria-live="polite"></div>
         </header>
-        <main class="mission-control-content">
-          <section class="mission-control-block mission-control-ops-block">
-            <div class="mission-control-ops-grid">
-              <div class="mission-control-ops-column">
-                <div class="mission-control-panel-header">
-                  <div class="mission-control-panel-heading">
-                    <p class="mission-control-panel-kicker">Flight Director</p>
-                    <h3>Executive Brief</h3>
-                  </div>
+        <main class="mission-control-stage">
+          <aside class="mission-control-column mission-control-column-rail">
+            <section class="mission-control-block mission-control-assignment-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Mission Library</p>
+                  <h3>Assignments</h3>
                 </div>
-                <div id="mission-control-ops-alerts" class="mission-control-ops-alerts"></div>
               </div>
-              <div class="mission-control-ops-column mission-control-assignment-column">
-                <div class="mission-control-panel-header">
-                  <div class="mission-control-panel-heading">
-                    <p class="mission-control-panel-kicker">Mission Assignment</p>
-                    <h3>Quick Select</h3>
-                  </div>
+              <div id="mission-control-mission-picker" class="mission-control-mission-picker"></div>
+            </section>
+            <section class="mission-control-block mission-control-fleet-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Active Vehicles</p>
+                  <h3>Fleet</h3>
                 </div>
-                <div id="mission-control-mission-picker" class="mission-control-mission-picker"></div>
               </div>
-            </div>
-          </section>
-          <section class="mission-control-block mission-control-director-block">
-            <div class="mission-control-panel-header">
-              <div class="mission-control-panel-heading">
-                <p class="mission-control-panel-kicker">Flight Director</p>
-                <h3>Command Net</h3>
+              <div id="mission-control-fleet" class="mission-control-fleet"></div>
+            </section>
+          </aside>
+
+          <section class="mission-control-column mission-control-column-main">
+            <section class="mission-control-block mission-control-view-block">
+              <div class="mission-control-panel-header mission-control-view-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Live Vehicle</p>
+                  <h3>Primary View</h3>
+                </div>
+                <div class="mission-control-view-buttons">
+                  <button id="mission-control-view-starship" class="mission-control-view-button" type="button">Starship</button>
+                  <button id="mission-control-view-booster" class="mission-control-view-button" type="button">Booster</button>
+                </div>
               </div>
-            </div>
-            <div id="mission-control-subsystems" class="mission-control-subsystems"></div>
-          </section>
-          <section class="mission-control-block mission-control-view-block">
-            <div class="mission-control-panel-header mission-control-view-panel-header">
-              <div class="mission-control-panel-heading">
-                <p class="mission-control-panel-kicker">Tracking Network</p>
-                <h3>Live Vehicle View</h3>
-              </div>
-              <div class="mission-control-view-buttons">
-                <button id="mission-control-view-starship" class="mission-control-view-button" type="button">Starship</button>
-                <button id="mission-control-view-booster" class="mission-control-view-button" type="button">Booster</button>
-              </div>
-            </div>
-            <p id="mission-control-view-status" class="mission-control-view-status">Vehicle views unavailable in current scene.</p>
-            <div class="mission-control-view-grid">
+              <p id="mission-control-view-status" class="mission-control-view-status">Vehicle views unavailable in current scene.</p>
               <div class="mission-control-live-viewport" aria-hidden="true">
                 <video
                   id="mission-control-live-feed-video"
@@ -186,48 +176,63 @@
                   </svg>
                 </div>
               </div>
-              <div id="mission-control-live-metrics" class="mission-control-live-metrics" aria-live="polite"></div>
-            </div>
-          </section>
-          <section class="mission-control-block mission-control-fleet-block">
-            <div class="mission-control-panel-header">
-              <div class="mission-control-panel-heading">
-                <p class="mission-control-panel-kicker">Fleet Board</p>
-                <h3>Fleet Operations</h3>
+            </section>
+
+            <section class="mission-control-block mission-control-summary-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Executive Summary</p>
+                  <h3>What Matters Now</h3>
+                </div>
               </div>
-            </div>
-            <div id="mission-control-fleet" class="mission-control-fleet"></div>
+              <div id="mission-control-live-metrics" class="mission-control-live-metrics" aria-live="polite"></div>
+            </section>
           </section>
-          <section class="mission-control-block mission-control-overview-block">
+
+          <aside class="mission-control-column mission-control-column-brief">
+            <section class="mission-control-block mission-control-director-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Director Brief</p>
+                  <h3>Flight State</h3>
+                </div>
+              </div>
+              <div id="mission-control-subsystems" class="mission-control-subsystems"></div>
+            </section>
+
+            <section class="mission-control-block mission-control-sequence-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Timeline</p>
+                  <h3>Sequence</h3>
+                </div>
+              </div>
+              <ol id="mission-control-sequence" class="mission-control-sequence-list"></ol>
+            </section>
+
+            <section class="mission-control-block mission-control-events-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Recent Events</p>
+                  <h3>CAPCOM Log</h3>
+                </div>
+              </div>
+              <div id="mission-control-events" class="mission-control-events-log" aria-live="polite"></div>
+            </section>
+          </aside>
+
+          <section class="mission-control-block mission-control-overview-block mission-control-overview-hidden" aria-hidden="true">
             <div class="mission-control-panel-header">
               <div class="mission-control-panel-heading">
-                <p class="mission-control-panel-kicker">Systems Telemetry</p>
-                <h3>Flight Overview</h3>
+                <p class="mission-control-panel-kicker">Hidden</p>
+                <h3>Hidden</h3>
               </div>
             </div>
             <div id="mission-control-overview" class="mission-control-overview-grid"></div>
           </section>
-          <section class="mission-control-block mission-control-sequence-block">
-            <div class="mission-control-panel-header">
-              <div class="mission-control-panel-heading">
-                <p class="mission-control-panel-kicker">Execution Timeline</p>
-                <h3>Mission Sequence</h3>
-              </div>
-            </div>
-            <ol id="mission-control-sequence" class="mission-control-sequence-list"></ol>
-          </section>
-          <section class="mission-control-block mission-control-events-block">
-            <div class="mission-control-panel-header">
-              <div class="mission-control-panel-heading">
-                <p class="mission-control-panel-kicker">CAPCOM Log</p>
-                <h3>Terminal Timeline</h3>
-              </div>
-            </div>
-            <div id="mission-control-events" class="mission-control-events-log" aria-live="polite"></div>
-          </section>
         </main>
       </div>
     </section>
-    <script type="module" src="/static/js/app.js?v=20260306a"></script>
+    <script type="module" src="/static/js/app.js?v=20260306i"></script>
   </body>
 </html>

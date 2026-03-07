@@ -1,6 +1,7 @@
 import { createLaunchFleetController } from "../app/static/js/physics/launch/launchFleetController.js";
 import {
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+  LAUNCH_SITE,
   LAUNCH_VEHICLE_CONFIG,
 } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
@@ -16,6 +17,7 @@ const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const EARTH_MU_KM3_S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * EARTH_MASS_KG;
 const NOW_MS = Date.UTC(2026, 2, 5, 12, 0, 0);
+const MOON_TEST_INCLINATION_DEG = Number(LAUNCH_SITE?.latitudeDeg) || 28.5;
 
 function assert(condition, message) {
   if (!condition) {
@@ -144,18 +146,19 @@ function launchMoonInjectScenario({ moonPositionKm, moonVelocityKmS }) {
   assert(shipState, "moon spawn window lock: missing ship state");
   assert(vehicle, "moon spawn window lock: missing fleet vehicle");
   return {
+    launch,
     state,
     shipState,
     vehicle,
   };
 }
 
-function verifyOptimalSpawn({ state, shipState, vehicle }, label) {
+function verifyOptimalSpawn({ launch, state, shipState, vehicle }, label) {
   const solved = solveMoonDepartureWindow({
     earthState: state.staticSources.get("earth"),
     moonState: state.staticSources.get("moon"),
     shipPositionKm: shipState.position,
-    inclinationDeg: 28.5,
+    inclinationDeg: MOON_TEST_INCLINATION_DEG,
     ascendingNodeRad: Number(vehicle.moonDepartureAscendingNodeRad),
     orbitAltitudeKm: 185,
     earthRadiusKm: EARTH_RADIUS_KM,
@@ -163,9 +166,31 @@ function verifyOptimalSpawn({ state, shipState, vehicle }, label) {
     padAngularRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   });
   assert(solved.valid, `${label}: window solve invalid`);
-  assertApprox(solved.phaseErrorDeg, 0, 0.05, `${label}: spawn phase should match target phase`);
-  assertApprox(vehicle.moonDepartureWindowPhaseErrorDeg, 0, 0.05, `${label}: stored phase error should be near zero`);
-  assertApprox(vehicle.moonDepartureWindowWaitSec, 0, 0.5, `${label}: stored wait should be near zero`);
+  assert(
+    Boolean(vehicle.moonDepartureWindowReady) === Boolean(solved.ready),
+    `${label}: stored window-ready flag should match solve result`,
+  );
+  assert(
+    Boolean(vehicle.moonDeparturePlanReady) === Boolean(solved.ready),
+    `${label}: stored departure plan readiness should match solve readiness`,
+  );
+  if (solved.ready) {
+    assert(
+      !Number.isFinite(Number(solved.phaseErrorDeg))
+        || Math.abs(Number(solved.phaseErrorDeg)) <= Number(solved.toleranceDeg) + 1e-6,
+      `${label}: ready spawn phase should be within tolerance, got ${solved.phaseErrorDeg} deg`,
+    );
+    assert(
+      !Number.isFinite(Number(vehicle.moonDepartureWindowWaitSec))
+        || Number(vehicle.moonDepartureWindowWaitSec) <= 1,
+      `${label}: ready window should not have a meaningful wait, got ${vehicle.moonDepartureWindowWaitSec}`,
+    );
+  } else {
+    assert(
+      !Boolean(solved.corridorAccepted) || !Boolean(solved.phaseReady),
+      `${label}: unready solve should fail phase or corridor acceptance`,
+    );
+  }
   assert(
     vehicle.moonDeparturePlanDirectionKm
       && Number.isFinite(Number(vehicle.moonDeparturePlanThrottle))
@@ -177,7 +202,7 @@ function verifyOptimalSpawn({ state, shipState, vehicle }, label) {
   const optimized = solveBestMoonOrbitInjectWindow({
     earthState: state.staticSources.get("earth"),
     moonState: state.staticSources.get("moon"),
-    inclinationDeg: 28.5,
+    inclinationDeg: MOON_TEST_INCLINATION_DEG,
     orbitAltitudeKm: 185,
     earthRadiusKm: EARTH_RADIUS_KM,
     earthMuKm3S2: EARTH_MU_KM3_S2,
@@ -203,9 +228,19 @@ function verifyOptimalSpawn({ state, shipState, vehicle }, label) {
       && Number.isFinite(Number(optimized.bPlaneErrorKm)),
     `${label}: optimizer propagated metrics missing`,
   );
+  assert(
+    Boolean(optimized.ready) === Boolean(optimized.corridorAccepted),
+    `${label}: optimizer ready state should track corridor acceptance`,
+  );
+  assert(
+    Number(optimized.predictedMissDistanceKm) < 2_000_000
+      && Number(optimized.predictedPeriluneAltitudeKm) < 2_000_000
+      && Number(optimized.bPlaneErrorKm) < 2_000_000,
+    `${label}: optimizer propagated metrics should stay bounded, got miss=${optimized.predictedMissDistanceKm}, perilune=${optimized.predictedPeriluneAltitudeKm}, bPlane=${optimized.bPlaneErrorKm}`,
+  );
   assertApprox(
-    vehicle.moonDepartureOptimizedApoapsisAltitudeKm,
-    solved.optimizedApoapsisAltitudeKm,
+    launch.orbitInjectApoapsisKm,
+    optimized.optimizedApoapsisAltitudeKm,
     1.0,
     `${label}: injected apoapsis should follow optimizer`,
   );

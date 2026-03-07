@@ -1,4 +1,4 @@
-import { add, clamp, normalize, scale, subtract } from "./launchMath.js";
+import { add, clamp, cross, normalize, scale, subtract } from "./launchMath.js";
 import { STARSHIP_STACK_DIMENSIONS_KM } from "./launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "./launchMissions.js";
 import {
@@ -148,7 +148,23 @@ export function computeRefuelStatus({
   const selectedMissionId = String(runtime?.mission?.selectedId || "").trim();
   const targetPropellantKg = resolveRefuelTargetKg(runtime?.refuel, stage2CapacityKg);
   const fillFraction = computeRefuelFillFraction(runtime?.stagePropellantKg, targetPropellantKg);
-  const requiredFlights = finiteNonNegative(runtime?.refuel?.requiredFlights);
+  const targetFillFraction = normalizedTargetFillFraction(
+    runtime?.refuel?.targetFillFraction,
+    config.targetFillFraction,
+  );
+  const transferPerFlightKg = finiteNonNegative(runtime?.refuel?.transferPerFlightKg || config.transferPerFlightKg);
+  const targetFillPropellantKg = targetPropellantKg * targetFillFraction;
+  const propellantGapKg = Math.max(
+    0,
+    targetFillPropellantKg - finiteNonNegative(runtime?.stagePropellantKg),
+  );
+  const additionalFlightsNeeded = transferPerFlightKg > 1e-6
+    ? Math.ceil(propellantGapKg / transferPerFlightKg)
+    : 0;
+  const requiredFlights = Math.max(
+    finiteNonNegative(runtime?.refuel?.requiredFlights),
+    finiteNonNegative(runtime?.refuel?.completedFlights) + additionalFlightsNeeded,
+  );
   const completedFlights = finiteNonNegative(runtime?.refuel?.completedFlights);
   const activeFlights = finiteNonNegative(runtime?.refuel?.activeFlights);
   const launchedFlights = finiteNonNegative(runtime?.refuel?.launchedFlights);
@@ -158,10 +174,6 @@ export function computeRefuelStatus({
     && String(runtime?.phase || "") !== "idle"
     && Number(runtime?.stageIndex) === 1
     && REFUEL_WINDOW_PHASES.has(missionPhase);
-  const targetFillFraction = normalizedTargetFillFraction(
-    runtime?.refuel?.targetFillFraction,
-    config.targetFillFraction,
-  );
   const refuelComplete = fillFraction >= targetFillFraction;
   const flights = Array.isArray(runtime?.refuel?.flights) ? runtime.refuel.flights : [];
   let activeFlight = null;
@@ -561,6 +573,37 @@ export function createLaunchRefuelController({
   }
 
   function launchDepotTanker(state, nowMs = Date.now()) {
+    const eligibility = refuelLaunchEligibility(state);
+    if (eligibility?.ok) {
+      const dockReadyDistanceKm = Math.max(
+        Number(config.dockHoldPointDistanceKm) || 0.065,
+        Number(config.dockDistanceKm) || 0.014,
+      );
+      const matchedLaunch = launchMissionRefuelTanker(state, eligibility, nowMs, {
+        dockReadyInject: true,
+        dockReadyDistanceKm,
+      });
+      if (matchedLaunch?.accepted) {
+        const rocketAltitudeKm = (
+          finiteVector?.(eligibility?.rocketState?.position)
+          && finiteVector?.(eligibility?.earthState?.position)
+        )
+          ? Math.max(
+            0,
+            vectorMagnitude(subtract(eligibility.rocketState.position, eligibility.earthState.position))
+              - (Math.max(1000, Number(getEarthRadiusKm?.()) || 6371)),
+          )
+          : null;
+        return {
+          ...matchedLaunch,
+          orbitAltitudeKm: Number.isFinite(Number(rocketAltitudeKm))
+            ? Number(rocketAltitudeKm)
+            : null,
+          dockReadyInject: true,
+          dockReadyDistanceKm,
+        };
+      }
+    }
     if (!state?.dynamicBodies) {
       return { accepted: false, reason: "state_unavailable" };
     }
@@ -1664,7 +1707,7 @@ export function createLaunchRefuelController({
     return selection.selected;
   }
 
-  function launchMissionRefuelTanker(state, eligibility, nowMs = Date.now()) {
+  function launchMissionRefuelTanker(state, eligibility, nowMs = Date.now(), options = {}) {
     const slot = Math.max(0, Number(runtime.refuel.nextSlot) || 0);
     const identity = buildTankerIdentity(state, runtime);
     if (!identity) {
@@ -1675,7 +1718,25 @@ export function createLaunchRefuelController({
       eligibility.rocketState.velocity || { x: 0, y: 0, z: 0 },
       eligibility.earthState.velocity || { x: 0, y: 0, z: 0 },
     );
-    const offset = refuelFlightOffsetKm(relPos, relVel, slot, 0);
+    const dockReadyInject = options?.dockReadyInject === true;
+    const dockReadyDistanceKm = Math.max(
+      Number(options?.dockReadyDistanceKm) || 0,
+      Number(config.dockDistanceKm) || 0.014,
+    );
+    const offset = dockReadyInject
+      ? scale(
+        normalize(relPos, { x: 0, y: 0, z: 1 }),
+        dockReadyDistanceKm,
+      )
+      : refuelFlightOffsetKm(relPos, relVel, slot, 0);
+    const shipToTankerAxisKm = normalize(offset, normalize(relPos, { x: 0, y: 0, z: 1 }));
+    const tankerToShipAxisKm = scale(shipToTankerAxisKm, -1);
+    const radiusKm = Math.max(1e-6, vectorMagnitude(relPos));
+    const angularVelocityRadS = scale(
+      cross(relPos, relVel),
+      1 / Math.max(radiusKm * radiusKm, 1e-9),
+    );
+    const offsetVelocityKmS = cross(angularVelocityRadS, offset);
     const targetPropellantKg = resolveRefuelTargetKg(runtime.refuel, stage2CapacityKg?.() || 0);
     const stagePropellantKg = Math.max(0, Number(runtime.stagePropellantKg) || 0);
     const requestedTransferKg = Math.max(0, Number(runtime.refuel.transferPerFlightKg) || 0);
@@ -1693,7 +1754,10 @@ export function createLaunchRefuelController({
       id: identity.id,
       massKg: tankerMassKg,
       position: add(eligibility.rocketState.position, offset),
-      velocity: { ...(eligibility.rocketState.velocity || { x: 0, y: 0, z: 0 }) },
+      velocity: add(
+        eligibility.rocketState.velocity || { x: 0, y: 0, z: 0 },
+        offsetVelocityKmS,
+      ),
     };
     state.dynamicBodies.set(identity.id, tankerState);
     runtime.refuel.flights = (Array.isArray(runtime.refuel.flights) ? runtime.refuel.flights : [])
@@ -1702,26 +1766,60 @@ export function createLaunchRefuelController({
       id: identity.id,
       slot,
       active: true,
-      status: "rendezvous",
+      status: dockReadyInject ? "transferring" : "rendezvous",
       launchedElapsedSec: runtime.elapsedSeconds,
       launchTimestampMs: nowMs,
       transferKg,
+      transferPlannedKg: dockReadyInject ? transferKg : 0,
+      transferRemainingKg: dockReadyInject ? transferKg : 0,
+      transferTransferredKg: 0,
+      transferDurationSec: dockReadyInject
+        ? Math.max(30, Number(config.transferDurationSec) || 150)
+        : 0,
+      transferRateKgS: dockReadyInject
+        ? (transferKg / Math.max(30, Number(config.transferDurationSec) || 150))
+        : 0,
+      transferStartedElapsedSec: dockReadyInject ? runtime.elapsedSeconds : 0,
+      lockedOffsetKm: dockReadyInject
+        ? clamp(
+          Number(config.dockLockedOffsetKm) || 0,
+          0,
+          Math.max(
+            0.02,
+            (Number(STARSHIP_STACK_DIMENSIONS_KM.diameterKm) || 0.009) * 2.5,
+          ),
+        )
+        : 0,
       ...defaultRefuelFlightRuntimeState({
-        attitudeAxisKm: normalizeFiniteAxis(eligibility.rocketState.velocity, normalize(offset, { x: 0, y: 0, z: 1 })),
+        attitudeAxisKm: dockReadyInject
+          ? tankerToShipAxisKm
+          : normalizeFiniteAxis(eligibility.rocketState.velocity, normalize(offset, { x: 0, y: 0, z: 1 })),
       }),
     });
+    if (dockReadyInject && runtime?.stageActuator && typeof runtime.stageActuator === "object") {
+      runtime.stageActuator.directionCommand = shipToTankerAxisKm;
+      runtime.stageActuator.directionActual = shipToTankerAxisKm;
+      runtime.stageActuator.gimbalErrorDeg = 0;
+    }
     runtime.refuel.launchedFlights = Math.max(0, Number(runtime.refuel.launchedFlights) || 0) + 1;
     runtime.refuel.nextSlot = slot + 1;
     runtime.refuel.lastAction = "tanker_launched";
     runtime.refuel.lastActionTimeSec = runtime.elapsedSeconds;
     recalcRefuelFlightCounts();
+    const liveStatus = computeRefuelStatus({
+      runtime,
+      missionIdMoonOrbitReturn,
+      missionIdsRefuelEligible: Array.from(refuelEligibleMissionIds),
+      stage2CapacityKg: stage2CapacityKg?.() || 0,
+      config,
+    });
     emitLaunchEvent?.("refuel_tanker_launched", {
       tankerId: identity.id,
       mode: "rendezvous",
       slot,
       launchedFlights: runtime.refuel.launchedFlights,
       activeFlights: runtime.refuel.activeFlights,
-      requiredFlights: runtime.refuel.requiredFlights,
+      requiredFlights: liveStatus.requiredFlights,
       transferKg,
       stagePropellantKg: runtime.stagePropellantKg,
       targetPropellantKg,
@@ -1732,9 +1830,11 @@ export function createLaunchRefuelController({
       tankerMeta,
       mode: "rendezvous",
       transferKg,
+      dockReadyInject,
+      dockReadyDistanceKm: dockReadyInject ? dockReadyDistanceKm : null,
       launchedFlights: runtime.refuel.launchedFlights,
       completedFlights: runtime.refuel.completedFlights,
-      requiredFlights: runtime.refuel.requiredFlights,
+      requiredFlights: liveStatus.requiredFlights,
     };
   }
 

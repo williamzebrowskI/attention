@@ -16,7 +16,6 @@ export { createNavigationTrajectoryPlanner } from "./navigationTrajectoryPlanner
 export { evaluateMissionPhase, evaluateMoonMissionPhase } from "./navigationPhaseEvaluator.js";
 export { createNavigationSystem } from "./navigationSystem.js";
 export {
-  computeMoonOrbitInjectPhaseAngleRad,
   evaluateMoonPadLaunchWindow,
   solveMoonDepartureWindow,
 } from "./lunar/departureWindowSolver.js";

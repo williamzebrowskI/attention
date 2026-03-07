@@ -38,8 +38,18 @@ export function evaluateMoonBurnAttitudeGate({
     ? normalize(latchedDirection, desiredAxis)
     : null;
   let alignedTimeSec = Math.max(0, Number(alignStableSec) || 0);
-
   const desiredErrorDeg = degrees(angleBetweenRadians(shipAxis, desiredAxis));
+
+  if (!gateEligible) {
+    return {
+      gateActive: false,
+      throttleSuppressed: false,
+      requestedDirection: desiredAxis,
+      latchedDirection: null,
+      alignStableSec: 0,
+      attitudeErrorDeg: desiredErrorDeg,
+    };
+  }
   if (!gateActive && gateEligible && desiredErrorDeg > enterThresholdDeg) {
     gateActive = true;
     latchedAxis = desiredAxis;

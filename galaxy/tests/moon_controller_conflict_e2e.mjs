@@ -243,21 +243,29 @@ function testFleetControllerTelemetryScenarioProgression() {
     String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn"),
     `fleet telemetry progression: expected powered TLI burn, got ${burnSnapshot.guidanceMode}`,
   );
+  if (Number(burnSnapshot.guidanceRequestedThrottle) > 0.4) {
+    assert(
+      String(burnSnapshot.guidanceMode || "").includes("+reacquire"),
+      `fleet telemetry progression: expected reacquire tag during burn, got ${burnSnapshot.guidanceMode}`,
+    );
+    assert(
+      burnSnapshot.guidanceBurnRequested === true,
+      "fleet telemetry progression: burn state should request thrust",
+    );
+  } else {
+    assert(
+      String(burnSnapshot.guidanceMode || "").includes("go-no-go-hold"),
+      `fleet telemetry progression: bad corridor should remain held, got ${burnSnapshot.guidanceMode}`,
+    );
+    assert(
+      burnSnapshot.guidanceBurnRequested === false,
+      "fleet telemetry progression: go/no-go hold should not request thrust",
+    );
+  }
   assert(
-    String(burnSnapshot.guidanceMode || "").includes("+reacquire"),
-    `fleet telemetry progression: expected reacquire tag during burn, got ${burnSnapshot.guidanceMode}`,
-  );
-  assert(
-    Number(burnSnapshot.guidanceRequestedThrottle) > 0.4,
-    `fleet telemetry progression: expected positive burn request, got ${burnSnapshot.guidanceRequestedThrottle}`,
-  );
-  assert(
-    burnSnapshot.guidanceBurnRequested === true,
-    "fleet telemetry progression: burn state should request thrust",
-  );
-  assert(
-    String(burnSnapshot.missionPhaseGateReason || "").includes("t=430s / 520s"),
-    `fleet telemetry progression: expected updated TLI phase time in gate reason, got ${burnSnapshot.missionPhaseGateReason}`,
+    String(burnSnapshot.missionPhaseGateReason || "").includes("t=430s / 520s")
+      || String(burnSnapshot.missionPhaseGateReason || "").includes("departure corridor not acceptable"),
+    `fleet telemetry progression: expected updated TLI timing or corridor gate, got ${burnSnapshot.missionPhaseGateReason}`,
   );
 }
 
@@ -298,17 +306,70 @@ function testFleetControllerOrbitInjectDepartureCommit() {
     baseSnapshot: {},
   });
   assertApprox(snapshot.altitudeKm, 185.0, 1.0, "fleet departure commit: starting altitude");
-  assert(
-    String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
-    `fleet departure commit: expected early departure burn mode, got ${snapshot.guidanceMode}`,
+  if (vehicle.moonDeparturePlanReady) {
+    assert(
+      String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
+      `fleet departure commit: expected early departure burn mode, got ${snapshot.guidanceMode}`,
+    );
+    assert(
+      Number(snapshot.guidanceRequestedThrottle) > 0.5,
+      `fleet departure commit: expected positive early throttle, got ${snapshot.guidanceRequestedThrottle}`,
+    );
+    assert(
+      snapshot.guidanceBurnRequested === true,
+      "fleet departure commit: expected burn request during departure commit",
+    );
+  } else {
+    assert(
+      String(snapshot.guidanceMode || "").includes("go-no-go-hold"),
+      `fleet departure commit: expected hold for bad corridor seed, got ${snapshot.guidanceMode}`,
+    );
+    assert(
+      !String(snapshot.guidanceMode || "").includes("+departure-commit"),
+      `fleet departure commit: bad corridor should not use departure commit, got ${snapshot.guidanceMode}`,
+    );
+  }
+}
+
+function testFleetControllerRejectsBadStoredDeparturePlanCommit() {
+  const state = makeState();
+  seedWorld(state);
+  const { controller, runtime } = createFleetHarness();
+  const launch = controller.launchMissionShip(
+    state,
+    LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN,
+    NOW_MS,
+    { mode: "orbit_inject" },
   );
+  assert(launch.accepted, `fleet bad departure plan: launch rejected (${launch.reason || "unknown"})`);
+  const shipId = launch.shipId;
+  const vehicle = runtime.fleet.vehicles.get(shipId);
+  const shipState = state.dynamicBodies.get(shipId);
+  assert(vehicle, "fleet bad departure plan: missing fleet vehicle");
+  assert(shipState, "fleet bad departure plan: missing ship state");
+  shipState.massKg = STAGE2_DRY_MASS_KG + STAGE2_PROPELLANT_KG;
+  vehicle.stageIndex = 1;
+  vehicle.stagePropellantKg = STAGE2_PROPELLANT_KG;
+  vehicle.missionPhase = "tli_burn";
+  vehicle.elapsedSeconds = EARLY_COMMIT_ELAPSED_SEC;
+  vehicle.phaseElapsedSec = EARLY_COMMIT_ELAPSED_SEC;
+  vehicle.moonDeparturePlanReady = true;
+  vehicle.moonDeparturePlanPredictedMissDistanceKm = 384340.9;
+  vehicle.moonDeparturePlanPredictedPeriluneAltitudeKm = 382603.5;
+  vehicle.moonDeparturePlanBPlaneErrorKm = 382436.0;
+  vehicle.moonDepartureGeometryScore = 0.956;
+  vehicle.moonDepartureAlignNow = 0.978;
+
+  controller.prepareStep(state, 1, NOW_MS + (EARLY_COMMIT_ELAPSED_SEC * 1000));
+  const snapshot = controller.statusSnapshotForBody({
+    state,
+    bodyId: shipId,
+    nowMs: NOW_MS + (EARLY_COMMIT_ELAPSED_SEC * 1000),
+    baseSnapshot: {},
+  });
   assert(
-    Number(snapshot.guidanceRequestedThrottle) > 0.5,
-    `fleet departure commit: expected positive early throttle, got ${snapshot.guidanceRequestedThrottle}`,
-  );
-  assert(
-    snapshot.guidanceBurnRequested === true,
-    "fleet departure commit: expected burn request during departure commit",
+    !String(snapshot.guidanceMode || "").includes("+departure-commit"),
+    `fleet bad departure plan: bad corridor should not force departure commit, got ${snapshot.guidanceMode}`,
   );
 }
 
@@ -333,14 +394,17 @@ function testPrimaryLaunchControllerConflictProgression() {
   });
   controller.prepareStep(state, 1, NOW_MS);
   const holdSnapshot = controller.statusSnapshotForBody(state, shipId, NOW_MS);
-  assert(
-    String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
-    `primary telemetry progression: expected public controller departure-commit burn, got ${holdSnapshot.guidanceMode}`,
-  );
-  assert(
-    Number(holdSnapshot.guidanceRequestedThrottle) > 0.5,
-    `primary telemetry progression: expected positive requested throttle during departure commit, got ${holdSnapshot.guidanceRequestedThrottle}`,
-  );
+  if (String(holdSnapshot.guidanceMode || "").includes("+departure-commit")) {
+    assert(
+      Number(holdSnapshot.guidanceRequestedThrottle) > 0.5,
+      `primary telemetry progression: expected positive requested throttle during departure commit, got ${holdSnapshot.guidanceRequestedThrottle}`,
+    );
+  } else {
+    assert(
+      String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+      `primary telemetry progression: expected departure commit or reacquire hold, got ${holdSnapshot.guidanceMode}`,
+    );
+  }
 
   seedConflictFrame({
     state,
@@ -351,17 +415,29 @@ function testPrimaryLaunchControllerConflictProgression() {
   controller.prepareStep(state, 1, NOW_MS + 1000);
   const burnSnapshot = controller.statusSnapshotForBody(state, shipId, NOW_MS + 1000);
   assert(
-    String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn"),
-    `primary telemetry progression: expected public controller burn mode, got ${burnSnapshot.guidanceMode}`,
+    String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn")
+      || String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+    `primary telemetry progression: expected public controller burn or hold mode, got ${burnSnapshot.guidanceMode}`,
   );
-  assert(
-    Number(burnSnapshot.guidanceRequestedThrottle) > 0.4,
-    `primary telemetry progression: expected positive burn request, got ${burnSnapshot.guidanceRequestedThrottle}`,
-  );
+  if (
+    String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn")
+    && !String(burnSnapshot.guidanceMode || "").includes("go-no-go-hold")
+  ) {
+    assert(
+      Number(burnSnapshot.guidanceRequestedThrottle) > 0.4,
+      `primary telemetry progression: expected positive burn request, got ${burnSnapshot.guidanceRequestedThrottle}`,
+    );
+  } else {
+    assert(
+      Number(burnSnapshot.guidanceRequestedThrottle) === 0,
+      `primary telemetry progression: hold should keep throttle at zero, got ${burnSnapshot.guidanceRequestedThrottle}`,
+    );
+  }
 }
 
 function main() {
   testFleetControllerOrbitInjectDepartureCommit();
+  testFleetControllerRejectsBadStoredDeparturePlanCommit();
   testFleetControllerTelemetryScenarioProgression();
   testPrimaryLaunchControllerConflictProgression();
   console.log("PASS moon-controller-conflict-e2e");

@@ -1,5 +1,6 @@
 import { LAUNCH_MISSION_IDS } from "../launchMissions.js";
 import { NAVIGATION_DEFAULTS } from "../../navigation_system/navigationSystemConfig.js";
+import { evaluateMoonDepartureCorridor } from "../../navigation_system/lunar/moonDepartureCorridor.js";
 
 function finiteNumber(value, fallback = Number.NaN) {
   const numeric = Number(value);
@@ -38,6 +39,9 @@ export function evaluateMoonTliGoNoGo({
   missionElapsedInPhaseSec = 0,
   moonDepartureWindowReady = null,
   moonDepartureWindowWaitSec = null,
+  departurePredictedMissDistanceKm = Number.NaN,
+  departurePredictedPeriluneAltitudeKm = Number.NaN,
+  departureBPlaneErrorKm = Number.NaN,
   plannerConfig = NAVIGATION_DEFAULTS?.planner,
   minPeriapsisKm = 130,
   minAltitudeKm = 120,
@@ -86,6 +90,17 @@ export function evaluateMoonTliGoNoGo({
   const windowHoldLimitSec = Math.max(10, finiteNumber(maxWindowHoldSec, 300));
   const shortWindowWait = Number.isFinite(windowWaitSec) && windowWaitSec > 1 && windowWaitSec <= windowHoldLimitSec;
   const shouldWindowHold = windowReady === false && shortWindowWait && phaseElapsedSec < windowWaitSec;
+  const corridor = evaluateMoonDepartureCorridor({
+    predictedMissDistanceKm: departurePredictedMissDistanceKm,
+    predictedPeriluneAltitudeKm: departurePredictedPeriluneAltitudeKm,
+    bPlaneErrorKm: departureBPlaneErrorKm,
+    plannerConfig: planner,
+  });
+  const corridorMetricsAvailable = (
+    Number.isFinite(Number(departurePredictedMissDistanceKm))
+    || Number.isFinite(Number(departurePredictedPeriluneAltitudeKm))
+    || Number.isFinite(Number(departureBPlaneErrorKm))
+  );
 
   addCheck(
     "periapsis-safe",
@@ -115,6 +130,13 @@ export function evaluateMoonTliGoNoGo({
     "window-ready",
     !shouldWindowHold,
     `holding for launch window (${Math.max(0, Math.ceil(windowWaitSec - phaseElapsedSec))}s remaining)`,
+  );
+  addCheck(
+    "departure-corridor",
+    windowReady !== false && (!corridorMetricsAvailable || corridor.accepted),
+    corridorMetricsAvailable
+      ? `departure corridor not acceptable (${corridor.reason})`
+      : "departure corridor not acceptable",
   );
 
   const failures = checks.filter((entry) => !entry.pass);
@@ -151,6 +173,8 @@ export function evaluateMoonTliGoNoGo({
       windowReady,
       windowWaitSec: Number.isFinite(windowWaitSec) ? windowWaitSec : null,
       windowHoldLimitSec,
+      departureCorridorAccepted: corridorMetricsAvailable ? corridor.accepted : null,
+      departureCorridorScore: corridorMetricsAvailable ? corridor.score : null,
       tliMissGateKm: finiteNumber(planner?.moonMidcourseMissDistanceKm, 95_000),
     },
   };

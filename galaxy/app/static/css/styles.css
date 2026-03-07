@@ -2941,3 +2941,842 @@ body {
     justify-self: start;
   }
 }
+
+/* Mission Control concept revamp */
+
+.mission-control-screen {
+  display: none;
+  overflow: hidden;
+  --mission-ink: #0f1713;
+  --mission-muted: #66766a;
+  --mission-surface: rgba(255, 255, 255, 0.92);
+  --mission-surface-strong: rgba(248, 250, 248, 0.96);
+  --mission-line: rgba(187, 201, 189, 0.95);
+  --mission-line-strong: rgba(158, 177, 160, 0.98);
+  --mission-glow: rgba(16, 24, 19, 0.08);
+  --mission-nominal: #107c41;
+  --mission-caution: #b7791f;
+  --mission-critical: #c2412d;
+  --mission-info: #0f766e;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(231, 239, 232, 0.92), transparent 30%),
+    radial-gradient(circle at 92% 12%, rgba(235, 242, 236, 0.88), transparent 28%),
+    linear-gradient(180deg, #f6f8f5, #eef3ef);
+  color: var(--mission-ink);
+}
+
+.mission-control-screen::before {
+  background:
+    linear-gradient(rgba(224, 231, 225, 0.72) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(224, 231, 225, 0.72) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.42;
+}
+
+.mission-control-screen::after {
+  background: none;
+}
+
+.mission-control-shell {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  padding: 22px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  overflow: hidden;
+}
+
+.mission-control-header {
+  gap: 14px;
+  margin: 0;
+}
+
+.mission-control-header-row {
+  gap: 16px;
+  align-items: center;
+}
+
+.mission-control-back-button {
+  min-width: 180px;
+  border-radius: 18px;
+  border: 1px solid var(--mission-line);
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--mission-ink);
+  box-shadow: 0 14px 28px rgba(15, 23, 19, 0.05);
+}
+
+.mission-control-back-button:hover {
+  border-color: var(--mission-line-strong);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.mission-control-kicker,
+.mission-control-panel-kicker,
+.mission-control-data-cluster-kicker,
+.mission-control-status-label,
+.mission-control-command-label,
+.mission-control-hero-label,
+.mission-control-subsystem-title,
+.mission-control-fleet-metric-label,
+.mission-control-event-level,
+.mission-control-alert-kicker {
+  color: #718175;
+}
+
+.mission-control-title {
+  color: #101814;
+}
+
+.mission-control-subtitle,
+.mission-control-status-meta,
+.mission-control-command-meta,
+.mission-control-hero-detail,
+.mission-control-subsystem-detail,
+.mission-control-subsystem-meta,
+.mission-control-event-detail,
+.mission-sequence-note,
+.mission-control-fleet-card-line,
+.mission-control-mission-card-description,
+.mission-control-mission-card-meta,
+.mission-control-mode-meta,
+.mission-control-mission-note {
+  color: #66766a;
+}
+
+.mission-control-header-status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mission-control-status-pill,
+.mission-control-command-card,
+.mission-control-hero-card,
+.mission-control-subsystem-card,
+.mission-control-data-cluster,
+.mission-sequence-item,
+.mission-control-event-row,
+.mission-control-fleet-card,
+.mission-control-mission-card,
+.mission-control-mode-group,
+.mission-control-mode-button,
+.mission-control-alert-card,
+.mission-control-events-log,
+.mission-control-view-status,
+.mission-control-fleet-empty,
+.mission-control-mission-note {
+  border-color: rgba(215, 223, 216, 0.96);
+  background: var(--mission-surface);
+  box-shadow: 0 16px 26px rgba(15, 23, 19, 0.04);
+}
+
+.mission-control-status-value,
+.mission-control-command-value,
+.mission-control-hero-value,
+.mission-control-subsystem-status,
+.mission-control-data-cluster-title,
+.mission-sequence-title,
+.mission-control-event-name,
+.mission-control-fleet-card-title,
+.mission-control-mission-card-title,
+.mission-control-mode-label,
+.mission-control-alert-title {
+  color: #101814;
+}
+
+.mission-control-status-pill.tone-nominal,
+.mission-control-command-card.tone-nominal,
+.mission-control-hero-card.tone-nominal,
+.mission-control-subsystem-card.tone-nominal,
+.mission-control-alert-card.tone-nominal {
+  border-color: rgba(177, 217, 190, 0.98);
+}
+
+.mission-control-status-pill.tone-caution,
+.mission-control-command-card.tone-caution,
+.mission-control-hero-card.tone-caution,
+.mission-control-subsystem-card.tone-caution,
+.mission-control-alert-card.tone-caution {
+  border-color: rgba(234, 205, 156, 0.98);
+}
+
+.mission-control-status-pill.tone-critical,
+.mission-control-command-card.tone-critical,
+.mission-control-hero-card.tone-critical,
+.mission-control-subsystem-card.tone-critical,
+.mission-control-alert-card.tone-critical {
+  border-color: rgba(234, 177, 167, 0.98);
+  animation: none;
+}
+
+.mission-control-status-pill.tone-info,
+.mission-control-command-card.tone-info,
+.mission-control-hero-card.tone-info,
+.mission-control-subsystem-card.tone-info,
+.mission-control-alert-card.tone-info {
+  border-color: rgba(184, 219, 215, 0.98);
+}
+
+.mission-control-command-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.mission-control-stage {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 308px minmax(0, 1fr) 340px;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.mission-control-column {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 16px;
+}
+
+.mission-control-column-rail {
+  grid-template-rows: minmax(0, 1.18fr) minmax(240px, 0.82fr);
+}
+
+.mission-control-column-main {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.mission-control-column-brief {
+  grid-template-rows: auto minmax(0, 0.92fr) minmax(0, 1fr);
+}
+
+.mission-control-block {
+  min-height: 0;
+  padding: 16px;
+  border-radius: 26px;
+  border: 1px solid rgba(221, 230, 222, 0.98);
+  background: var(--mission-surface-strong);
+  box-shadow: 0 18px 34px rgba(16, 24, 19, 0.05);
+  backdrop-filter: blur(18px);
+}
+
+.mission-control-assignment-block,
+.mission-control-fleet-block,
+.mission-control-sequence-block,
+.mission-control-events-block {
+  overflow: hidden;
+}
+
+.mission-control-panel-header {
+  margin: 0 0 14px;
+}
+
+.mission-control-block h3 {
+  color: #101814;
+  font-size: 22px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.mission-control-overview-hidden {
+  display: none !important;
+}
+
+.mission-control-mission-picker {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+  display: grid;
+  gap: 12px;
+}
+
+.mission-control-mission-summary-row,
+.mission-control-mission-card-grid,
+.mission-control-mode-groups,
+.mission-control-mode-row {
+  grid-template-columns: 1fr;
+}
+
+.mission-control-mission-summary-row {
+  display: grid;
+  gap: 8px;
+}
+
+.mission-control-mission-card {
+  gap: 8px;
+  padding: 14px;
+  border-radius: 22px;
+}
+
+.mission-control-mission-card.selected {
+  border-color: rgba(22, 29, 24, 0.98);
+  background: #111915;
+  box-shadow: 0 18px 32px rgba(17, 25, 21, 0.16);
+}
+
+.mission-control-mission-card.selected .mission-control-mission-card-title,
+.mission-control-mission-card.selected .mission-control-mission-card-description,
+.mission-control-mission-card.selected .mission-control-mission-card-meta {
+  color: #f5f8f5;
+}
+
+.mission-control-mission-card.active {
+  border-color: rgba(170, 214, 183, 0.98);
+}
+
+.mission-control-mission-badge {
+  border-color: rgba(213, 221, 214, 0.98);
+  background: #f3f6f3;
+  color: #233128;
+}
+
+.mission-control-mission-card.selected .mission-control-mission-badge {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #f6faf6;
+}
+
+.mission-control-mode-group {
+  padding: 12px;
+  border-radius: 20px;
+}
+
+.mission-control-mode-group-title {
+  color: #223026;
+  font-size: 12px;
+}
+
+.mission-control-mode-button {
+  padding: 11px 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(216, 224, 217, 0.98);
+  background: #ffffff;
+}
+
+.mission-control-mode-button.active {
+  border-color: rgba(22, 29, 24, 0.98);
+  background: #111915;
+}
+
+.mission-control-mode-button.active .mission-control-mode-label,
+.mission-control-mode-button.active .mission-control-mode-meta {
+  color: #f5f8f5;
+}
+
+.mission-control-fleet {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.mission-control-fleet-cards {
+  max-height: none;
+  min-height: 0;
+  overflow: auto;
+}
+
+.mission-control-fleet-card {
+  gap: 6px;
+  padding: 12px;
+  border-radius: 20px;
+}
+
+.mission-control-fleet-card.selected {
+  border-color: rgba(22, 29, 24, 0.98);
+  background: #111915;
+  box-shadow: 0 18px 32px rgba(17, 25, 21, 0.16);
+}
+
+.mission-control-fleet-card.selected .mission-control-fleet-card-title,
+.mission-control-fleet-card.selected .mission-control-fleet-card-line,
+.mission-control-fleet-card.selected .mission-control-fleet-metric-value {
+  color: #f5f8f5;
+}
+
+.mission-control-fleet-card.selected .mission-control-fleet-chip {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #f5f8f5;
+}
+
+.mission-control-fleet-card-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mission-control-view-block {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: var(--mission-surface-strong);
+}
+
+.mission-control-view-status {
+  margin: 0 0 12px;
+  padding: 11px 12px;
+  border-radius: 18px;
+}
+
+.mission-control-live-viewport {
+  min-height: 0;
+  height: 100%;
+  border-radius: 28px;
+  border: 1px solid rgba(220, 228, 221, 0.98);
+  background:
+    linear-gradient(rgba(226, 233, 227, 0.9) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(226, 233, 227, 0.9) 1px, transparent 1px),
+    radial-gradient(circle at 50% 40%, rgba(236, 241, 236, 0.92), transparent 40%),
+    linear-gradient(180deg, #fbfdfb, #f2f6f2);
+  background-size: 28px 28px, 28px 28px, auto, auto;
+  box-shadow: inset 0 0 0 1px rgba(237, 242, 237, 0.98);
+}
+
+.mission-control-live-feed-video {
+  object-fit: contain;
+  opacity: 0.9;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(236, 241, 236, 0.96), transparent 42%),
+    linear-gradient(180deg, rgba(249, 252, 249, 0.94), rgba(242, 246, 242, 0.96));
+}
+
+.mission-control-live-feed-canvas.fallback {
+  opacity: 0.28;
+}
+
+.mission-control-live-viewport::before {
+  z-index: 1;
+  background:
+    linear-gradient(180deg, transparent 0%, rgba(184, 194, 186, 0.22) 50%, transparent 100%);
+  background-size: 100% 180px;
+  opacity: 0.35;
+}
+
+.mission-control-live-viewport::after {
+  z-index: 1;
+  border: 1px solid rgba(221, 229, 222, 0.98);
+  box-shadow: inset 0 0 0 1px rgba(246, 248, 246, 0.94);
+}
+
+.mission-control-live-tag {
+  border: 1px solid rgba(214, 222, 215, 0.98);
+  background: rgba(255, 255, 255, 0.92);
+  color: #1d2920;
+}
+
+.mission-control-live-reticle {
+  border-color: rgba(194, 203, 195, 0.98);
+  box-shadow: none;
+}
+
+.mission-control-live-reticle::before,
+.mission-control-live-reticle::after {
+  background: rgba(191, 199, 192, 0.92);
+}
+
+.mission-control-vehicle-svg {
+  width: min(38vw, 320px);
+  opacity: 0.82;
+  filter: drop-shadow(0 8px 18px rgba(17, 25, 21, 0.08));
+}
+
+.mission-control-hull-shell,
+.mission-control-hull-fin {
+  fill: rgba(255, 255, 255, 0.86);
+  stroke: rgba(32, 42, 35, 0.96);
+}
+
+.mission-control-vehicle-nodes [data-part] {
+  fill: rgba(174, 188, 177, 0.2);
+  stroke: rgba(104, 119, 107, 0.4);
+}
+
+.mission-control-vehicle-nodes [data-part].active {
+  fill: rgba(22, 160, 94, 0.92);
+  stroke: rgba(16, 124, 65, 0.98);
+  filter: drop-shadow(0 0 5px rgba(22, 160, 94, 0.18));
+}
+
+.mission-control-summary-block {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.mission-control-live-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mission-control-hero-card {
+  padding: 14px;
+  border-radius: 22px;
+}
+
+.mission-control-hero-value {
+  font-size: 28px;
+}
+
+.mission-control-hero-bar,
+.mission-control-subsystem-bar {
+  height: 6px;
+  background: rgba(219, 226, 220, 0.98);
+}
+
+.mission-control-hero-bar-fill,
+.mission-control-subsystem-bar-fill {
+  background: linear-gradient(90deg, rgba(16, 124, 65, 0.82), rgba(52, 168, 83, 0.92));
+  box-shadow: none;
+}
+
+.mission-control-subsystems {
+  display: grid;
+  gap: 10px;
+}
+
+.mission-control-alert-card {
+  padding: 14px;
+  border-radius: 22px;
+}
+
+.mission-control-alert-title {
+  font-size: 20px;
+}
+
+.mission-control-sequence-list,
+.mission-control-events-log {
+  max-height: none;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.mission-sequence-item {
+  padding: 12px;
+  border-radius: 18px;
+}
+
+.mission-sequence-marker {
+  width: 10px;
+  height: 10px;
+  box-shadow: none;
+}
+
+.mission-control-events-log {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  display: grid;
+  gap: 8px;
+}
+
+.mission-control-event-row {
+  grid-template-columns: 70px 40px minmax(0, 1fr);
+  padding: 11px 12px;
+  border-radius: 18px;
+}
+
+.mission-control-event-time,
+.mission-control-event-level,
+.mission-control-event-name,
+.mission-control-event-detail {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+.mission-control-event-level {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.mission-control-event-row.tone-critical .mission-control-event-level {
+  color: #c2412d;
+}
+
+.mission-control-event-row.tone-nominal .mission-control-event-level {
+  color: #107c41;
+}
+
+.mission-control-overview-grid {
+  display: none;
+}
+
+@media (max-width: 1420px) {
+  .mission-control-header-status,
+  .mission-control-command-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mission-control-stage {
+    grid-template-columns: 284px minmax(0, 1fr) 320px;
+  }
+
+  .mission-control-live-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1180px) {
+  .mission-control-screen {
+    overflow: auto;
+  }
+
+  .mission-control-shell {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .mission-control-stage {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .mission-control-column-rail,
+  .mission-control-column-main,
+  .mission-control-column-brief {
+    grid-template-rows: auto;
+  }
+
+  .mission-control-mission-picker,
+  .mission-control-fleet-cards,
+  .mission-control-sequence-list,
+  .mission-control-events-log {
+    overflow: visible;
+  }
+
+  .mission-control-live-viewport {
+    min-height: 420px;
+  }
+}
+
+@media (max-width: 880px) {
+  .mission-control-shell {
+    padding: 12px;
+  }
+
+  .mission-control-header-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .mission-control-header-status,
+  .mission-control-command-strip,
+  .mission-control-live-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .mission-control-back-button {
+    width: 100%;
+  }
+
+  .mission-control-live-viewport {
+    min-height: 280px;
+  }
+
+  .mission-control-view-buttons {
+    width: 100%;
+  }
+
+  .mission-control-view-button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .mission-control-event-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Mission Control alignment fixes */
+
+.mission-control-command-strip {
+  display: none !important;
+}
+
+.mission-control-stage {
+  align-items: stretch;
+}
+
+.mission-control-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 16px;
+}
+
+.mission-control-column > * {
+  grid-area: auto !important;
+}
+
+.mission-control-column-rail {
+  min-width: 0;
+}
+
+.mission-control-column-main {
+  min-width: 0;
+}
+
+.mission-control-column-brief {
+  min-width: 0;
+}
+
+.mission-control-assignment-block,
+.mission-control-fleet-block,
+.mission-control-view-block,
+.mission-control-summary-block,
+.mission-control-director-block,
+.mission-control-sequence-block,
+.mission-control-events-block {
+  min-height: 0;
+}
+
+.mission-control-assignment-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1.1 1 0;
+}
+
+.mission-control-fleet-block {
+  display: flex;
+  flex-direction: column;
+  flex: 0.9 1 0;
+}
+
+.mission-control-view-block {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 520px;
+}
+
+.mission-control-summary-block {
+  order: 2;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+.mission-control-director-block {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+.mission-control-sequence-block {
+  order: 2;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 220px;
+}
+
+.mission-control-events-block {
+  order: 3;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+}
+
+.mission-control-mission-picker,
+.mission-control-fleet,
+.mission-control-sequence-list,
+.mission-control-events-log,
+.mission-control-subsystems {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.mission-control-panel-header {
+  flex: 0 0 auto;
+}
+
+.mission-control-live-viewport {
+  flex: 1 1 auto;
+  min-height: 460px;
+}
+
+.mission-control-live-metrics {
+  align-items: stretch;
+}
+
+.mission-control-hero-card,
+.mission-control-alert-card,
+.mission-control-fleet-card,
+.mission-control-mission-card {
+  justify-content: start;
+}
+
+.mission-control-fleet-head {
+  flex: 0 0 auto;
+}
+
+.mission-control-header-status {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.mission-control-status-pill {
+  min-width: 0;
+}
+
+.mission-control-mission-summary-row .mission-control-status-pill {
+  min-width: 0;
+}
+
+.mission-control-mission-picker {
+  align-content: start;
+}
+
+.mission-control-subsystems {
+  align-content: start;
+}
+
+@media (max-width: 1420px) {
+  .mission-control-view-block {
+    min-height: 440px;
+  }
+
+  .mission-control-live-viewport {
+    min-height: 380px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .mission-control-command-strip {
+    display: none !important;
+  }
+
+  .mission-control-column {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mission-control-view-block {
+    min-height: 0;
+  }
+
+  .mission-control-live-viewport {
+    min-height: 360px;
+  }
+
+  .mission-control-events-block,
+  .mission-control-sequence-block,
+  .mission-control-assignment-block,
+  .mission-control-fleet-block {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 880px) {
+  .mission-control-header-status {
+    grid-template-columns: 1fr;
+  }
+
+  .mission-control-live-viewport {
+    min-height: 280px;
+  }
+
+  .mission-control-sequence-block {
+    flex-basis: auto;
+  }
+}

@@ -11,13 +11,24 @@ import {
 import {
   buildMoonGuidanceSourceModel,
   burnDurationForDeltaVSec,
-  estimateBPlaneErrorKm,
   propagateMoonGuidanceState,
 } from "./moonDynamicsModel.js";
+import { evaluateMoonDepartureCorridor } from "./moonDepartureCorridor.js";
 import {
   createMoonNavigationFilterState,
   updateMoonNavigationFilter,
 } from "./moonStateFilter.js";
+import {
+  getMoonClosedLoopSolveCadenceSec,
+  nominalTliDeltaVEstimateKmS,
+  nominalTransferTimeSec,
+  solveBestClosedLoopTransferSync,
+} from "./moonClosedLoopSolverCore.js";
+import {
+  canUseMoonClosedLoopSolveWorker,
+  consumeMoonClosedLoopTransferSolveResult,
+  requestMoonClosedLoopTransferSolve,
+} from "./moonClosedLoopSolveWorkerClient.js";
 
 const EARTH_MU_KM3_S2 = 398600.4418;
 const DEFAULT_MOON_RADIUS_KM = 1737.4;
@@ -26,14 +37,6 @@ const DEFAULT_EARTH_RADIUS_KM = 6371;
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : Number(fallback);
-}
-
-function cross(a, b) {
-  return {
-    x: ((Number(a?.y) || 0) * (Number(b?.z) || 0)) - ((Number(a?.z) || 0) * (Number(b?.y) || 0)),
-    y: ((Number(a?.z) || 0) * (Number(b?.x) || 0)) - ((Number(a?.x) || 0) * (Number(b?.z) || 0)),
-    z: ((Number(a?.x) || 0) * (Number(b?.y) || 0)) - ((Number(a?.y) || 0) * (Number(b?.x) || 0)),
-  };
 }
 
 function ensureMoonGncRuntime(moonRuntime) {
@@ -50,236 +53,39 @@ function ensureMoonGncRuntime(moonRuntime) {
       predictedPeriluneAltitudeKm: null,
       bPlaneErrorKm: null,
       deltaVNeedKmS: null,
+      departureSeedTrackAccepted: null,
+      departureSeedTrackPositionErrorKm: null,
+      departureSeedTrackVelocityErrorKmS: null,
+      departureSeedTrackLastEvalSec: null,
+      workerPending: false,
+      workerRequestId: null,
+      workerRequestedAtSec: null,
+      workerResult: null,
+      workerResponseReady: false,
+      workerError: "",
+      workerSolveReason: "",
+      workerSolvedAtSec: Number.NaN,
+      workerErrorBackoffUntilSec: null,
     };
   }
   return moonRuntime.gnc;
 }
 
-function basisFromPrimary(primary, up) {
-  const primaryDir = normalize(primary, { x: 0, y: 1, z: 0 });
-  const radialDir = normalize(up, { x: 0, y: 0, z: 1 });
-  let normalDir = normalize(cross(primaryDir, radialDir), { x: 1, y: 0, z: 0 });
-  if (length(normalDir) <= 1e-9) {
-    normalDir = { x: 1, y: 0, z: 0 };
+function storeClosedLoopSolveResult({
+  runtime = null,
+  solution = null,
+  nowSec = Number.NaN,
+  solveReason = "",
+} = {}) {
+  if (!runtime || typeof runtime !== "object") {
+    return;
   }
-  return { primaryDir, radialDir, normalDir };
-}
-
-function combineBasis({ primaryDir, radialDir, normalDir, primaryWeight, radialWeight, normalWeight }) {
-  return normalize(
-    add(
-      scale(primaryDir, primaryWeight),
-      add(scale(radialDir, radialWeight), scale(normalDir, normalWeight)),
-    ),
-    primaryDir,
+  runtime.solution = solution;
+  runtime.lastSolveSec = Number.isFinite(nowSec) ? nowSec : runtime.lastSolveSec;
+  runtime.lastSolveReason = String(
+    solveReason
+    || (solution ? "nbody-closed-loop-optimal" : "nbody-no-solution"),
   );
-}
-
-function nominalTliDeltaVEstimateKmS(shipEarthRadiusKm, moonEarthDistanceKm, earthMuKm3S2 = EARTH_MU_KM3_S2) {
-  const r1 = Math.max(6500, finiteNumber(shipEarthRadiusKm, 0));
-  const r2 = Math.max(r1 + 1, finiteNumber(moonEarthDistanceKm, 0));
-  if (!(r2 > r1) || !(earthMuKm3S2 > 0)) {
-    return 3.15;
-  }
-  const semiMajorKm = (r1 + r2) * 0.5;
-  const circularSpeed = Math.sqrt(earthMuKm3S2 / r1);
-  const transferSpeed = Math.sqrt(earthMuKm3S2 * ((2 / r1) - (1 / semiMajorKm)));
-  return Math.max(0.25, transferSpeed - circularSpeed);
-}
-
-function nominalTransferTimeSec(shipEarthRadiusKm, moonEarthDistanceKm, earthMuKm3S2 = EARTH_MU_KM3_S2) {
-  const r1 = Math.max(6500, finiteNumber(shipEarthRadiusKm, 0));
-  const r2 = Math.max(r1 + 1, finiteNumber(moonEarthDistanceKm, 0));
-  if (!(r2 > r1) || !(earthMuKm3S2 > 0)) {
-    return 72 * 3600;
-  }
-  const semiMajorKm = (r1 + r2) * 0.5;
-  return Math.PI * Math.sqrt((semiMajorKm ** 3) / earthMuKm3S2);
-}
-
-function closestTargetStateForBody(propagation, targetBodyId) {
-  if (targetBodyId === "earth") {
-    return propagation?.closestEarthState || null;
-  }
-  return propagation?.closestMoonState || null;
-}
-
-function minDistanceForBody(propagation, targetBodyId) {
-  if (targetBodyId === "earth") {
-    return propagation?.minEarthDistanceKm;
-  }
-  return propagation?.minMoonDistanceKm;
-}
-
-function minAltitudeForBody(propagation, targetBodyId) {
-  if (targetBodyId === "earth") {
-    return propagation?.minEarthAltitudeKm;
-  }
-  return propagation?.minMoonAltitudeKm;
-}
-
-function evaluateTransferCandidate({
-  initialState,
-  sources,
-  spacecraft,
-  burnDirection,
-  deltaVNeedKmS,
-  throttle,
-  accelAtThrottle1KmS2,
-  predictDurationSec,
-  stepSec,
-  targetPositionKm,
-  targetVelocityKmS,
-  targetBodyId,
-  targetBodyRadiusKm,
-  targetPeriluneAltitudeKm,
-  safetyBodyId,
-  safetyMinAltitudeKm,
-}) {
-  const burnDurationSec = burnDurationForDeltaVSec(deltaVNeedKmS, accelAtThrottle1KmS2, throttle);
-  const propagation = propagateMoonGuidanceState({
-    initialState,
-    durationSec: predictDurationSec,
-    stepSec,
-    sources,
-    spacecraft,
-    burnCommand: {
-      direction: burnDirection,
-      throttle,
-      accelAtThrottle1KmS2,
-      burnDurationSec,
-    },
-  });
-  if (!propagation) {
-    return null;
-  }
-  const targetState = closestTargetStateForBody(propagation, targetBodyId);
-  const predictedMissDistanceKm = Number.isFinite(minDistanceForBody(propagation, targetBodyId))
-    ? minDistanceForBody(propagation, targetBodyId)
-    : Number.POSITIVE_INFINITY;
-  const predictedPeriluneAltitudeKm = Number.isFinite(minAltitudeForBody(propagation, targetBodyId))
-    ? minAltitudeForBody(propagation, targetBodyId)
-    : Number.POSITIVE_INFINITY;
-  const closestTargetRelPos = targetState && finiteVector(targetPositionKm)
-    ? subtract(targetState.positionKm, targetPositionKm)
-    : null;
-  const closestTargetRelVel = targetState && finiteVector(targetVelocityKmS)
-    ? subtract(targetState.velocityKmS, targetVelocityKmS)
-    : null;
-  const bPlaneErrorKm = estimateBPlaneErrorKm({
-    relativePositionKm: closestTargetRelPos,
-    relativeVelocityKmS: closestTargetRelVel,
-    targetPeriluneAltitudeKm,
-    bodyRadiusKm: targetBodyRadiusKm,
-  });
-  const closestTargetRangeKm = finiteVector(closestTargetRelPos) ? length(closestTargetRelPos) : Number.NaN;
-  const closestClosingSpeedKmS = (
-    finiteVector(closestTargetRelPos)
-    && finiteVector(closestTargetRelVel)
-    && closestTargetRangeKm > 1e-9
-  )
-    ? -dot(closestTargetRelVel, scale(closestTargetRelPos, 1 / closestTargetRangeKm))
-    : Number.NaN;
-  const safetyAltitudeKm = Number.isFinite(minAltitudeForBody(propagation, safetyBodyId))
-    ? minAltitudeForBody(propagation, safetyBodyId)
-    : Number.NaN;
-  const safetyRiskKm = Number.isFinite(safetyAltitudeKm)
-    ? Math.max(0, safetyMinAltitudeKm - safetyAltitudeKm)
-    : safetyMinAltitudeKm;
-  const closingPenalty = Number.isFinite(closestClosingSpeedKmS)
-    ? Math.max(0, -closestClosingSpeedKmS) * 10_000
-    : 5_000;
-  const cost = (
-    predictedMissDistanceKm
-    + (Math.abs(predictedPeriluneAltitudeKm - targetPeriluneAltitudeKm) * 0.8)
-    + ((Number.isFinite(bPlaneErrorKm) ? bPlaneErrorKm : predictedMissDistanceKm) * 0.55)
-    + (safetyRiskKm * 8_000)
-    + closingPenalty
-    + (deltaVNeedKmS * 600)
-  );
-  return {
-    cost,
-    throttle,
-    deltaVNeedKmS,
-    burnDurationSec,
-    burnDirection,
-    propagation,
-    predictedMissDistanceKm,
-    predictedPeriluneAltitudeKm,
-    bPlaneErrorKm,
-    closestClosingSpeedKmS,
-  };
-}
-
-function enumerateTransferCandidates({
-  initialState,
-  sources,
-  spacecraft,
-  primaryDirection,
-  up,
-  nominalDeltaVKmS,
-  accelAtThrottle1KmS2,
-  predictDurationSec,
-  plannerConfig,
-  targetPositionKm,
-  targetVelocityKmS,
-  targetBodyId,
-  targetBodyRadiusKm,
-  targetPeriluneAltitudeKm,
-  safetyBodyId,
-  safetyMinAltitudeKm,
-  phase,
-}) {
-  const { primaryDir, radialDir, normalDir } = basisFromPrimary(primaryDirection, up);
-  const dvOffsets = phase === "tli_burn"
-    ? [-0.45, -0.15, 0, 0.18, 0.42]
-    : [-0.06, -0.02, 0, 0.02, 0.06];
-  const radialOffsets = phase === "tli_burn" ? [-0.12, 0, 0.12] : [-0.05, 0, 0.05];
-  const normalOffsets = phase === "tli_burn" ? [-0.05, 0, 0.05] : [-0.03, 0, 0.03];
-  const stepSec = Math.max(30, finiteNumber(plannerConfig.moonClosedLoopPropagationStepSec, 600));
-  let best = null;
-  for (let dvIndex = 0; dvIndex < dvOffsets.length; dvIndex += 1) {
-    const dvNeedKmS = Math.max(0.002, nominalDeltaVKmS + dvOffsets[dvIndex]);
-    for (let radialIndex = 0; radialIndex < radialOffsets.length; radialIndex += 1) {
-      for (let normalIndex = 0; normalIndex < normalOffsets.length; normalIndex += 1) {
-        const burnDirection = combineBasis({
-          primaryDir,
-          radialDir,
-          normalDir,
-          primaryWeight: 1,
-          radialWeight: radialOffsets[radialIndex],
-          normalWeight: normalOffsets[normalIndex],
-        });
-        const throttle = clamp(
-          dvNeedKmS / Math.max(0.02, finiteNumber(plannerConfig.moonClosedLoopThrottleDvScaleKmS, 1.15)),
-          finiteNumber(plannerConfig.moonClosedLoopThrottleMin, 0.08),
-          finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
-        );
-        const candidate = evaluateTransferCandidate({
-          initialState,
-          sources,
-          spacecraft,
-          burnDirection,
-          deltaVNeedKmS: dvNeedKmS,
-          throttle,
-          accelAtThrottle1KmS2,
-          predictDurationSec,
-          stepSec,
-          targetPositionKm,
-          targetVelocityKmS,
-          targetBodyId,
-          targetBodyRadiusKm,
-          targetPeriluneAltitudeKm,
-          safetyBodyId,
-          safetyMinAltitudeKm,
-        });
-        if (candidate && (!best || candidate.cost < best.cost)) {
-          best = candidate;
-        }
-      }
-    }
-  }
-  return best;
 }
 
 function solveBestClosedLoopTransfer({
@@ -304,52 +110,202 @@ function solveBestClosedLoopTransfer({
   nowSec,
   runtime,
 }) {
-  const cadenceSec = Math.max(20, finiteNumber(plannerConfig.moonClosedLoopSolveCadenceSec, 120));
+  const cadenceSec = getMoonClosedLoopSolveCadenceSec(plannerConfig);
+  let solvedThisStep = false;
+  const workerResponse = runtime ? consumeMoonClosedLoopTransferSolveResult(runtime) : null;
+  if (workerResponse) {
+    if (!workerResponse.error) {
+      storeClosedLoopSolveResult({
+        runtime,
+        solution: workerResponse.solution,
+        nowSec: Number.isFinite(Number(workerResponse.solvedAtSec))
+          ? Number(workerResponse.solvedAtSec)
+          : nowSec,
+        solveReason: workerResponse.solveReason,
+      });
+      runtime.workerErrorBackoffUntilSec = null;
+      solvedThisStep = true;
+    } else if (workerResponse.error) {
+      runtime.lastSolveReason = `nbody-worker-error:${workerResponse.error}`;
+      runtime.workerErrorBackoffUntilSec = Number.isFinite(nowSec)
+        ? (nowSec + Math.max(60, cadenceSec))
+        : runtime.workerErrorBackoffUntilSec;
+    }
+  }
   const lastSolveSec = finiteNumber(runtime?.lastSolveSec, Number.NaN);
   const solveDue = !runtime?.solution || !Number.isFinite(lastSolveSec) || !Number.isFinite(nowSec) || ((nowSec - lastSolveSec) >= cadenceSec);
   if (!solveDue && runtime?.solution) {
-    return { solution: runtime.solution, solvedThisStep: false };
+    return { solution: runtime.solution, solvedThisStep };
   }
 
-  const shipEarthRadiusKm = length(initialState.positionKm);
-  const accelAtThrottle1KmS2 = Math.max(0.0002, finiteNumber(plannerConfig.engineAccelAtThrottle1KmS2, 0.0055));
-  let best = null;
-  const normalizedPrimaryDirection = normalize(primaryDirection, tangent);
-  const normalizedNominalDeltaV = Math.max(0.002, finiteNumber(nominalDeltaVKmS, 0.15));
-  const durations = Array.isArray(predictDurationsSec) && predictDurationsSec.length > 0
-    ? predictDurationsSec
-    : [nominalTransferTimeSec(shipEarthRadiusKm, targetDistanceKm, EARTH_MU_KM3_S2)];
-  for (let i = 0; i < durations.length; i += 1) {
-    const predictDurationSec = Math.max(3 * 3600, finiteNumber(durations[i], durations[0]));
-    const candidate = enumerateTransferCandidates({
-      initialState,
-      sources,
-      spacecraft,
-      primaryDirection: normalizedPrimaryDirection,
-      up,
-      nominalDeltaVKmS: normalizedNominalDeltaV,
-      accelAtThrottle1KmS2,
-      predictDurationSec,
-      plannerConfig,
-      targetPositionKm,
-      targetVelocityKmS,
-      targetBodyId,
-      targetBodyRadiusKm,
-      targetPeriluneAltitudeKm,
-      safetyBodyId,
-      safetyMinAltitudeKm,
-      phase,
+  const workerBackoffActive = (
+    Number.isFinite(Number(runtime?.workerErrorBackoffUntilSec))
+    && Number.isFinite(nowSec)
+    && nowSec < Number(runtime.workerErrorBackoffUntilSec)
+  );
+  if (runtime?.solution && runtime?.workerPending) {
+    return { solution: runtime.solution, solvedThisStep };
+  }
+  if (
+    runtime?.solution
+    && !runtime?.workerPending
+    && !workerBackoffActive
+    && canUseMoonClosedLoopSolveWorker()
+  ) {
+    const workerRequested = requestMoonClosedLoopTransferSolve({
+      runtime,
+      payload: {
+        initialState,
+        sources,
+        spacecraft,
+        tangent,
+        up,
+        primaryDirection,
+        targetPositionKm,
+        targetVelocityKmS,
+        targetBodyId,
+        targetBodyRadiusKm,
+        targetDistanceKm,
+        targetPeriluneAltitudeKm,
+        safetyBodyId,
+        safetyMinAltitudeKm,
+        nominalDeltaVKmS,
+        predictDurationsSec,
+        plannerConfig,
+        phase,
+        nowSec,
+      },
     });
-    if (candidate && (!best || candidate.cost < best.cost)) {
-      best = candidate;
+    if (workerRequested) {
+      return { solution: runtime.solution, solvedThisStep };
     }
   }
-  if (runtime) {
-    runtime.solution = best;
-    runtime.lastSolveSec = Number.isFinite(nowSec) ? nowSec : runtime.lastSolveSec;
-    runtime.lastSolveReason = best ? "nbody-closed-loop-optimal" : "nbody-no-solution";
-  }
+
+  const best = solveBestClosedLoopTransferSync({
+    initialState,
+    sources,
+    spacecraft,
+    tangent,
+    up,
+    primaryDirection,
+    targetPositionKm,
+    targetVelocityKmS,
+    targetBodyId,
+    targetBodyRadiusKm,
+    targetDistanceKm,
+    targetPeriluneAltitudeKm,
+    safetyBodyId,
+    safetyMinAltitudeKm,
+    nominalDeltaVKmS,
+    predictDurationsSec,
+    plannerConfig,
+    phase,
+  });
+  storeClosedLoopSolveResult({
+    runtime,
+    solution: best,
+    nowSec,
+    solveReason: best ? "nbody-closed-loop-optimal" : "nbody-no-solution",
+  });
   return { solution: best, solvedThisStep: true };
+}
+
+function departureCorridorCompositeScore({
+  predictedMissDistanceKm,
+  predictedPeriluneAltitudeKm,
+  bPlaneErrorKm,
+  targetPeriluneAltitudeKm,
+}) {
+  const missKm = Number.isFinite(Number(predictedMissDistanceKm))
+    ? Math.max(0, Number(predictedMissDistanceKm))
+    : 1e12;
+  const periluneKm = Number.isFinite(Number(predictedPeriluneAltitudeKm))
+    ? Math.max(0, Number(predictedPeriluneAltitudeKm))
+    : 1e12;
+  const bPlaneKm = Number.isFinite(Number(bPlaneErrorKm))
+    ? Math.max(0, Number(bPlaneErrorKm))
+    : missKm;
+  const targetPeriluneKm = Math.max(20, finiteNumber(targetPeriluneAltitudeKm, 120));
+  return (
+    missKm
+    + (Math.abs(periluneKm - targetPeriluneKm) * 0.8)
+    + (bPlaneKm * 0.55)
+  );
+}
+
+function evaluateDepartureSeedTrack({
+  seedPositionKm = null,
+  seedVelocityKmS = null,
+  currentPositionKm = null,
+  currentVelocityKmS = null,
+  sources = null,
+  spacecraft = null,
+  plannerConfig = {},
+  departurePlanDirection = null,
+  departurePlanThrottle = Number.NaN,
+  departurePlanBurnDurationSec = Number.NaN,
+  engineAccelAtThrottle1KmS2 = Number.NaN,
+  missionPhaseElapsedSec = Number.NaN,
+}) {
+  if (
+    !finiteVector(seedPositionKm)
+    || !finiteVector(seedVelocityKmS)
+    || !finiteVector(currentPositionKm)
+    || !finiteVector(currentVelocityKmS)
+    || !finiteVector(departurePlanDirection)
+    || !Number.isFinite(departurePlanThrottle)
+    || !Number.isFinite(departurePlanBurnDurationSec)
+    || !Number.isFinite(engineAccelAtThrottle1KmS2)
+    || !Number.isFinite(missionPhaseElapsedSec)
+    || !(missionPhaseElapsedSec >= 0)
+  ) {
+    return {
+      accepted: false,
+      positionErrorKm: Number.NaN,
+      velocityErrorKmS: Number.NaN,
+    };
+  }
+  const trackingPropagation = propagateMoonGuidanceState({
+    initialState: {
+      positionKm: seedPositionKm,
+      velocityKmS: seedVelocityKmS,
+    },
+    durationSec: missionPhaseElapsedSec,
+    stepSec: Math.max(10, Math.min(60, finiteNumber(plannerConfig.moonClosedLoopPropagationStepSec, 30))),
+    sources,
+    spacecraft,
+    burnCommand: {
+      direction: departurePlanDirection,
+      throttle: departurePlanThrottle,
+      accelAtThrottle1KmS2: engineAccelAtThrottle1KmS2,
+      burnDurationSec: departurePlanBurnDurationSec,
+    },
+  });
+  const trackedState = trackingPropagation?.finalState || null;
+  const positionErrorKm = trackedState?.positionKm
+    ? length(subtract(currentPositionKm, trackedState.positionKm))
+    : Number.NaN;
+  const velocityErrorKmS = trackedState?.velocityKmS
+    ? length(subtract(currentVelocityKmS, trackedState.velocityKmS))
+    : Number.NaN;
+  const positionToleranceKm = Math.max(
+    40,
+    Math.min(250, missionPhaseElapsedSec * 0.45),
+  );
+  const velocityToleranceKmS = Math.max(
+    0.18,
+    Math.min(0.45, 0.12 + (missionPhaseElapsedSec * 0.0008)),
+  );
+  return {
+    accepted: (
+      Number.isFinite(positionErrorKm)
+      && Number.isFinite(velocityErrorKmS)
+      && positionErrorKm <= positionToleranceKm
+      && velocityErrorKmS <= velocityToleranceKmS
+    ),
+    positionErrorKm,
+    velocityErrorKmS,
+  };
 }
 
 function solveOrbitInsertionBurn({
@@ -520,15 +476,28 @@ export function planMoonClosedLoopMissionCommand({
   const departurePlanThrottle = Number(metrics.departurePlanThrottle);
   const departurePlanBurnDurationSec = Number(metrics.departurePlanBurnDurationSec);
   const departurePlanCommitWindowSec = Math.max(1, finiteNumber(metrics.departurePlanCommitWindowSec, 0));
+  const departureSeedPositionKm = finiteVector(targetVectors.departureSeedPositionKm)
+    ? targetVectors.departureSeedPositionKm
+    : null;
+  const departureSeedVelocityKmS = finiteVector(targetVectors.departureSeedVelocityKmS)
+    ? targetVectors.departureSeedVelocityKmS
+    : null;
   const departurePlanPredictedMissDistanceKm = Number(metrics.departurePlanPredictedMissDistanceKm);
   const departurePlanPredictedPeriluneAltitudeKm = Number(metrics.departurePlanPredictedPeriluneAltitudeKm);
   const departurePlanBPlaneErrorKm = Number(metrics.departurePlanBPlaneErrorKm);
   const departurePlanGeometryScore = Number(metrics.departurePlanGeometryScore);
   const departurePlanAlignNow = Number(metrics.departurePlanAlignNow);
+  const departurePlanCorridor = evaluateMoonDepartureCorridor({
+    predictedMissDistanceKm: departurePlanPredictedMissDistanceKm,
+    predictedPeriluneAltitudeKm: departurePlanPredictedPeriluneAltitudeKm,
+    bPlaneErrorKm: departurePlanBPlaneErrorKm,
+    plannerConfig,
+  });
   const departurePlanGeometryAcceptable = !Number.isFinite(departurePlanGeometryScore)
     || departurePlanGeometryScore >= 0.55;
   const departurePlanAlignmentAcceptable = !Number.isFinite(departurePlanAlignNow)
     || departurePlanAlignNow >= 0.7;
+  const departurePlanCorridorAcceptable = departurePlanCorridor.accepted;
   const departureCommitActive = (
     phaseName === "tli_burn"
     && Boolean(metrics.departurePlanReady)
@@ -538,22 +507,128 @@ export function planMoonClosedLoopMissionCommand({
     && missionPhaseElapsedSec <= departurePlanCommitWindowSec
     && departurePlanGeometryAcceptable
     && departurePlanAlignmentAcceptable
+    && departurePlanCorridorAcceptable
   );
   const nowSec = Number(timestampSec);
+  const departurePlanParityWindowSec = Math.max(
+    Number.isFinite(departurePlanBurnDurationSec)
+      ? departurePlanBurnDurationSec + 60
+      : (departurePlanCommitWindowSec + 40),
+    120,
+  );
+  let departureSeedTrack = {
+    accepted: true,
+    positionErrorKm: 0,
+    velocityErrorKmS: 0,
+  };
+  if (phaseName === "tli_burn" && missionPhaseElapsedSec > departurePlanCommitWindowSec) {
+    const trackCadenceSec = Math.max(
+      10,
+      Math.min(30, finiteNumber(plannerConfig.moonClosedLoopSolveCadenceSec, 20)),
+    );
+    const canReuseSeedTrack = (
+      Number.isFinite(nowSec)
+      && Number.isFinite(gncRuntime?.departureSeedTrackLastEvalSec)
+      && ((nowSec - gncRuntime.departureSeedTrackLastEvalSec) < trackCadenceSec)
+      && typeof gncRuntime?.departureSeedTrackAccepted === "boolean"
+    );
+    if (canReuseSeedTrack) {
+      departureSeedTrack = {
+        accepted: gncRuntime.departureSeedTrackAccepted,
+        positionErrorKm: gncRuntime.departureSeedTrackPositionErrorKm,
+        velocityErrorKmS: gncRuntime.departureSeedTrackVelocityErrorKmS,
+      };
+    } else {
+      departureSeedTrack = evaluateDepartureSeedTrack({
+        seedPositionKm: departureSeedPositionKm,
+        seedVelocityKmS: departureSeedVelocityKmS,
+        currentPositionKm: initialState.positionKm,
+        currentVelocityKmS: initialState.velocityKmS,
+        sources,
+        spacecraft,
+        plannerConfig,
+        departurePlanDirection,
+        departurePlanThrottle,
+        departurePlanBurnDurationSec,
+        engineAccelAtThrottle1KmS2,
+        missionPhaseElapsedSec,
+      });
+      gncRuntime.departureSeedTrackAccepted = departureSeedTrack.accepted;
+      gncRuntime.departureSeedTrackPositionErrorKm = departureSeedTrack.positionErrorKm;
+      gncRuntime.departureSeedTrackVelocityErrorKmS = departureSeedTrack.velocityErrorKmS;
+      gncRuntime.departureSeedTrackLastEvalSec = Number.isFinite(nowSec) ? nowSec : null;
+    }
+  }
+  const departurePlanParityWindowActive = (
+    phaseName === "tli_burn"
+    && departurePlanCorridorAcceptable
+    && finiteVector(departurePlanDirection)
+    && Number.isFinite(missionPhaseElapsedSec)
+    && missionPhaseElapsedSec <= departurePlanParityWindowSec
+    && departureSeedTrack.accepted
+  );
+  const departureSeedTrackHardPositionToleranceKm = Math.max(
+    1_500,
+    Math.min(4_500, finiteNumber(missionPhaseElapsedSec, 0) * 6),
+  );
+  const departureSeedTrackHardVelocityToleranceKmS = Math.max(
+    1.0,
+    Math.min(2.2, 0.55 + (finiteNumber(missionPhaseElapsedSec, 0) * 0.002)),
+  );
+  const departureSeedTrackCatastrophic = (
+    Number.isFinite(departureSeedTrack.positionErrorKm)
+    && Number.isFinite(departureSeedTrack.velocityErrorKmS)
+    && (
+      departureSeedTrack.positionErrorKm > departureSeedTrackHardPositionToleranceKm
+      || departureSeedTrack.velocityErrorKmS > departureSeedTrackHardVelocityToleranceKmS
+    )
+  );
+  const solvePlannerConfig = departurePlanParityWindowActive
+    ? {
+      ...plannerConfig,
+      moonClosedLoopSolveCadenceSec: Math.min(
+        20,
+        Math.max(20, finiteNumber(plannerConfig.moonClosedLoopSolveCadenceSec, 120)),
+      ),
+      engineAccelAtThrottle1KmS2,
+    }
+    : {
+      ...plannerConfig,
+      engineAccelAtThrottle1KmS2,
+    };
 
   if (phaseName === "tli_burn" || phaseName === "coast_to_moon") {
     const shipEarthRadiusKm = length(initialState.positionKm);
     const nominalTransferSec = nominalTransferTimeSec(shipEarthRadiusKm, moonDistanceKm, EARTH_MU_KM3_S2);
     const nominalDeltaVKmS = nominalTliDeltaVEstimateKmS(shipEarthRadiusKm, moonDistanceKm, EARTH_MU_KM3_S2);
+    const nominalPrimaryDirection = phaseName === "tli_burn"
+      ? normalize(add(scale(tangent, 0.8), scale(toMoon, 0.2)), tangent)
+      : normalize(add(scale(toMoon, 0.6), scale(tangent, 0.4)), toMoon);
+    const solvePrimaryDirection = (
+      phaseName === "tli_burn"
+      && finiteVector(departurePlanDirection)
+    )
+      ? normalize(
+        add(
+          scale(
+            departurePlanDirection,
+            departureCommitActive ? 0.92 : 0.72,
+          ),
+          scale(
+            nominalPrimaryDirection,
+            departureCommitActive ? 0.08 : 0.28,
+          ),
+        ),
+        departurePlanDirection,
+      )
+      : nominalPrimaryDirection;
     const solve = solveBestClosedLoopTransfer({
       initialState,
       sources,
       spacecraft,
       tangent,
       up,
-      primaryDirection: phaseName === "tli_burn"
-        ? normalize(add(scale(tangent, 0.8), scale(toMoon, 0.2)), tangent)
-        : normalize(add(scale(toMoon, 0.6), scale(tangent, 0.4)), toMoon),
+      primaryDirection: solvePrimaryDirection,
       targetPositionKm: sources.moon.positionKm,
       targetVelocityKmS: sources.moon.velocityKmS,
       targetBodyId: "moon",
@@ -568,10 +643,7 @@ export function planMoonClosedLoopMissionCommand({
       predictDurationsSec: phaseName === "tli_burn"
         ? [nominalTransferSec * 0.85, nominalTransferSec, nominalTransferSec * 1.15]
         : [Math.max(6 * 3600, nominalTransferSec * 0.25), Math.max(10 * 3600, nominalTransferSec * 0.4)],
-      plannerConfig: {
-        ...plannerConfig,
-        engineAccelAtThrottle1KmS2,
-      },
+      plannerConfig: solvePlannerConfig,
       phase: phaseName,
       nowSec,
       runtime: gncRuntime,
@@ -596,6 +668,46 @@ export function planMoonClosedLoopMissionCommand({
         },
       };
     }
+    const bestDiagnosticsScore = departureCorridorCompositeScore({
+      predictedMissDistanceKm: best.predictedMissDistanceKm,
+      predictedPeriluneAltitudeKm: best.predictedPeriluneAltitudeKm,
+      bPlaneErrorKm: best.bPlaneErrorKm,
+      targetPeriluneAltitudeKm: Math.max(20, finiteNumber(plannerConfig.moonTargetPeriluneAltitudeKm, 120)),
+    });
+    const departurePlanDiagnosticsScore = departureCorridorCompositeScore({
+      predictedMissDistanceKm: departurePlanPredictedMissDistanceKm,
+      predictedPeriluneAltitudeKm: departurePlanPredictedPeriluneAltitudeKm,
+      bPlaneErrorKm: departurePlanBPlaneErrorKm,
+      targetPeriluneAltitudeKm: Math.max(20, finiteNumber(plannerConfig.moonTargetPeriluneAltitudeKm, 120)),
+    });
+    const departurePlanRescueActive = (
+      phaseName === "tli_burn"
+      && departurePlanCorridorAcceptable
+      && finiteVector(departurePlanDirection)
+      && Number.isFinite(missionPhaseElapsedSec)
+      && Number.isFinite(departurePlanBurnDurationSec)
+      && missionPhaseElapsedSec <= (departurePlanBurnDurationSec + 30)
+      && !departureSeedTrackCatastrophic
+      && best.predictedMissDistanceKm > Math.max(
+        missGateKm * 2.1,
+        Math.max(40_000, departurePlanPredictedMissDistanceKm * 8),
+      )
+      && best.predictedPeriluneAltitudeKm > Math.max(
+        20_000,
+        departurePlanPredictedPeriluneAltitudeKm + 50_000,
+      )
+      && best.bPlaneErrorKm > Math.max(
+        Math.max(100, finiteNumber(plannerConfig.moonBPlaneToleranceKm, 6_000)) * 4,
+        Math.max(20_000, departurePlanBPlaneErrorKm * 8),
+      )
+    );
+    const departurePlanDominates = (
+      (
+        departurePlanParityWindowActive
+        && departurePlanDiagnosticsScore <= (bestDiagnosticsScore * 0.55)
+      )
+      || departurePlanRescueActive
+    );
     const missFarFromGate = best.predictedMissDistanceKm > (missGateKm * 2.1);
     const movingAwayFromMoon = moonClosingSpeedKmS < -0.02;
     const missDiverging = missTrendKmS > 0.08;
@@ -603,23 +715,23 @@ export function planMoonClosedLoopMissionCommand({
       && missFarFromGate
       && (movingAwayFromMoon || missDiverging)
       && !nearPeriapsisBurnWindow
-      && !departureCommitActive;
+      && !departureCommitActive
+      && !departurePlanDominates;
+    const useDeparturePlanDiagnostics = (
+      (departureCommitActive || departurePlanDominates)
+      && departurePlanCorridorAcceptable
+      && departurePlanDiagnosticsScore <= bestDiagnosticsScore
+    );
 
-    const effectivePredictedMissDistanceKm = (
-      departureCommitActive && Number.isFinite(departurePlanPredictedMissDistanceKm)
-        ? departurePlanPredictedMissDistanceKm
-        : best.predictedMissDistanceKm
-    );
-    const effectivePredictedPeriluneAltitudeKm = (
-      departureCommitActive && Number.isFinite(departurePlanPredictedPeriluneAltitudeKm)
-        ? departurePlanPredictedPeriluneAltitudeKm
-        : best.predictedPeriluneAltitudeKm
-    );
-    const effectiveBPlaneErrorKm = (
-      departureCommitActive && Number.isFinite(departurePlanBPlaneErrorKm)
-        ? departurePlanBPlaneErrorKm
-        : best.bPlaneErrorKm
-    );
+    const effectivePredictedMissDistanceKm = useDeparturePlanDiagnostics
+      ? departurePlanPredictedMissDistanceKm
+      : best.predictedMissDistanceKm;
+    const effectivePredictedPeriluneAltitudeKm = useDeparturePlanDiagnostics
+      ? departurePlanPredictedPeriluneAltitudeKm
+      : best.predictedPeriluneAltitudeKm;
+    const effectiveBPlaneErrorKm = useDeparturePlanDiagnostics
+      ? departurePlanBPlaneErrorKm
+      : best.bPlaneErrorKm;
     const effectiveBurnDurationSec = (
       departureCommitActive && Number.isFinite(departurePlanBurnDurationSec)
         ? departurePlanBurnDurationSec
@@ -643,7 +755,7 @@ export function planMoonClosedLoopMissionCommand({
         ? "navsys:gnc-lambert-tli-burn"
         : "navsys:gnc-lambert-midcourse-correction",
     };
-    if (departureCommitActive) {
+    if (departureCommitActive || departurePlanDominates) {
       const blendedDepartureDirection = finiteVector(best?.burnDirection)
         ? normalize(
           add(
@@ -661,7 +773,9 @@ export function planMoonClosedLoopMissionCommand({
           finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
         ),
         direction: blendedDepartureDirection,
-        mode: "navsys:gnc-lambert-tli-burn+departure-commit+diffcorr",
+        mode: departureCommitActive
+          ? "navsys:gnc-lambert-tli-burn+departure-commit+diffcorr"
+          : "navsys:gnc-lambert-tli-burn+seed-lock+diffcorr",
       };
     } else if (tliReacquireHold) {
       command = {
@@ -742,6 +856,16 @@ export function planMoonClosedLoopMissionCommand({
         tliReacquireHold,
         nearPeriapsisBurnWindow,
         departureCommitActive,
+        departureSeedTrackAccepted: departureSeedTrack.accepted,
+        departureSeedTrackPositionErrorKm: Number.isFinite(departureSeedTrack.positionErrorKm)
+          ? departureSeedTrack.positionErrorKm
+          : null,
+        departureSeedTrackVelocityErrorKmS: Number.isFinite(departureSeedTrack.velocityErrorKmS)
+          ? departureSeedTrack.velocityErrorKmS
+          : null,
+        departureSeedTrackCatastrophic,
+        departurePlanCorridorAccepted: departurePlanCorridorAcceptable,
+        departurePlanRescueActive,
         solveReady: true,
       },
     };

@@ -15,6 +15,9 @@ const MOON_SURVIVAL_PHASES = new Set([
 
 const MOON_SURVIVAL_HARD_MIN_PERIAPSIS_KM = 130;
 const MOON_SURVIVAL_SOFT_MIN_PERIAPSIS_KM = 145;
+const MOON_SURVIVAL_RELEASE_PERIAPSIS_KM = 152;
+const MOON_SURVIVAL_RELEASE_ALTITUDE_KM = 138;
+const MOON_SURVIVAL_RELEASE_DESCENT_KM_S = -0.0002;
 const MOON_SURVIVAL_SOFT_DESCENT_KM_S = -0.0014;
 const MOON_SURVIVAL_EMERGENCY_ALTITUDE_KM = 125;
 const MOON_SURVIVAL_THROTTLE_BASE = 0.24;
@@ -35,6 +38,7 @@ export function computeMoonSurvivalRecoveryOverride({
   prograde,
   up,
   availablePropellantKg,
+  recoveryWasActive = false,
   reasonPrefix = "",
 } = {}) {
   if (!MOON_SURVIVAL_PHASES.has(String(missionPhase || "").trim().toLowerCase())) {
@@ -59,8 +63,16 @@ export function computeMoonSurvivalRecoveryOverride({
     && periapsis < MOON_SURVIVAL_SOFT_MIN_PERIAPSIS_KM
     && radial < MOON_SURVIVAL_SOFT_DESCENT_KM_S
   );
+  const releaseReady = (
+    Number.isFinite(periapsis)
+    && periapsis >= MOON_SURVIVAL_RELEASE_PERIAPSIS_KM
+    && Number.isFinite(altitude)
+    && altitude >= MOON_SURVIVAL_RELEASE_ALTITUDE_KM
+    && radial >= MOON_SURVIVAL_RELEASE_DESCENT_KM_S
+  );
+  const latchedRecoveryNeeded = Boolean(recoveryWasActive) && !releaseReady;
 
-  if (!emergencyRecoveryNeeded && !hardRecoveryNeeded && !softRecoveryNeeded) {
+  if (!emergencyRecoveryNeeded && !hardRecoveryNeeded && !softRecoveryNeeded && !latchedRecoveryNeeded) {
     return null;
   }
 
@@ -100,6 +112,7 @@ export function computeMoonSurvivalRecoveryOverride({
       emergencyRecoveryNeeded,
       hardRecoveryNeeded,
       softRecoveryNeeded,
+      latchedRecoveryNeeded,
       periapsisKm: Number.isFinite(periapsis) ? periapsis : null,
       altitudeKm: Number.isFinite(altitude) ? altitude : null,
       radialSpeedKmS: Number.isFinite(radial) ? radial : null,

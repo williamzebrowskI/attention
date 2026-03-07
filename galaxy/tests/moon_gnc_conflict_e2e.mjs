@@ -389,6 +389,108 @@ function testDepartureCommitOverridesEarlyTliHold() {
   );
 }
 
+function testDepartureCommitUsesLiveDiagnosticsNotSeedTelemetry() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "tli_burn",
+    plannerRuntime: runtime,
+    timestampSec: 22,
+    metrics: {
+      missionPhaseElapsedSec: 22,
+      moonDistanceKm: 391956.5,
+      moonClosingSpeedKmS: 7.5517,
+      moonProjectedMissTrendKmS: 466.332,
+      timeToPeriapsisSec: 1200,
+      departurePlanReady: true,
+      departurePlanThrottle: 0.78,
+      departurePlanBurnDurationSec: 1200,
+      departurePlanCommitWindowSec: 180,
+      departurePlanPredictedMissDistanceKm: 148079302,
+      departurePlanPredictedPeriluneAltitudeKm: 148077564.6,
+      departurePlanBPlaneErrorKm: 145677093.2,
+      departurePlanGeometryScore: 0.956,
+      departurePlanAlignNow: 0.977,
+      earthDistanceKm: 6555.84,
+      periapsisKm: 183.58,
+      stageMassKg: 4_945_637,
+      engineAccelAtThrottle1KmS2: 0.0159,
+    },
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.19, y: 0.98, z: 0.02 },
+      shipEarthPositionKm: { x: 6555.84, y: 0, z: 0 },
+      shipEarthVelocityKmS: { x: 0, y: 7.8564, z: 0 },
+      moonEarthPositionKm: { x: 391956.5, y: 0, z: 0 },
+      moonEarthVelocityKmS: { x: 0, y: 1.022, z: 0 },
+      sunEarthPositionKm: { x: 149597870, y: 0, z: 0 },
+      sunEarthVelocityKmS: { x: 0, y: 29.78, z: 0 },
+    },
+  });
+  assert(result, "departure_commit_live_diag: missing result");
+  assert(
+    Number(result.diagnostics?.missDistanceKm) < 2_000_000,
+    `departure_commit_live_diag: miss should use live bounded solve, got ${result.diagnostics?.missDistanceKm}`,
+  );
+  assert(
+    Number(result.diagnostics?.periluneEstimateKm) < 2_000_000,
+    `departure_commit_live_diag: perilune should use live bounded solve, got ${result.diagnostics?.periluneEstimateKm}`,
+  );
+  assert(
+    Number(result.diagnostics?.bPlaneErrorKm) < 2_000_000,
+    `departure_commit_live_diag: B-plane should use live bounded solve, got ${result.diagnostics?.bPlaneErrorKm}`,
+  );
+  assert(
+    !Boolean(result.diagnostics?.departureCommitActive),
+    "departure_commit_live_diag: invalid seed corridor should not keep departure commit active",
+  );
+}
+
+function testDepartureCommitRejectsBadCorridorSeed() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "tli_burn",
+    plannerRuntime: runtime,
+    timestampSec: 317,
+    metrics: {
+      missionPhaseElapsedSec: 317,
+      moonDistanceKm: 389850.9,
+      moonClosingSpeedKmS: 6.6923,
+      moonProjectedMissTrendKmS: 410.837,
+      timeToPeriapsisSec: 900,
+      departurePlanReady: true,
+      departurePlanThrottle: 0.78,
+      departurePlanBurnDurationSec: 1200,
+      departurePlanCommitWindowSec: 360,
+      departurePlanPredictedMissDistanceKm: 384340.9,
+      departurePlanPredictedPeriluneAltitudeKm: 382603.5,
+      departurePlanBPlaneErrorKm: 382436.0,
+      departurePlanGeometryScore: 0.956,
+      departurePlanAlignNow: 0.978,
+      earthDistanceKm: 6555.0,
+      periapsisKm: 177.54,
+      stageMassKg: 4_508_919,
+      engineAccelAtThrottle1KmS2: 0.0159,
+    },
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.19, y: 0.98, z: 0.02 },
+      shipEarthPositionKm: { x: 6555.0, y: 0, z: 0 },
+      shipEarthVelocityKmS: { x: 0, y: 8.1654, z: 0 },
+      moonEarthPositionKm: { x: 391956.5, y: 0, z: 0 },
+      moonEarthVelocityKmS: { x: 0, y: 1.022, z: 0 },
+      sunEarthPositionKm: { x: 149597870, y: 0, z: 0 },
+      sunEarthVelocityKmS: { x: 0, y: 29.78, z: 0 },
+    },
+  });
+  assert(result, "departure_commit_bad_corridor: missing result");
+  assert(
+    !Boolean(result.diagnostics?.departureCommitActive),
+    "departure_commit_bad_corridor: bad corridor should not activate departure commit",
+  );
+  assert(
+    !String(result.mode || "").includes("+departure-commit"),
+    `departure_commit_bad_corridor: unexpected departure commit mode ${result.mode}`,
+  );
+}
+
 function main() {
   testTliReacquireHoldMovingAway();
   testTliReacquireHoldMissDivergingOnly();
@@ -399,6 +501,8 @@ function main() {
   testTelemetrySnapshotReacquireWindowHold();
   testTelemetrySnapshotReacquireWindowProgression();
   testDepartureCommitOverridesEarlyTliHold();
+  testDepartureCommitUsesLiveDiagnosticsNotSeedTelemetry();
+  testDepartureCommitRejectsBadCorridorSeed();
   console.log("PASS moon-gnc-conflict-e2e");
 }
 

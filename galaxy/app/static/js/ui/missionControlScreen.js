@@ -804,6 +804,22 @@ export function createMissionControlScreenController(options = {}) {
     ].join("");
   }
 
+  function focusedMissionSequence(steps) {
+    const list = Array.isArray(steps) ? steps : [];
+    if (list.length <= 5) {
+      return list;
+    }
+    let focusIndex = list.findIndex((step) => step?.status === "active");
+    if (focusIndex < 0) {
+      focusIndex = list.findIndex((step) => step?.status === "pending");
+    }
+    if (focusIndex < 0) {
+      focusIndex = list.length - 1;
+    }
+    const start = Math.max(0, Math.min(focusIndex - 1, list.length - 5));
+    return list.slice(start, start + 5);
+  }
+
   function launchEventInlineDetail(entry) {
     if (!entry || typeof entry !== "object") {
       return "";
@@ -1446,7 +1462,7 @@ export function createMissionControlScreenController(options = {}) {
   }
 
   function render(snapshot, launchActive, launchEventLogEntries = [], lastLaunchEventSummary = "", vehicleViewState = null, fleetEntries = [], missionPickerState = null) {
-    if (!missionControlScreenNode || !missionControlOverviewNode || !missionControlSequenceNode || !missionControlEventsNode || !missionControlSubtitleNode) {
+    if (!missionControlScreenNode || !missionControlSequenceNode || !missionControlEventsNode || !missionControlSubtitleNode) {
       return;
     }
     const safeVehicleViewState = syncVehicleViewState(vehicleViewState);
@@ -1477,67 +1493,45 @@ export function createMissionControlScreenController(options = {}) {
         missionControlLiveMetricsNode.innerHTML = [
           heroMetric({ label: "Altitude", value: "Standby", detail: "Vehicle not yet committed.", tone: "info" }),
           heroMetric({ label: "Velocity", value: "Standby", detail: "Awaiting live orbital state.", tone: "info" }),
-          heroMetric({ label: "Propulsion", value: "Idle", detail: "No active thrust command.", tone: "info" }),
-          heroMetric({ label: "Target", value: "Not Assigned", detail: "No intercept solution loaded.", tone: "info" }),
+          heroMetric({ label: "Propellant", value: "n/a", detail: "Stage loadout unavailable.", tone: "info" }),
+          heroMetric({ label: "Guidance", value: "Standby", detail: "Flight rules will appear here once telemetry is live.", tone: "info" }),
         ].join("");
       }
       if (missionControlSubsystemsNode) {
         missionControlSubsystemsNode.innerHTML = [
-          subsystemCard({ title: "Flight Rules", status: "Standby", detail: "Go / no-go logic waiting for launch.", tone: "info" }),
-          subsystemCard({ title: "Guidance", status: "Idle", detail: "Autopilot not engaged.", tone: "info" }),
-          subsystemCard({ title: "Propulsion", status: "Cold", detail: "No ignition sequence active.", tone: "info" }),
-          subsystemCard({ title: "Attitude / RCS", status: "Idle", detail: "Control jets inactive.", tone: "info" }),
-          subsystemCard({ title: "Mission Ops", status: "Awaiting Assignment", detail: "Refuel, transfer, and lunar operations locked.", tone: "info" }),
-          subsystemCard({ title: "Environment", status: "Nominal", detail: "No live forcing loaded yet.", tone: "info" }),
-        ].join("");
-      }
-      if (missionControlOpsAlertsNode) {
-        missionControlOpsAlertsNode.innerHTML = [
           alertCard({
-            kicker: "Flight Call",
+            kicker: "Current Call",
             title: "Standby",
-            detail: "Mission Control is ready. Arm a mission profile and launch when the stack is clear.",
-            meta: "No live telemetry in the console.",
+            detail: "Arm a mission profile and launch when the stack is clear.",
+            meta: "No active telemetry.",
             tone: "info",
           }),
           alertCard({
             kicker: "Immediate Action",
-            title: safeMissionPickerState.selectedMissionId ? "Select Launch Mode" : "Choose Mission Profile",
-            detail: safeMissionPickerState.selectedMissionId
-              ? `${safeMissionPickerState.profiles.find((profile) => profile.id === safeMissionPickerState.selectedMissionId)?.name || "Mission"} is armed for the next stack.`
-              : "Mission library available in Quick Select.",
+            title: "Choose Mission",
+            detail: "Assignments are armed from the left rail.",
             meta: `Mission launch ${missionLaunchModeDisplay(safeMissionPickerState.missionLaunchMode)} | Tankers ${tankerLaunchModeDisplay(safeMissionPickerState.tankerLaunchMode)}`,
             tone: "nominal",
           }),
           alertCard({
             kicker: "Tracking Watch",
             title: "Scene Feed Ready",
-            detail: "Live vehicle view, fleet board, and CAPCOM log will populate once a vehicle is active.",
-            meta: "Tracking lock unavailable while the scene is idle.",
+            detail: "The primary view will lock as soon as a tracked vehicle is active.",
+            meta: "Starship and booster views arm automatically when available.",
             tone: "info",
           }),
           alertCard({
-            kicker: "Timeline",
+            kicker: "Latest Event",
             title: "No Recent Event",
-            detail: "No mission events in the current console window.",
-            meta: "Press Launch to begin telemetry streaming.",
+            detail: "CAPCOM log is quiet.",
+            meta: "Awaiting first mission event.",
             tone: "info",
           }),
         ].join("");
       }
-      missionControlOverviewNode.innerHTML = [
-        overviewCluster({
-          title: "Mission Console",
-          kicker: "Readiness",
-          tone: "info",
-          rows: [
-            overviewRow("Status", "Standby", true),
-            overviewRow("Vehicle Lock", "Unavailable"),
-            overviewRow("Timeline", "No launch events yet."),
-            overviewRow("Action", "Press Launch to begin telemetry."),
-          ],
-        }),
-      ].join("");
+      if (missionControlOverviewNode) {
+        missionControlOverviewNode.innerHTML = "";
+      }
       missionControlSequenceNode.innerHTML = missionSequenceItem({
         title: "Preflight Go / No-Go",
         note: "No mission in progress.",
@@ -1917,49 +1911,41 @@ export function createMissionControlScreenController(options = {}) {
     if (missionControlCommandStripNode) {
       missionControlCommandStripNode.innerHTML = [
         commandCard({
-          label: "Mission",
-          value: missionName,
+          label: "Flight Rules",
+          value: flightRules.value,
           meta: missionPhase,
-          tone: active ? "nominal" : "info",
-        }),
-        commandCard({
-          label: "Vehicle",
-          value: vehicleName,
-          meta: `${phaseLabel} | ${stageName}`,
-          tone: "info",
-        }),
-        commandCard({
-          label: "MET",
-          value: met,
-          meta: snapshot.launchSiteName || "Launch Site",
-          tone: active ? "nominal" : "info",
-        }),
-        commandCard({
-          label: "Guidance",
-          value: shortModeLabel(snapshot.autopilotMode || snapshot.guidanceMode || "n/a"),
-          meta: flightRules.detail,
           tone: flightRules.tone,
         }),
         commandCard({
-          label: "Intercept",
-          value: launchTargetValue(snapshot),
-          meta: targetClosingSpeedKmS !== null
-            ? `Closing ${formatNumber(targetClosingSpeedKmS, 4)} km/s`
-            : "No closing rate solution.",
-          tone: targetBodyLabel === "n/a" ? "info" : "nominal",
+          label: "Tracked Vehicle",
+          value: vehicleName,
+          meta: `${phaseLabel} | ${stageName}`,
+          tone: active ? "nominal" : "info",
         }),
         commandCard({
-          label: "CAPCOM",
-          value: missionLastEventSummary
-            ? humanizeLaunchEventName(missionLastEventSummary)
-            : (lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "No recent event"),
-          meta: missionEvents.length > 0 ? `${missionEvents.length} events in current track window` : "Timeline quiet",
-          tone: missionEvents.length > 0 ? "nominal" : "info",
+          label: "Mission Clock",
+          value: met,
+          meta: snapshot.launchSiteName || "Launch Site",
+          tone: "info",
+        }),
+        commandCard({
+          label: "Target",
+          value: targetBodyLabel,
+          meta: targetDistanceKm !== null
+            ? `${formatNumber(targetDistanceKm, 1)} km${targetEtaSeconds !== null ? ` | ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
+            : "No range solution.",
+          tone: targetBodyLabel === "n/a" ? "info" : "nominal",
         }),
       ].join("");
     }
 
     if (missionControlLiveMetricsNode) {
+      const propellantValue = stagePropellantKg !== null
+        ? `${formatNumber(stagePropellantKg, 0)} kg`
+        : percentString(snapshot.refuelFillFraction);
+      const propellantDetail = stagePropellantKg !== null
+        ? (fuelBudgetMarginKg !== null ? `Fuel margin ${formatNumber(fuelBudgetMarginKg, 0)} kg` : "Stage propellant remaining.")
+        : `Refuel fill ${percentString(snapshot.refuelFillFraction)}`;
       missionControlLiveMetricsNode.innerHTML = [
         heroMetric({
           label: "Altitude",
@@ -1982,227 +1968,64 @@ export function createMissionControlScreenController(options = {}) {
           tone: "info",
         }),
         heroMetric({
-          label: "Propulsion",
-          value: thrustMN !== null
-            ? `${formatNumber(thrustMN / 1_000_000, 3)} MN`
-            : "n/a",
-          detail: `Throttle ${Number.isFinite(throttlePct) ? `${formatNumber(throttlePct * 100, 1)}%` : "n/a"} | Cmd ${Number.isFinite(guidanceRequestedThrottlePct) ? `${formatNumber(guidanceRequestedThrottlePct, 1)}%` : (Number.isFinite(throttleCommandPct) ? `${formatNumber(throttleCommandPct, 1)}%` : "n/a")}`,
-          tone: guidanceInertNoPropellant ? "critical" : ((throttlePct !== null && throttlePct > 0.01) ? "nominal" : "info"),
-          progress: Number.isFinite(Number(snapshot.throttleCommand))
-            ? Number(snapshot.throttleCommand)
-            : throttlePct,
-        }),
-        heroMetric({
-          label: "Orbit State",
-          value: Number.isFinite(Number(snapshot.apoapsisKm)) || Number.isFinite(Number(snapshot.periapsisKm))
-            ? `A ${Number.isFinite(Number(snapshot.apoapsisKm)) ? formatNumber(snapshot.apoapsisKm, 1) : "n/a"} / P ${Number.isFinite(Number(snapshot.periapsisKm)) ? formatNumber(snapshot.periapsisKm, 1) : "n/a"}`
-            : "n/a",
-          detail: Number.isFinite(Number(snapshot.timeToApoapsisSec))
-            ? `TTA ${formatDurationSeconds(snapshot.timeToApoapsisSec)}`
-            : "No apoapsis timer.",
-          tone: "info",
-        }),
-        heroMetric({
-          label: "Target",
-          value: targetBodyLabel,
-          detail: targetDistanceKm !== null
-            ? `${formatNumber(targetDistanceKm, 1)} km${targetEtaSeconds !== null ? ` | ETA ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
-            : "No range solution.",
-          tone: targetDistanceKm !== null && targetDistanceKm < 5 ? "nominal" : "info",
+          label: "Propellant",
+          value: propellantValue,
+          detail: propellantDetail,
+          tone: fuelBudgetFeasible === false ? "critical" : "info",
+          progress: stagePropellantKg !== null && fuelBudgetAvailablePropellantKg > 0
+            ? clamp(stagePropellantKg / Math.max(1, fuelBudgetAvailablePropellantKg), 0, 1)
+            : clamp(Number(snapshot.refuelFillFraction) || 0, 0, 1),
         }),
         missionSpecificHero,
       ].join("");
     }
 
     if (missionControlSubsystemsNode) {
-      const missionOpsCard = (() => {
-        if (
-          snapshot.vehicleKind === "tanker"
-          || snapshot.refuelTransferActive
-          || snapshot.refuelRequiredFlights > 0
-          || snapshot.missionPhase === "orbital_refuel"
-        ) {
-          return subsystemCard({
-            title: "Mission Ops",
-            status: snapshot.refuelTransferActive ? "Fuel Transfer" : (snapshot.refuelCanLaunchTanker ? "Tanker Window Open" : "Campaign Hold"),
-            detail: `Flights ${Math.max(0, Number(snapshot.refuelCompletedFlights) || 0)}/${Math.max(0, Number(snapshot.refuelRequiredFlights) || 0)} | Fill ${percentString(snapshot.refuelFillFraction)}`,
-            meta: snapshot.refuelTransferActive
-              ? `Rate ${Number.isFinite(transferRateKgS) ? `${formatNumber(transferRateKgS, 1)} kg/s` : "n/a"} | Remaining ${Number.isFinite(transferRemainingKg) ? `${formatNumber(transferRemainingKg, 0)} kg` : "n/a"}`
-              : `Dock lock ${snapshot.refuelTransferLocked ? "confirmed" : "open"} | Undock ${snapshot.refuelUndockActive ? "active" : "idle"}`,
-            tone: snapshot.refuelTransferActive ? "nominal" : (snapshot.refuelCanLaunchTanker ? "caution" : "info"),
-            progress: snapshot.refuelTransferActive ? refuelTransferProgress : clamp(Number(snapshot.refuelFillFraction) || 0, 0, 1),
-          });
-        }
-        if (snapshot.missionId === "moon_orbit_return") {
-          return subsystemCard({
-            title: "Mission Ops",
-            status: snapshot.moonDepartureWindowReady ? "Lunar Window Ready" : missionPhase,
-            detail: `Miss ${Number.isFinite(Number(snapshot.moonProjectedMissDistanceKm)) ? `${formatNumber(snapshot.moonProjectedMissDistanceKm, 1)} km` : "n/a"} | Perilune ${Number.isFinite(Number(snapshot.moonProjectedPeriluneAltitudeKm)) ? `${formatNumber(snapshot.moonProjectedPeriluneAltitudeKm, 1)} km` : "n/a"}`,
-            meta: Number.isFinite(moonWindowWaitSec)
-              ? `Window wait ${formatDurationSeconds(moonWindowWaitSec)} | B-plane ${Number.isFinite(Number(snapshot.moonBPlaneErrorKm)) ? `${formatNumber(snapshot.moonBPlaneErrorKm, 1)} km` : "n/a"}`
-              : "Monitoring lunar approach geometry.",
-            tone: snapshot.moonDepartureWindowReady ? "nominal" : (flightRules.tone === "critical" ? "critical" : "caution"),
-          });
-        }
-        return subsystemCard({
-          title: "Mission Ops",
-          status: missionPhase,
-          detail: `Target ${targetBodyLabel} | Range ${targetDistanceKm !== null ? `${formatNumber(targetDistanceKm, 1)} km` : "n/a"}`,
-          meta: missionLastEventSummary
-            ? humanizeLaunchEventName(missionLastEventSummary)
-            : "Awaiting next mission event.",
-          tone: active ? "nominal" : "info",
-        });
-      })();
       missionControlSubsystemsNode.innerHTML = [
-        subsystemCard({
-          title: "Flight Rules",
-          status: flightRules.value,
+        alertCard({
+          kicker: "Current Call",
+          title: flightRules.value,
           detail: flightRules.detail,
-          meta: guidanceInertNoPropellant ? "Burn command inhibited." : "Rule set synchronized.",
+          meta: `${missionPhase} | ${phaseLabel} | ${stageName}`,
           tone: flightRules.tone,
         }),
-        subsystemCard({
-          title: "Guidance",
-          status: shortModeLabel(snapshot.autopilotMode || snapshot.guidanceMode || "n/a"),
-          detail: `${missionPhase} | ${phaseLabel}`,
-          meta: guidanceBurnRequested
-            ? `Burn cmd ${Number.isFinite(guidanceRequestedThrottlePct) ? `${formatNumber(guidanceRequestedThrottlePct, 1)}%` : "n/a"}`
-            : "No burn command active.",
-          tone: flightRules.tone === "critical" ? "critical" : (String(snapshot.missionPhaseGateReason || "").trim() ? "caution" : "info"),
+        alertCard({
+          kicker: "Immediate Action",
+          title: immediateActionState.title,
+          detail: immediateActionState.detail,
+          meta: immediateActionState.meta,
+          tone: immediateActionState.tone,
         }),
-        subsystemCard({
-          title: "Propulsion",
-          status: thrustMN !== null && thrustMN > 1 ? "Ignition" : "Idle",
-          detail: `Thrust ${thrustMN !== null ? `${formatNumber(thrustMN / 1_000_000, 3)} MN` : "n/a"} | Burn ${guidanceBurnRequested ? "requested" : "off"}`,
-          meta: `Throttle ${Number.isFinite(throttlePct) ? `${formatNumber(throttlePct * 100, 1)}%` : "n/a"} | Cmd ${Number.isFinite(throttleCommandPct) ? `${formatNumber(throttleCommandPct, 1)}%` : "n/a"}`,
-          tone: guidanceInertNoPropellant ? "critical" : ((throttlePct !== null && throttlePct > 0.01) ? "nominal" : "info"),
-          progress: Number.isFinite(Number(snapshot.throttleCommand))
-            ? Number(snapshot.throttleCommand)
-            : throttlePct,
+        alertCard({
+          kicker: "Tracking Watch",
+          title: trackingWatchState.title,
+          detail: trackingWatchState.detail,
+          meta: trackingWatchState.meta,
+          tone: trackingWatchState.tone,
         }),
-        subsystemCard({
-          title: "Attitude / RCS",
-          status: snapshot.rcsActive ? "Jet Control Active" : "Passive Hold",
-          detail: `Authority ${Number.isFinite(rcsAuthorityPct) ? `${formatNumber(rcsAuthorityPct, 1)}%` : "n/a"} | Jets ${rcsJetsLabel}`,
-          meta: `Axis ${rcsThrustAxisLabel} | Corr ${Number.isFinite(rcsCorrectionAccelKmS2) ? `${formatNumber(rcsCorrectionAccelKmS2 * 1000, 4)} m/s²` : "n/a"}`,
-          tone: snapshot.rcsActive ? "nominal" : "info",
-          progress: Number.isFinite(Number(snapshot.rcsAuthority)) ? Number(snapshot.rcsAuthority) : null,
-        }),
-        missionOpsCard,
-        subsystemCard({
-          title: "Environment",
-          status: dynamicPressureKPa !== null ? `${formatNumber(dynamicPressureKPa / 1000, 2)} kPa` : "No Q Data",
-          detail: Number.isFinite(Number(snapshot.spaceWeatherKp))
-            ? `Kp ${formatNumber(snapshot.spaceWeatherKp, 2)} | F10.7 ${Number.isFinite(Number(snapshot.spaceWeatherF107)) ? formatNumber(snapshot.spaceWeatherF107, 1) : "n/a"}`
-            : "Space weather unavailable.",
-          meta: snapshot.hotstageActive
-            ? `Hot-stage active | overlap ${Number.isFinite(Number(snapshot.hotstageOverlapSeconds)) ? `${formatNumber(snapshot.hotstageOverlapSeconds, 2)} s` : "n/a"}`
-            : (snapshot.hotstageDetachReason ? `Hot-stage ${snapshot.hotstageDetachReason}` : "Hot-stage idle"),
-          tone: snapshot.hotstageActive ? "caution" : spaceWeatherToneValue,
+        alertCard({
+          kicker: "Latest Event",
+          title: latestMissionEventEntry
+            ? humanizeLaunchEventName(latestMissionEventEntry.name)
+            : (lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "No Recent Event"),
+          detail: latestMissionEventEntry
+            ? (launchEventInlineDetail(latestMissionEventEntry).replace(/^\s*\|\s*/, "") || "Telemetry event captured.")
+            : "CAPCOM log is quiet.",
+          meta: latestMissionEventEntry ? latestEventTimeLabel : "Awaiting next mission event.",
+          tone: latestMissionEventEntry?.level === "error" ? "critical" : (latestMissionEventEntry ? "nominal" : "info"),
         }),
       ].join("");
     }
+    if (missionControlOverviewNode) {
+      missionControlOverviewNode.innerHTML = "";
+    }
 
-    const overviewClusters = [
-      overviewCluster({
-        title: "Mission State",
-        kicker: "Ops Summary",
-        tone: active ? "nominal" : "info",
-        rows: [
-          overviewRow("Vehicle", vehicleName, true),
-          overviewRow("Mission", missionName),
-          overviewRow("Mission Phase", missionPhase, true),
-          overviewRow("Vehicle Phase", phaseLabel),
-          overviewRow("Stage", stageName),
-          overviewRow("MET", met, true),
-          overviewRow("Launch Site", snapshot.launchSiteName || "n/a"),
-          overviewRow("Last Event", missionLastEventSummary
-            ? humanizeLaunchEventName(missionLastEventSummary)
-            : (lastLaunchEventSummary ? humanizeLaunchEventName(lastLaunchEventSummary) : "n/a")),
-        ],
-      }),
-      overviewCluster({
-        title: "Flight Dynamics",
-        kicker: "Trajectory",
-        tone: "info",
-        rows: [
-          overviewRow("Altitude", Number.isFinite(Number(snapshot.altitudeKm)) ? `${formatNumber(snapshot.altitudeKm, 3)} km` : "n/a", true),
-          overviewRow("Altitude AGL", Number.isFinite(Number(snapshot.altitudeAboveTerrainKm)) ? `${formatNumber(snapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"),
-          overviewRow("Speed", Number.isFinite(Number(snapshot.speedKmS)) ? `${formatNumber(snapshot.speedKmS, 4)} km/s` : "n/a", true),
-          overviewRow("Apoapsis", Number.isFinite(Number(snapshot.apoapsisKm)) ? `${formatNumber(snapshot.apoapsisKm, 2)} km` : "n/a"),
-          overviewRow("Periapsis", Number.isFinite(Number(snapshot.periapsisKm)) ? `${formatNumber(snapshot.periapsisKm, 2)} km` : "n/a"),
-          overviewRow("Radial V", Number.isFinite(Number(snapshot.radialSpeedKmS)) ? `${formatNumber(snapshot.radialSpeedKmS, 4)} km/s` : "n/a"),
-          overviewRow("Tangential V", Number.isFinite(Number(snapshot.tangentialSpeedKmS)) ? `${formatNumber(snapshot.tangentialSpeedKmS, 4)} km/s` : "n/a"),
-          overviewRow("Dynamic Pressure", dynamicPressureKPa !== null ? `${formatNumber(dynamicPressureKPa / 1000, 2)} kPa` : "n/a"),
-        ],
-      }),
-      overviewCluster({
-        title: "Guidance / Targeting",
-        kicker: "FD Guidance",
-        tone: flightRules.tone,
-        rows: [
-          overviewRow("Guidance Mode", shortModeLabel(snapshot.autopilotMode || snapshot.guidanceMode || "n/a"), true),
-          overviewRow("Phase Gate", String(snapshot.missionPhaseGateReason || "").trim() || "n/a"),
-          overviewRow("Target Body", targetBodyLabel),
-          overviewRow("Target Range", targetDistanceKm !== null ? `${formatNumber(targetDistanceKm, 1)} km` : "n/a"),
-          overviewRow("Closing Speed", targetClosingSpeedKmS !== null ? `${formatNumber(targetClosingSpeedKmS, 4)} km/s` : "n/a"),
-          overviewRow("Target ETA", targetEtaSeconds !== null ? formatDurationSeconds(targetEtaSeconds) : "n/a"),
-          overviewRow("Moon Rel V", Number.isFinite(Number(snapshot.moonRelativeSpeedKmS)) ? `${formatNumber(snapshot.moonRelativeSpeedKmS, 4)} km/s` : "n/a"),
-          overviewRow("Projected Miss", Number.isFinite(Number(snapshot.moonProjectedMissDistanceKm)) ? `${formatNumber(snapshot.moonProjectedMissDistanceKm, 1)} km` : "n/a"),
-          overviewRow("Perilune Est", Number.isFinite(Number(snapshot.moonProjectedPeriluneAltitudeKm)) ? `${formatNumber(snapshot.moonProjectedPeriluneAltitudeKm, 1)} km` : "n/a"),
-          overviewRow("B-Plane Error", Number.isFinite(Number(snapshot.moonBPlaneErrorKm)) ? `${formatNumber(snapshot.moonBPlaneErrorKm, 1)} km` : "n/a"),
-        ],
-      }),
-      overviewCluster({
-        title: "Propulsion / Budget",
-        kicker: "Systems",
-        tone: fuelBudgetFeasible === false ? "critical" : "nominal",
-        rows: [
-          overviewRow("Thrust", thrustMN !== null ? `${formatNumber(thrustMN / 1_000_000, 3)} MN` : "n/a", true),
-          overviewRow("Throttle", Number.isFinite(throttlePct) ? `${formatNumber(throttlePct * 100, 1)}%` : "n/a"),
-          overviewRow("Throttle Cmd", Number.isFinite(throttleCommandPct) ? `${formatNumber(throttleCommandPct, 1)}%` : "n/a"),
-          overviewRow("Guidance Burn Cmd", guidanceBurnRequested
-            ? `Yes${Number.isFinite(guidanceRequestedThrottlePct) ? ` (${formatNumber(guidanceRequestedThrottlePct, 1)}%)` : ""}`
-            : "No"),
-          overviewRow("Stage Propellant", stagePropellantKg !== null ? `${formatNumber(stagePropellantKg, 0)} kg` : "n/a"),
-          overviewRow("Fuel Budget", fuelBudgetFeasible === null ? "n/a" : (fuelBudgetFeasible ? "Feasible" : "Deficit"), true),
-          overviewRow("DV Req / Avail", Number.isFinite(fuelBudgetRequiredDeltaVKmS) && Number.isFinite(fuelBudgetAvailableDeltaVKmS)
-            ? `${formatNumber(fuelBudgetRequiredDeltaVKmS, 3)} / ${formatNumber(fuelBudgetAvailableDeltaVKmS, 3)} km/s`
-            : "n/a"),
-          overviewRow("Fuel Margin", Number.isFinite(fuelBudgetMarginKg) ? `${formatNumber(fuelBudgetMarginKg, 0)} kg` : "n/a"),
-          overviewRow("Refuel Fill", percentString(snapshot.refuelFillFraction)),
-          overviewRow("Refuel Flights", `${Math.max(0, Number(snapshot.refuelCompletedFlights) || 0)} / ${Math.max(0, Number(snapshot.refuelRequiredFlights) || 0)}`),
-        ],
-      }),
-      overviewCluster({
-        title: "External / Booster",
-        kicker: "Range Safety",
-        tone: snapshot.boosterActive ? "caution" : spaceWeatherToneValue,
-        rows: [
-          overviewRow("Booster Phase", snapshot.boosterPhase || "n/a", true),
-          overviewRow("Booster Fuel", Number.isFinite(Number(snapshot.boosterFuelFraction)) ? `${formatNumber(Number(snapshot.boosterFuelFraction) * 100, 1)}%` : "n/a"),
-          overviewRow("Booster Alt", Number.isFinite(Number(snapshot.boosterAltitudeKm)) ? `${formatNumber(snapshot.boosterAltitudeKm, 2)} km` : "n/a"),
-          overviewRow("Booster Speed", Number.isFinite(Number(snapshot.boosterSpeedKmS)) ? `${formatNumber(snapshot.boosterSpeedKmS, 3)} km/s` : "n/a"),
-          overviewRow("Booster Throttle", Number.isFinite(boosterThrottleCommandPct) ? `${formatNumber(boosterThrottleCommandPct, 1)}%` : "n/a"),
-          overviewRow("Booster RCS", snapshot.boosterRcsActive ? `On ${Number.isFinite(boosterRcsAuthorityPct) ? `(${formatNumber(boosterRcsAuthorityPct, 1)}%)` : ""}` : "Off"),
-          overviewRow("Space Weather", Number.isFinite(Number(snapshot.spaceWeatherF107)) && Number.isFinite(Number(snapshot.spaceWeatherKp))
-            ? `F10.7 ${formatNumber(snapshot.spaceWeatherF107, 1)} | Kp ${formatNumber(snapshot.spaceWeatherKp, 2)}`
-            : "n/a"),
-          overviewRow("Space Wx Src", String(snapshot.spaceWeatherSource || "").trim() || "n/a"),
-          overviewRow("RCS Jets", rcsJetsLabel),
-          overviewRow("RCS Corr Force", Number.isFinite(rcsCorrectionForceN) ? `${formatNumber(rcsCorrectionForceN / 1000, 2)} kN` : "n/a"),
-        ],
-      }),
-    ];
-    missionControlOverviewNode.innerHTML = overviewClusters.join("");
-
-    const sequence = buildMissionSequence(snapshot, missionEvents);
+    const sequence = focusedMissionSequence(buildMissionSequence(snapshot, missionEvents));
     missionControlSequenceNode.innerHTML = sequence
       .map((step) => missionSequenceItem(step))
       .join("");
 
-    const recentEvents = missionEvents.slice(-32).reverse();
+    const recentEvents = missionEvents.slice(-6).reverse();
     if (recentEvents.length <= 0) {
       missionControlEventsNode.innerHTML = "<p class=\"mission-control-events-empty\">No launch events yet.</p>";
     } else {

@@ -87,7 +87,6 @@ export function evaluateMoonMissionPhase({
       },
       plannerConfig: NAVIGATION_DEFAULTS.planner,
       minPeriapsisKm: Math.max(80, Number(profile.tliPeriapsisMinKm) || 130),
-      fallbackDurationSec: Number(profile?.tliDurationSec) || 520,
     });
     const apoReached = apoapsisKm >= (profile.tliTargetApoapsisKm - profile.tliApoapsisMarginKm);
     const energyReady = specificEnergy >= profile.tliMinSpecificEnergyKm2S2;

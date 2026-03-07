@@ -1,5 +1,4 @@
 export const MOON_BURN_ATTITUDE_GATE_PHASES = new Set([
-  "tli_burn",
   "coast_to_moon",
   "lunar_insertion",
   "tei_burn",

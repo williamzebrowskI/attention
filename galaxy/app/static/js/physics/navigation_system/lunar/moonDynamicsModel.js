@@ -43,6 +43,27 @@ function cross(a, b) {
   };
 }
 
+function rotateAroundAxis(vector, axis, angleRad) {
+  if (!finiteVector(vector)) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  const normalizedAxis = normalize(axis, { x: 0, y: 0, z: 1 });
+  const angle = finiteNumber(angleRad, 0);
+  if (length(normalizedAxis) <= 1e-9 || Math.abs(angle) <= 1e-12) {
+    return { ...vector };
+  }
+  const cosTheta = Math.cos(angle);
+  const sinTheta = Math.sin(angle);
+  const axisDotVector = dot(normalizedAxis, vector);
+  return add(
+    add(
+      scale(vector, cosTheta),
+      scale(cross(normalizedAxis, vector), sinTheta),
+    ),
+    scale(normalizedAxis, axisDotVector * (1 - cosTheta)),
+  );
+}
+
 function stateVector(positionKm, velocityKmS) {
   return {
     positionKm: finiteVector(positionKm) ? { ...positionKm } : { x: 0, y: 0, z: 0 },
@@ -63,6 +84,21 @@ function pointMassAccelerationKmS2(targetPosKm, sourcePosKm, sourceMassKg) {
   const muKm3S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * massKg;
   const scaleFactor = -muKm3S2 / (radiusKm * radiusKm * radiusKm);
   return scale(rel, scaleFactor);
+}
+
+function thirdBodyDifferentialAccelerationKmS2({
+  targetPosKm = null,
+  sourcePosKm = null,
+  sourceMassKg = 0,
+  frameOriginPosKm = null,
+} = {}) {
+  const targetAccel = pointMassAccelerationKmS2(targetPosKm, sourcePosKm, sourceMassKg);
+  const originAccel = pointMassAccelerationKmS2(
+    finiteVector(frameOriginPosKm) ? frameOriginPosKm : { x: 0, y: 0, z: 0 },
+    sourcePosKm,
+    sourceMassKg,
+  );
+  return subtract(targetAccel, originAccel);
 }
 
 function defaultAxesForSource(sourceId, positionKm = null, velocityKmS = null) {
@@ -109,6 +145,71 @@ function sourceDescriptor({
     s22: finiteNumber(s22, 0),
     axes: axes || defaultAxesForSource(id, positionKm, velocityKmS),
   };
+}
+
+function propagateMovingSourceDescriptor(source, elapsedSec = 0) {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const timeSec = finiteNumber(elapsedSec, 0);
+  if (String(source.id || "") === "earth" || Math.abs(timeSec) <= 1e-9) {
+    return sourceDescriptor({
+      ...source,
+      axes: defaultAxesForSource(source.id, source.positionKm, source.velocityKmS),
+    });
+  }
+  const positionKm = finiteVector(source.positionKm) ? source.positionKm : { x: 0, y: 0, z: 0 };
+  const velocityKmS = finiteVector(source.velocityKmS) ? source.velocityKmS : { x: 0, y: 0, z: 0 };
+  const radiusKm = Math.max(1e-9, length(positionKm));
+  const angularMomentum = cross(positionKm, velocityKmS);
+  const angularMomentumMag = length(angularMomentum);
+  const tangentialSpeedKmS = length(subtract(
+    velocityKmS,
+    scale(normalize(positionKm, { x: 1, y: 0, z: 0 }), dot(velocityKmS, normalize(positionKm, { x: 1, y: 0, z: 0 }))),
+  ));
+  if (angularMomentumMag <= 1e-9 || tangentialSpeedKmS <= 1e-9) {
+    const propagatedPositionKm = add(positionKm, scale(velocityKmS, timeSec));
+    return sourceDescriptor({
+      ...source,
+      positionKm: propagatedPositionKm,
+      velocityKmS,
+      axes: defaultAxesForSource(source.id, propagatedPositionKm, velocityKmS),
+    });
+  }
+  const planeNormal = scale(angularMomentum, 1 / angularMomentumMag);
+  const angularSpeedRadS = tangentialSpeedKmS / radiusKm;
+  const angleRad = angularSpeedRadS * timeSec;
+  const propagatedPositionKm = rotateAroundAxis(positionKm, planeNormal, angleRad);
+  const propagatedVelocityKmS = rotateAroundAxis(velocityKmS, planeNormal, angleRad);
+  return sourceDescriptor({
+    ...source,
+    positionKm: propagatedPositionKm,
+    velocityKmS: propagatedVelocityKmS,
+    axes: defaultAxesForSource(source.id, propagatedPositionKm, propagatedVelocityKmS),
+  });
+}
+
+function sourceModelAtTimeSec(sources, elapsedSec = 0, cache = null) {
+  if (!sources || typeof sources !== "object") {
+    return null;
+  }
+  const cacheKey = Number.isFinite(Number(elapsedSec))
+    ? String(Math.round(Number(elapsedSec) * 1000) / 1000)
+    : "0";
+  if (cache instanceof Map && cache.has(cacheKey)) {
+    return cache.get(cacheKey);
+  }
+  const model = {
+    frame: String(sources.frame || "earth-centered-inertial"),
+    stepSec: Math.max(5, finiteNumber(sources.stepSec, DEFAULT_MOON_STEP_SEC)),
+    earth: propagateMovingSourceDescriptor(sources.earth, 0),
+    moon: propagateMovingSourceDescriptor(sources.moon, elapsedSec),
+    sun: propagateMovingSourceDescriptor(sources.sun, elapsedSec),
+  };
+  if (cache instanceof Map) {
+    cache.set(cacheKey, model);
+  }
+  return model;
 }
 
 export function buildMoonGuidanceSourceModel({
@@ -196,7 +297,12 @@ export function computeMoonGuidanceAccelerationKmS2({
   }
 
   if (moon) {
-    total = add(total, pointMassAccelerationKmS2(statePos, moon.positionKm, moon.massKg));
+    total = add(total, thirdBodyDifferentialAccelerationKmS2({
+      targetPosKm: statePos,
+      sourcePosKm: moon.positionKm,
+      sourceMassKg: moon.massKg,
+      frameOriginPosKm: earth.positionKm,
+    }));
     const relMoon = subtract(statePos, moon.positionKm);
     const moonRadius = Math.max(1e-6, length(relMoon));
     const moonMuOverR3 = (GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * moon.massKg) / Math.max(1e-12, moonRadius ** 3);
@@ -225,7 +331,12 @@ export function computeMoonGuidanceAccelerationKmS2({
   }
 
   if (sun) {
-    total = add(total, pointMassAccelerationKmS2(statePos, sun.positionKm, sun.massKg));
+    total = add(total, thirdBodyDifferentialAccelerationKmS2({
+      targetPosKm: statePos,
+      sourcePosKm: sun.positionKm,
+      sourceMassKg: sun.massKg,
+      frameOriginPosKm: earth.positionKm,
+    }));
     const transmittance = computeSolarShadowTransmittance({
       targetId: String(spacecraft?.bodyId || "earth_launch_vehicle"),
       targetPosKm: statePos,
@@ -254,12 +365,13 @@ export function computeMoonGuidanceAccelerationKmS2({
   return total;
 }
 
-function rk4Step(state, dtSec, sources, spacecraft, burnCommand = null, elapsedSec = 0) {
+function rk4Step(state, dtSec, sources, spacecraft, burnCommand = null, elapsedSec = 0, sourceCache = null) {
   const dt = Math.max(0, Number(dtSec) || 0);
   if (!(dt > 0)) {
     return stateVector(state.positionKm, state.velocityKmS);
   }
   const accelForSample = (sampleState, sampleTimeSec) => {
+    const dynamicSources = sourceModelAtTimeSec(sources, sampleTimeSec, sourceCache);
     let control = { x: 0, y: 0, z: 0 };
     if (burnCommand && sampleTimeSec < Math.max(0, finiteNumber(burnCommand.burnDurationSec, 0))) {
       const throttle = clamp(finiteNumber(burnCommand.throttle, 0), 0, 1);
@@ -270,7 +382,7 @@ function rk4Step(state, dtSec, sources, spacecraft, burnCommand = null, elapsedS
     return computeMoonGuidanceAccelerationKmS2({
       positionKm: sampleState.positionKm,
       velocityKmS: sampleState.velocityKmS,
-      sources,
+      sources: dynamicSources,
       spacecraft,
       controlAccelerationKmS2: control,
     });
@@ -324,6 +436,7 @@ export function propagateMoonGuidanceState({
   }
   const duration = Math.max(0, Number(durationSec) || 0);
   const step = Math.max(5, Number(stepSec) || DEFAULT_MOON_STEP_SEC);
+  const sourceCache = new Map();
   let elapsedSec = 0;
   let state = stateVector(initialState.positionKm, initialState.velocityKmS);
   const earthRadiusKm = Math.max(1, finiteNumber(sources?.earth?.radiusKm, DEFAULT_EARTH_RADIUS_KM));
@@ -335,38 +448,68 @@ export function propagateMoonGuidanceState({
   let minEarthDistanceKm = Number.POSITIVE_INFINITY;
   let closestMoonState = null;
   let closestEarthState = null;
+  let closestMoonSourceState = null;
+  let closestEarthSourceState = null;
+  let closestMoonTimeSec = Number.NaN;
+  let closestEarthTimeSec = Number.NaN;
 
   while (elapsedSec < duration - 1e-9) {
     const dt = Math.min(step, duration - elapsedSec);
-    state = rk4Step(state, dt, sources, spacecraft, burnCommand, elapsedSec);
+    state = rk4Step(state, dt, sources, spacecraft, burnCommand, elapsedSec, sourceCache);
     elapsedSec += dt;
 
-    const moonDistanceKm = sources?.moon ? length(subtract(state.positionKm, sources.moon.positionKm)) : Number.POSITIVE_INFINITY;
-    const earthDistanceKm = length(subtract(state.positionKm, sources?.earth?.positionKm || { x: 0, y: 0, z: 0 }));
+    const sampleSources = sourceModelAtTimeSec(sources, elapsedSec, sourceCache);
+    const sampleMoon = sampleSources?.moon || null;
+    const sampleEarth = sampleSources?.earth || null;
+    const moonDistanceKm = sampleMoon
+      ? length(subtract(state.positionKm, sampleMoon.positionKm))
+      : Number.POSITIVE_INFINITY;
+    const earthDistanceKm = length(subtract(state.positionKm, sampleEarth?.positionKm || { x: 0, y: 0, z: 0 }));
     if (moonDistanceKm < minMoonDistanceKm) {
       minMoonDistanceKm = moonDistanceKm;
       closestMoonState = stateVector(state.positionKm, state.velocityKmS);
+      closestMoonSourceState = sampleMoon
+        ? stateVector(sampleMoon.positionKm, sampleMoon.velocityKmS)
+        : null;
+      closestMoonTimeSec = elapsedSec;
     }
     if (earthDistanceKm < minEarthDistanceKm) {
       minEarthDistanceKm = earthDistanceKm;
       closestEarthState = stateVector(state.positionKm, state.velocityKmS);
+      closestEarthSourceState = sampleEarth
+        ? stateVector(sampleEarth.positionKm, sampleEarth.velocityKmS)
+        : null;
+      closestEarthTimeSec = elapsedSec;
     }
   }
 
-  const finalMoonRelPos = sources?.moon ? subtract(state.positionKm, sources.moon.positionKm) : null;
-  const finalMoonRelVel = sources?.moon ? subtract(state.velocityKmS, sources.moon.velocityKmS) : null;
-  const finalEarthRelPos = subtract(state.positionKm, sources?.earth?.positionKm || { x: 0, y: 0, z: 0 });
-  const finalEarthRelVel = subtract(state.velocityKmS, sources?.earth?.velocityKmS || { x: 0, y: 0, z: 0 });
+  const finalSources = sourceModelAtTimeSec(sources, elapsedSec, sourceCache);
+  const finalMoonSourceState = finalSources?.moon
+    ? stateVector(finalSources.moon.positionKm, finalSources.moon.velocityKmS)
+    : null;
+  const finalEarthSourceState = finalSources?.earth
+    ? stateVector(finalSources.earth.positionKm, finalSources.earth.velocityKmS)
+    : stateVector({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+  const finalMoonRelPos = finalMoonSourceState ? subtract(state.positionKm, finalMoonSourceState.positionKm) : null;
+  const finalMoonRelVel = finalMoonSourceState ? subtract(state.velocityKmS, finalMoonSourceState.velocityKmS) : null;
+  const finalEarthRelPos = subtract(state.positionKm, finalEarthSourceState.positionKm);
+  const finalEarthRelVel = subtract(state.velocityKmS, finalEarthSourceState.velocityKmS);
   const moonOrbit = finalMoonRelPos && finalMoonRelVel
     ? orbitalStateFromRelative(moonMuKm3S2, moonRadiusKm, finalMoonRelPos, finalMoonRelVel)
     : null;
   const earthOrbit = orbitalStateFromRelative(earthMuKm3S2, earthRadiusKm, finalEarthRelPos, finalEarthRelVel);
 
-  const closestMoonRelPos = closestMoonState && sources?.moon
-    ? subtract(closestMoonState.positionKm, sources.moon.positionKm)
+  const closestMoonRelPos = closestMoonState && closestMoonSourceState
+    ? subtract(closestMoonState.positionKm, closestMoonSourceState.positionKm)
     : null;
-  const closestMoonRelVel = closestMoonState && sources?.moon
-    ? subtract(closestMoonState.velocityKmS, sources.moon.velocityKmS)
+  const closestMoonRelVel = closestMoonState && closestMoonSourceState
+    ? subtract(closestMoonState.velocityKmS, closestMoonSourceState.velocityKmS)
+    : null;
+  const closestEarthRelPos = closestEarthState && closestEarthSourceState
+    ? subtract(closestEarthState.positionKm, closestEarthSourceState.positionKm)
+    : null;
+  const closestEarthRelVel = closestEarthState && closestEarthSourceState
+    ? subtract(closestEarthState.velocityKmS, closestEarthSourceState.velocityKmS)
     : null;
   const closestMoonRangeKm = closestMoonRelPos ? length(closestMoonRelPos) : Number.POSITIVE_INFINITY;
   const closestMoonClosingSpeedKmS = (
@@ -386,9 +529,23 @@ export function propagateMoonGuidanceState({
     minEarthAltitudeKm: Number.isFinite(minEarthDistanceKm) ? (minEarthDistanceKm - earthRadiusKm) : Number.NaN,
     closestMoonState,
     closestEarthState,
+    closestMoonSourceState,
+    closestEarthSourceState,
+    closestMoonTimeSec,
+    closestEarthTimeSec,
+    closestMoonRelativePositionKm: closestMoonRelPos,
+    closestMoonRelativeVelocityKmS: closestMoonRelVel,
+    closestEarthRelativePositionKm: closestEarthRelPos,
+    closestEarthRelativeVelocityKmS: closestEarthRelVel,
     closestMoonClosingSpeedKmS,
     earthOrbit,
     moonOrbit,
+    finalMoonSourceState,
+    finalEarthSourceState,
+    finalMoonRelativePositionKm: finalMoonRelPos,
+    finalMoonRelativeVelocityKmS: finalMoonRelVel,
+    finalEarthRelativePositionKm: finalEarthRelPos,
+    finalEarthRelativeVelocityKmS: finalEarthRelVel,
     finalMoonDistanceKm: finalMoonRelPos ? length(finalMoonRelPos) : Number.POSITIVE_INFINITY,
     finalMoonRelativeSpeedKmS: finalMoonRelVel ? length(finalMoonRelVel) : Number.POSITIVE_INFINITY,
   };

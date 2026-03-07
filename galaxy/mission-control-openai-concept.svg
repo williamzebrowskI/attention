@@ -1,0 +1,210 @@
+<svg width="1600" height="1040" viewBox="0 0 1600 1040" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="1040" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6F8F5"/>
+      <stop offset="1" stop-color="#EFF3EF"/>
+    </linearGradient>
+    <linearGradient id="hero" x1="0" y1="0" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F5F7F5"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F7F9F7"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#122017" flood-opacity="0.08"/>
+    </filter>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 L 0 0 0 28" stroke="#DDE6DE" stroke-width="1"/>
+    </pattern>
+    <pattern id="microgrid" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M 8 0 L 0 0 0 8" stroke="#E8EEE8" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="1040" fill="url(#bg)"/>
+  <rect x="48" y="40" width="1504" height="960" rx="30" fill="#F9FBF8" stroke="#DEE7DE"/>
+
+  <g opacity="0.7">
+    <rect x="84" y="78" width="1432" height="884" rx="26" fill="url(#microgrid)"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="84" y="78" width="1432" height="92" rx="24" fill="#FFFFFF"/>
+    <rect x="84.5" y="78.5" width="1431" height="91" rx="23.5" stroke="#E3EAE3"/>
+  </g>
+
+  <text x="124" y="118" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="30" font-weight="600">Mission Control</text>
+  <text x="124" y="146" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="16">Single-screen flight operations console</text>
+
+  <g>
+    <rect x="920" y="103" width="104" height="42" rx="16" fill="#E8F6EC"/>
+    <text x="972" y="129" text-anchor="middle" fill="#107C41" font-family="Sohne, Inter, system-ui, sans-serif" font-size="15" font-weight="600">GO</text>
+
+    <rect x="1038" y="103" width="154" height="42" rx="16" fill="#F3F5F3"/>
+    <text x="1115" y="129" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="15" font-weight="500">Starship 01</text>
+
+    <rect x="1206" y="103" width="126" height="42" rx="16" fill="#F3F5F3"/>
+    <text x="1269" y="129" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="15" font-weight="500">T+ 12:43</text>
+
+    <rect x="1346" y="103" width="126" height="42" rx="16" fill="#F3F5F3"/>
+    <text x="1409" y="129" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="15" font-weight="500">Moon</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="84" y="194" width="296" height="768" rx="28" fill="url(#panel)"/>
+    <rect x="84.5" y="194.5" width="295" height="767" rx="27.5" stroke="#E3EAE3"/>
+  </g>
+  <text x="116" y="238" fill="#6B7B6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="1.2">MISSION LIBRARY</text>
+  <text x="116" y="270" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="24" font-weight="600">Assignments</text>
+
+  <g>
+    <rect x="116" y="300" width="232" height="146" rx="24" fill="#F3F7F4" stroke="#DDE7DE"/>
+    <rect x="132" y="318" width="68" height="28" rx="14" fill="#111915"/>
+    <text x="166" y="337" text-anchor="middle" fill="#FFFFFF" font-family="Sohne, Inter, system-ui, sans-serif" font-size="11" font-weight="600">ACTIVE</text>
+    <text x="132" y="382" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="20" font-weight="600">Moon Orbit + Return</text>
+    <text x="132" y="412" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Trans-lunar injection, lunar hold,</text>
+    <text x="132" y="434" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">and Earth return in one flow.</text>
+  </g>
+
+  <g>
+    <rect x="116" y="466" width="232" height="132" rx="24" fill="#FFFFFF" stroke="#E2EAE2"/>
+    <rect x="132" y="484" width="56" height="28" rx="14" fill="#EEF2EE"/>
+    <text x="160" y="503" text-anchor="middle" fill="#4E5D51" font-family="Sohne, Inter, system-ui, sans-serif" font-size="11" font-weight="600">READY</text>
+    <text x="132" y="548" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="19" font-weight="600">Orbital Refuel Demo</text>
+    <text x="132" y="576" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Focused rendezvous and in-orbit</text>
+    <text x="132" y="598" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">propellant transfer profile.</text>
+  </g>
+
+  <g>
+    <rect x="116" y="618" width="232" height="132" rx="24" fill="#FFFFFF" stroke="#E2EAE2"/>
+    <rect x="132" y="636" width="56" height="28" rx="14" fill="#EEF2EE"/>
+    <text x="160" y="655" text-anchor="middle" fill="#4E5D51" font-family="Sohne, Inter, system-ui, sans-serif" font-size="11" font-weight="600">READY</text>
+    <text x="132" y="700" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="19" font-weight="600">Earth Orbit Hold</text>
+    <text x="132" y="728" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Stabilized orbital operations with</text>
+    <text x="132" y="750" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">minimum mission overhead.</text>
+  </g>
+
+  <g>
+    <text x="116" y="812" fill="#6B7B6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="1.2">DEPLOYMENT</text>
+    <rect x="116" y="834" width="112" height="60" rx="18" fill="#111915"/>
+    <text x="172" y="858" text-anchor="middle" fill="#FFFFFF" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600">Pad Launch</text>
+    <text x="172" y="878" text-anchor="middle" fill="#B8C4BA" font-family="Sohne, Inter, system-ui, sans-serif" font-size="11">booster ascent</text>
+
+    <rect x="236" y="834" width="112" height="60" rx="18" fill="#F3F5F3" stroke="#E0E8E0"/>
+    <text x="292" y="858" text-anchor="middle" fill="#223027" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600">Orbit Inject</text>
+    <text x="292" y="878" text-anchor="middle" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="11">best LEO slot</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="404" y="194" width="742" height="548" rx="28" fill="url(#hero)"/>
+    <rect x="404.5" y="194.5" width="741" height="547" rx="27.5" stroke="#E3EAE3"/>
+  </g>
+
+  <text x="438" y="238" fill="#6B7B6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="1.2">LIVE VEHICLE</text>
+  <text x="438" y="270" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="24" font-weight="600">Primary view</text>
+
+  <g>
+    <rect x="438" y="292" width="674" height="416" rx="24" fill="#F7FAF7" stroke="#E2E9E2"/>
+    <rect x="438" y="292" width="674" height="416" rx="24" fill="url(#grid)" opacity="0.85"/>
+    <line x1="775" y1="326" x2="775" y2="674" stroke="#D3DDD4" stroke-width="1.5"/>
+    <line x1="472" y1="500" x2="1078" y2="500" stroke="#D3DDD4" stroke-width="1.5"/>
+    <circle cx="775" cy="500" r="86" stroke="#C8D6C9" stroke-width="2"/>
+    <circle cx="775" cy="500" r="12" fill="#111915"/>
+
+    <g transform="translate(695 348)">
+      <path d="M80 16 C103 48 110 83 110 127 L110 287 C110 325 96 359 80 385 C64 359 50 325 50 287 L50 127 C50 83 57 48 80 16 Z" fill="#FFFFFF" stroke="#1E2A22" stroke-width="4"/>
+      <rect x="30" y="245" width="18" height="56" rx="8" fill="#EFF3EF" stroke="#1E2A22" stroke-width="3"/>
+      <rect x="112" y="245" width="18" height="56" rx="8" fill="#EFF3EF" stroke="#1E2A22" stroke-width="3"/>
+      <circle cx="62" cy="339" r="8" fill="#18A05E"/>
+      <circle cx="80" cy="348" r="9" fill="#18A05E"/>
+      <circle cx="98" cy="339" r="8" fill="#18A05E"/>
+    </g>
+
+    <rect x="462" y="316" width="128" height="36" rx="14" fill="#FFFFFF"/>
+    <text x="526" y="339" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">STARSHIP LOCK</text>
+
+    <rect x="958" y="316" width="126" height="36" rx="14" fill="#FFFFFF"/>
+    <text x="1021" y="339" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">FLIGHT GO</text>
+
+    <rect x="462" y="648" width="150" height="36" rx="14" fill="#FFFFFF"/>
+    <text x="537" y="671" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">MET 12:43</text>
+
+    <rect x="930" y="648" width="154" height="36" rx="14" fill="#FFFFFF"/>
+    <text x="1007" y="671" text-anchor="middle" fill="#1B241E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">MOON TRACK</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="404" y="766" width="742" height="196" rx="28" fill="url(#panel)"/>
+    <rect x="404.5" y="766.5" width="741" height="195" rx="27.5" stroke="#E3EAE3"/>
+  </g>
+  <text x="438" y="810" fill="#6B7B6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="1.2">EXECUTIVE SUMMARY</text>
+  <text x="438" y="842" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="24" font-weight="600">What matters now</text>
+
+  <g>
+    <rect x="438" y="866" width="164" height="72" rx="22" fill="#F5F8F5" stroke="#E1E9E1"/>
+    <text x="462" y="890" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">ALTITUDE</text>
+    <text x="462" y="922" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="28" font-weight="600">184.7 km</text>
+  </g>
+
+  <g>
+    <rect x="620" y="866" width="164" height="72" rx="22" fill="#F5F8F5" stroke="#E1E9E1"/>
+    <text x="644" y="890" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">VELOCITY</text>
+    <text x="644" y="922" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="28" font-weight="600">7.81 km/s</text>
+  </g>
+
+  <g>
+    <rect x="802" y="866" width="164" height="72" rx="22" fill="#F5F8F5" stroke="#E1E9E1"/>
+    <text x="826" y="890" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">PROPELLANT</text>
+    <text x="826" y="922" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="28" font-weight="600">82%</text>
+  </g>
+
+  <g>
+    <rect x="984" y="866" width="128" height="72" rx="22" fill="#EAF6EE" stroke="#D9EBDD"/>
+    <text x="1008" y="890" fill="#107C41" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">GUIDANCE</text>
+    <text x="1008" y="922" fill="#107C41" font-family="Sohne, Inter, system-ui, sans-serif" font-size="28" font-weight="600">GO</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1170" y="194" width="346" height="768" rx="28" fill="url(#panel)"/>
+    <rect x="1170.5" y="194.5" width="345" height="767" rx="27.5" stroke="#E3EAE3"/>
+  </g>
+
+  <text x="1202" y="238" fill="#6B7B6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="1.2">DIRECTOR BRIEF</text>
+  <text x="1202" y="270" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="24" font-weight="600">Flight state</text>
+
+  <g>
+    <rect x="1202" y="300" width="282" height="118" rx="24" fill="#FFFFFF" stroke="#E2EAE2"/>
+    <text x="1228" y="332" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">CURRENT CALL</text>
+    <text x="1228" y="372" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="26" font-weight="600">Hold for lunar window</text>
+    <text x="1228" y="398" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Best TLI departure in 14m 22s.</text>
+  </g>
+
+  <g>
+    <rect x="1202" y="434" width="282" height="144" rx="24" fill="#FFFFFF" stroke="#E2EAE2"/>
+    <text x="1228" y="466" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">CRITICAL WATCH</text>
+    <text x="1228" y="506" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="20" font-weight="600">Moon geometry</text>
+    <text x="1228" y="532" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Miss distance: 1,280 km</text>
+    <text x="1228" y="554" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Perilune estimate: 142 km</text>
+  </g>
+
+  <g>
+    <rect x="1202" y="594" width="282" height="164" rx="24" fill="#FFFFFF" stroke="#E2EAE2"/>
+    <text x="1228" y="626" fill="#6A7A6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">TIMELINE</text>
+    <text x="1228" y="664" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="18" font-weight="600">1  Parking orbit complete</text>
+    <text x="1228" y="694" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="18" font-weight="600">2  Refuel campaign ready</text>
+    <text x="1228" y="724" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="18" font-weight="600">3  TLI window pending</text>
+  </g>
+
+  <g>
+    <rect x="1202" y="774" width="282" height="156" rx="24" fill="#F6FAF7" stroke="#E1E9E1"/>
+    <text x="1228" y="806" fill="#6B7B6E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="12" font-weight="600">EVENTS</text>
+    <text x="1228" y="842" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="17" font-weight="600">12:41  Guidance hold</text>
+    <text x="1228" y="866" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Waiting for departure geometry.</text>
+    <text x="1228" y="898" fill="#101814" font-family="Sohne, Inter, system-ui, sans-serif" font-size="17" font-weight="600">12:36  Parking orbit achieved</text>
+    <text x="1228" y="922" fill="#607063" font-family="Sohne, Inter, system-ui, sans-serif" font-size="14">Orbit stable. Refuel logic armed.</text>
+  </g>
+
+  <text x="800" y="1010" text-anchor="middle" fill="#7B8C7E" font-family="Sohne, Inter, system-ui, sans-serif" font-size="16">Concept direction: one-screen layout, quiet surfaces, fewer panels, stronger priorities, no long vertical scroll</text>
+</svg>
