@@ -315,8 +315,9 @@ function testFleetControllerOrbitInjectDepartureCommit() {
   );
   if (vehicle.moonDeparturePlanReady) {
     assert(
-      String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn+departure-commit"),
-      `fleet departure commit: expected early departure burn mode, got ${snapshot.guidanceMode}`,
+      String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn")
+        && !String(snapshot.guidanceMode || "").includes("go-no-go-hold"),
+      `fleet departure commit: expected early powered TLI burn mode, got ${snapshot.guidanceMode}`,
     );
     assert(
       Number(snapshot.guidanceRequestedThrottle) > 0.5,
@@ -401,15 +402,18 @@ function testPrimaryLaunchControllerConflictProgression() {
   });
   controller.prepareStep(state, 1, NOW_MS);
   const holdSnapshot = controller.statusSnapshotForBody(state, shipId, NOW_MS);
-  if (String(holdSnapshot.guidanceMode || "").includes("+departure-commit")) {
+  if (
+    String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn")
+    && !String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window")
+  ) {
     assert(
       Number(holdSnapshot.guidanceRequestedThrottle) > 0.5,
-      `primary telemetry progression: expected positive requested throttle during departure commit, got ${holdSnapshot.guidanceRequestedThrottle}`,
+      `primary telemetry progression: expected positive requested throttle during early powered TLI, got ${holdSnapshot.guidanceRequestedThrottle}`,
     );
   } else {
     assert(
       String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
-      `primary telemetry progression: expected departure commit or reacquire hold, got ${holdSnapshot.guidanceMode}`,
+      `primary telemetry progression: expected early powered TLI or reacquire hold, got ${holdSnapshot.guidanceMode}`,
     );
   }
 

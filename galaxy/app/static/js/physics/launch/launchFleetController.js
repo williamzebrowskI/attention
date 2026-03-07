@@ -73,6 +73,8 @@ import {
   MOON_BURN_ATTITUDE_GATE_ENTER_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
   MOON_ORBIT_INJECT_ALTITUDE_KM,
+  MOON_ORBIT_INJECT_DEPARTURE_NODE_SAMPLES,
+  MOON_ORBIT_INJECT_DEPARTURE_SEARCH_PROFILE,
   MOON_PARKING_ORBIT_APOAPSIS_KM,
   MOON_PARKING_ORBIT_PERIAPSIS_KM,
 } from "./lunar/constants.js";
@@ -1474,6 +1476,8 @@ export function createLaunchFleetController({
         earthMuKm3S2,
         engineAccelAtThrottle1KmS2: moonDepartureSolverEngineAccelAtThrottle1KmS2,
         spacecraftMassKg: moonDepartureSolverStageMassKg,
+        nodeSamples: MOON_ORBIT_INJECT_DEPARTURE_NODE_SAMPLES,
+        searchProfile: MOON_ORBIT_INJECT_DEPARTURE_SEARCH_PROFILE,
       })
       : null;
     const moonOrbitInjectAscendingNodeRad = moonDepartureWindowSeed
@@ -1730,6 +1734,10 @@ export function createLaunchFleetController({
       moonDeparturePlanBPlaneErrorKm: moonDeparturePlanSource
         ? finiteOrNull(moonDeparturePlanSource.bPlaneErrorKm)
         : null,
+      moonDeparturePlanTransferTimeSec: moonDeparturePlanSource
+        ? finiteOrNull(moonDeparturePlanSource.transferTimeSec)
+        : null,
+      moonDeparturePlanTransitStartElapsedSec: null,
       moonDepartureSeedPositionKm: isMoonOrbitInject ? cloneFiniteVector(spawnRelPos) : null,
       moonDepartureSeedVelocityKmS: isMoonOrbitInject ? cloneFiniteVector(spawnRelVel) : null,
       moonDepartureAscendingNodeRad: isMoonOrbitInject
