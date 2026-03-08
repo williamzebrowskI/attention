@@ -36,12 +36,17 @@ function getSharedWorker() {
     return null;
   }
   if (!sharedWorker) {
-    sharedWorker = new Worker(
-      new URL("./moonClosedLoopSolveWorker.js", import.meta.url),
-      { type: "module" },
-    );
-    sharedWorker.addEventListener("message", handleWorkerMessage);
-    sharedWorker.addEventListener("error", handleWorkerError);
+    try {
+      sharedWorker = new Worker(
+        new URL("./moonClosedLoopSolveWorker.js", import.meta.url),
+        { type: "module" },
+      );
+      sharedWorker.addEventListener("message", handleWorkerMessage);
+      sharedWorker.addEventListener("error", handleWorkerError);
+    } catch (_error) {
+      sharedWorker = null;
+      return null;
+    }
   }
   return sharedWorker;
 }
@@ -84,11 +89,24 @@ export function requestMoonClosedLoopTransferSolve({
     runtime.workerSolveReason = String(message?.solveReason || "");
     runtime.workerSolvedAtSec = Number(message?.solvedAtSec);
   });
-  worker.postMessage({
-    type: "solveBestClosedLoopTransfer",
-    requestId,
-    payload,
-  });
+  try {
+    worker.postMessage({
+      type: "solveBestClosedLoopTransfer",
+      requestId,
+      payload,
+    });
+  } catch (_error) {
+    pendingCallbacks.delete(requestId);
+    runtime.workerPending = false;
+    runtime.workerRequestId = null;
+    runtime.workerRequestedAtSec = null;
+    runtime.workerResult = null;
+    runtime.workerResponseReady = false;
+    runtime.workerError = "worker-post-failed";
+    runtime.workerSolveReason = "";
+    runtime.workerSolvedAtSec = Number.NaN;
+    return false;
+  }
   return true;
 }
 

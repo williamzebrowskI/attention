@@ -100,7 +100,7 @@ function main() {
   assert(shipBody, "moon_post_tli_departure_hold: missing ship body");
 
   vehicle.missionPhase = "coast_to_moon";
-  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast+departure-hold";
+  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast+ballistic-track";
   vehicle.guidanceBurnRequested = false;
   vehicle.guidanceRequestedThrottle = 0;
   vehicle.elapsedSeconds = 1500;
@@ -134,8 +134,8 @@ function main() {
     `moon_post_tli_departure_hold: expected coast_to_moon, got ${snapshot?.missionPhase}`,
   );
   assert(
-    String(snapshot.guidanceMode || "").includes("midcourse-coast"),
-    `moon_post_tli_departure_hold: expected early coast hold, got ${snapshot.guidanceMode}`,
+    String(snapshot.guidanceMode || "").includes("ballistic-track"),
+    `moon_post_tli_departure_hold: expected early ballistic coast track, got ${snapshot.guidanceMode}`,
   );
   assert(
     Number(snapshot.guidanceRequestedThrottle) === 0,

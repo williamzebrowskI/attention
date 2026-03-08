@@ -168,6 +168,38 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : Number(fallback);
 }
 
+function unitVectorOrNull(vector) {
+  if (!finiteVector(vector)) {
+    return null;
+  }
+  const magnitude = length(vector);
+  if (!Number.isFinite(magnitude) || magnitude <= 1e-9) {
+    return null;
+  }
+  return scale(vector, 1 / magnitude);
+}
+
+function alignmentAngleDeg(alignment) {
+  if (!Number.isFinite(Number(alignment))) {
+    return null;
+  }
+  const clamped = clamp(Number(alignment), -1, 1);
+  return Math.acos(clamped) * (180 / Math.PI);
+}
+
+function classifyDirectionalState(alignment, positiveLabel, negativeLabel, neutralLabel = "sideways") {
+  if (!Number.isFinite(Number(alignment))) {
+    return "n/a";
+  }
+  if (alignment >= 0.35) {
+    return positiveLabel;
+  }
+  if (alignment <= -0.35) {
+    return negativeLabel;
+  }
+  return neutralLabel;
+}
+
 function cloneFiniteVector(vector) {
   return finiteVector(vector)
     ? {
@@ -449,14 +481,14 @@ function resolveMoonTliTelemetryMetrics(vehicle = null, fallback = {}, options =
   };
 }
 
-function moonDepartureHoldTelemetryActive(vehicle = null, guidanceMode = "") {
+function moonBallisticCoastTelemetryActive(vehicle = null, guidanceMode = "") {
   if (!vehicle || typeof vehicle !== "object") {
     return false;
   }
   return (
     vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
     && String(vehicle.missionPhase || "").trim() === "coast_to_moon"
-    && String(guidanceMode || "").includes("departure-hold")
+    && String(guidanceMode || "").includes("ballistic-track")
   );
 }
 
@@ -467,17 +499,16 @@ function resolveMoonDepartureTelemetryMetricsForSnapshot({
   rawPredictedPeriluneAltitudeKm = null,
   rawBPlaneErrorKm = null,
 } = {}) {
-  const departureHoldActive = moonDepartureHoldTelemetryActive(vehicle, guidanceMode);
+  const ballisticTrackActive = moonBallisticCoastTelemetryActive(vehicle, guidanceMode);
   const telemetry = resolveMoonTliTelemetryMetrics(vehicle, {
     predictedMissDistanceKm: rawPredictedMissDistanceKm,
     predictedPeriluneAltitudeKm: rawPredictedPeriluneAltitudeKm,
     bPlaneErrorKm: rawBPlaneErrorKm,
-  }, {
-    preferDeparturePlan: departureHoldActive,
   });
   return {
     ...telemetry,
-    preserveDeparturePlan: departureHoldActive,
+    preserveDeparturePlan: false,
+    ballisticTrackActive,
   };
 }
 
@@ -487,11 +518,11 @@ function resolveTargetEtaTelemetryForSnapshot({
   targetDistanceKm = null,
   targetClosingSpeedKmS = null,
 } = {}) {
-  const departureHoldActive = moonDepartureHoldTelemetryActive(vehicle, guidanceMode);
+  const ballisticTrackActive = moonBallisticCoastTelemetryActive(vehicle, guidanceMode);
   const plannedTransferTimeSec = finiteOrNull(vehicle?.moonDeparturePlanTransferTimeSec);
   const transitStartElapsedSec = finiteOrNull(vehicle?.moonDeparturePlanTransitStartElapsedSec);
   if (
-    departureHoldActive
+    ballisticTrackActive
     && Number.isFinite(plannedTransferTimeSec)
     && Number.isFinite(transitStartElapsedSec)
   ) {
@@ -3601,6 +3632,17 @@ export function createLaunchFleetController({
         targetEtaSource: "",
         targetRateLabel: "Closing",
         targetEtaLabel: "ETA",
+        earthDistanceKm: null,
+        earthRelativeSpeedKmS: null,
+        earthRadialSpeedKmS: null,
+        earthDirectionState: "n/a",
+        earthDirectionAlignment: null,
+        earthDirectionAngleDeg: null,
+        earthRelativePositionKm: null,
+        moonDirectionState: "n/a",
+        moonDirectionAlignment: null,
+        moonDirectionAngleDeg: null,
+        moonRelativePositionKm: null,
         moonTliTargetMode: "",
         moonTliTargetMissKm: null,
         moonTliTargetMissGateKm: null,
@@ -3674,6 +3716,24 @@ export function createLaunchFleetController({
     const earthRadialSpeedKmS = earthDistanceKm > 1e-9
       ? dot(relPos, relVel) / earthDistanceKm
       : 0;
+    const earthRelativeSpeedKmS = length(relVel);
+    const earthOutwardUnit = unitVectorOrNull(relPos);
+    const earthVelocityDirectionUnit = unitVectorOrNull(relVel);
+    const earthDirectionAlignment = earthOutwardUnit && earthVelocityDirectionUnit
+      ? clamp(dot(earthVelocityDirectionUnit, earthOutwardUnit), -1, 1)
+      : null;
+    const earthDirectionAngleDeg = alignmentAngleDeg(earthDirectionAlignment);
+    const earthDirectionState = classifyDirectionalState(
+      earthDirectionAlignment,
+      "outbound",
+      "inbound",
+      "crossrange",
+    );
+    const earthRelativePositionKm = cloneFiniteVector(scale(relPos, -1));
+    let moonDirectionState = "n/a";
+    let moonDirectionAlignment = null;
+    let moonDirectionAngleDeg = null;
+    let moonRelativePositionKm = null;
     const moonState = bodyStateFromNBody(state, "moon");
     if (
       vehicle.missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
@@ -3687,6 +3747,7 @@ export function createLaunchFleetController({
         moonState.velocity || { x: 0, y: 0, z: 0 },
       );
       const moonDistanceKm = length(moonRelPos);
+      moonRelativePositionKm = cloneFiniteVector(scale(moonRelPos, -1));
       targetBodyId = "moon";
       targetBodyName = "Moon";
       targetDistanceKm = moonDistanceKm;
@@ -3695,6 +3756,18 @@ export function createLaunchFleetController({
         : null;
       const relativeSpeed = length(moonRelVel);
       moonRelativeSpeedKmS = Number.isFinite(relativeSpeed) ? relativeSpeed : null;
+      const towardMoonUnit = unitVectorOrNull(scale(moonRelPos, -1));
+      const moonVelocityDirectionUnit = unitVectorOrNull(moonRelVel);
+      moonDirectionAlignment = towardMoonUnit && moonVelocityDirectionUnit
+        ? clamp(dot(moonVelocityDirectionUnit, towardMoonUnit), -1, 1)
+        : null;
+      moonDirectionAngleDeg = alignmentAngleDeg(moonDirectionAlignment);
+      moonDirectionState = classifyDirectionalState(
+        moonDirectionAlignment,
+        "toward",
+        "away",
+        "sideways",
+      );
       const projectedMiss = projectedClosestApproachDistanceKm(moonRelPos, moonRelVel);
       const rawMoonProjectedMissDistanceKm = Number.isFinite(projectedMiss) ? projectedMiss : null;
       moonProjectedMissDistanceKm = rawMoonProjectedMissDistanceKm;
@@ -3710,7 +3783,7 @@ export function createLaunchFleetController({
         : rawMoonProjectedMissDistanceKm;
       if (
         vehicle.missionPhase === "tli_burn"
-        || moonDepartureHoldTelemetryActive(vehicle, snapshotGuidanceMode)
+        || moonBallisticCoastTelemetryActive(vehicle, snapshotGuidanceMode)
       ) {
         const tliTelemetry = resolveMoonDepartureTelemetryMetricsForSnapshot({
           vehicle,
@@ -4031,6 +4104,17 @@ export function createLaunchFleetController({
       targetEtaSource: String(targetEtaTelemetry.targetEtaSource || ""),
       targetRateLabel: String(targetEtaTelemetry.targetRateLabel || "Closing"),
       targetEtaLabel: String(targetEtaTelemetry.targetEtaLabel || "ETA"),
+      earthDistanceKm,
+      earthRelativeSpeedKmS: finiteOrNull(earthRelativeSpeedKmS),
+      earthRadialSpeedKmS: finiteOrNull(earthRadialSpeedKmS),
+      earthDirectionState,
+      earthDirectionAlignment: finiteOrNull(earthDirectionAlignment),
+      earthDirectionAngleDeg: finiteOrNull(earthDirectionAngleDeg),
+      earthRelativePositionKm,
+      moonDirectionState,
+      moonDirectionAlignment: finiteOrNull(moonDirectionAlignment),
+      moonDirectionAngleDeg: finiteOrNull(moonDirectionAngleDeg),
+      moonRelativePositionKm,
       moonRelativeSpeedKmS,
       moonProjectedMissDistanceKm,
       moonProjectedMissTrendKmS,

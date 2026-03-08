@@ -2488,6 +2488,8 @@ export function solveMoonOrbitInjectWindowForLaunch({
   ];
   let bestWindow = null;
   let bestScore = Number.NEGATIVE_INFINITY;
+  let bestAcceptedWindow = null;
+  let bestAcceptedScore = Number.NEGATIVE_INFINITY;
   for (let index = 0; index < attempts.length; index += 1) {
     const attempt = attempts[index];
     const solved = solveBestMoonOrbitInjectWindow({
@@ -2507,9 +2509,14 @@ export function solveMoonOrbitInjectWindowForLaunch({
       bestScore = score;
       bestWindow = solved;
     }
-    if (solved?.valid && solved?.ready && solved?.corridorAccepted) {
-      return solved;
+    if (solved?.valid && solved?.ready && solved?.corridorAccepted && score > bestAcceptedScore) {
+      bestAcceptedScore = score;
+      bestAcceptedWindow = solved;
+    }
+    const comparedCoarseAndHybridAttempts = index >= 1;
+    if (bestAcceptedWindow && comparedCoarseAndHybridAttempts) {
+      break;
     }
   }
-  return bestWindow;
+  return bestAcceptedWindow || bestWindow;
 }

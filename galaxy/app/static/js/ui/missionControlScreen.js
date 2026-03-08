@@ -1,3 +1,8 @@
+import {
+  resolveSnapshotTargetTelemetry,
+  shouldShowTerrainRelativeAltitude,
+} from "./launchTelemetryDisplay.js";
+
 function fallbackEscapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1620,19 +1625,12 @@ export function createMissionControlScreenController(options = {}) {
       ? "Booster tracking lock"
       : (safeVehicleViewState.activeView === "starship" ? "Starship tracking lock" : "Observation free-look");
     const targetBodyLabel = String(snapshot.targetBodyName || snapshot.targetBodyId || "").trim() || "n/a";
-    const targetDistanceKm = finiteNumberOrNull(snapshot.targetDistanceKm);
-    const targetClosingSpeedKmS = finiteNumberOrNull(snapshot.targetClosingSpeedKmS);
-    const targetEtaSeconds = Number.isFinite(Number(snapshot.targetEtaSeconds))
-      ? Number(snapshot.targetEtaSeconds)
-      : (
-        targetDistanceKm !== null
-        && targetClosingSpeedKmS !== null
-        && targetClosingSpeedKmS > 1e-6
-      )
-        ? (targetDistanceKm / targetClosingSpeedKmS)
-        : null;
-    const targetRateLabel = String(snapshot.targetRateLabel || "Closing").trim() || "Closing";
-    const targetEtaLabel = String(snapshot.targetEtaLabel || "ETA").trim() || "ETA";
+    const targetTelemetry = resolveSnapshotTargetTelemetry(snapshot);
+    const targetDistanceKm = finiteNumberOrNull(targetTelemetry.targetDistanceKm);
+    const targetClosingSpeedKmS = finiteNumberOrNull(targetTelemetry.targetClosingSpeedKmS);
+    const targetEtaSeconds = finiteNumberOrNull(targetTelemetry.targetEtaSeconds);
+    const targetRateLabel = String(targetTelemetry.targetRateLabel || "Closing").trim() || "Closing";
+    const targetEtaLabel = String(targetTelemetry.targetEtaLabel || "ETA").trim() || "ETA";
     const flightRules = flightRuleState({
       snapshot,
       guidanceInertNoPropellant,
@@ -1956,9 +1954,9 @@ export function createMissionControlScreenController(options = {}) {
           value: Number.isFinite(Number(snapshot.altitudeKm))
             ? `${formatNumber(snapshot.altitudeKm, 3)} km`
             : "n/a",
-          detail: Number.isFinite(Number(snapshot.altitudeAboveTerrainKm))
+          detail: shouldShowTerrainRelativeAltitude(snapshot) && Number.isFinite(Number(snapshot.altitudeAboveTerrainKm))
             ? `AGL ${formatNumber(snapshot.altitudeAboveTerrainKm, 3)} km`
-            : "No AGL solution.",
+            : "Earth-relative altitude.",
           tone: active ? "nominal" : "info",
         }),
         heroMetric({

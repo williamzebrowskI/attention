@@ -200,6 +200,95 @@ function evaluateTransferCandidate({
   };
 }
 
+export function evaluateBallisticTransferSync({
+  initialState,
+  sources,
+  spacecraft,
+  primaryDirection,
+  targetBodyId,
+  targetBodyRadiusKm,
+  targetPeriluneAltitudeKm,
+  safetyBodyId,
+  safetyMinAltitudeKm,
+  predictDurationSec,
+  plannerConfig,
+} = {}) {
+  const accelAtThrottle1KmS2 = Math.max(0.0002, finiteNumber(plannerConfig?.engineAccelAtThrottle1KmS2, 0.0055));
+  const stepSec = Math.max(30, finiteNumber(plannerConfig?.moonClosedLoopPropagationStepSec, 600));
+  const ballisticDirection = normalize(primaryDirection, { x: 0, y: 1, z: 0 });
+  const propagation = propagateMoonGuidanceState({
+    initialState,
+    durationSec: predictDurationSec,
+    stepSec,
+    sources,
+    spacecraft,
+    burnCommand: {
+      direction: ballisticDirection,
+      throttle: 0,
+      accelAtThrottle1KmS2,
+      burnDurationSec: 0,
+    },
+  });
+  if (!propagation) {
+    return null;
+  }
+  const closestRelativeState = closestRelativeStateForBody(propagation, targetBodyId);
+  const predictedMissDistanceKm = Number.isFinite(minDistanceForBody(propagation, targetBodyId))
+    ? minDistanceForBody(propagation, targetBodyId)
+    : Number.POSITIVE_INFINITY;
+  const predictedPeriluneAltitudeKm = Number.isFinite(minAltitudeForBody(propagation, targetBodyId))
+    ? minAltitudeForBody(propagation, targetBodyId)
+    : Number.POSITIVE_INFINITY;
+  const closestTargetRelPos = finiteVector(closestRelativeState.positionKm)
+    ? closestRelativeState.positionKm
+    : null;
+  const closestTargetRelVel = finiteVector(closestRelativeState.velocityKmS)
+    ? closestRelativeState.velocityKmS
+    : null;
+  const bPlaneErrorKm = estimateBPlaneErrorKm({
+    relativePositionKm: closestTargetRelPos,
+    relativeVelocityKmS: closestTargetRelVel,
+    targetPeriluneAltitudeKm,
+    bodyRadiusKm: targetBodyRadiusKm,
+  });
+  const closestTargetRangeKm = finiteVector(closestTargetRelPos) ? length(closestTargetRelPos) : Number.NaN;
+  const closestClosingSpeedKmS = (
+    finiteVector(closestTargetRelPos)
+    && finiteVector(closestTargetRelVel)
+    && closestTargetRangeKm > 1e-9
+  )
+    ? -dot(closestTargetRelVel, scale(closestTargetRelPos, 1 / closestTargetRangeKm))
+    : Number.NaN;
+  const safetyAltitudeKm = Number.isFinite(minAltitudeForBody(propagation, safetyBodyId))
+    ? minAltitudeForBody(propagation, safetyBodyId)
+    : Number.NaN;
+  const safetyRiskKm = Number.isFinite(safetyAltitudeKm)
+    ? Math.max(0, safetyMinAltitudeKm - safetyAltitudeKm)
+    : safetyMinAltitudeKm;
+  const closingPenalty = Number.isFinite(closestClosingSpeedKmS)
+    ? Math.max(0, -closestClosingSpeedKmS) * 10_000
+    : 5_000;
+  const cost = (
+    predictedMissDistanceKm
+    + (Math.abs(predictedPeriluneAltitudeKm - targetPeriluneAltitudeKm) * 0.8)
+    + ((Number.isFinite(bPlaneErrorKm) ? bPlaneErrorKm : predictedMissDistanceKm) * 0.55)
+    + (safetyRiskKm * 8_000)
+    + closingPenalty
+  );
+  return {
+    cost,
+    throttle: 0,
+    deltaVNeedKmS: 0,
+    burnDurationSec: 0,
+    burnDirection: ballisticDirection,
+    propagation,
+    predictedMissDistanceKm,
+    predictedPeriluneAltitudeKm,
+    bPlaneErrorKm,
+    closestClosingSpeedKmS,
+  };
+}
+
 function enumerateTransferCandidates({
   initialState,
   sources,
@@ -218,11 +307,29 @@ function enumerateTransferCandidates({
   phase,
 }) {
   const { primaryDir, radialDir, normalDir } = basisFromPrimary(primaryDirection, up);
-  const dvOffsets = phase === "tli_burn"
+  const defaultDvOffsets = phase === "tli_burn"
     ? [-0.45, -0.15, 0, 0.18, 0.42]
     : [-0.06, -0.02, 0, 0.02, 0.06];
-  const radialOffsets = phase === "tli_burn" ? [-0.12, 0, 0.12] : [-0.05, 0, 0.05];
-  const normalOffsets = phase === "tli_burn" ? [-0.05, 0, 0.05] : [-0.03, 0, 0.03];
+  const defaultRadialOffsets = phase === "tli_burn" ? [-0.12, 0, 0.12] : [-0.05, 0, 0.05];
+  const defaultNormalOffsets = phase === "tli_burn" ? [-0.05, 0, 0.05] : [-0.03, 0, 0.03];
+  const dvOffsets = Array.isArray(plannerConfig?.moonClosedLoopDvOffsetsKmS)
+    && plannerConfig.moonClosedLoopDvOffsetsKmS.length > 0
+    ? plannerConfig.moonClosedLoopDvOffsetsKmS
+        .map((value) => finiteNumber(value, Number.NaN))
+        .filter((value) => Number.isFinite(value))
+    : defaultDvOffsets;
+  const radialOffsets = Array.isArray(plannerConfig?.moonClosedLoopRadialOffsets)
+    && plannerConfig.moonClosedLoopRadialOffsets.length > 0
+    ? plannerConfig.moonClosedLoopRadialOffsets
+        .map((value) => finiteNumber(value, Number.NaN))
+        .filter((value) => Number.isFinite(value))
+    : defaultRadialOffsets;
+  const normalOffsets = Array.isArray(plannerConfig?.moonClosedLoopNormalOffsets)
+    && plannerConfig.moonClosedLoopNormalOffsets.length > 0
+    ? plannerConfig.moonClosedLoopNormalOffsets
+        .map((value) => finiteNumber(value, Number.NaN))
+        .filter((value) => Number.isFinite(value))
+    : defaultNormalOffsets;
   const stepSec = Math.max(30, finiteNumber(plannerConfig.moonClosedLoopPropagationStepSec, 600));
   let best = null;
   for (let dvIndex = 0; dvIndex < dvOffsets.length; dvIndex += 1) {

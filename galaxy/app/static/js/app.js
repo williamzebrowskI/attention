@@ -68,7 +68,7 @@ import {
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
 import { MOON_ORBIT_INJECT_ALTITUDE_KM } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260306b";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260307w";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -78,6 +78,16 @@ import { computeLaunchVehicleViewState } from "./ui/launchVehicleViewState.js";
 import { createLegendVehicleStatusController } from "./ui/legendVehicleStatus.js";
 import { createRefuelTransferVisualController } from "./ui/refuelTransferVisual.js";
 import { createLaunchVehicleDeleteController } from "./ui/launchVehicleDeleteController.js";
+import { resolveMissionLaunchAction } from "./ui/launchCommandRouting.js";
+import {
+  spacecraftMinOrbitDistanceScene,
+  spacecraftEarthRelativeOrbitAngles,
+  spacecraftPreferredCameraDistanceScene,
+} from "./ui/spacecraftCameraFraming.js";
+import {
+  resolveSnapshotTargetTelemetry,
+  shouldShowTerrainRelativeAltitude,
+} from "./ui/launchTelemetryDisplay.js";
 
 const canvas = document.getElementById("scene");
 const infoCard = document.getElementById("planet-info");
@@ -208,7 +218,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260306c";
+const FRONTEND_MODULE_VERSION = "20260307ac";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -2707,7 +2717,7 @@ function createLegendGravityPanel(body, isMoon) {
 
 function hasVisibleBodyState(bodyId) {
   const visual = bodyVisuals.get(bodyId);
-  const hasCoords = Boolean(runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km);
+  const hasCoords = Boolean(runtimeCoordsOrLiveById(bodyId));
   return Boolean(metaById.has(bodyId) && visual?.root?.visible && hasCoords);
 }
 
@@ -3156,17 +3166,12 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const dynamicPressureKPa = Number.isFinite(Number(snapshot.dynamicPressurePa))
     ? Number(snapshot.dynamicPressurePa) / 1000
     : Number.NaN;
-  const targetEtaSeconds = Number.isFinite(Number(snapshot.targetEtaSeconds))
-    ? Number(snapshot.targetEtaSeconds)
-    : (
-      Number.isFinite(Number(snapshot.targetDistanceKm))
-      && Number.isFinite(Number(snapshot.targetClosingSpeedKmS))
-      && Number(snapshot.targetClosingSpeedKmS) > 1e-6
-        ? (Number(snapshot.targetDistanceKm) / Number(snapshot.targetClosingSpeedKmS))
-        : Number.NaN
-    );
-  const targetRateLabel = String(snapshot.targetRateLabel || "Closing").trim() || "Closing";
-  const targetEtaLabel = String(snapshot.targetEtaLabel || "ETA").trim() || "ETA";
+  const targetTelemetry = resolveSnapshotTargetTelemetry(snapshot);
+  const targetEtaSeconds = Number.isFinite(Number(targetTelemetry.targetEtaSeconds))
+    ? Number(targetTelemetry.targetEtaSeconds)
+    : Number.NaN;
+  const targetRateLabel = String(targetTelemetry.targetRateLabel || "Closing").trim() || "Closing";
+  const targetEtaLabel = String(targetTelemetry.targetEtaLabel || "ETA").trim() || "ETA";
   const moonRelativeSpeedKmS = Number(snapshot.moonRelativeSpeedKmS);
   const moonProjectedMissDistanceKm = Number(snapshot.moonProjectedMissDistanceKm);
   const moonWindowWaitSec = Number(snapshot.moonDepartureWindowWaitSec);
@@ -3245,7 +3250,12 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Guidance", value: guidance },
     { label: "Target Orbit", value: Number.isFinite(Number(snapshot.targetOrbitAltitudeKm)) ? `${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km` : "n/a" },
     { label: "Altitude", value: Number.isFinite(Number(snapshot.altitudeKm)) ? `${formatNumber(snapshot.altitudeKm, 3)} km` : "n/a" },
-    { label: "Altitude AGL", value: Number.isFinite(Number(snapshot.altitudeAboveTerrainKm)) ? `${formatNumber(snapshot.altitudeAboveTerrainKm, 3)} km` : "n/a" },
+    {
+      label: "Altitude AGL",
+      value: shouldShowTerrainRelativeAltitude(snapshot) && Number.isFinite(Number(snapshot.altitudeAboveTerrainKm))
+        ? `${formatNumber(snapshot.altitudeAboveTerrainKm, 3)} km`
+        : "n/a",
+    },
     { label: "Speed", value: Number.isFinite(Number(snapshot.speedKmS)) ? `${formatNumber(snapshot.speedKmS, 4)} km/s` : "n/a" },
     { label: "Mass", value: Number.isFinite(Number(snapshot.massKg)) ? `${formatNumber(snapshot.massKg, 0)} kg` : "n/a" },
   ];
@@ -3726,6 +3736,7 @@ function applyLaunchMissionSelection(selectedMissionId) {
     selectedMissionName: applied.name,
   });
   updateLaunchStatusPanel(true, `Mission selected: ${applied.name}`);
+  warmSelectedMissionLaunchSolve();
   return {
     accepted: true,
     staged: false,
@@ -3749,6 +3760,7 @@ function setMissionLaunchModeSelection(mode, options = {}) {
     });
     updateLaunchStatusPanel(true, `Mission launch mode set: ${missionLaunchModeDisplayLabel(resolved)}.`);
   }
+  warmSelectedMissionLaunchSolve();
   return resolved;
 }
 
@@ -4010,9 +4022,14 @@ function updateLegendFleetManager() {
 async function ensureRuntimeCatalogBody(bodyMeta) {
   return ensureRuntimeCatalogBodyView({
     bodyMeta,
-    hasBody: (id) => metaById.has(id),
+    hasBody: (id) => metaById.has(id) && bodyVisuals.has(id),
     registerBody: (normalized) => {
-      bodies = [...bodies, normalized];
+      const existingIndex = bodies.findIndex((body) => body?.id === normalized.id);
+      if (existingIndex >= 0) {
+        bodies = bodies.map((body, index) => (index === existingIndex ? normalized : body));
+      } else {
+        bodies = [...bodies, normalized];
+      }
       metaById.set(normalized.id, normalized);
     },
     createBodyVisual,
@@ -4070,6 +4087,15 @@ function tankerLaunchRejectLabel(reason) {
 
 function missionLaunchRejectLabel(reason) {
   const key = String(reason || "").trim().toLowerCase();
+  if (key === "orbit_inject_solver_timeout") {
+    return "Moon direct inject solve timed out before launch. Please retry.";
+  }
+  if (key === "orbit_inject_solver_unavailable") {
+    return "Moon direct inject solver is unavailable in this browser runtime.";
+  }
+  if (key === "orbit_inject_solver_error") {
+    return "Moon direct inject solver failed before launch.";
+  }
   if (key === "orbit_inject_window_unavailable") {
     return "Moon direct inject is not in a valid immediate departure window right now.";
   }
@@ -4106,9 +4132,65 @@ async function requestMissionShipLaunch(state, missionId, launchMode, launchOpti
   };
   if (isAsyncMoonOrbitInjectLaunch(missionId, launchMode)) {
     updateLaunchStatusPanel(true, "Computing best Moon inject window...");
-    return launchController.launchMissionShipAsync(state, missionId, Date.now(), options);
+    try {
+      return await launchController.launchMissionShipAsync(state, missionId, Date.now(), options);
+    } catch (error) {
+      console.warn("[launch] Async moon inject solve failed before launch.", error);
+      updateLaunchStatusPanel(true, "Moon inject solve failed before launch.");
+      return {
+        accepted: false,
+        reason: "orbit_inject_solver_error",
+      };
+    }
   }
   return launchController.launchMissionShip?.(state, missionId, Date.now(), options);
+}
+
+function warmSelectedMissionLaunchSolve() {
+  if (!launchController || !nBodyState?.initialized) {
+    return;
+  }
+  const selectedMissionId = activeSelectedMissionId();
+  const missionLaunchMode = selectedMissionLaunchMode();
+  if (
+    String(selectedMissionId || "").trim().toLowerCase() !== "moon_orbit_return"
+    || String(missionLaunchMode || "").trim().toLowerCase() !== "orbit_inject"
+    || typeof launchController?.warmMoonOrbitInjectLaunchSolve !== "function"
+  ) {
+    return;
+  }
+  void launchController.warmMoonOrbitInjectLaunchSolve(
+    nBodyState,
+    selectedMissionId,
+    {
+      allowLocalFallback: true,
+      mode: missionLaunchMode,
+      orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
+      vehicleRole: "mission",
+    },
+  ).catch((error) => {
+    console.warn("[launch] Failed to warm Moon direct inject solve.", error);
+  });
+}
+
+function syncRuntimeScenePositionsNow(nowMs = Date.now()) {
+  if (!nBodyState?.initialized) {
+    return;
+  }
+  runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
+  applyScenePositions(runtimeCoordsKmById);
+}
+
+function primaryLaunchActive() {
+  if (typeof launchController?.isPrimaryLaunchActive === "function") {
+    return Boolean(launchController.isPrimaryLaunchActive());
+  }
+  if (typeof launchController?.statusSnapshot !== "function") {
+    return false;
+  }
+  const snapshot = launchController.statusSnapshot(nBodyState);
+  const phase = String(snapshot?.phase || "").trim().toLowerCase();
+  return phase !== "idle" || Boolean(snapshot?.boosterActive);
 }
 
 function setupLaunchControls() {
@@ -4122,6 +4204,7 @@ function setupLaunchControls() {
     return;
   }
   setupLaunchMissionPicker();
+  warmSelectedMissionLaunchSolve();
   if (launchControlButton) {
     launchControlButton.addEventListener("click", async () => {
       if (launchModuleLoadError) {
@@ -4144,7 +4227,11 @@ function setupLaunchControls() {
         || launchController.getMissionProfile?.()?.id
         || "";
       const missionLaunchMode = selectedMissionLaunchMode();
-      if (launchController.isActive()) {
+      const missionLaunchAction = resolveMissionLaunchAction({
+        primaryLaunchActive: primaryLaunchActive(),
+        missionLaunchMode,
+      });
+      if (missionLaunchAction === "mission_additional_fleet") {
         let launchResult = await requestMissionShipLaunch(
           nBodyState,
           selectedMissionId,
@@ -4198,18 +4285,21 @@ function setupLaunchControls() {
           orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
         });
         if (launchResult?.shipMeta) {
-          void ensureRuntimeCatalogBody(launchResult.shipMeta).catch((error) => {
+          try {
+            await ensureRuntimeCatalogBody(launchResult.shipMeta);
+          } catch (error) {
             console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
-          });
+          }
         }
         if (launchResult?.shipId) {
+          syncRuntimeScenePositionsNow(Date.now());
           setSelected(launchResult.shipId, true);
         }
         updateLaunchControls();
         updateLaunchStatusPanel(true);
         return;
       }
-      if (missionLaunchMode === "orbit_inject") {
+      if (missionLaunchAction === "mission_orbit_inject") {
         if (selectedMissionId) {
           launchController.setMissionProfile?.(selectedMissionId);
         }
@@ -4266,11 +4356,14 @@ function setupLaunchControls() {
           orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
         });
         if (launchResult?.shipMeta) {
-          void ensureRuntimeCatalogBody(launchResult.shipMeta).catch((error) => {
+          try {
+            await ensureRuntimeCatalogBody(launchResult.shipMeta);
+          } catch (error) {
             console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
-          });
+          }
         }
         if (launchResult?.shipId) {
+          syncRuntimeScenePositionsNow(Date.now());
           setSelected(launchResult.shipId, true);
         }
         updateLaunchControls();
@@ -4283,6 +4376,7 @@ function setupLaunchControls() {
       const started = launchController.startLaunch(nBodyState, Date.now());
       if (started) {
         resetLaunchTrajectoryPath();
+        syncRuntimeScenePositionsNow(Date.now());
         setSelected(LAUNCH_BODY_ID, true);
       } else {
         appendLaunchLogEntry("error", {
@@ -4376,6 +4470,13 @@ function setupLaunchControls() {
       }
       if (launchResult?.tankerMeta) {
         await ensureRuntimeCatalogBody(launchResult.tankerMeta);
+      }
+      if (launchResult?.pending) {
+        syncRuntimeScenePositionsNow(Date.now());
+        setSelected(LAUNCH_BODY_ID, true);
+      } else if (launchResult?.tankerId) {
+        syncRuntimeScenePositionsNow(Date.now());
+        setSelected(launchResult.tankerId, true);
       }
       appendLaunchLogEntry("info", {
         name: "refuel_tanker_launch_requested",
@@ -4544,7 +4645,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const orbitTarget = Number.isFinite(Number(snapshot.targetOrbitAltitudeKm))
     ? ` | Target ${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km`
     : "";
-  const altitudeAgl = Number.isFinite(Number(snapshot.altitudeAboveTerrainKm))
+  const altitudeAgl = shouldShowTerrainRelativeAltitude(snapshot) && Number.isFinite(Number(snapshot.altitudeAboveTerrainKm))
     ? Number(snapshot.altitudeAboveTerrainKm)
     : null;
   const altitudeLabel = altitudeAgl !== null
@@ -4577,15 +4678,12 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   const targetBodyName = String(snapshot.targetBodyName || "").trim();
   const targetBodyId = String(snapshot.targetBodyId || "").trim();
   const targetBodyLabel = launchTargetLabel(targetBodyName, targetBodyId);
-  const targetDistanceKm = Number(snapshot.targetDistanceKm);
-  const targetClosingSpeedKmS = Number(snapshot.targetClosingSpeedKmS);
-  const targetEtaSeconds = Number.isFinite(Number(snapshot.targetEtaSeconds))
-    ? Number(snapshot.targetEtaSeconds)
-    : (Number.isFinite(targetDistanceKm) && Number.isFinite(targetClosingSpeedKmS) && targetClosingSpeedKmS > 1e-6
-      ? (targetDistanceKm / targetClosingSpeedKmS)
-      : null);
-  const targetRateLabel = String(snapshot.targetRateLabel || "Closing").trim() || "Closing";
-  const targetEtaLabel = String(snapshot.targetEtaLabel || "ETA").trim() || "ETA";
+  const targetTelemetry = resolveSnapshotTargetTelemetry(snapshot);
+  const targetDistanceKm = targetTelemetry.targetDistanceKm;
+  const targetClosingSpeedKmS = targetTelemetry.targetClosingSpeedKmS;
+  const targetEtaSeconds = targetTelemetry.targetEtaSeconds;
+  const targetRateLabel = String(targetTelemetry.targetRateLabel || "Closing").trim() || "Closing";
+  const targetEtaLabel = String(targetTelemetry.targetEtaLabel || "ETA").trim() || "ETA";
   const targetLine = Number.isFinite(targetDistanceKm)
     ? ` | Target ${targetBodyLabel || "Body"} ${formatNumber(targetDistanceKm, 1)} km${Number.isFinite(targetClosingSpeedKmS) ? ` (${targetRateLabel} ${formatNumber(targetClosingSpeedKmS, 4)} km/s)` : ""}${Number.isFinite(targetEtaSeconds) ? ` ${targetEtaLabel} ${formatDurationSeconds(targetEtaSeconds)}` : ""}`
     : "";
@@ -7458,6 +7556,7 @@ function updatePositions(payload, source = "runtime") {
   if (launchFeatureEnabled) {
     updateLaunchControls();
     updateLaunchStatusPanel(true);
+    warmSelectedMissionLaunchSolve();
   }
   if (source === "startup_seed") {
     startupSeedLocked = true;
@@ -9175,14 +9274,12 @@ function minOrbitDistanceForVisual(visual) {
   }
   const bodyType = String(visual?.body?.body_type || "").toLowerCase();
   if (bodyType === "spacecraft") {
-    const bodyRadiusKm = Number(visual?.body?.radius_km);
-    const bodyRadiusScene = Number.isFinite(bodyRadiusKm) && bodyRadiusKm > 0
-      ? bodyRadiusKm * DISTANCE_SCALE
-      : Math.max((Number(visual.renderRadius) || 0) * 0.08, SPACECRAFT_MIN_DISTANCE_ABSOLUTE);
-    return Math.max(
-      SPACECRAFT_MIN_DISTANCE_ABSOLUTE,
-      bodyRadiusScene * SPACECRAFT_MIN_DISTANCE_RADIUS_FACTOR,
-    );
+    return spacecraftMinOrbitDistanceScene({
+      distanceScale: DISTANCE_SCALE,
+      renderRadius: Number(visual.renderRadius) || 0,
+      bodyRadiusKm: Number(visual?.body?.radius_km),
+      stackHeightKm: INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM,
+    });
   }
   const radiusFactor = ORBIT_MIN_DISTANCE_RADIUS_FACTOR;
   return Math.max(
@@ -9295,12 +9392,14 @@ function preferredCameraDistanceForSelection(visual) {
   }
 
   if (body.body_type === "spacecraft") {
-    const bodyRadiusKm = Number(visual?.body?.radius_km);
-    const bodyRadiusScene = Number.isFinite(bodyRadiusKm) && bodyRadiusKm > 0
-      ? bodyRadiusKm * DISTANCE_SCALE
-      : Math.max((Number(visual.renderRadius) || 0) * 0.08, SPACECRAFT_MIN_DISTANCE_ABSOLUTE);
     return clamp(
-      Math.max(bodyRadiusScene * SPACECRAFT_DEFAULT_FOCUS_DISTANCE_FACTOR, 0.00000025),
+      spacecraftPreferredCameraDistanceScene({
+        distanceScale: DISTANCE_SCALE,
+        renderRadius: Number(visual.renderRadius) || 0,
+        bodyRadiusKm: Number(visual?.body?.radius_km),
+        stackHeightKm: INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM,
+        nearSurface,
+      }),
       nearSurface,
       orbit.maxDistance,
     );
@@ -9377,7 +9476,7 @@ function setSelected(bodyId, moveCamera) {
     return;
   }
 
-  const liveCoords = runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
+  const liveCoords = runtimeCoordsOrLiveById(bodyId);
   const canReframe = observation.mode === OBSERVATION_MODES.BODY_LOCK;
   if (canReframe) {
     orbit.minDistance = minOrbitDistanceForVisual(visual);
@@ -9394,7 +9493,23 @@ function setSelected(bodyId, moveCamera) {
   if (moveCamera && canReframe) {
     if (liveCoords) {
       orbit.radius = preferredCameraDistanceForSelection(visual);
-      orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
+      const bodyType = String(visual?.body?.body_type || "").toLowerCase();
+      if (bodyType === "spacecraft") {
+        const targetForView = resolveBodyLockTargetPosition(bodyId) || visual.root.position;
+        const earthScene = bodyVisuals.get("earth")?.root?.position || null;
+        const orbitAngles = spacecraftEarthRelativeOrbitAngles({
+          targetScene: targetForView,
+          earthScene,
+        });
+        if (orbitAngles) {
+          orbit.azimuth = orbitAngles.azimuth;
+          orbit.polar = clamp(orbitAngles.polar, orbit.minPolar, orbit.maxPolar);
+        } else {
+          orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
+        }
+      } else {
+        orbit.polar = clamp(rad(84), orbit.minPolar, orbit.maxPolar);
+      }
     }
   }
   updateObservationStatus();
@@ -9761,7 +9876,10 @@ function shouldApplyOcclusionPair(targetBody, occluderBody) {
 }
 
 function runtimeCoordsOrLiveById(bodyId) {
-  const coords = runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
+  const coords = runtimeCoordsKmById.get(bodyId)
+    || nBodyCoordinatesKmById(bodyId)
+    || positionsById.get(bodyId)?.coordinates_km
+    || null;
   return finiteVectorKm(coords) ? coords : null;
 }
 
@@ -9771,7 +9889,10 @@ function runtimeVelocityKmSOrLiveById(bodyId) {
 }
 
 function lightCoordsById(bodyId) {
-  const coords = runtimeCoordsKmById.get(bodyId) || positionsById.get(bodyId)?.coordinates_km || null;
+  const coords = runtimeCoordsKmById.get(bodyId)
+    || nBodyCoordinatesKmById(bodyId)
+    || positionsById.get(bodyId)?.coordinates_km
+    || null;
   return finiteVectorKm(coords) ? coords : null;
 }
 
@@ -10864,15 +10985,42 @@ function updateInfoOverlay() {
     const targetClosingLine = Number.isFinite(targetClosingRawKmS)
       ? `${formatNumber(targetClosingRawKmS, 4)} km/s`
       : "n/a";
-    const targetEtaSeconds = Number.isFinite(Number(launchSnapshot?.targetEtaSeconds))
-      ? Number(launchSnapshot.targetEtaSeconds)
-      : (Number.isFinite(targetDistanceRawKm) && Number.isFinite(targetClosingRawKmS) && targetClosingRawKmS > 1e-6
-        ? (targetDistanceRawKm / targetClosingRawKmS)
-        : null);
-    const targetRateLabel = String(launchSnapshot?.targetRateLabel || "Closing").trim() || "Closing";
-    const targetEtaLabel = String(launchSnapshot?.targetEtaLabel || "ETA").trim() || "ETA";
+    const targetTelemetry = resolveSnapshotTargetTelemetry(launchSnapshot);
+    const targetEtaSeconds = targetTelemetry.targetEtaSeconds;
+    const targetRateLabel = String(targetTelemetry.targetRateLabel || "Closing").trim() || "Closing";
+    const targetEtaLabel = String(targetTelemetry.targetEtaLabel || "ETA").trim() || "ETA";
     const targetEtaLine = Number.isFinite(targetEtaSeconds)
       ? formatDurationSeconds(targetEtaSeconds)
+      : "n/a";
+    const earthDistanceLine = Number.isFinite(Number(launchSnapshot?.earthDistanceKm))
+      ? `${formatNumber(launchSnapshot.earthDistanceKm, 1)} km`
+      : "n/a";
+    const earthRadialLine = Number.isFinite(Number(launchSnapshot?.earthRadialSpeedKmS))
+      ? `${formatNumber(launchSnapshot.earthRadialSpeedKmS, 4)} km/s`
+      : "n/a";
+    const earthDirectionStateLine = String(launchSnapshot?.earthDirectionState || "").trim() || "n/a";
+    const earthDirectionAngleLine = Number.isFinite(Number(launchSnapshot?.earthDirectionAngleDeg))
+      ? `${formatNumber(launchSnapshot.earthDirectionAngleDeg, 1)}°`
+      : "n/a";
+    const earthRelativeVectorLine = (
+      launchSnapshot?.earthRelativePositionKm
+      && Number.isFinite(Number(launchSnapshot.earthRelativePositionKm.x))
+      && Number.isFinite(Number(launchSnapshot.earthRelativePositionKm.y))
+      && Number.isFinite(Number(launchSnapshot.earthRelativePositionKm.z))
+    )
+      ? `${formatNumber(launchSnapshot.earthRelativePositionKm.x, 1)}, ${formatNumber(launchSnapshot.earthRelativePositionKm.y, 1)}, ${formatNumber(launchSnapshot.earthRelativePositionKm.z, 1)}`
+      : "n/a";
+    const moonDirectionStateLine = String(launchSnapshot?.moonDirectionState || "").trim() || "n/a";
+    const moonDirectionAngleLine = Number.isFinite(Number(launchSnapshot?.moonDirectionAngleDeg))
+      ? `${formatNumber(launchSnapshot.moonDirectionAngleDeg, 1)}°`
+      : "n/a";
+    const moonRelativeVectorLine = (
+      launchSnapshot?.moonRelativePositionKm
+      && Number.isFinite(Number(launchSnapshot.moonRelativePositionKm.x))
+      && Number.isFinite(Number(launchSnapshot.moonRelativePositionKm.y))
+      && Number.isFinite(Number(launchSnapshot.moonRelativePositionKm.z))
+    )
+      ? `${formatNumber(launchSnapshot.moonRelativePositionKm.x, 1)}, ${formatNumber(launchSnapshot.moonRelativePositionKm.y, 1)}, ${formatNumber(launchSnapshot.moonRelativePositionKm.z, 1)}`
       : "n/a";
     const moonRelativeSpeedLine = Number.isFinite(launchSnapshot?.moonRelativeSpeedKmS)
       ? `${formatNumber(launchSnapshot.moonRelativeSpeedKmS, 4)} km/s`
@@ -11003,6 +11151,10 @@ function updateInfoOverlay() {
         <p class="line launch-line">Attitude Error: ${tankerAttitudeErrorLine} | Authority: ${tankerAttitudeAuthorityLine} | Limited: ${tankerAttitudeLimitedLine}</p>
         <p class="line launch-line">Apoapsis/Periapsis: ${starshipOrbitLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | ${targetRateLabel}: ${targetClosingLine} | ${targetEtaLabel}: ${targetEtaLine}</p>
+        <p class="line launch-line">Earth LOS: ${earthDirectionStateLine} | Off-Radial: ${earthDirectionAngleLine} | Radial: ${earthRadialLine}</p>
+        <p class="line launch-line">Earth Vector (km): ${earthRelativeVectorLine}</p>
+        <p class="line launch-line">Moon LOS: ${moonDirectionStateLine} | Off-Target: ${moonDirectionAngleLine} | Approach: ${targetBodyId === "moon" ? targetClosingLine : "n/a"}</p>
+        <p class="line launch-line">Moon Vector (km): ${moonRelativeVectorLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -11022,6 +11174,10 @@ function updateInfoOverlay() {
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | ${targetRateLabel}: ${targetClosingLine} | ${targetEtaLabel}: ${targetEtaLine}</p>
+        <p class="line launch-line">Earth LOS: ${earthDirectionStateLine} | Off-Radial: ${earthDirectionAngleLine} | Radial: ${earthRadialLine}</p>
+        <p class="line launch-line">Earth Vector (km): ${earthRelativeVectorLine}</p>
+        <p class="line launch-line">Moon LOS: ${moonDirectionStateLine} | Off-Target: ${moonDirectionAngleLine} | Approach: ${targetBodyId === "moon" ? targetClosingLine : "n/a"}</p>
+        <p class="line launch-line">Moon Vector (km): ${moonRelativeVectorLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -11072,10 +11228,10 @@ function updateInfoOverlay() {
        <p class="line launch-line">Mission: ${launchSnapshot.missionName || "n/a"} | Phase: ${launchSnapshot.missionPhase || "n/a"} | Complete: ${launchSnapshot.missionCompleted ? "yes" : "no"}</p>
        <p class="line launch-line">${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}</p>
        <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
-       <p class="line launch-line">Altitude Above Terrain: ${Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
+       <p class="line launch-line">Altitude Above Terrain: ${shouldShowTerrainRelativeAltitude(launchSnapshot) && Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
        <p class="line launch-line">Local Terrain Elevation: ${Number.isFinite(launchSnapshot.terrainElevationKm) ? `${formatNumber(launchSnapshot.terrainElevationKm, 3)} km` : "n/a"} | Lat/Lon: ${Number.isFinite(launchSnapshot.latitudeDeg) && Number.isFinite(launchSnapshot.longitudeDeg) ? `${formatNumber(launchSnapshot.latitudeDeg, 4)}°, ${formatNumber(launchSnapshot.longitudeDeg, 4)}°` : "n/a"}</p>
        <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
-       <p class="line launch-line">Target Body: ${launchTargetLabel(launchSnapshot.targetBodyName, launchSnapshot.targetBodyId)} | Distance: ${Number.isFinite(launchSnapshot.targetDistanceKm) ? `${formatNumber(launchSnapshot.targetDistanceKm, 1)} km` : "n/a"} | ${String(launchSnapshot.targetRateLabel || "Closing").trim() || "Closing"}: ${Number.isFinite(launchSnapshot.targetClosingSpeedKmS) ? `${formatNumber(launchSnapshot.targetClosingSpeedKmS, 4)} km/s` : "n/a"}${Number.isFinite(Number(launchSnapshot.targetEtaSeconds)) ? ` | ${String(launchSnapshot.targetEtaLabel || "ETA").trim() || "ETA"}: ${formatDurationSeconds(Number(launchSnapshot.targetEtaSeconds))}` : ""}</p>
+       <p class="line launch-line">Target Body: ${launchTargetLabel(launchSnapshot.targetBodyName, launchSnapshot.targetBodyId)} | Distance: ${Number.isFinite(targetTelemetry.targetDistanceKm) ? `${formatNumber(targetTelemetry.targetDistanceKm, 1)} km` : "n/a"} | ${targetRateLabel}: ${Number.isFinite(targetTelemetry.targetClosingSpeedKmS) ? `${formatNumber(targetTelemetry.targetClosingSpeedKmS, 4)} km/s` : "n/a"}${Number.isFinite(targetEtaSeconds) ? ` | ${targetEtaLabel}: ${formatDurationSeconds(targetEtaSeconds)}` : ""}</p>
        <p class="line launch-line">Booster Phase: ${launchSnapshot.boosterPhase || "n/a"} | Guidance: ${launchSnapshot.boosterGuidanceMode || "n/a"} | Landed: ${launchSnapshot.boosterLanded ? "yes" : "no"}</p>
        <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed: ${Number.isFinite(launchSnapshot.boosterSpeedKmS) ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s` : "n/a"}</p>
        <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}${Number.isFinite(launchSnapshot.boosterFuelFraction) ? ` (${formatNumber(launchSnapshot.boosterFuelFraction * 100, 1)}% remaining)` : ""}</p>

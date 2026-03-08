@@ -208,6 +208,90 @@ function testRuntimeDiagnosticsArePopulated() {
   );
 }
 
+function testEarlyCoastNoLegacyDepartureHold() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "coast_to_moon",
+    plannerRuntime: runtime,
+    timestampSec: 600,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.15, y: 0.988, z: 0.02 },
+      shipEarthPositionKm: { x: 15000, y: 0, z: 0 },
+      shipEarthVelocityKmS: { x: 0, y: 10.2, z: 0 },
+    },
+    metrics: {
+      moonDistanceKm: 390600,
+      moonClosingSpeedKmS: 0.24,
+      moonProjectedMissTrendKmS: 0,
+      timeToPeriapsisSec: 999999,
+      missionPhaseElapsedSec: 600,
+      departurePlanReady: true,
+      departurePlanThrottle: 1,
+      departurePlanBurnDurationSec: 834,
+      departurePlanCommitWindowSec: 105,
+      departurePlanPredictedMissDistanceKm: 8200,
+      departurePlanPredictedPeriluneAltitudeKm: 283,
+      departurePlanBPlaneErrorKm: 2685,
+      departurePlanGeometryScore: 0.95,
+      departurePlanAlignNow: 0.8,
+      earthDistanceKm: 18000,
+      periapsisKm: 250,
+      stageMassKg: 1_500_000,
+      engineAccelAtThrottle1KmS2: 0.01,
+    },
+  });
+  assert(result, "early_coast_no_legacy_hold: missing result");
+  assert(
+    !String(result.mode || "").includes("departure-hold"),
+    `early_coast_no_legacy_hold: expected legacy departure hold to be removed, got ${result.mode}`,
+  );
+  assert(
+    String(result.mode || "").includes("midcourse"),
+    `early_coast_no_legacy_hold: expected lunar coast guidance family, got ${result.mode}`,
+  );
+}
+
+function testLateCoastDepartureHoldReleasesWhenMovingAway() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "coast_to_moon",
+    plannerRuntime: runtime,
+    timestampSec: 2400,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.15, y: 0.988, z: 0.02 },
+      shipEarthPositionKm: { x: 15000, y: 0, z: 0 },
+      shipEarthVelocityKmS: { x: 0, y: 10.2, z: 0 },
+    },
+    metrics: {
+      moonDistanceKm: 390600,
+      moonClosingSpeedKmS: -0.24,
+      moonProjectedMissTrendKmS: 0,
+      timeToPeriapsisSec: 999999,
+      missionPhaseElapsedSec: 2400,
+      departurePlanReady: true,
+      departurePlanThrottle: 1,
+      departurePlanBurnDurationSec: 834,
+      departurePlanCommitWindowSec: 105,
+      departurePlanPredictedMissDistanceKm: 8200,
+      departurePlanPredictedPeriluneAltitudeKm: 283,
+      departurePlanBPlaneErrorKm: 2685,
+      departurePlanGeometryScore: 0.95,
+      departurePlanAlignNow: 0.8,
+      earthDistanceKm: 18000,
+      periapsisKm: 250,
+      stageMassKg: 1_500_000,
+      engineAccelAtThrottle1KmS2: 0.01,
+    },
+  });
+  assert(result, "late_coast_departure_release: missing result");
+  assert(
+    !String(result.mode || "").includes("ballistic-track"),
+    `late_coast_departure_release: late diverging coast should not stay in ballistic track, got ${result.mode}`,
+  );
+  assert(result.phase === "powered", `late_coast_departure_release: expected powered correction, got ${result.phase}`);
+  assert(Number(result.throttle) > 0, `late_coast_departure_release: expected positive throttle, got ${result.throttle}`);
+}
+
 function testTelemetrySnapshotReacquireWindowHold() {
   const runtime = createPlannerRuntime();
   runCommand({
@@ -491,6 +575,55 @@ function testDepartureCommitRejectsBadCorridorSeed() {
   );
 }
 
+function testLateCoastWeakClosureTriggersRescueCorrection() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "coast_to_moon",
+    plannerRuntime: runtime,
+    timestampSec: 2700,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.18, y: 0.983, z: 0.02 },
+      shipEarthPositionKm: { x: 26_000, y: 7_500, z: 0 },
+      shipEarthVelocityKmS: { x: 0.15, y: 10.45, z: 0.01 },
+      moonEarthPositionKm: { x: 355_000, y: 128_000, z: 9_000 },
+      moonEarthVelocityKmS: { x: -0.35, y: 0.94, z: 0.01 },
+    },
+    metrics: {
+      moonDistanceKm: 390_500,
+      moonClosingSpeedKmS: 0.03,
+      moonProjectedMissTrendKmS: 0.18,
+      timeToPeriapsisSec: 999999,
+      missionPhaseElapsedSec: 2700,
+      departurePlanReady: true,
+      departurePlanThrottle: 1,
+      departurePlanBurnDurationSec: 834,
+      departurePlanCommitWindowSec: 105,
+      departurePlanPredictedMissDistanceKm: 8_300,
+      departurePlanPredictedPeriluneAltitudeKm: 280,
+      departurePlanBPlaneErrorKm: 2_700,
+      departurePlanGeometryScore: 0.95,
+      departurePlanAlignNow: 0.8,
+      earthDistanceKm: 27_000,
+      periapsisKm: 245,
+      stageMassKg: 1_450_000,
+      engineAccelAtThrottle1KmS2: 0.01,
+    },
+  });
+  assert(result, "late_coast_weak_closure_rescue: missing result");
+  assert(
+    !String(result.mode || "").includes("ballistic-track"),
+    `late_coast_weak_closure_rescue: expected ballistic coast track to release, got ${result.mode}`,
+  );
+  assert(
+    result.phase === "powered",
+    `late_coast_weak_closure_rescue: expected powered correction, got ${result.phase}`,
+  );
+  assert(
+    Number(result.throttle) >= 0.15,
+    `late_coast_weak_closure_rescue: expected meaningful correction throttle, got ${result.throttle}`,
+  );
+}
+
 function main() {
   testTliReacquireHoldMovingAway();
   testTliReacquireHoldMissDivergingOnly();
@@ -498,11 +631,14 @@ function main() {
   testMidcourseApproachCoastNearMoon();
   testRetargetCadenceDoesNotRetriggerEveryTick();
   testRuntimeDiagnosticsArePopulated();
+  testEarlyCoastNoLegacyDepartureHold();
+  testLateCoastDepartureHoldReleasesWhenMovingAway();
   testTelemetrySnapshotReacquireWindowHold();
   testTelemetrySnapshotReacquireWindowProgression();
   testDepartureCommitOverridesEarlyTliHold();
   testDepartureCommitUsesLiveDiagnosticsNotSeedTelemetry();
   testDepartureCommitRejectsBadCorridorSeed();
+  testLateCoastWeakClosureTriggersRescueCorrection();
   console.log("PASS moon-gnc-conflict-e2e");
 }
 

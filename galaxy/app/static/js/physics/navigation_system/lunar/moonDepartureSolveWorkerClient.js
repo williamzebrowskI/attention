@@ -36,12 +36,17 @@ function getSharedWorker() {
     return null;
   }
   if (!sharedWorker) {
-    sharedWorker = new Worker(
-      new URL("./moonDepartureSolveWorker.js", import.meta.url),
-      { type: "module" },
-    );
-    sharedWorker.addEventListener("message", handleWorkerMessage);
-    sharedWorker.addEventListener("error", handleWorkerError);
+    try {
+      sharedWorker = new Worker(
+        new URL("./moonDepartureSolveWorker.js", import.meta.url),
+        { type: "module" },
+      );
+      sharedWorker.addEventListener("message", handleWorkerMessage);
+      sharedWorker.addEventListener("error", handleWorkerError);
+    } catch (_error) {
+      sharedWorker = null;
+      return null;
+    }
   }
   return sharedWorker;
 }
@@ -65,11 +70,16 @@ export function requestMoonDepartureSolve({
   const requestId = nextRequestId;
   nextRequestId += 1;
   pendingCallbacks.set(requestId, onComplete);
-  worker.postMessage({
-    type: String(type || ""),
-    requestId,
-    payload,
-  });
+  try {
+    worker.postMessage({
+      type: String(type || ""),
+      requestId,
+      payload,
+    });
+  } catch (_error) {
+    pendingCallbacks.delete(requestId);
+    return false;
+  }
   return true;
 }
 

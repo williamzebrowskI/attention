@@ -19,6 +19,7 @@ import {
   updateMoonNavigationFilter,
 } from "./moonStateFilter.js";
 import {
+  evaluateBallisticTransferSync,
   getMoonClosedLoopSolveCadenceSec,
   nominalTliDeltaVEstimateKmS,
   nominalTransferTimeSec,
@@ -616,13 +617,12 @@ export function planMoonClosedLoopMissionCommand({
     && Number.isFinite(departurePlanBurnDurationSec)
     && missionPhaseElapsedSec <= departurePlanBurnDurationSec
   );
-  const departurePlanCoastRescueActive = (
-    phaseName === "coast_to_moon"
-    && departurePlanCorridorAcceptable
-    && finiteVector(departurePlanDirection)
-    && Number.isFinite(missionPhaseElapsedSec)
-    && missionPhaseElapsedSec <= (3 * 3600)
+  const ballisticCoastWeakClosingKmS = Math.max(
+    0.2,
+    finiteNumber(plannerConfig.moonMidcourseMinClosingSpeedKmS, 0.02) * 12,
   );
+  const ballisticCoastMovingAway = Number.isFinite(moonClosingSpeedKmS)
+    && moonClosingSpeedKmS < -0.02;
   const solvePlannerConfig = departurePlanParityWindowActive
     ? {
       ...plannerConfig,
@@ -688,7 +688,7 @@ export function planMoonClosedLoopMissionCommand({
       nowSec,
       runtime: gncRuntime,
     });
-    const best = solve.solution;
+    let best = solve.solution;
     if (!best) {
       const fallbackMode = phaseName === "tli_burn"
         ? "navsys:gnc-lambert-unavailable"
@@ -707,6 +707,128 @@ export function planMoonClosedLoopMissionCommand({
           solveReady: false,
         },
       };
+    }
+    const ballisticCoastDirection = normalize(add(scale(toMoon, 0.86), scale(tangent, 0.14)), toMoon);
+    const ballisticCoastCandidate = phaseName === "coast_to_moon"
+      ? evaluateBallisticTransferSync({
+        initialState,
+        sources,
+        spacecraft,
+        primaryDirection: ballisticCoastDirection,
+        targetBodyId: "moon",
+        targetBodyRadiusKm: Number(sources?.moon?.radiusKm) || DEFAULT_MOON_RADIUS_KM,
+        targetPeriluneAltitudeKm: Math.max(20, finiteNumber(plannerConfig.moonTargetPeriluneAltitudeKm, 120)),
+        safetyBodyId: "earth",
+        safetyMinAltitudeKm: periapsisMinKm,
+        predictDurationSec: Math.max(18 * 3600, nominalTransferSec * 0.55),
+        plannerConfig: solvePlannerConfig,
+      })
+      : null;
+    const ballisticCoastCorridorAcceptable = (
+      ballisticCoastCandidate
+      && ballisticCoastCandidate.predictedMissDistanceKm <= Math.max(
+        missGateKm,
+        Math.max(16_000, finiteNumber(departurePlanPredictedMissDistanceKm, 8_000) * 2.2),
+      )
+      && ballisticCoastCandidate.predictedPeriluneAltitudeKm <= Math.max(
+        Math.max(20_000, finiteNumber(plannerConfig.moonCaptureUpperAltitudeKm, 16_000) * 1.1),
+        finiteNumber(departurePlanPredictedPeriluneAltitudeKm, 280) + 14_000,
+      )
+      && ballisticCoastCandidate.bPlaneErrorKm <= Math.max(
+        Math.max(100, finiteNumber(plannerConfig.moonBPlaneToleranceKm, 6_000)) * 1.25,
+        Math.max(8_000, finiteNumber(departurePlanBPlaneErrorKm, 2_500) * 2.5),
+      )
+      && (
+        !Number.isFinite(ballisticCoastCandidate.closestClosingSpeedKmS)
+        || ballisticCoastCandidate.closestClosingSpeedKmS >= ballisticCoastWeakClosingKmS
+      )
+    );
+    let aggressiveCoastRescueUsed = false;
+    if (phaseName === "coast_to_moon") {
+      const coastRescueNeeded = (
+        !ballisticCoastCorridorAcceptable
+        && (
+          ballisticCoastMovingAway
+          || best.predictedMissDistanceKm > Math.max(
+            missGateKm * 1.35,
+            Math.max(75_000, finiteNumber(departurePlanPredictedMissDistanceKm, 8_000) * 4),
+          )
+          || best.predictedPeriluneAltitudeKm > Math.max(
+            24_000,
+            finiteNumber(departurePlanPredictedPeriluneAltitudeKm, 280) + 20_000,
+          )
+          || best.bPlaneErrorKm > Math.max(
+            Math.max(100, finiteNumber(plannerConfig.moonBPlaneToleranceKm, 6_000)) * 1.6,
+            Math.max(12_000, finiteNumber(departurePlanBPlaneErrorKm, 2_500) * 4),
+          )
+          || (
+            Number.isFinite(best.closestClosingSpeedKmS)
+            && best.closestClosingSpeedKmS < ballisticCoastWeakClosingKmS
+          )
+        )
+      );
+      if (coastRescueNeeded) {
+        const aggressiveCoastPlannerConfig = {
+          ...solvePlannerConfig,
+          moonClosedLoopDvOffsetsKmS: [-0.22, -0.08, 0, 0.18, 0.4, 0.72, 1.0],
+          moonClosedLoopRadialOffsets: [-0.18, -0.08, 0, 0.08, 0.18],
+          moonClosedLoopNormalOffsets: [-0.1, -0.04, 0, 0.04, 0.1],
+          moonClosedLoopPropagationStepSec: Math.min(
+            300,
+            Math.max(60, finiteNumber(solvePlannerConfig.moonClosedLoopPropagationStepSec, 180)),
+          ),
+        };
+        const aggressiveNominalDeltaVKmS = Math.max(
+          0.24,
+          Math.min(
+            1.4,
+            Math.max(
+              finiteNumber(best.deltaVNeedKmS, 0) * 1.8,
+              nominalDeltaVKmS * 1.4,
+              0.55,
+            ),
+          ),
+        );
+        const aggressivePredictDurationsSec = [
+          Math.max(6 * 3600, nominalTransferSec * 0.3),
+          Math.max(12 * 3600, nominalTransferSec * 0.45),
+          Math.max(18 * 3600, nominalTransferSec * 0.65),
+        ];
+        const aggressivePrimaryDirection = normalize(
+          add(scale(toMoon, 0.88), scale(tangent, 0.12)),
+          toMoon,
+        );
+        const aggressiveBest = solveBestClosedLoopTransferSync({
+          initialState,
+          sources,
+          spacecraft,
+          tangent,
+          up,
+          primaryDirection: aggressivePrimaryDirection,
+          targetBodyId: "moon",
+          targetBodyRadiusKm: Number(sources?.moon?.radiusKm) || DEFAULT_MOON_RADIUS_KM,
+          targetDistanceKm: moonDistanceKm,
+          targetPeriluneAltitudeKm: Math.max(20, finiteNumber(plannerConfig.moonTargetPeriluneAltitudeKm, 120)),
+          safetyBodyId: "earth",
+          safetyMinAltitudeKm: periapsisMinKm,
+          nominalDeltaVKmS: aggressiveNominalDeltaVKmS,
+          predictDurationsSec: aggressivePredictDurationsSec,
+          plannerConfig: aggressiveCoastPlannerConfig,
+          phase: phaseName,
+        });
+        if (
+          aggressiveBest
+          && (
+            !best
+            || aggressiveBest.cost < (best.cost * 0.92)
+            || best.predictedMissDistanceKm > Math.max(150_000, aggressiveBest.predictedMissDistanceKm * 1.8)
+            || best.bPlaneErrorKm > Math.max(40_000, aggressiveBest.bPlaneErrorKm * 1.8)
+          )
+        ) {
+          best = aggressiveBest;
+          aggressiveCoastRescueUsed = true;
+        }
+      }
     }
     const bestDiagnosticsScore = departureCorridorCompositeScore({
       predictedMissDistanceKm: best.predictedMissDistanceKm,
@@ -741,21 +863,6 @@ export function planMoonClosedLoopMissionCommand({
         Math.max(20_000, departurePlanBPlaneErrorKm * 8),
       )
     );
-    const departurePlanCoastDiagnosticsCollapse = (
-      departurePlanCoastRescueActive
-      && best.predictedMissDistanceKm > Math.max(
-        missGateKm * 2.5,
-        Math.max(50_000, departurePlanPredictedMissDistanceKm * 10),
-      )
-      && best.predictedPeriluneAltitudeKm > Math.max(
-        25_000,
-        departurePlanPredictedPeriluneAltitudeKm + 60_000,
-      )
-      && best.bPlaneErrorKm > Math.max(
-        Math.max(100, finiteNumber(plannerConfig.moonBPlaneToleranceKm, 6_000)) * 5,
-        Math.max(25_000, departurePlanBPlaneErrorKm * 10),
-      )
-    );
     const departurePlanDominates = (
       departurePlanBurnLockActive
       || (
@@ -763,7 +870,6 @@ export function planMoonClosedLoopMissionCommand({
         && departurePlanDiagnosticsScore <= (bestDiagnosticsScore * 0.55)
       )
       || departurePlanRescueActive
-      || departurePlanCoastDiagnosticsCollapse
     );
     const missFarFromGate = best.predictedMissDistanceKm > (missGateKm * 2.1);
     const movingAwayFromMoon = moonClosingSpeedKmS < -0.02;
@@ -775,20 +881,38 @@ export function planMoonClosedLoopMissionCommand({
       && !departureCommitActive
       && !departurePlanDominates;
     const useDeparturePlanDiagnostics = (
-      (departureCommitActive || departurePlanDominates)
+      phaseName === "tli_burn"
+      && (departureCommitActive || departurePlanDominates)
       && departurePlanCorridorAcceptable
       && departurePlanDiagnosticsScore <= bestDiagnosticsScore
     );
+    const useBallisticCoastDiagnostics = (
+      phaseName === "coast_to_moon"
+      && ballisticCoastCandidate
+      && !ballisticCoastMovingAway
+      && ballisticCoastCorridorAcceptable
+      && (
+        !best
+        || best.deltaVNeedKmS <= 0.05
+        || ballisticCoastCandidate.cost <= (best.cost * 1.18)
+      )
+    );
 
-    const effectivePredictedMissDistanceKm = useDeparturePlanDiagnostics
-      ? departurePlanPredictedMissDistanceKm
-      : best.predictedMissDistanceKm;
-    const effectivePredictedPeriluneAltitudeKm = useDeparturePlanDiagnostics
-      ? departurePlanPredictedPeriluneAltitudeKm
-      : best.predictedPeriluneAltitudeKm;
-    const effectiveBPlaneErrorKm = useDeparturePlanDiagnostics
-      ? departurePlanBPlaneErrorKm
-      : best.bPlaneErrorKm;
+    const effectivePredictedMissDistanceKm = useBallisticCoastDiagnostics
+      ? ballisticCoastCandidate.predictedMissDistanceKm
+      : (useDeparturePlanDiagnostics
+        ? departurePlanPredictedMissDistanceKm
+        : best.predictedMissDistanceKm);
+    const effectivePredictedPeriluneAltitudeKm = useBallisticCoastDiagnostics
+      ? ballisticCoastCandidate.predictedPeriluneAltitudeKm
+      : (useDeparturePlanDiagnostics
+        ? departurePlanPredictedPeriluneAltitudeKm
+        : best.predictedPeriluneAltitudeKm);
+    const effectiveBPlaneErrorKm = useBallisticCoastDiagnostics
+      ? ballisticCoastCandidate.bPlaneErrorKm
+      : (useDeparturePlanDiagnostics
+        ? departurePlanBPlaneErrorKm
+        : best.bPlaneErrorKm);
     const effectiveBurnDurationSec = (
       departureCommitActive && Number.isFinite(departurePlanBurnDurationSec)
         ? departurePlanBurnDurationSec
@@ -822,31 +946,31 @@ export function planMoonClosedLoopMissionCommand({
           departurePlanDirection,
         )
         : departurePlanDirection;
-      command = departurePlanCoastDiagnosticsCollapse
-        ? {
-          phase: "coast",
-          throttle: 0,
-          direction: normalize(add(scale(toMoon, 0.82), scale(tangent, 0.18)), toMoon),
-          mode: "navsys:gnc-lambert-midcourse-coast+departure-hold",
-        }
-        : {
-          phase: "powered",
-          throttle: clamp(
-            departurePlanThrottle,
-            finiteNumber(plannerConfig.moonClosedLoopThrottleMin, 0.08),
-            finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
-          ),
-          direction: blendedDepartureDirection,
-          mode: departureCommitActive
-            ? "navsys:gnc-lambert-tli-burn+departure-commit+diffcorr"
-            : "navsys:gnc-lambert-tli-burn+seed-lock+diffcorr",
-        };
+      command = {
+        phase: "powered",
+        throttle: clamp(
+          departurePlanThrottle,
+          finiteNumber(plannerConfig.moonClosedLoopThrottleMin, 0.08),
+          finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
+        ),
+        direction: blendedDepartureDirection,
+        mode: departureCommitActive
+          ? "navsys:gnc-lambert-tli-burn+departure-commit+diffcorr"
+          : "navsys:gnc-lambert-tli-burn+seed-lock+diffcorr",
+      };
     } else if (tliReacquireHold) {
       command = {
         phase: "coast",
         throttle: 0,
         direction: normalize(add(scale(toMoon, 0.74), scale(tangent, 0.26)), toMoon),
         mode: "navsys:gnc-lambert-tli-reacquire-window",
+      };
+    } else if (useBallisticCoastDiagnostics) {
+      command = {
+        phase: "coast",
+        throttle: 0,
+        direction: ballisticCoastDirection,
+        mode: "navsys:gnc-lambert-midcourse-coast+ballistic-track",
       };
     } else if (
       phaseName === "coast_to_moon"
@@ -885,6 +1009,9 @@ export function planMoonClosedLoopMissionCommand({
         command.mode = `${command.mode}+reacquire`;
       }
       command.mode = `${command.mode}+diffcorr`;
+    }
+    if (aggressiveCoastRescueUsed && phaseName === "coast_to_moon" && command.phase === "powered") {
+      command.mode = `${command.mode}+rescue`;
     }
     if (solve.solvedThisStep) {
       command.mode = `${command.mode}+retarget`;
@@ -930,6 +1057,7 @@ export function planMoonClosedLoopMissionCommand({
         departureSeedTrackCatastrophic,
         departurePlanCorridorAccepted: departurePlanCorridorAcceptable,
         departurePlanRescueActive,
+        ballisticCoastTrackActive: useBallisticCoastDiagnostics,
         solveReady: true,
       },
     };

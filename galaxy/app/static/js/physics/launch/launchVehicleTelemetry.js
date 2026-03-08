@@ -6,6 +6,61 @@ import {
 } from "./launchConfig.js";
 import { clamp, dot, length, scale, subtract } from "./launchMath.js";
 
+function finiteVectorValue(value) {
+  return Boolean(
+    value
+    && Number.isFinite(Number(value.x))
+    && Number.isFinite(Number(value.y))
+    && Number.isFinite(Number(value.z)),
+  );
+}
+
+function cloneVectorOrNull(value) {
+  return finiteVectorValue(value)
+    ? {
+      x: Number(value.x),
+      y: Number(value.y),
+      z: Number(value.z),
+    }
+    : null;
+}
+
+function finiteOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function unitVectorOrNull(value) {
+  if (!finiteVectorValue(value)) {
+    return null;
+  }
+  const magnitude = length(value);
+  if (!Number.isFinite(magnitude) || magnitude <= 1e-9) {
+    return null;
+  }
+  return scale(value, 1 / magnitude);
+}
+
+function alignmentAngleDeg(alignment) {
+  if (!Number.isFinite(Number(alignment))) {
+    return null;
+  }
+  return Math.acos(clamp(Number(alignment), -1, 1)) * (180 / Math.PI);
+}
+
+function classifyDirectionalState(alignment, positiveLabel, negativeLabel, neutralLabel = "sideways") {
+  if (!Number.isFinite(Number(alignment))) {
+    return "n/a";
+  }
+  if (alignment >= 0.35) {
+    return positiveLabel;
+  }
+  if (alignment <= -0.35) {
+    return negativeLabel;
+  }
+  return neutralLabel;
+}
+
 export function isRefuelTankerBodyId(bodyId) {
   return String(bodyId || "").startsWith("earth_refuel_tanker_");
 }
@@ -131,6 +186,22 @@ export function buildVehicleStatusSnapshot({
   const radialClosingSpeedKmS = radialDistanceKm > 1e-9
     ? -dot(relVel, scale(relPos, 1 / radialDistanceKm))
     : null;
+  const earthRadialSpeedKmS = radialDistanceKm > 1e-9
+    ? dot(relPos, relVel) / radialDistanceKm
+    : null;
+  const earthVelocityDirectionUnit = unitVectorOrNull(relVel);
+  const earthOutwardUnit = unitVectorOrNull(relPos);
+  const earthDirectionAlignment = earthVelocityDirectionUnit && earthOutwardUnit
+    ? clamp(dot(earthVelocityDirectionUnit, earthOutwardUnit), -1, 1)
+    : null;
+  const earthDirectionAngleDeg = alignmentAngleDeg(earthDirectionAlignment);
+  const earthDirectionState = classifyDirectionalState(
+    earthDirectionAlignment,
+    "outbound",
+    "inbound",
+    "crossrange",
+  );
+  const earthRelativePositionKm = cloneVectorOrNull(scale(relPos, -1));
   const altitudeKm = Math.max(0, Number(orbital.altitudeKm) || 0);
   const currentEarthAxes = earthAxes?.(nowMs) || { pole: { x: 0, y: 0, z: 1 } };
   const atmosphereSample = sampleEarthAtmosphere?.(
@@ -154,6 +225,37 @@ export function buildVehicleStatusSnapshot({
     ? Number(orbital.periapsisKm)
     : null;
   const inBoundOrbit = Number(orbital.specificEnergy) < 0 && Number(orbital.periapsisKm) > 80;
+  const moonState = state?.dynamicBodies?.get?.("moon")
+    || state?.staticSources?.get?.("moon")
+    || null;
+  let moonDirectionState = "n/a";
+  let moonDirectionAlignment = null;
+  let moonDirectionAngleDeg = null;
+  let moonRelativePositionKm = null;
+  if (
+    moonState
+    && finiteVector?.(moonState.position)
+    && finiteVector?.(moonState.velocity || { x: 0, y: 0, z: 0 })
+  ) {
+    const moonRelPos = subtract(bodyState.position, moonState.position);
+    const moonRelVel = subtract(
+      bodyState.velocity || { x: 0, y: 0, z: 0 },
+      moonState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    moonRelativePositionKm = cloneVectorOrNull(scale(moonRelPos, -1));
+    const towardMoonUnit = unitVectorOrNull(scale(moonRelPos, -1));
+    const moonVelocityDirectionUnit = unitVectorOrNull(moonRelVel);
+    moonDirectionAlignment = towardMoonUnit && moonVelocityDirectionUnit
+      ? clamp(dot(moonVelocityDirectionUnit, towardMoonUnit), -1, 1)
+      : null;
+    moonDirectionAngleDeg = alignmentAngleDeg(moonDirectionAlignment);
+    moonDirectionState = classifyDirectionalState(
+      moonDirectionAlignment,
+      "toward",
+      "away",
+      "sideways",
+    );
+  }
 
   const throttle = vehicleKind === "booster"
     ? (Number(runtime?.booster?.telemetry?.throttle) || Number(runtime?.booster?.lastStep?.throttle) || 0)
@@ -314,6 +416,17 @@ export function buildVehicleStatusSnapshot({
     targetBodyName: "Earth",
     targetDistanceKm: Math.max(0, radialDistanceKm - earthRadiusKm),
     targetClosingSpeedKmS: radialClosingSpeedKmS,
+    earthDistanceKm: radialDistanceKm,
+    earthRelativeSpeedKmS: length(relVel),
+    earthRadialSpeedKmS,
+    earthDirectionState,
+    earthDirectionAlignment: finiteOrNull(earthDirectionAlignment),
+    earthDirectionAngleDeg: finiteOrNull(earthDirectionAngleDeg),
+    earthRelativePositionKm,
+    moonDirectionState,
+    moonDirectionAlignment: finiteOrNull(moonDirectionAlignment),
+    moonDirectionAngleDeg: finiteOrNull(moonDirectionAngleDeg),
+    moonRelativePositionKm,
     rcsActive: tankerRcsActive,
     rcsErrorDeg: vehicleKind === "tanker" ? tankerAttitudeErrorDeg : 0,
     rcsAuthority: tankerRcsAuthority,
