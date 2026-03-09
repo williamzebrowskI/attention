@@ -186,6 +186,8 @@ export const LAUNCH_RCS_CONFIG = Object.freeze({
   minStageIndex: 1,
   deadbandDeg: 0.8,
   fullAuthorityDeg: 10.0,
+  moonCoastFullAuthorityDeg: 18.0,
+  moonCoastTurnRateDegS: 3.0,
   maxAccelerationKmS2: 0.00004,
   minReferenceSpeedKmS: 0.05,
 });

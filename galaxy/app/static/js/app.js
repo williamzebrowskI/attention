@@ -72,7 +72,7 @@ import {
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
 } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260308ae";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260309a";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -89,6 +89,7 @@ import {
   spacecraftPreferredCameraDistanceScene,
 } from "./ui/spacecraftCameraFraming.js";
 import {
+  resolveSnapshotControlTelemetry,
   resolveSnapshotTargetTelemetry,
   shouldShowTerrainRelativeAltitude,
 } from "./ui/launchTelemetryDisplay.js";
@@ -244,7 +245,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260308ae";
+const FRONTEND_MODULE_VERSION = "20260309a";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -5610,6 +5611,32 @@ function updateLaunchVehicleVisuals() {
   }
   const speed = velocityScene.length();
   const prograde = speed > 1e-12 ? velocityScene.clone().multiplyScalar(1 / speed) : null;
+  const bodyAxisKm = finiteVectorKm(snapshot?.bodyAxisDirectionKm)
+    ? snapshot.bodyAxisDirectionKm
+    : null;
+  const guidanceAxisKm = finiteVectorKm(snapshot?.guidanceRequestedDirectionKm)
+    ? snapshot.guidanceRequestedDirectionKm
+    : null;
+  const bodyAxisScene = bodyAxisKm
+    ? safeNormalizeSceneDirection(
+      new THREE_NS.Vector3(
+        Number(bodyAxisKm.x) || 0,
+        Number(bodyAxisKm.z) || 0,
+        Number(bodyAxisKm.y) || 0,
+      ),
+      null,
+    )
+    : null;
+  const guidanceAxisScene = guidanceAxisKm
+    ? safeNormalizeSceneDirection(
+      new THREE_NS.Vector3(
+        Number(guidanceAxisKm.x) || 0,
+        Number(guidanceAxisKm.z) || 0,
+        Number(guidanceAxisKm.y) || 0,
+      ),
+      bodyAxisScene || null,
+    )
+    : null;
 
   let upScene = null;
   if (finiteVectorKm(rocketCoordsKm) && finiteVectorKm(earthCoordsKm)) {
@@ -5642,6 +5669,10 @@ function updateLaunchVehicleVisuals() {
   let targetDirection = upScene || prograde || defaultAxis;
   if (dockingLock?.directionScene) {
     targetDirection = dockingLock.directionScene;
+  } else if (bodyAxisScene && !forceVerticalVisual) {
+    targetDirection = bodyAxisScene;
+  } else if (guidanceAxisScene && !forceVerticalVisual) {
+    targetDirection = guidanceAxisScene;
   } else if (!forceVerticalVisual && upScene && prograde) {
     const altitudeKm = Number(snapshot?.altitudeKm) || 0;
     const speedBlend = clamp((speed - 0.35) / 1.8, 0, 1);
@@ -5858,6 +5889,32 @@ function updateFleetSpacecraftVisuals() {
 
     const speed = velocityScene.length();
     const prograde = speed > 1e-12 ? velocityScene.clone().multiplyScalar(1 / speed) : null;
+    const bodyAxisKm = finiteVectorKm(snapshot?.bodyAxisDirectionKm)
+      ? snapshot.bodyAxisDirectionKm
+      : null;
+    const guidanceAxisKm = finiteVectorKm(snapshot?.guidanceRequestedDirectionKm)
+      ? snapshot.guidanceRequestedDirectionKm
+      : null;
+    const bodyAxisScene = bodyAxisKm
+      ? safeNormalizeSceneDirection(
+        new THREE_NS.Vector3(
+          Number(bodyAxisKm.x) || 0,
+          Number(bodyAxisKm.z) || 0,
+          Number(bodyAxisKm.y) || 0,
+        ),
+        null,
+      )
+      : null;
+    const guidanceAxisScene = guidanceAxisKm
+      ? safeNormalizeSceneDirection(
+        new THREE_NS.Vector3(
+          Number(guidanceAxisKm.x) || 0,
+          Number(guidanceAxisKm.z) || 0,
+          Number(guidanceAxisKm.y) || 0,
+        ),
+        bodyAxisScene || null,
+      )
+      : null;
 
     const vehicleCoordsKm = runtimeCoordsOrLiveById(bodyId);
     let upScene = null;
@@ -5917,13 +5974,19 @@ function updateFleetSpacecraftVisuals() {
 
     let targetDirection = upScene || prograde || defaultAxis;
     if (forceHorizontalVisual) {
-      targetDirection = prograde
+      targetDirection = bodyAxisScene
+        || guidanceAxisScene
+        || prograde
         || safeNormalizeSceneDirection(
           defaultAxis.clone().applyQuaternion(visual.tiltGroup.quaternion),
           defaultAxis,
         );
     } else if (dockingLock?.directionScene) {
       targetDirection = dockingLock.directionScene;
+    } else if (bodyAxisScene && !forceVerticalVisual) {
+      targetDirection = bodyAxisScene;
+    } else if (guidanceAxisScene && !forceVerticalVisual) {
+      targetDirection = guidanceAxisScene;
     } else if (thrustAxisScene && !forceVerticalVisual) {
       targetDirection = thrustAxisScene;
     } else if (forceVerticalVisual && upScene) {
@@ -11520,6 +11583,14 @@ function updateInfoOverlay() {
     const bodyRadialAngleLine = Number.isFinite(Number(launchSnapshot?.bodyRadialAngleDeg))
       ? `${formatNumber(launchSnapshot.bodyRadialAngleDeg, 1)}°`
       : "n/a";
+    const guidanceMoonStateLine = String(launchSnapshot?.guidanceMoonState || "").trim() || "n/a";
+    const guidanceMoonAngleLine = Number.isFinite(Number(launchSnapshot?.guidanceMoonAngleDeg))
+      ? `${formatNumber(launchSnapshot.guidanceMoonAngleDeg, 1)}°`
+      : "n/a";
+    const bodyMoonStateLine = String(launchSnapshot?.bodyMoonState || "").trim() || "n/a";
+    const bodyMoonAngleLine = Number.isFinite(Number(launchSnapshot?.bodyMoonAngleDeg))
+      ? `${formatNumber(launchSnapshot.bodyMoonAngleDeg, 1)}°`
+      : "n/a";
     const earthRelativeVectorLine = (
       launchSnapshot?.earthRelativePositionKm
       && Number.isFinite(Number(launchSnapshot.earthRelativePositionKm.x))
@@ -11586,6 +11657,9 @@ function updateInfoOverlay() {
     const guidanceRequestedThrottleLine = Number.isFinite(Number(launchSnapshot?.guidanceRequestedThrottle))
       ? `${formatNumber(Number(launchSnapshot.guidanceRequestedThrottle) * 100, 1)}%`
       : "n/a";
+    const controlTelemetry = resolveSnapshotControlTelemetry(launchSnapshot);
+    const attitudeControlLine = controlTelemetry.attitudeControlLabel;
+    const trajectoryBurnLine = controlTelemetry.trajectoryBurnLabel;
     const guidanceInertNoPropellant = Boolean(launchSnapshot?.guidanceInertNoPropellant);
     const guidanceInertReasonLine = guidanceInertNoPropellant
       ? (String(launchSnapshot?.guidanceInertReason || "").trim() || "no-propellant-for-guidance-burn")
@@ -11675,6 +11749,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">Moon Vector (km): ${moonRelativeVectorLine}</p>
         <p class="line launch-line">Cmd Axis: ${guidanceVelocityStateLine} | Off-Vel: ${guidanceVelocityAngleLine} | Off-Up: ${guidanceRadialAngleLine} | Radial: ${guidanceRadialStateLine}</p>
         <p class="line launch-line">Nose Axis: ${bodyVelocityStateLine} | Off-Vel: ${bodyVelocityAngleLine} | Off-Up: ${bodyRadialAngleLine} | Radial: ${bodyRadialStateLine}</p>
+        <p class="line launch-line">Cmd Moon Aim: ${guidanceMoonStateLine} | Off-Moon: ${guidanceMoonAngleLine}</p>
+        <p class="line launch-line">Nose Moon Aim: ${bodyMoonStateLine} | Off-Moon: ${bodyMoonAngleLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -11682,6 +11758,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Launch Window: ${moonWindowReadyLine} | Best In: ${moonWindowWaitLine} | Best At: ${moonWindowLaunchClockLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
+        <p class="line launch-line">Attitude Control: ${attitudeControlLine} | Trajectory Burn: ${trajectoryBurnLine}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
         <p class="line launch-line">Fuel Budget DV Req/Avail: ${fuelBudgetRequiredDeltaVLine} / ${fuelBudgetAvailableDeltaVLine}</p>
         <p class="line launch-line">Fuel Budget Prop Req/Avail/Margin: ${fuelBudgetRequiredPropLine} / ${fuelBudgetAvailablePropLine} / ${fuelBudgetMarginLine} | Feasible: ${fuelBudgetFeasibleLine}</p>
@@ -11700,6 +11777,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">Moon Vector (km): ${moonRelativeVectorLine}</p>
         <p class="line launch-line">Cmd Axis: ${guidanceVelocityStateLine} | Off-Vel: ${guidanceVelocityAngleLine} | Off-Up: ${guidanceRadialAngleLine} | Radial: ${guidanceRadialStateLine}</p>
         <p class="line launch-line">Nose Axis: ${bodyVelocityStateLine} | Off-Vel: ${bodyVelocityAngleLine} | Off-Up: ${bodyRadialAngleLine} | Radial: ${bodyRadialStateLine}</p>
+        <p class="line launch-line">Cmd Moon Aim: ${guidanceMoonStateLine} | Off-Moon: ${guidanceMoonAngleLine}</p>
+        <p class="line launch-line">Nose Moon Aim: ${bodyMoonStateLine} | Off-Moon: ${bodyMoonAngleLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -11707,6 +11786,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Launch Window: ${moonWindowReadyLine} | Best In: ${moonWindowWaitLine} | Best At: ${moonWindowLaunchClockLine}</p>
         <p class="line launch-line">Phase Gate: ${phaseGateReasonLine}</p>
         <p class="line launch-line">Guidance Burn Cmd: ${guidanceBurnRequestedLine} @ ${guidanceRequestedThrottleLine} | Inert: ${guidanceInertNoPropellant ? "yes" : "no"}</p>
+        <p class="line launch-line">Attitude Control: ${attitudeControlLine} | Trajectory Burn: ${trajectoryBurnLine}</p>
         <p class="line launch-line">Inert Reason: ${guidanceInertReasonLine}</p>
         <p class="line launch-line">Fuel Budget DV Req/Avail: ${fuelBudgetRequiredDeltaVLine} / ${fuelBudgetAvailableDeltaVLine}</p>
         <p class="line launch-line">Fuel Budget Prop Req/Avail/Margin: ${fuelBudgetRequiredPropLine} / ${fuelBudgetAvailablePropLine} / ${fuelBudgetMarginLine} | Feasible: ${fuelBudgetFeasibleLine}</p>

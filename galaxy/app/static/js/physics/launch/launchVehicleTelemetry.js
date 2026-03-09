@@ -5,6 +5,7 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
 import { clamp, dot, length, scale, subtract } from "./launchMath.js";
+import { computeMoonAimTelemetry } from "./lunar/moonAttitudePolicy.js";
 
 function finiteVectorValue(value) {
   return Boolean(
@@ -347,6 +348,15 @@ export function buildVehicleStatusSnapshot({
       z: Number(tankerRefuelFlight.attitudeDesiredAxisKm.z) || 0,
     }
     : null;
+  const moonAimTelemetry = computeMoonAimTelemetry({
+    requestedDirectionKm: baseSnapshot?.guidanceRequestedDirectionKm
+      || tankerDesiredAxisKm
+      || null,
+    bodyAxisDirectionKm: baseSnapshot?.bodyAxisDirectionKm
+      || tankerThrustAxisKm
+      || null,
+    moonRelativePositionKm,
+  });
 
   return {
     ...baseSnapshot,
@@ -427,6 +437,12 @@ export function buildVehicleStatusSnapshot({
     moonDirectionAlignment: finiteOrNull(moonDirectionAlignment),
     moonDirectionAngleDeg: finiteOrNull(moonDirectionAngleDeg),
     moonRelativePositionKm,
+    guidanceMoonState: moonAimTelemetry.guidanceMoonState,
+    guidanceMoonAlignment: finiteOrNull(moonAimTelemetry.guidanceMoonAlignment),
+    guidanceMoonAngleDeg: finiteOrNull(moonAimTelemetry.guidanceMoonAngleDeg),
+    bodyMoonState: moonAimTelemetry.bodyMoonState,
+    bodyMoonAlignment: finiteOrNull(moonAimTelemetry.bodyMoonAlignment),
+    bodyMoonAngleDeg: finiteOrNull(moonAimTelemetry.bodyMoonAngleDeg),
     rcsActive: tankerRcsActive,
     rcsErrorDeg: vehicleKind === "tanker" ? tankerAttitudeErrorDeg : 0,
     rcsAuthority: tankerRcsAuthority,

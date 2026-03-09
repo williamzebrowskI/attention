@@ -125,6 +125,7 @@ import {
   MOON_PARKING_ORBIT_APOAPSIS_KM,
 } from "./lunar/constants.js";
 import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
+import { resolveMoonMissionAttitudeDirection } from "./lunar/moonAttitudePolicy.js";
 import {
   canUseMoonDepartureSolveWorker,
   requestMoonDepartureSolvePromise,
@@ -620,6 +621,34 @@ function finiteOrNull(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function finiteLaunchVectorValue(value) {
+  return Boolean(
+    value
+    && Number.isFinite(Number(value.x))
+    && Number.isFinite(Number(value.y))
+    && Number.isFinite(Number(value.z)),
+  );
+}
+
+function cloneLaunchVector(value, fallback = { x: 0, y: 0, z: 0 }) {
+  if (!finiteLaunchVectorValue(value)) {
+    return {
+      x: Number(fallback?.x) || 0,
+      y: Number(fallback?.y) || 0,
+      z: Number(fallback?.z) || 0,
+    };
+  }
+  return {
+    x: Number(value.x),
+    y: Number(value.y),
+    z: Number(value.z),
+  };
+}
+
+function cloneLaunchVectorOrNull(value) {
+  return finiteLaunchVectorValue(value) ? cloneLaunchVector(value) : null;
+}
+
 function telemetryFromState({
   gravitationalConstantKm3PerKgS2,
   earthMassKg,
@@ -708,6 +737,8 @@ function telemetryFromState({
       ? Number(surfaceSample.longitudeDeg)
       : null,
     guidanceMode: runtime.lastStep?.guidanceMode || "idle",
+    guidanceRequestedDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.requestedDirectionKm),
+    bodyAxisDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.bodyAxisDirectionKm),
     missionId: runtime.mission.selectedId,
     missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
     missionPhase: runtime.mission.phase,
@@ -4037,10 +4068,21 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         requestedThrottle = 0,
         guidanceMode = "coast",
       }) => {
-        const directionRequested = normalize(
+        let directionRequested = normalize(
           desiredDirection || normalize(relVel, orbital.up),
           orbital.up,
         );
+        const moonAttitudePolicy = resolveMoonMissionAttitudeDirection({
+          missionId: runtime.mission.selectedId,
+          missionPhase: runtime.mission.phase,
+          requestedThrottle,
+          desiredDirection: directionRequested,
+          toMoonVectorKm,
+          fallbackDirection: orbital.up,
+          currentDirection: runtime.stageActuator?.directionActual || directionRequested,
+          dtSeconds,
+        });
+        directionRequested = moonAttitudePolicy.requestedDirection;
         const bodyKind = stageBodyKindFromStageIndex(runtime.stageIndex);
         const stageForStep = stageAtIndex(runtime.stageIndex);
         const lowAltitudeQAlphaBypass =
@@ -4175,7 +4217,22 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           referenceAreaM2: Number(LAUNCH_VEHICLE_CONFIG.referenceAreaM2) || 0,
           massKg: effectiveMassKg,
         });
-        const rcs = computeRcsAssist({
+        const moonCoastRcsAssist = (
+          moonAttitudePolicy.passiveMoonCoastPointing
+          && moonAttitudePolicy.passiveMoonCoastAttitudeAssist?.active
+          && !(throttleActual > 1e-3)
+        )
+          ? {
+            accelerationKmS2: { x: 0, y: 0, z: 0 },
+            active: true,
+            errorDeg: Number(moonAttitudePolicy.passiveMoonCoastAttitudeAssist.errorDeg) || 0,
+            authority: Number(moonAttitudePolicy.passiveMoonCoastAttitudeAssist.authority) || 0,
+            jets: Array.isArray(moonAttitudePolicy.passiveMoonCoastAttitudeAssist.jets)
+              ? [...moonAttitudePolicy.passiveMoonCoastAttitudeAssist.jets]
+              : [],
+          }
+          : null;
+        const rcs = moonCoastRcsAssist || computeRcsAssist({
           stageIndex: runtime.stageIndex,
           desiredDirection: steeringDirection,
           relVel,
@@ -4197,6 +4254,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           burnRateKgS,
           dynamicPressurePa: aero.dynamicPressurePa,
           guidanceMode: guidanceModeLabel,
+          requestedDirectionKm: cloneVectorOrNull(steeringDirection),
+          bodyAxisDirectionKm: cloneVectorOrNull(directionActual),
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
           rcsAuthority: rcs.authority,

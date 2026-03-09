@@ -158,6 +158,10 @@ function main() {
     assert(snapshot.bodyRadialState === "upward", `expected upward nose axis, got ${snapshot.bodyRadialState}`);
     assert(Number(snapshot.guidanceVelocityAngleDeg) < 1, `expected near-zero command off-velocity angle, got ${snapshot.guidanceVelocityAngleDeg}`);
     assert(Number(snapshot.bodyVelocityAngleDeg) < 1, `expected near-zero nose off-velocity angle, got ${snapshot.bodyVelocityAngleDeg}`);
+    assert(snapshot.guidanceMoonState === "toward", `expected command moon aim toward, got ${snapshot.guidanceMoonState}`);
+    assert(snapshot.bodyMoonState === "toward", `expected nose moon aim toward, got ${snapshot.bodyMoonState}`);
+    assert(Number(snapshot.guidanceMoonAngleDeg) < 1, `expected near-zero command off-moon angle, got ${snapshot.guidanceMoonAngleDeg}`);
+    assert(Number(snapshot.bodyMoonAngleDeg) < 1, `expected near-zero nose off-moon angle, got ${snapshot.bodyMoonAngleDeg}`);
   }
 
   {
@@ -184,6 +188,10 @@ function main() {
     assert(snapshot.guidanceRadialState === "downward", `expected downward command axis, got ${snapshot.guidanceRadialState}`);
     assert(snapshot.bodyVelocityState === "prograde", `expected prograde nose axis on reversed velocity case, got ${snapshot.bodyVelocityState}`);
     assert(snapshot.bodyRadialState === "downward", `expected downward nose axis, got ${snapshot.bodyRadialState}`);
+    assert(snapshot.guidanceMoonState === "away", `expected command moon aim away, got ${snapshot.guidanceMoonState}`);
+    assert(snapshot.bodyMoonState === "away", `expected nose moon aim away, got ${snapshot.bodyMoonState}`);
+    assert(Number(snapshot.guidanceMoonAngleDeg) > 179, `expected near-180 command off-moon angle, got ${snapshot.guidanceMoonAngleDeg}`);
+    assert(Number(snapshot.bodyMoonAngleDeg) > 179, `expected near-180 nose off-moon angle, got ${snapshot.bodyMoonAngleDeg}`);
   }
 
   console.log("PASS moon-directional-telemetry-lock");

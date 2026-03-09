@@ -1,4 +1,5 @@
 import {
+  resolveSnapshotControlTelemetry,
   resolveSnapshotTargetTelemetry,
   shouldShowTerrainRelativeAltitude,
 } from "../app/static/js/ui/launchTelemetryDisplay.js";
@@ -50,6 +51,28 @@ function main() {
   assert(plannedTargetTelemetry.targetEtaSeconds === 110_000, "expected planned departure ETA to be preserved");
   assert(plannedTargetTelemetry.targetRateLabel === "Approach", `expected translunar-coast label normalization, got ${plannedTargetTelemetry.targetRateLabel}`);
   assert(plannedTargetTelemetry.targetEtaLabel === "Plan ETA", `expected translunar-coast ETA label normalization, got ${plannedTargetTelemetry.targetEtaLabel}`);
+
+  const coastControlTelemetry = resolveSnapshotControlTelemetry({
+    missionPhase: "coast_to_moon",
+    guidanceMode: "navsys:gnc-lambert-midcourse-coast",
+    rcsActive: true,
+    thrustN: 0,
+    throttle: 0,
+    guidanceBurnRequested: false,
+  });
+  assert(coastControlTelemetry.attitudeControlLabel === "RCS", `expected RCS attitude control, got ${coastControlTelemetry.attitudeControlLabel}`);
+  assert(coastControlTelemetry.trajectoryBurnLabel === "None", `expected no trajectory burn during passive coast, got ${coastControlTelemetry.trajectoryBurnLabel}`);
+
+  const burnControlTelemetry = resolveSnapshotControlTelemetry({
+    missionPhase: "tli_burn",
+    guidanceMode: "navsys:gnc-lambert-tli-burn",
+    rcsActive: false,
+    thrustN: 15_600_000,
+    throttle: 1,
+    guidanceBurnRequested: true,
+  });
+  assert(burnControlTelemetry.attitudeControlLabel === "Main Vector", `expected main-vector attitude control during burn, got ${burnControlTelemetry.attitudeControlLabel}`);
+  assert(burnControlTelemetry.trajectoryBurnLabel === "Main Engines", `expected main-engine trajectory burn during powered flight, got ${burnControlTelemetry.trajectoryBurnLabel}`);
 
   const normalTargetTelemetry = resolveSnapshotTargetTelemetry({
     missionPhase: "launch_to_parking",

@@ -98,3 +98,29 @@ export function resolveSnapshotTargetTelemetry(snapshot = null) {
     targetEtaLabel,
   };
 }
+
+export function resolveSnapshotControlTelemetry(snapshot = null) {
+  const thrustN = finiteNumberOrNull(snapshot?.thrustN);
+  const throttle = finiteNumberOrNull(snapshot?.throttle);
+  const guidanceBurnRequested = Boolean(snapshot?.guidanceBurnRequested);
+  const guidanceInertNoPropellant = Boolean(snapshot?.guidanceInertNoPropellant);
+  const rcsActive = Boolean(snapshot?.rcsActive);
+  const mainBurnActive = !guidanceInertNoPropellant && (
+    (thrustN !== null && thrustN > 1e4)
+    || (guidanceBurnRequested && throttle !== null && throttle > 1e-3)
+  );
+
+  let attitudeControlLabel = "Coast Hold";
+  if (mainBurnActive) {
+    attitudeControlLabel = "Main Vector";
+  } else if (rcsActive) {
+    attitudeControlLabel = "RCS";
+  }
+
+  return {
+    attitudeControlLabel,
+    trajectoryBurnLabel: mainBurnActive ? "Main Engines" : "None",
+    mainBurnActive,
+    rcsActive,
+  };
+}

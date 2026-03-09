@@ -705,6 +705,79 @@ function testLateCoastWeakClosureTriggersRescueCorrection() {
   );
 }
 
+function testHealthyCoastLockSuppressesMarginalCorrectionChatter() {
+  const runtime = createPlannerRuntime();
+  const healthy = runCommand({
+    phase: "coast_to_moon",
+    plannerRuntime: runtime,
+    timestampSec: 1200,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.16, y: 0.986, z: 0.02 },
+      shipEarthPositionKm: { x: 22_000, y: 8_500, z: 0 },
+      shipEarthVelocityKmS: { x: 0.25, y: 10.55, z: 0.02 },
+      moonEarthPositionKm: { x: 348_000, y: 136_000, z: 10_000 },
+      moonEarthVelocityKmS: { x: -0.35, y: 0.93, z: 0.01 },
+    },
+    metrics: {
+      moonDistanceKm: 392_000,
+      moonClosingSpeedKmS: 3.8,
+      moonProjectedMissTrendKmS: 0,
+      timeToPeriapsisSec: 999999,
+      missionPhaseElapsedSec: 1200,
+      departurePlanReady: true,
+      departurePlanThrottle: 1,
+      departurePlanBurnDurationSec: 834,
+      departurePlanCommitWindowSec: 105,
+      departurePlanPredictedMissDistanceKm: 8_400,
+      departurePlanPredictedPeriluneAltitudeKm: 290,
+      departurePlanBPlaneErrorKm: 2_700,
+      departurePlanGeometryScore: 0.95,
+      departurePlanAlignNow: 0.8,
+      earthDistanceKm: 24_000,
+      periapsisKm: 245,
+      stageMassKg: 1_450_000,
+      engineAccelAtThrottle1KmS2: 0.01,
+    },
+  });
+  assert(
+    String(healthy.mode || "").includes("navsys:gnc-lambert-midcourse-coast"),
+    `healthy_coast_lock: expected initial passive coast, got ${healthy.mode}`,
+  );
+
+  const marginal = runCommand({
+    phase: "coast_to_moon",
+    plannerRuntime: runtime,
+    timestampSec: 1260,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.19, y: 0.98, z: 0.02 },
+      shipEarthPositionKm: { x: 26_000, y: 7_500, z: 0 },
+      shipEarthVelocityKmS: { x: 0.15, y: 10.45, z: 0.01 },
+      moonEarthPositionKm: { x: 355_000, y: 128_000, z: 9_000 },
+      moonEarthVelocityKmS: { x: -0.35, y: 0.94, z: 0.01 },
+    },
+    metrics: {
+      moonDistanceKm: 390_500,
+      moonClosingSpeedKmS: 0.03,
+      moonProjectedMissTrendKmS: 0.18,
+      timeToPeriapsisSec: 999999,
+      missionPhaseElapsedSec: 1260,
+      departurePlanReady: false,
+      earthDistanceKm: 27_000,
+      periapsisKm: 245,
+      stageMassKg: 1_450_000,
+      engineAccelAtThrottle1KmS2: 0.01,
+    },
+  });
+  assert(
+    String(marginal.mode || "").includes("navsys:gnc-lambert-midcourse-coast"),
+    `healthy_coast_lock: expected hysteresis to keep passive coast, got ${marginal.mode}`,
+  );
+  assert(
+    Number(marginal.throttle) === 0,
+    `healthy_coast_lock: expected zero throttle while coast lock is active, got ${marginal.throttle}`,
+  );
+}
+
 function testLateHealthyCoastPreservesCommittedDepartureCorridor() {
   const runtime = createPlannerRuntime();
   const result = runCommand({
@@ -796,8 +869,9 @@ testLateCoastDepartureHoldReleasesWhenMovingAway();
   testDepartureCommitUsesLiveDiagnosticsNotSeedTelemetry();
   testDepartureCommitRejectsBadCorridorSeed();
   testLateHealthyCoastPreservesCommittedDepartureCorridor();
-  testLateCoastWeakClosureTriggersRescueCorrection();
-  testPassiveCoastRejectedForCatastrophicLiveCorridor();
+testLateCoastWeakClosureTriggersRescueCorrection();
+testHealthyCoastLockSuppressesMarginalCorrectionChatter();
+testPassiveCoastRejectedForCatastrophicLiveCorridor();
   console.log("PASS moon-gnc-conflict-e2e");
 }
 
