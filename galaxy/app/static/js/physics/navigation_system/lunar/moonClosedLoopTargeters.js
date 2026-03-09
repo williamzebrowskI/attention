@@ -164,6 +164,66 @@ export function shouldBridgeDeparturePlanIntoEarlyCoast({
   );
 }
 
+export function doesMoonCorridorCandidateImproveCommittedPlan({
+  candidatePredictedMissDistanceKm = Number.NaN,
+  candidatePredictedPeriluneAltitudeKm = Number.NaN,
+  candidateBPlaneErrorKm = Number.NaN,
+  departurePlanPredictedMissDistanceKm = Number.NaN,
+  departurePlanPredictedPeriluneAltitudeKm = Number.NaN,
+  departurePlanBPlaneErrorKm = Number.NaN,
+  plannerConfig = null,
+} = {}) {
+  const departureMissKm = finiteNumber(departurePlanPredictedMissDistanceKm, Number.NaN);
+  const departurePeriluneKm = finiteNumber(departurePlanPredictedPeriluneAltitudeKm, Number.NaN);
+  const departureBPlaneKm = finiteNumber(departurePlanBPlaneErrorKm, Number.NaN);
+  const candidateMissKm = finiteNumber(candidatePredictedMissDistanceKm, Number.NaN);
+  const candidatePeriluneKm = finiteNumber(candidatePredictedPeriluneAltitudeKm, Number.NaN);
+  const candidateBPlaneKm = finiteNumber(candidateBPlaneErrorKm, Number.NaN);
+  if (
+    !Number.isFinite(departureMissKm)
+    || !Number.isFinite(departurePeriluneKm)
+    || !Number.isFinite(departureBPlaneKm)
+    || !Number.isFinite(candidateMissKm)
+    || !Number.isFinite(candidatePeriluneKm)
+    || !Number.isFinite(candidateBPlaneKm)
+  ) {
+    return false;
+  }
+
+  const targetPeriluneKm = Math.max(
+    20,
+    finiteNumber(plannerConfig?.moonTargetPeriluneAltitudeKm, 120),
+  );
+  const departureScore = departureCorridorCompositeScore({
+    predictedMissDistanceKm: departureMissKm,
+    predictedPeriluneAltitudeKm: departurePeriluneKm,
+    bPlaneErrorKm: departureBPlaneKm,
+    targetPeriluneAltitudeKm: targetPeriluneKm,
+  });
+  const candidateScore = departureCorridorCompositeScore({
+    predictedMissDistanceKm: candidateMissKm,
+    predictedPeriluneAltitudeKm: candidatePeriluneKm,
+    bPlaneErrorKm: candidateBPlaneKm,
+    targetPeriluneAltitudeKm: targetPeriluneKm,
+  });
+  if (!Number.isFinite(departureScore) || !Number.isFinite(candidateScore)) {
+    return false;
+  }
+
+  const departurePeriluneResidualKm = Math.abs(departurePeriluneKm - targetPeriluneKm);
+  const candidatePeriluneResidualKm = Math.abs(candidatePeriluneKm - targetPeriluneKm);
+  const candidateNotWorse = (
+    candidateMissKm <= Math.max(departureMissKm + 750, departureMissKm * 1.05)
+    && candidateBPlaneKm <= Math.max(departureBPlaneKm + 750, departureBPlaneKm * 1.05)
+    && candidatePeriluneResidualKm <= Math.max(
+      departurePeriluneResidualKm + 750,
+      Math.max(50, departurePeriluneResidualKm) * 1.08,
+    )
+  );
+  const materiallyBetter = candidateScore <= (departureScore * 0.92);
+  return candidateNotWorse && materiallyBetter;
+}
+
 function ensureMoonGncRuntime(moonRuntime) {
   if (!moonRuntime || typeof moonRuntime !== "object") {
     return null;
@@ -975,6 +1035,46 @@ export function planMoonClosedLoopMissionCommand({
       missGateKm,
       plannerConfig,
     });
+    const bestImprovesCommittedDeparturePlan = (
+      phaseName === "coast_to_moon"
+      && departurePlanCorridorAcceptable
+      && doesMoonCorridorCandidateImproveCommittedPlan({
+        candidatePredictedMissDistanceKm: best.predictedMissDistanceKm,
+        candidatePredictedPeriluneAltitudeKm: best.predictedPeriluneAltitudeKm,
+        candidateBPlaneErrorKm: best.bPlaneErrorKm,
+        departurePlanPredictedMissDistanceKm,
+        departurePlanPredictedPeriluneAltitudeKm,
+        departurePlanBPlaneErrorKm,
+        plannerConfig,
+      })
+    );
+    const ballisticCoastImprovesCommittedDeparturePlan = (
+      phaseName === "coast_to_moon"
+      && departurePlanCorridorAcceptable
+      && ballisticCoastCandidate
+      && doesMoonCorridorCandidateImproveCommittedPlan({
+        candidatePredictedMissDistanceKm: ballisticCoastCandidate.predictedMissDistanceKm,
+        candidatePredictedPeriluneAltitudeKm: ballisticCoastCandidate.predictedPeriluneAltitudeKm,
+        candidateBPlaneErrorKm: ballisticCoastCandidate.bPlaneErrorKm,
+        departurePlanPredictedMissDistanceKm,
+        departurePlanPredictedPeriluneAltitudeKm,
+        departurePlanBPlaneErrorKm,
+        plannerConfig,
+      })
+    );
+    const committedDepartureCorridorPreferred = (
+      phaseName === "coast_to_moon"
+      && departurePlanCorridorAcceptable
+      && finiteVector(departurePlanDirection)
+      && Number.isFinite(moonClosingSpeedKmS)
+      && moonClosingSpeedKmS > Math.max(
+        0.02,
+        finiteNumber(plannerConfig?.moonMidcourseMinClosingSpeedKmS, 0.02),
+      )
+      && !ballisticCoastMovingAway
+      && !bestImprovesCommittedDeparturePlan
+      && !ballisticCoastImprovesCommittedDeparturePlan
+    );
     const missFarFromGate = best.predictedMissDistanceKm > (missGateKm * 2.1);
     const movingAwayFromMoon = moonClosingSpeedKmS < -0.02;
     const missDiverging = missTrendKmS > 0.08;
@@ -992,6 +1092,7 @@ export function planMoonClosedLoopMissionCommand({
         && departurePlanDiagnosticsScore <= bestDiagnosticsScore
       )
       || earlyCoastDepartureBridgeActive
+      || committedDepartureCorridorPreferred
     );
     const useBallisticCoastDiagnostics = (
       phaseName === "coast_to_moon"
@@ -1096,6 +1197,19 @@ export function planMoonClosedLoopMissionCommand({
         ),
         mode: "navsys:gnc-lambert-midcourse-coast",
       };
+    } else if (committedDepartureCorridorPreferred) {
+      command = {
+        phase: "coast",
+        throttle: 0,
+        direction: normalize(
+          add(
+            scale(departurePlanDirection, 0.78),
+            scale(toMoon, 0.22),
+          ),
+          departurePlanDirection,
+        ),
+        mode: "navsys:gnc-lambert-midcourse-coast",
+      };
     } else if (useBallisticCoastDiagnostics) {
       command = {
         phase: "coast",
@@ -1189,6 +1303,9 @@ export function planMoonClosedLoopMissionCommand({
         departurePlanCorridorAccepted: departurePlanCorridorAcceptable,
         departurePlanRescueActive,
         earlyCoastDepartureBridgeActive,
+        committedDepartureCorridorPreferred,
+        bestImprovesCommittedDeparturePlan,
+        ballisticCoastImprovesCommittedDeparturePlan,
         ballisticCoastTrackActive: useBallisticCoastDiagnostics,
         coastCorridorAccepted: passiveCoastEligibility.corridorAccepted,
         coastCorridorWeakClosing: passiveCoastEligibility.weakClosing,

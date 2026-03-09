@@ -2639,8 +2639,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         safeOptions.moonDepartureWindowSeed = cachedSeed;
       } else {
         const browserRuntime = typeof window !== "undefined";
-        const payloadKey = moonOrbitInjectLaunchSolveKey(moonOrbitInjectPayload);
-        const samePendingKey = payloadKey && runtime.moonOrbitInjectSolve.key === payloadKey;
         if (browserRuntime) {
           return {
             accepted: false,

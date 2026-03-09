@@ -1,5 +1,6 @@
 import { planMoonMissionGncCommand } from "../app/static/js/physics/navigation_system/gnc/moonMissionGncStack.js";
 import {
+  doesMoonCorridorCandidateImproveCommittedPlan,
   evaluateMoonPassiveCoastEligibility,
   shouldBridgeDeparturePlanIntoEarlyCoast,
 } from "../app/static/js/physics/navigation_system/lunar/moonClosedLoopTargeters.js";
@@ -296,6 +297,38 @@ function testEarlyCoastDepartureBridgeReleasesWhenLateAndDiverging() {
   assert(
     !bridgeActive,
     "early_coast_departure_bridge_release: expected late diverging coast to stop preserving departure corridor",
+  );
+}
+
+function testCommittedDepartureCorridorRejectsCatastrophicLiveReplacement() {
+  const improves = doesMoonCorridorCandidateImproveCommittedPlan({
+    candidatePredictedMissDistanceKm: 361_000,
+    candidatePredictedPeriluneAltitudeKm: 374_000,
+    candidateBPlaneErrorKm: 374_000,
+    departurePlanPredictedMissDistanceKm: 8_400,
+    departurePlanPredictedPeriluneAltitudeKm: 290,
+    departurePlanBPlaneErrorKm: 2_700,
+    plannerConfig: NAVIGATION_DEFAULTS.planner,
+  });
+  assert(
+    !improves,
+    "committed_departure_corridor_lock: catastrophic live solution should not replace accepted departure plan",
+  );
+}
+
+function testCommittedDepartureCorridorAllowsMaterialImprovement() {
+  const improves = doesMoonCorridorCandidateImproveCommittedPlan({
+    candidatePredictedMissDistanceKm: 7_100,
+    candidatePredictedPeriluneAltitudeKm: 220,
+    candidateBPlaneErrorKm: 2_050,
+    departurePlanPredictedMissDistanceKm: 8_400,
+    departurePlanPredictedPeriluneAltitudeKm: 290,
+    departurePlanBPlaneErrorKm: 2_700,
+    plannerConfig: NAVIGATION_DEFAULTS.planner,
+  });
+  assert(
+    improves,
+    "committed_departure_corridor_lock: materially better live solution should be allowed to replace accepted departure plan",
   );
 }
 
@@ -705,6 +738,8 @@ testRuntimeDiagnosticsArePopulated();
 testEarlyCoastNoLegacyDepartureHold();
 testEarlyCoastDepartureBridgePrefersAcceptedTliCorridor();
 testEarlyCoastDepartureBridgeReleasesWhenLateAndDiverging();
+testCommittedDepartureCorridorRejectsCatastrophicLiveReplacement();
+testCommittedDepartureCorridorAllowsMaterialImprovement();
 testLateCoastDepartureHoldReleasesWhenMovingAway();
   testTelemetrySnapshotReacquireWindowHold();
   testTelemetrySnapshotReacquireWindowProgression();
