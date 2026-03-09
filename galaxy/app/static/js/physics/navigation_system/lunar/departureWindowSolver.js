@@ -60,6 +60,27 @@ const HYBRID_TRANSFER_RESERVE_OFFSETS_SEC = [-2 * 3600, -1 * 3600, 0, 1 * 3600, 
 
 function departureSolverProfile(searchProfile = "fast") {
   const mode = String(searchProfile || "fast").trim().toLowerCase();
+  if (mode === "browser") {
+    return {
+      mode: "browser",
+      approximate: false,
+      phaseSamples: 12,
+      apoapsisOffsetsKm: [0, 24, 52],
+      finalistCount: 3,
+      nodeFinalistCount: 3,
+      defaultNodeSamples: 12,
+      minNodeSamples: 8,
+      maxNodeSamples: 24,
+      refinePasses: 1,
+      initialApoRefineStepKm: 12,
+      useAggressive: false,
+      directionBlendWeights: FAST_PRIMARY_DIRECTION_BLEND_WEIGHTS,
+      dvOffsetsKmS: FAST_DV_OFFSETS_KM_S,
+      radialOffsets: FAST_RADIAL_OFFSETS,
+      normalOffsets: FAST_NORMAL_OFFSETS,
+      transferReserveOffsetsSec: FAST_TRANSFER_RESERVE_OFFSETS_SEC,
+    };
+  }
   if (mode === "hybrid" || mode === "inject") {
     return {
       mode: "hybrid",
@@ -2468,24 +2489,32 @@ export function solveMoonOrbitInjectWindowForLaunch({
   nodeSamples = 24,
   searchProfile = "hybrid",
 } = {}) {
-  const attempts = [
-    {
-      nodeSamples,
-      searchProfile,
-    },
-    {
-      nodeSamples: Math.max(Number(nodeSamples) || 0, 36),
-      searchProfile: "hybrid",
-    },
-    {
-      nodeSamples: Math.max(72, (Number(nodeSamples) || 0) * 3),
-      searchProfile: "full",
-    },
-    {
-      nodeSamples: Math.max(96, (Number(nodeSamples) || 0) * 4),
-      searchProfile: "aggressive",
-    },
-  ];
+  const normalizedSearchProfile = String(searchProfile || "hybrid").trim().toLowerCase();
+  const attempts = normalizedSearchProfile === "browser"
+    ? [
+      {
+        nodeSamples,
+        searchProfile: "browser",
+      },
+    ]
+    : [
+      {
+        nodeSamples,
+        searchProfile,
+      },
+      {
+        nodeSamples: Math.max(Number(nodeSamples) || 0, 36),
+        searchProfile: "hybrid",
+      },
+      {
+        nodeSamples: Math.max(72, (Number(nodeSamples) || 0) * 3),
+        searchProfile: "full",
+      },
+      {
+        nodeSamples: Math.max(96, (Number(nodeSamples) || 0) * 4),
+        searchProfile: "aggressive",
+      },
+    ];
   let bestWindow = null;
   let bestScore = Number.NEGATIVE_INFINITY;
   let bestAcceptedWindow = null;
@@ -2513,8 +2542,7 @@ export function solveMoonOrbitInjectWindowForLaunch({
       bestAcceptedScore = score;
       bestAcceptedWindow = solved;
     }
-    const comparedCoarseAndHybridAttempts = index >= 1;
-    if (bestAcceptedWindow && comparedCoarseAndHybridAttempts) {
+    if (bestAcceptedWindow) {
       break;
     }
   }

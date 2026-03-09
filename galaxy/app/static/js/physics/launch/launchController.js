@@ -61,6 +61,7 @@ import {
   missionUsesSustainedOrbitReserve as missionUsesSustainedOrbitReserveModel,
   setMissionPhase as setMissionPhaseModel,
 } from "./launchMissionEngine.js";
+import { MOON_PARKING_ORBIT_GATE_TOLERANCE_KM } from "../navigation_system/lunar/moonParkingOrbitGate.js";
 import {
   applyQAlphaSteeringLimit,
   atmosphereRelativeVelocityKmS,
@@ -117,6 +118,8 @@ import {
   MOON_BURN_ATTITUDE_GATE_EXIT_ERROR_DEG,
   MOON_BURN_ATTITUDE_GATE_PHASES,
   MOON_ORBIT_INJECT_ALTITUDE_KM,
+  MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
+  MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
   MOON_ORBIT_INJECT_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_LAUNCH_SEARCH_PROFILE,
   MOON_PARKING_ORBIT_APOAPSIS_KM,
@@ -125,10 +128,11 @@ import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 import {
   canUseMoonDepartureSolveWorker,
   requestMoonDepartureSolvePromise,
+  requestMoonDepartureSolvePromiseFresh,
 } from "../navigation_system/lunar/moonDepartureSolveWorkerClient.js";
 import { solveMoonOrbitInjectWindowForLaunch } from "../navigation_system/lunar/departureWindowSolver.js";
 
-const MOON_ORBIT_INJECT_WORKER_TIMEOUT_MS = 45000;
+const MOON_ORBIT_INJECT_WORKER_TIMEOUT_MS = 60000;
 
 const MIN_ROCKET_MASS_KG = 500;
 const PRIMARY_ORBITAL_REFUEL_DEMO_STAGE2_MIN_PROPELLANT_KG = 2_400_000;
@@ -1042,6 +1046,10 @@ export function createLaunchController(options) {
       pending: null,
       solution: null,
       error: "",
+      pendingStartedAtMs: 0,
+      source: "",
+      searchProfile: "",
+      nodeSamples: 0,
     },
     hotstage: createHotstageState(),
     pendingPadTankerLaunch: null,
@@ -1452,7 +1460,7 @@ export function createLaunchController(options) {
     }
     const missionPhase = String(phase || "").trim();
     if (missionPhase === "launch_to_parking") {
-      return `Awaiting parking orbit gate: apo/peri >= ${formatGateKm(profile.parkingOrbitApoapsisMinKm)} / ${formatGateKm(profile.parkingOrbitPeriapsisMinKm)}.`;
+      return `Awaiting parking orbit gate: apo/peri near ${formatGateKm(profile.parkingOrbitApoapsisMinKm)} / ${formatGateKm(profile.parkingOrbitPeriapsisMinKm)} (tol ${formatGateKm(MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.apoapsisKm)} / ${formatGateKm(MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.periapsisKm)}).`;
     }
     if (missionPhase === "orbital_refuel") {
       return `Awaiting refuel target: fill ${formatGatePercent(refuelFillFraction)} / ${formatGatePercent(profile.refuelTargetFillFraction)}.`;
@@ -2297,6 +2305,22 @@ export function createLaunchController(options) {
         || Number(earthState.massKg)
         || 0
       );
+    const browserRuntime = typeof window !== "undefined";
+    const requestedNodeSamples = Number(safeOptions.orbitInjectNodeSamples);
+    const requestedSearchProfile = String(safeOptions.orbitInjectSearchProfile || "").trim().toLowerCase();
+    const nodeSamples = Number.isFinite(requestedNodeSamples) && requestedNodeSamples > 0
+      ? Math.max(1, Math.round(requestedNodeSamples))
+      : (
+        browserRuntime
+          ? MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES
+          : MOON_ORBIT_INJECT_LAUNCH_NODE_SAMPLES
+      );
+    const searchProfile = requestedSearchProfile
+      || (
+        browserRuntime
+          ? MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE
+          : MOON_ORBIT_INJECT_LAUNCH_SEARCH_PROFILE
+      );
     return {
       earthState,
       moonState,
@@ -2306,8 +2330,8 @@ export function createLaunchController(options) {
       earthMuKm3S2,
       engineAccelAtThrottle1KmS2,
       spacecraftMassKg,
-      nodeSamples: MOON_ORBIT_INJECT_LAUNCH_NODE_SAMPLES,
-      searchProfile: MOON_ORBIT_INJECT_LAUNCH_SEARCH_PROFILE,
+      nodeSamples,
+      searchProfile,
     };
   }
 
@@ -2373,13 +2397,23 @@ function acceptedMoonOrbitInjectLaunchSolveResponse(response = null) {
 }
 
 function cacheMoonOrbitInjectLaunchSolveResponse(key, response = null) {
-  if (runtime.moonOrbitInjectSolve.key === key) {
-    runtime.moonOrbitInjectSolve.pending = null;
-    runtime.moonOrbitInjectSolve.solution = response?.solution || null;
-    runtime.moonOrbitInjectSolve.error = String(response?.error || "");
+    if (runtime.moonOrbitInjectSolve.key === key) {
+      const completedAtMs = Date.now();
+      const startedAtMs = Number(runtime.moonOrbitInjectSolve.pendingStartedAtMs) || 0;
+      runtime.moonOrbitInjectSolve.pending = null;
+      runtime.moonOrbitInjectSolve.solution = response?.solution || null;
+      runtime.moonOrbitInjectSolve.error = String(response?.error || "");
+      runtime.moonOrbitInjectSolve.pendingStartedAtMs = 0;
+      runtime.moonOrbitInjectSolve.lastDurationMs = startedAtMs > 0
+        ? Math.max(0, completedAtMs - startedAtMs)
+        : 0;
+      runtime.moonOrbitInjectSolve.lastCompletedAtMs = completedAtMs;
+      runtime.moonOrbitInjectSolve.source = "";
+      runtime.moonOrbitInjectSolve.searchProfile = "";
+      runtime.moonOrbitInjectSolve.nodeSamples = 0;
+    }
+    return response;
   }
-  return response;
-}
 
 function solveMoonOrbitInjectLaunchLocally(payload = null) {
   try {
@@ -2414,6 +2448,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   runtime.moonOrbitInjectSolve.pending = pending;
   runtime.moonOrbitInjectSolve.solution = null;
   runtime.moonOrbitInjectSolve.error = "";
+  runtime.moonOrbitInjectSolve.pendingStartedAtMs = Date.now();
+  runtime.moonOrbitInjectSolve.lastDurationMs = 0;
+  runtime.moonOrbitInjectSolve.lastCompletedAtMs = 0;
+  runtime.moonOrbitInjectSolve.source = "local-fallback";
+  runtime.moonOrbitInjectSolve.searchProfile = String(payload?.searchProfile || "");
+  runtime.moonOrbitInjectSolve.nodeSamples = Number(payload?.nodeSamples) || 0;
   return pending;
 }
 
@@ -2426,11 +2466,22 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         solution: null,
       };
     }
-    const allowLocalFallback = options?.allowLocalFallback !== false;
+    const browserRuntime = typeof window !== "undefined";
+    const allowLocalFallback = options?.allowLocalFallback !== undefined
+      ? options.allowLocalFallback !== false
+      : !browserRuntime;
+    const forceLocalFallback = options?.forceLocalFallback === true;
+    const forceRestart = options?.forceRestart === true;
+    const reuseAnyPending = options?.reuseAnyPending === true;
+    const useFreshWorker = browserRuntime && forceRestart;
+    const key = moonOrbitInjectLaunchSolveKey(payload);
+    if (forceLocalFallback) {
+      return startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload);
+    }
     if (!canUseMoonDepartureSolveWorker()) {
       return allowLocalFallback
         ? startDeferredLocalMoonOrbitInjectLaunchSolve(
-          moonOrbitInjectLaunchSolveKey(payload),
+          key,
           payload,
         )
         : {
@@ -2439,8 +2490,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           solution: null,
         };
     }
-    const key = moonOrbitInjectLaunchSolveKey(payload);
-    if (runtime.moonOrbitInjectSolve.key === key) {
+    if (!forceRestart && runtime.moonOrbitInjectSolve.key === key) {
       if (runtime.moonOrbitInjectSolve.solution) {
         return {
           error: String(runtime.moonOrbitInjectSolve.error || ""),
@@ -2449,29 +2499,65 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         };
       }
       if (runtime.moonOrbitInjectSolve.pending) {
-        return runtime.moonOrbitInjectSolve.pending;
+        if (!allowLocalFallback) {
+          return runtime.moonOrbitInjectSolve.pending;
+        }
+        return runtime.moonOrbitInjectSolve.pending.then((response) => {
+          if (!response?.error || acceptedMoonOrbitInjectLaunchSolveResponse(response)) {
+            return response;
+          }
+          return browserRuntime
+            ? startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload)
+            : cacheMoonOrbitInjectLaunchSolveResponse(
+              key,
+              solveMoonOrbitInjectLaunchLocally(payload),
+            );
+        });
       }
     }
-    const pending = Promise.race([
-      requestMoonDepartureSolvePromise({
-        type: "solveMoonOrbitInjectWindowForLaunch",
-        payload,
-      }),
-      new Promise((resolve) => {
-        setTimeout(() => {
-          resolve({
-            error: "worker-timeout",
-            type: "solveMoonOrbitInjectWindowForLaunch",
-            solution: null,
-          });
-        }, MOON_ORBIT_INJECT_WORKER_TIMEOUT_MS);
-      }),
-    ]).then((response) => {
+    if (
+      !forceRestart
+      && reuseAnyPending
+      && runtime.moonOrbitInjectSolve.pending
+      && String(runtime.moonOrbitInjectSolve.source || "") === "shared-worker"
+    ) {
+      return runtime.moonOrbitInjectSolve.pending;
+    }
+    const workerSolvePromise = (
+      useFreshWorker
+        ? requestMoonDepartureSolvePromiseFresh({
+          type: "solveMoonOrbitInjectWindowForLaunch",
+          payload,
+          timeoutMs: MOON_ORBIT_INJECT_WORKER_TIMEOUT_MS,
+        })
+        : requestMoonDepartureSolvePromise({
+          type: "solveMoonOrbitInjectWindowForLaunch",
+          payload,
+        })
+    );
+    const timedWorkerSolvePromise = useFreshWorker
+      ? Promise.race([
+        workerSolvePromise,
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              error: "worker-timeout",
+              type: "solveMoonOrbitInjectWindowForLaunch",
+              solution: null,
+            });
+          }, MOON_ORBIT_INJECT_WORKER_TIMEOUT_MS);
+        }),
+      ])
+      : workerSolvePromise;
+    const pending = timedWorkerSolvePromise.then((response) => {
       if (!response?.error || acceptedMoonOrbitInjectLaunchSolveResponse(response)) {
         return cacheMoonOrbitInjectLaunchSolveResponse(key, response);
       }
       if (!allowLocalFallback) {
         return cacheMoonOrbitInjectLaunchSolveResponse(key, response);
+      }
+      if (browserRuntime) {
+        return startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload);
       }
       return cacheMoonOrbitInjectLaunchSolveResponse(
         key,
@@ -2486,6 +2572,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       if (!allowLocalFallback) {
         return cacheMoonOrbitInjectLaunchSolveResponse(key, response);
       }
+      if (browserRuntime) {
+        return startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload);
+      }
       return cacheMoonOrbitInjectLaunchSolveResponse(
         key,
         solveMoonOrbitInjectLaunchLocally(payload),
@@ -2495,6 +2584,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.moonOrbitInjectSolve.pending = pending;
     runtime.moonOrbitInjectSolve.solution = null;
     runtime.moonOrbitInjectSolve.error = "";
+    runtime.moonOrbitInjectSolve.pendingStartedAtMs = Date.now();
+    runtime.moonOrbitInjectSolve.lastDurationMs = 0;
+    runtime.moonOrbitInjectSolve.lastCompletedAtMs = 0;
+    runtime.moonOrbitInjectSolve.source = useFreshWorker ? "fresh-worker" : "shared-worker";
+    runtime.moonOrbitInjectSolve.searchProfile = String(payload?.searchProfile || "");
+    runtime.moonOrbitInjectSolve.nodeSamples = Number(payload?.nodeSamples) || 0;
     return pending;
   }
 
@@ -2506,17 +2601,52 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     return fleetController.launchMissionShip(state, missionId, nowMs, safeOptions);
   }
 
+  function getMoonOrbitInjectSolveState() {
+    const solution = runtime.moonOrbitInjectSolve.solution || null;
+    return {
+      key: String(runtime.moonOrbitInjectSolve.key || ""),
+      pending: Boolean(runtime.moonOrbitInjectSolve.pending),
+      error: String(runtime.moonOrbitInjectSolve.error || ""),
+      pendingStartedAtMs: Number(runtime.moonOrbitInjectSolve.pendingStartedAtMs) || 0,
+      lastDurationMs: Number(runtime.moonOrbitInjectSolve.lastDurationMs) || 0,
+      lastCompletedAtMs: Number(runtime.moonOrbitInjectSolve.lastCompletedAtMs) || 0,
+      source: String(runtime.moonOrbitInjectSolve.source || ""),
+      searchProfile: String(runtime.moonOrbitInjectSolve.searchProfile || ""),
+      nodeSamples: Number(runtime.moonOrbitInjectSolve.nodeSamples) || 0,
+      solutionReady: Boolean(solution?.ready),
+      solutionValid: Boolean(solution?.valid),
+      solutionCorridorAccepted: Boolean(solution?.corridorAccepted),
+    };
+  }
+
   async function launchMissionShipAsync(state, missionId = runtime.mission.selectedId, nowMs = Date.now(), options = {}) {
     const safeOptions = {
       ...(options && typeof options === "object" ? options : {}),
       vehicleRole: "mission",
     };
+    if (
+      safeOptions?.moonDepartureWindowSeed
+      && safeOptions.moonDepartureWindowSeed?.valid
+      && safeOptions.moonDepartureWindowSeed?.ready
+      && safeOptions.moonDepartureWindowSeed?.corridorAccepted
+    ) {
+      return fleetController.launchMissionShip(state, missionId, nowMs, safeOptions);
+    }
     const moonOrbitInjectPayload = buildMoonOrbitInjectLaunchSolvePayload(state, missionId, safeOptions);
     if (moonOrbitInjectPayload) {
       const cachedSeed = getCachedMoonOrbitInjectLaunchSolve(moonOrbitInjectPayload);
       if (cachedSeed) {
         safeOptions.moonDepartureWindowSeed = cachedSeed;
       } else {
+        const browserRuntime = typeof window !== "undefined";
+        const payloadKey = moonOrbitInjectLaunchSolveKey(moonOrbitInjectPayload);
+        const samePendingKey = payloadKey && runtime.moonOrbitInjectSolve.key === payloadKey;
+        if (browserRuntime) {
+          return {
+            accepted: false,
+            reason: "orbit_inject_seed_required",
+          };
+        }
         const solveResponse = await warmMoonOrbitInjectLaunchSolve(
           state,
           missionId,
@@ -3004,6 +3134,108 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     };
     state.dynamicBodies.set(LAUNCH_BODY_ID, rocketState);
     return rocketState;
+  }
+
+  function repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs = Date.now()) {
+    if (
+      !state?.dynamicBodies
+      || runtime.phase !== "idle"
+      || runtime.booster.active
+      || Boolean(runtime.pendingPadTankerLaunch?.active)
+    ) {
+      return false;
+    }
+    const earthState = earthStateFromNBody(state);
+    if (
+      !earthState
+      || !finiteVector(earthState.position)
+      || !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      return false;
+    }
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const currentEarthAxes = earthAxes(nowMs);
+    const pad = computePadState({
+      earthState,
+      earthRadiusKm,
+      earthAxes: currentEarthAxes,
+    });
+    if (!pad) {
+      return false;
+    }
+    let rocketState = state.dynamicBodies.get(LAUNCH_BODY_ID) || null;
+    let needsRepair = false;
+    if (
+      !rocketState
+      || !finiteVector(rocketState.position)
+      || !finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      needsRepair = true;
+    } else {
+      const relPos = subtract(rocketState.position, earthState.position);
+      const altitudeKm = length(relPos) - earthRadiusKm;
+      needsRepair = !Number.isFinite(altitudeKm) || altitudeKm > 20 || altitudeKm < -1;
+    }
+    if (!needsRepair) {
+      return false;
+    }
+    rocketState = {
+      id: LAUNCH_BODY_ID,
+      massKg: surfaceLaunchInitialMassKgForMission(runtime.mission.selectedId),
+      position: { ...pad.position },
+      velocity: { ...pad.velocity },
+    };
+    state.dynamicBodies.set(LAUNCH_BODY_ID, rocketState);
+    applyEarthSurfaceContactForVehicle({
+      rocketState,
+      earthState,
+      earthAxes: currentEarthAxes,
+      earthRadiusKm,
+      earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+      referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+      dtSeconds: 0,
+      thrustN: 0,
+    });
+    runtime.lastTrackedPositionKm = earthFixedRelativePositionKm(
+      rocketState,
+      earthState,
+      currentEarthAxes,
+    );
+    updateRuntimeSurfaceSample(
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      earthRadiusKm,
+    );
+    const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
+    const atmosphereSample = sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null;
+    const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+      atmosphereSample,
+      relPos,
+      relVel,
+      currentEarthAxes.pole,
+    );
+    runtime.lastTelemetry = telemetryFromState({
+      gravitationalConstantKm3PerKgS2,
+      earthMassKg: Number(getEarthMassKg?.()) || 0,
+      earthRadiusKm,
+      earthState,
+      rocketState,
+      atmosphereSample,
+      earthPole: currentEarthAxes.pole,
+      dynamicPressurePaOverride: dynamicPressurePa,
+      runtime,
+    });
+    emitLaunchEvent("launch_vehicle_idle_pad_repair", {
+      launchSiteName: LAUNCH_SITE.name || "Launch Site",
+      ...telemetryLogDetails(runtime.lastTelemetry),
+    });
+    return true;
   }
 
   function resetToPad(state, nowMs = Date.now(), options = {}) {
@@ -4653,6 +4885,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   }
 
   function statusSnapshot(state = null) {
+    repairIdlePrimaryLaunchBodyToPadIfNeeded(state, Date.now());
     const telemetry = runtime.lastTelemetry;
     const targetDescriptor = missionTargetDescriptor();
     const directionTelemetry = resolveRelativeDirectionTelemetry(state, LAUNCH_BODY_ID);
@@ -4983,6 +5216,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   }
 
   function statusSnapshotForBody(state, bodyId = LAUNCH_BODY_ID, nowMs = Date.now()) {
+    if (String(bodyId || "") === LAUNCH_BODY_ID) {
+      repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs);
+    }
     const baseSnapshot = statusSnapshot(state);
     const fleetSnapshot = fleetController.statusSnapshotForBody({
       state,
@@ -5600,6 +5836,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     launchMissionShip,
     launchMissionShipAsync,
     warmMoonOrbitInjectLaunchSolve,
+    getMoonOrbitInjectSolveState,
     removeVehicleById,
     launchRefuelTanker,
     prepareStep,

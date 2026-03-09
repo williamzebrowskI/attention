@@ -1,4 +1,8 @@
-import { planMoonLambertGncCommand } from "../app/static/js/physics/navigation_system/gnc/moonLambertGncStack.js";
+import { planMoonMissionGncCommand } from "../app/static/js/physics/navigation_system/gnc/moonMissionGncStack.js";
+import {
+  evaluateMoonPassiveCoastEligibility,
+  shouldBridgeDeparturePlanIntoEarlyCoast,
+} from "../app/static/js/physics/navigation_system/lunar/moonClosedLoopTargeters.js";
 import { NAVIGATION_DEFAULTS } from "../app/static/js/physics/navigation_system/navigationSystemConfig.js";
 import { createPlannerRuntime } from "../app/static/js/physics/navigation_system/planners/moonGuidanceState.js";
 
@@ -42,7 +46,7 @@ function runCommand({
   plannerRuntime = createPlannerRuntime(),
   timestampSec = 0,
 }) {
-  return planMoonLambertGncCommand({
+  return planMoonMissionGncCommand({
     phase,
     targetVectors: {
       ...baseTargetVectors(),
@@ -71,7 +75,7 @@ function testTliReacquireHoldMovingAway() {
   assert(result.phase === "coast", "reacquire_hold_moving_away: expected coast");
   assert(Number(result.throttle) === 0, "reacquire_hold_moving_away: expected zero throttle");
   assert(
-    String(result.mode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+    String(result.mode || "").includes("navsys:gnc-lambert-tli-hold"),
     `reacquire_hold_moving_away: unexpected mode ${result.mode}`,
   );
   assert(Boolean(result.diagnostics?.tliReacquireHold), "reacquire_hold_moving_away: expected reacquire hold");
@@ -93,7 +97,7 @@ function testTliReacquireHoldMissDivergingOnly() {
   assert(result.phase === "coast", "reacquire_hold_diverging: expected coast");
   assert(Number(result.throttle) === 0, "reacquire_hold_diverging: expected zero throttle");
   assert(
-    String(result.mode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+    String(result.mode || "").includes("navsys:gnc-lambert-tli-hold"),
     `reacquire_hold_diverging: unexpected mode ${result.mode}`,
   );
   assert(Boolean(result.diagnostics?.tliReacquireHold), "reacquire_hold_diverging: expected reacquire hold");
@@ -146,7 +150,7 @@ function testMidcourseApproachCoastNearMoon() {
   assert(result.phase === "coast", "midcourse_approach_coast: expected coast");
   assert(Number(result.throttle) === 0, "midcourse_approach_coast: expected zero throttle");
   assert(
-    String(result.mode || "").includes("navsys:gnc-lambert-approach-coast"),
+    String(result.mode || "").includes("navsys:gnc-lambert-midcourse-coast"),
     `midcourse_approach_coast: unexpected mode ${result.mode}`,
   );
 }
@@ -251,6 +255,50 @@ function testEarlyCoastNoLegacyDepartureHold() {
   );
 }
 
+function testEarlyCoastDepartureBridgePrefersAcceptedTliCorridor() {
+  const bridgeActive = shouldBridgeDeparturePlanIntoEarlyCoast({
+    phaseName: "coast_to_moon",
+    missionPhaseElapsedSec: 45,
+    moonClosingSpeedKmS: 3.9,
+    predictedMissDistanceKm: 361_000,
+    predictedPeriluneAltitudeKm: 374_000,
+    bPlaneErrorKm: 374_000,
+    departurePlanCorridorAcceptable: true,
+    departurePlanDirection: { x: 0.18, y: 0.98, z: 0.06 },
+    departurePlanPredictedMissDistanceKm: 8_400,
+    departurePlanPredictedPeriluneAltitudeKm: 290,
+    departurePlanBPlaneErrorKm: 2_700,
+    missGateKm: 95_000,
+    plannerConfig: NAVIGATION_DEFAULTS.planner,
+  });
+  assert(
+    bridgeActive,
+    "early_coast_departure_bridge: expected early coast to preserve accepted departure corridor",
+  );
+}
+
+function testEarlyCoastDepartureBridgeReleasesWhenLateAndDiverging() {
+  const bridgeActive = shouldBridgeDeparturePlanIntoEarlyCoast({
+    phaseName: "coast_to_moon",
+    missionPhaseElapsedSec: 2_400,
+    moonClosingSpeedKmS: -0.1,
+    predictedMissDistanceKm: 361_000,
+    predictedPeriluneAltitudeKm: 374_000,
+    bPlaneErrorKm: 374_000,
+    departurePlanCorridorAcceptable: true,
+    departurePlanDirection: { x: 0.18, y: 0.98, z: 0.06 },
+    departurePlanPredictedMissDistanceKm: 8_400,
+    departurePlanPredictedPeriluneAltitudeKm: 290,
+    departurePlanBPlaneErrorKm: 2_700,
+    missGateKm: 95_000,
+    plannerConfig: NAVIGATION_DEFAULTS.planner,
+  });
+  assert(
+    !bridgeActive,
+    "early_coast_departure_bridge_release: expected late diverging coast to stop preserving departure corridor",
+  );
+}
+
 function testLateCoastDepartureHoldReleasesWhenMovingAway() {
   const runtime = createPlannerRuntime();
   const result = runCommand({
@@ -285,8 +333,8 @@ function testLateCoastDepartureHoldReleasesWhenMovingAway() {
   });
   assert(result, "late_coast_departure_release: missing result");
   assert(
-    !String(result.mode || "").includes("ballistic-track"),
-    `late_coast_departure_release: late diverging coast should not stay in ballistic track, got ${result.mode}`,
+    !String(result.mode || "").includes("navsys:gnc-lambert-midcourse-coast"),
+    `late_coast_departure_release: late diverging coast should not stay in passive coast, got ${result.mode}`,
   );
   assert(result.phase === "powered", `late_coast_departure_release: expected powered correction, got ${result.phase}`);
   assert(Number(result.throttle) > 0, `late_coast_departure_release: expected positive throttle, got ${result.throttle}`);
@@ -320,7 +368,7 @@ function testTelemetrySnapshotReacquireWindowHold() {
   assert(result.phase === "coast", "telemetry_snapshot_reacquire_window: expected coast");
   assert(Number(result.throttle) === 0, "telemetry_snapshot_reacquire_window: expected zero throttle");
   assert(
-    String(result.mode || "") === "navsys:gnc-lambert-tli-reacquire-window",
+    String(result.mode || "") === "navsys:gnc-lambert-tli-hold",
     `telemetry_snapshot_reacquire_window: unexpected mode ${result.mode}`,
   );
   assert(
@@ -351,7 +399,7 @@ function testTelemetrySnapshotReacquireWindowProgression() {
   visited.push(String(holdA?.mode || ""));
   assert(holdA.phase === "coast", "telemetry_progression.holdA: expected coast");
   assert(
-    String(holdA.mode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+    String(holdA.mode || "").includes("navsys:gnc-lambert-tli-hold"),
     `telemetry_progression.holdA: unexpected mode ${holdA?.mode}`,
   );
 
@@ -369,7 +417,7 @@ function testTelemetrySnapshotReacquireWindowProgression() {
   visited.push(String(holdB?.mode || ""));
   assert(holdB.phase === "coast", "telemetry_progression.holdB: expected coast");
   assert(
-    String(holdB.mode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+    String(holdB.mode || "").includes("navsys:gnc-lambert-tli-hold"),
     `telemetry_progression.holdB: unexpected mode ${holdB?.mode}`,
   );
 
@@ -611,8 +659,8 @@ function testLateCoastWeakClosureTriggersRescueCorrection() {
   });
   assert(result, "late_coast_weak_closure_rescue: missing result");
   assert(
-    !String(result.mode || "").includes("ballistic-track"),
-    `late_coast_weak_closure_rescue: expected ballistic coast track to release, got ${result.mode}`,
+    !String(result.mode || "").includes("navsys:gnc-lambert-midcourse-coast"),
+    `late_coast_weak_closure_rescue: expected passive coast to release, got ${result.mode}`,
   );
   assert(
     result.phase === "powered",
@@ -624,21 +672,47 @@ function testLateCoastWeakClosureTriggersRescueCorrection() {
   );
 }
 
+function testPassiveCoastRejectedForCatastrophicLiveCorridor() {
+  const eligibility = evaluateMoonPassiveCoastEligibility({
+    phaseName: "coast_to_moon",
+    predictedMissDistanceKm: 333_424.4,
+    predictedPeriluneAltitudeKm: 330_871.9,
+    bPlaneErrorKm: 330_751.9,
+    deltaVNeedKmS: 0.001,
+    moonClosingSpeedKmS: 3.472,
+    missTrendKmS: -0.023,
+    plannerConfig: NAVIGATION_DEFAULTS.planner,
+    missGateKm: 95_000,
+  });
+  assert(eligibility, "passive_coast_bad_corridor: missing eligibility");
+  assert(
+    !eligibility.corridorAccepted,
+    "passive_coast_bad_corridor: catastrophic live corridor should not be accepted",
+  );
+  assert(
+    !eligibility.allowPassiveCoast,
+    "passive_coast_bad_corridor: passive coast should be disallowed for catastrophic live corridor",
+  );
+}
+
 function main() {
   testTliReacquireHoldMovingAway();
   testTliReacquireHoldMissDivergingOnly();
   testNearPeriapsisOverridesReacquireHold();
   testMidcourseApproachCoastNearMoon();
   testRetargetCadenceDoesNotRetriggerEveryTick();
-  testRuntimeDiagnosticsArePopulated();
-  testEarlyCoastNoLegacyDepartureHold();
-  testLateCoastDepartureHoldReleasesWhenMovingAway();
+testRuntimeDiagnosticsArePopulated();
+testEarlyCoastNoLegacyDepartureHold();
+testEarlyCoastDepartureBridgePrefersAcceptedTliCorridor();
+testEarlyCoastDepartureBridgeReleasesWhenLateAndDiverging();
+testLateCoastDepartureHoldReleasesWhenMovingAway();
   testTelemetrySnapshotReacquireWindowHold();
   testTelemetrySnapshotReacquireWindowProgression();
   testDepartureCommitOverridesEarlyTliHold();
   testDepartureCommitUsesLiveDiagnosticsNotSeedTelemetry();
   testDepartureCommitRejectsBadCorridorSeed();
   testLateCoastWeakClosureTriggersRescueCorrection();
+  testPassiveCoastRejectedForCatastrophicLiveCorridor();
   console.log("PASS moon-gnc-conflict-e2e");
 }
 

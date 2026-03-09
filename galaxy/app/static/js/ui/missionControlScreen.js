@@ -844,6 +844,8 @@ export function createMissionControlScreenController(options = {}) {
     }
     if (typeof entry.fromGuidanceMode === "string" && typeof entry.toGuidanceMode === "string" && entry.toGuidanceMode) {
       parts.push(`Guidance ${entry.fromGuidanceMode || "n/a"} -> ${entry.toGuidanceMode}`);
+    } else if (typeof entry.guidanceDisplayMode === "string" && entry.guidanceDisplayMode) {
+      parts.push(`Guidance ${entry.guidanceDisplayMode}`);
     } else if (typeof entry.guidanceMode === "string" && entry.guidanceMode) {
       parts.push(`Guidance ${entry.guidanceMode}`);
     }
@@ -1169,6 +1171,7 @@ export function createMissionControlScreenController(options = {}) {
         phaseLabel: String(entry.phaseLabel || ""),
         stageName: String(entry.stageName || ""),
         guidanceMode: String(entry.guidanceMode || entry.autopilotMode || "n/a"),
+        guidanceDisplayMode: String(entry.guidanceDisplayMode || entry.guidanceMode || entry.autopilotMode || "n/a"),
         altitudeKm: Number(entry.altitudeKm),
         speedKmS: Number(entry.speedKmS),
         tracked: Boolean(entry.tracked),
@@ -1246,7 +1249,7 @@ export function createMissionControlScreenController(options = {}) {
         entry.missionName,
         fleetPhaseLabel(entry),
         entry.stageName || "",
-        entry.guidanceMode || "",
+        entry.guidanceDisplayMode || entry.guidanceMode || "",
         Number.isFinite(entry.altitudeKm) ? Math.round(entry.altitudeKm * 10) : "na",
         Number.isFinite(entry.speedKmS) ? Math.round(entry.speedKmS * 1000) : "na",
         entry.tracked ? "1" : "0",
@@ -1299,7 +1302,7 @@ export function createMissionControlScreenController(options = {}) {
           `<div class="mission-control-fleet-card-metrics">`,
           fleetMetric("ALT", altitudeLine),
           fleetMetric("VEL", speedLine),
-          fleetMetric("GUID", shortModeLabel(entry.guidanceMode || "n/a")),
+          fleetMetric("GUID", shortModeLabel(entry.guidanceDisplayMode || entry.guidanceMode || "n/a")),
           fleetMetric("BODY", entry.bodyId),
           "</div>",
           "</button>",
@@ -1748,7 +1751,7 @@ export function createMissionControlScreenController(options = {}) {
         return {
           title: "Monitor Active Burn",
           detail: `Throttle ${Number.isFinite(throttlePct) ? `${formatNumber(throttlePct * 100, 1)}%` : "n/a"} | Thrust ${thrustMN !== null ? `${formatNumber(thrustMN / 1_000_000, 3)} MN` : "n/a"}`,
-          meta: shortModeLabel(snapshot.autopilotMode || snapshot.guidanceMode || "n/a"),
+          meta: shortModeLabel(snapshot.guidanceDisplayMode || snapshot.autopilotMode || snapshot.guidanceMode || "n/a"),
           tone: guidanceInertNoPropellant ? "critical" : "nominal",
         };
       }

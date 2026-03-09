@@ -175,7 +175,7 @@ function main() {
     `moon_tli_reacquire_snapshot_consistency: expected TLI Reacquire Hold label, got ${snapshot.phaseLabel}`,
   );
   assert(
-    String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+    String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-hold"),
     `moon_tli_reacquire_snapshot_consistency: expected reacquire guidance, got ${snapshot.guidanceMode}`,
   );
   assert(

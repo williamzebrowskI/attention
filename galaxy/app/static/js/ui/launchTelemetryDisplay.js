@@ -47,9 +47,11 @@ export function resolveSnapshotTargetTelemetry(snapshot = null) {
   const targetClosingSpeedKmS = finiteNumberOrNull(snapshot?.targetClosingSpeedKmS);
   const targetEtaSecondsRaw = finiteNumberOrNull(snapshot?.targetEtaSeconds);
   const targetEtaSource = String(snapshot?.targetEtaSource || "").trim().toLowerCase();
+  const missionPhase = String(snapshot?.missionPhase || "").trim().toLowerCase();
   const guidanceText = `${String(snapshot?.autopilotMode || "").trim()} ${String(snapshot?.guidanceMode || "").trim()}`
     .toLowerCase();
-  const ballisticCoastActive = guidanceText.includes("ballistic-track");
+  const ballisticCoastActive = missionPhase === "coast_to_moon"
+    && guidanceText.includes("navsys:gnc-lambert-midcourse-coast");
   const plannedCoastActive = ballisticCoastActive;
 
   const rawTargetRateLabel = String(snapshot?.targetRateLabel || "").trim();

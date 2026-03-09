@@ -104,3 +104,83 @@ export function requestMoonDepartureSolvePromise({
     }
   });
 }
+
+export function requestMoonDepartureSolvePromiseFresh({
+  type = "",
+  payload = null,
+  timeoutMs = 45000,
+} = {}) {
+  return new Promise((resolve) => {
+    if (!canUseWorkerRuntime()) {
+      resolve({
+        error: "worker-unavailable",
+        type: String(type || ""),
+        solution: null,
+      });
+      return;
+    }
+    let worker = null;
+    let settled = false;
+    let timeoutId = null;
+    const finish = (message = {}) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+      if (worker) {
+        try {
+          worker.terminate();
+        } catch (_error) {
+          // noop
+        }
+      }
+      resolve(message || {});
+    };
+    try {
+      worker = new Worker(
+        new URL("./moonDepartureSolveWorker.js", import.meta.url),
+        { type: "module" },
+      );
+    } catch (_error) {
+      resolve({
+        error: "worker-unavailable",
+        type: String(type || ""),
+        solution: null,
+      });
+      return;
+    }
+    worker.addEventListener("message", (event) => {
+      finish(event?.data || {});
+    });
+    worker.addEventListener("error", (error) => {
+      finish({
+        error: error instanceof Error ? error.message : String(error || "worker-error"),
+        type: String(type || ""),
+        solution: null,
+      });
+    });
+    timeoutId = setTimeout(() => {
+      finish({
+        error: "worker-timeout",
+        type: String(type || ""),
+        solution: null,
+      });
+    }, Math.max(1, Number(timeoutMs) || 45000));
+    try {
+      worker.postMessage({
+        type: String(type || ""),
+        requestId: 1,
+        payload,
+      });
+    } catch (_error) {
+      finish({
+        error: "worker-post-failed",
+        type: String(type || ""),
+        solution: null,
+      });
+    }
+  });
+}

@@ -1,4 +1,4 @@
-import { planMoonLambertGncCommand } from "../app/static/js/physics/navigation_system/gnc/moonLambertGncStack.js";
+import { planMoonMissionGncCommand } from "../app/static/js/physics/navigation_system/gnc/moonMissionGncStack.js";
 import { NAVIGATION_DEFAULTS } from "../app/static/js/physics/navigation_system/navigationSystemConfig.js";
 import { createPlannerRuntime } from "../app/static/js/physics/navigation_system/planners/moonGuidanceState.js";
 
@@ -42,7 +42,7 @@ function runCommand({
   plannerRuntime = createPlannerRuntime(),
   timestampSec = 0,
 }) {
-  return planMoonLambertGncCommand({
+  return planMoonMissionGncCommand({
     phase,
     targetVectors: {
       ...baseTargetVectors(),
@@ -57,7 +57,7 @@ function runCommand({
 
 function modeFamily(mode = "") {
   const label = String(mode || "");
-  if (label.includes("navsys:gnc-lambert-tli-reacquire-window")) {
+  if (label.includes("navsys:gnc-lambert-tli-hold")) {
     return "reacquire_hold";
   }
   if (label.includes("navsys:gnc-lambert-tli-burn")) {

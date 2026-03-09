@@ -1,7 +1,7 @@
 import { normalize, scale } from "../navigationMath.js";
 import { NAVIGATION_MISSION_PHASES } from "../navigationMissionProfiles.js";
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
-import { planMoonClosedLoopMissionCommand } from "../lunar/moonClosedLoopTargeters.js";
+import { planMoonMissionGncCommand } from "../gnc/moonMissionGncStack.js";
 import { planRefuelRendezvousCommand } from "./refuelRendezvousPlanner.js";
 
 export function planMoonMissionCommand({
@@ -27,7 +27,7 @@ export function planMoonMissionCommand({
     });
   }
 
-  const moonCommand = planMoonClosedLoopMissionCommand({
+  const moonCommand = planMoonMissionGncCommand({
     phase: phaseName,
     targetVectors: {
       ...targetVectors,

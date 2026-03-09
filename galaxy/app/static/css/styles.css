@@ -2519,6 +2519,18 @@ body {
   white-space: normal;
 }
 
+.legend-launch-debug {
+  padding: 6px 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(94, 164, 221, 0.24);
+  background: rgba(7, 16, 27, 0.72);
+  color: #9fd3ff;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 9px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
 .legend-fleet-status {
   margin: 6px 0 0;
   color: #acd4f6;

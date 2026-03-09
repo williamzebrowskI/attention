@@ -1,7 +1,7 @@
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
 import { planMoonClosedLoopMissionCommand } from "../lunar/moonClosedLoopTargeters.js";
 
-export function planMoonLambertGncCommand({
+export function planMoonMissionGncCommand({
   phase,
   targetVectors = {},
   metrics = {},

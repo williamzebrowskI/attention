@@ -104,9 +104,7 @@ export function computeMoonSurvivalRecoveryOverride({
       add(scale(prograde, 1), scale(up, upBias)),
       prograde,
     ),
-    mode: emergencyRecoveryNeeded
-      ? "navsys:moon-survival-emergency-recovery"
-      : "navsys:moon-survival-periapsis-recovery",
+    mode: "navsys:moon-survival-recovery",
     gateReason: gateDetails,
     diagnostics: {
       emergencyRecoveryNeeded,

@@ -67,8 +67,12 @@ import {
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
-import { MOON_ORBIT_INJECT_ALTITUDE_KM } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260307w";
+import {
+  MOON_ORBIT_INJECT_ALTITUDE_KM,
+  MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
+  MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
+} from "./physics/launch/lunar/constants.js";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260308ad";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -125,12 +129,34 @@ const missionControlLiveFeedCanvasNode = document.getElementById("mission-contro
 const missionControlViewStarshipButton = document.getElementById("mission-control-view-starship");
 const missionControlViewBoosterButton = document.getElementById("mission-control-view-booster");
 let launchStatusNode = document.getElementById("launch-status");
+let launchDebugNode = document.getElementById("launch-debug");
 let launchEventLogNode = document.getElementById("launch-event-log");
 let launchMissionControlPanelNode = document.getElementById("launch-mission-control");
 let launchMissionControlStatusNode = document.getElementById("launch-mission-control-status");
 let launchMissionControlMetricsNode = document.getElementById("launch-mission-metrics");
 let launchMissionControlToggleButton = document.getElementById("launch-mission-toggle");
 let launchMissionControlCollapsed = false;
+let lastMoonOrbitInjectDebugLogSignature = "";
+function createMoonOrbitInjectDebugState() {
+  return {
+    active: false,
+    missionId: "",
+    launchMode: "",
+    phase: "idle",
+    detail: "",
+    reason: "",
+    key: "",
+    shipId: "",
+    selectedBodyId: "",
+    selectedMatches: false,
+    dynamicPresent: false,
+    visualMounted: false,
+    visualVisible: false,
+    updatedAtUtc: "",
+  };
+}
+
+let moonOrbitInjectDebugState = createMoonOrbitInjectDebugState();
 const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
 const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
 const LEGEND_SECTION_COLLAPSED_STORAGE_KEY_PREFIX = "galaxy_legend_section_collapsed_";
@@ -218,7 +244,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260307ac";
+const FRONTEND_MODULE_VERSION = "20260308ad";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -1340,6 +1366,158 @@ function appendLaunchLogEntry(level, entry) {
   updateLaunchEventFeed();
 }
 
+function isMoonOrbitInjectMissionSelection(missionId, launchMode) {
+  return String(missionId || "").trim().toLowerCase() === "moon_orbit_return"
+    && String(launchMode || "").trim().toLowerCase() === "orbit_inject";
+}
+
+function currentMoonOrbitInjectSolveDebugState() {
+  const solve = launchController?.getMoonOrbitInjectSolveState?.();
+  return {
+    key: String(solve?.key || ""),
+    pending: Boolean(solve?.pending),
+    error: String(solve?.error || ""),
+    source: String(solve?.source || ""),
+    pendingStartedAtMs: Number(solve?.pendingStartedAtMs) || 0,
+    solutionReady: Boolean(solve?.solutionReady),
+    solutionValid: Boolean(solve?.solutionValid),
+    corridorAccepted: Boolean(solve?.solutionCorridorAccepted),
+  };
+}
+
+function currentMoonOrbitInjectDebugSnapshot() {
+  const controllerState = currentMoonOrbitInjectSolveDebugState();
+  const shipId = String(moonOrbitInjectDebugState.shipId || "").trim();
+  const dynamicPresent = shipId ? Boolean(nBodyState?.dynamicBodies?.has?.(shipId)) : false;
+  const visual = shipId ? bodyVisuals.get(shipId) : null;
+  const visualMounted = Boolean(visual?.root);
+  const visualVisible = Boolean(visual?.root?.visible);
+  const selectedBodyId = String(selectedId || moonOrbitInjectDebugState.selectedBodyId || "").trim();
+  return {
+    ...moonOrbitInjectDebugState,
+    key: String(moonOrbitInjectDebugState.key || controllerState.key || ""),
+    selectedBodyId,
+    selectedMatches: shipId ? selectedBodyId === shipId : false,
+    dynamicPresent,
+    visualMounted,
+    visualVisible,
+    controller: controllerState,
+  };
+}
+
+function emitMoonOrbitInjectClientLog(entry) {
+  if (typeof window === "undefined" || typeof window.fetch !== "function") {
+    return;
+  }
+  const payload = {
+    channel: "moon_orbit_inject",
+    timestampUtc: new Date().toISOString(),
+    ...(entry && typeof entry === "object" ? entry : {}),
+  };
+  const signature = JSON.stringify([
+    payload.phase || "",
+    payload.detail || "",
+    payload.reason || "",
+    payload.key || "",
+    payload.shipId || "",
+    payload.controller?.pending ? 1 : 0,
+    payload.controller?.source || "",
+    payload.controller?.pendingStartedAtMs || 0,
+    payload.controller?.solutionReady ? 1 : 0,
+    payload.controller?.corridorAccepted ? 1 : 0,
+    payload.controller?.error || "",
+  ]);
+  if (signature === lastMoonOrbitInjectDebugLogSignature) {
+    return;
+  }
+  lastMoonOrbitInjectDebugLogSignature = signature;
+  void window.fetch("/api/client-log", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  }).catch((error) => {
+    console.warn("[launch] Failed to emit Moon orbit inject client log.", error);
+  });
+}
+
+function renderMoonOrbitInjectDebugState() {
+  if (!launchDebugNode) {
+    return;
+  }
+  const debug = currentMoonOrbitInjectDebugSnapshot();
+  const selectedMissionId = activeSelectedMissionId();
+  const missionLaunchMode = selectedMissionLaunchMode();
+  const shouldShow = isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)
+    || debug.active
+    || debug.controller.pending
+    || debug.controller.solutionReady
+    || Boolean(debug.controller.error);
+  if (!shouldShow) {
+    launchDebugNode.hidden = true;
+    launchDebugNode.textContent = "";
+    return;
+  }
+  const keyLabel = debug.key
+    ? debug.key.split("|").slice(0, 3).join(" | ")
+    : "n/a";
+  const shipLabel = debug.shipId
+    ? `${debug.shipId} | dynamic ${debug.dynamicPresent ? "yes" : "no"} | visual ${debug.visualMounted ? (debug.visualVisible ? "visible" : "hidden") : "missing"} | selected ${debug.selectedMatches ? "yes" : "no"}`
+    : "none";
+  const controllerLabel = `pending ${debug.controller.pending ? "yes" : "no"} | ready ${debug.controller.solutionReady ? "yes" : "no"} | corridor ${debug.controller.corridorAccepted ? "yes" : "no"}${debug.controller.error ? ` | error ${debug.controller.error}` : ""}`;
+  const timingLabel = `Timing | source ${debug.controller.source || "n/a"} | profile ${debug.controller.searchProfile || "n/a"} | nodes ${debug.controller.nodeSamples || 0} | pending-start ${debug.controller.pendingStartedAtMs || 0} | last-ms ${debug.controller.lastDurationMs || 0}`;
+  const detailParts = [
+    debug.phase || "idle",
+    debug.detail || "",
+    debug.reason ? `reason ${debug.reason}` : "",
+    debug.updatedAtUtc ? `updated ${new Date(debug.updatedAtUtc).toLocaleTimeString()}` : "",
+  ].filter(Boolean);
+  launchDebugNode.hidden = false;
+  launchDebugNode.textContent = [
+    `Moon Orbit Debug | ${detailParts.join(" | ")}`,
+    `Solve | ${controllerLabel}`,
+    timingLabel,
+    `Key | ${keyLabel}`,
+    `Ship | ${shipLabel}`,
+  ].join("\n");
+}
+
+function updateMoonOrbitInjectDebugState(patch = {}, options = {}) {
+  const previous = moonOrbitInjectDebugState;
+  if (options.reset) {
+    moonOrbitInjectDebugState = createMoonOrbitInjectDebugState();
+  }
+  const next = {
+    ...moonOrbitInjectDebugState,
+    ...(patch && typeof patch === "object" ? patch : {}),
+  };
+  const hasMeaningfulPatch = Boolean(
+    next.phase && next.phase !== "idle"
+    || next.detail
+    || next.reason
+    || next.shipId
+    || next.key,
+  );
+  next.active = patch?.active !== undefined ? Boolean(patch.active) : (next.active || hasMeaningfulPatch);
+  next.updatedAtUtc = new Date().toISOString();
+  moonOrbitInjectDebugState = next;
+  const debugSnapshot = currentMoonOrbitInjectDebugSnapshot();
+  window.__moonOrbitInjectDebug = debugSnapshot;
+  renderMoonOrbitInjectDebugState();
+  if (
+    previous.phase !== next.phase
+    || previous.detail !== next.detail
+    || previous.reason !== next.reason
+    || previous.key !== next.key
+    || previous.shipId !== next.shipId
+  ) {
+    console.warn("[moon-orbit-inject-debug]", debugSnapshot);
+    emitMoonOrbitInjectClientLog(debugSnapshot);
+  }
+}
+
 function registerLaunchLogDebugHandles() {
   window.__launchEventLog = launchEventLogEntries;
   window.getLaunchEventLog = () => launchEventLogEntries.map((entry) => ({ ...entry }));
@@ -1350,6 +1528,8 @@ function registerLaunchLogDebugHandles() {
     updateLaunchEventFeed();
   };
   window.getEnvironmentForcing = () => currentEnvironmentForcingSnapshot();
+  window.__moonOrbitInjectDebug = currentMoonOrbitInjectDebugSnapshot();
+  window.getMoonOrbitInjectDebug = () => currentMoonOrbitInjectDebugSnapshot();
   window.setEnvironmentForcingScenario = async (scenario = "moderate", forceRefresh = true) => (
     setEnvironmentForcingScenario(scenario, forceRefresh)
   );
@@ -2990,6 +3170,14 @@ function createLegendVehicleViewPanel() {
   panel.appendChild(status);
   launchStatusNode = status;
 
+  const debug = document.createElement("p");
+  debug.id = "launch-debug";
+  debug.className = "legend-launch-status legend-launch-debug";
+  debug.hidden = true;
+  panel.appendChild(debug);
+  launchDebugNode = debug;
+  renderMoonOrbitInjectDebugState();
+
   const missionControl = document.createElement("section");
   missionControl.id = "launch-mission-control";
   missionControl.className = "legend-mission-control";
@@ -3156,7 +3344,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
   const phaseLabel = snapshot.phaseLabel || phaseLabelForLaunch(snapshot.phase);
   const stageName = snapshot.stageName || "n/a";
   const missionElapsed = formatDurationSeconds(snapshot.elapsedSeconds);
-  const guidance = snapshot.autopilotMode || snapshot.guidanceMode || "n/a";
+  const guidance = snapshot.guidanceDisplayMode || snapshot.autopilotMode || snapshot.guidanceMode || "n/a";
   const throttlePct = Number.isFinite(Number(snapshot.throttle))
     ? Number(snapshot.throttle) * 100
     : Number.NaN;
@@ -3551,6 +3739,7 @@ function missionControlFleetEntries(nowMs = Date.now()) {
       phaseLabel: String(snapshot?.phaseLabel || phaseLabelForLaunch(snapshot?.phase)),
       stageName: String(snapshot?.stageName || ""),
       guidanceMode: String(snapshot?.guidanceMode || snapshot?.autopilotMode || "n/a"),
+      guidanceDisplayMode: String(snapshot?.guidanceDisplayMode || snapshot?.guidanceMode || snapshot?.autopilotMode || "n/a"),
       altitudeKm: Number(snapshot?.altitudeKm),
       speedKmS: Number(snapshot?.speedKmS),
       tracked: String(selectedId || "") === bodyId,
@@ -4087,6 +4276,12 @@ function tankerLaunchRejectLabel(reason) {
 
 function missionLaunchRejectLabel(reason) {
   const key = String(reason || "").trim().toLowerCase();
+  if (key === "orbit_inject_solver_warming") {
+    return "Preparing Moon direct inject route. Launch again in a moment.";
+  }
+  if (key === "orbit_inject_solver_pending") {
+    return "Moon direct inject route is still being computed. Launch again in a moment.";
+  }
   if (key === "orbit_inject_solver_timeout") {
     return "Moon direct inject solve timed out before launch. Please retry.";
   }
@@ -4123,17 +4318,326 @@ function isAsyncMoonOrbitInjectLaunch(missionId, launchMode) {
     && typeof launchController?.launchMissionShipAsync === "function";
 }
 
-async function requestMissionShipLaunch(state, missionId, launchMode, launchOptions = {}) {
-  const options = {
+const MOON_ORBIT_INJECT_PENDING_LOG_INTERVAL_MS = 5000;
+
+function isPendingOrbitInjectLaunchReason(reason) {
+  const key = String(reason || "").trim().toLowerCase();
+  return key === "orbit_inject_solver_warming" || key === "orbit_inject_solver_pending";
+}
+
+function missionShipLaunchOptions(missionId, launchMode, launchOptions = {}) {
+  const normalizedMissionId = String(missionId || "").trim().toLowerCase();
+  const normalizedLaunchMode = String(launchMode || "").trim().toLowerCase();
+  const moonOrbitInjectBrowserLaunch = (
+    typeof window !== "undefined"
+    && normalizedMissionId === "moon_orbit_return"
+    && normalizedLaunchMode === "orbit_inject"
+  );
+  return {
     ...(launchOptions && typeof launchOptions === "object" ? launchOptions : {}),
     mode: launchMode,
     orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(missionId),
+    orbitInjectSearchProfile: moonOrbitInjectBrowserLaunch
+      ? MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE
+      : undefined,
+    orbitInjectNodeSamples: moonOrbitInjectBrowserLaunch
+      ? MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES
+      : undefined,
     vehicleRole: "mission",
   };
+}
+
+async function finalizeAcceptedMissionShipLaunch(launchResult, selectedMissionId, missionLaunchMode) {
+  if (String(launchResult?.vehicleRole || "").toLowerCase() === "tanker") {
+    appendLaunchLogEntry("error", {
+      name: "fleet_mission_ship_launch_rejected",
+      reason: "unexpected_tanker_route",
+      missionId: selectedMissionId,
+      mode: missionLaunchMode,
+    });
+    updateLaunchStatusPanel(true, "Mission launch routed to tanker path unexpectedly; launch cancelled.");
+    if (isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)) {
+      updateMoonOrbitInjectDebugState({
+        active: true,
+        missionId: selectedMissionId,
+        launchMode: missionLaunchMode,
+        phase: "launch-error",
+        detail: "unexpected tanker route",
+        reason: "unexpected_tanker_route",
+      });
+    }
+    updateLaunchControls();
+    return false;
+  }
+  appendLaunchLogEntry("info", {
+    name: "fleet_mission_ship_launch_requested",
+    shipId: launchResult.shipId,
+    missionId: launchResult.missionId || selectedMissionId,
+    missionPhase: launchResult.missionPhase || "",
+    launchMode: launchResult.launchMode || missionLaunchMode,
+    orbitInjectAltitudeKm: Number(launchResult.orbitInjectAltitudeKm) || null,
+    orbitInjectPeriapsisKm: Number(launchResult.orbitInjectPeriapsisKm) || null,
+    orbitInjectApoapsisKm: Number(launchResult.orbitInjectApoapsisKm) || null,
+    orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
+  });
+  if (launchResult?.shipMeta) {
+    try {
+      await ensureRuntimeCatalogBody(launchResult.shipMeta);
+    } catch (error) {
+      console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
+      if (isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)) {
+        updateMoonOrbitInjectDebugState({
+          active: true,
+          missionId: selectedMissionId,
+          launchMode: missionLaunchMode,
+          phase: "visual-error",
+          detail: "runtime catalog registration failed",
+          reason: error instanceof Error ? error.message : String(error || "runtime_catalog_error"),
+          shipId: String(launchResult?.shipId || ""),
+        });
+      }
+    }
+  }
+  if (launchResult?.shipId) {
+    syncRuntimeScenePositionsNow(Date.now());
+    if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+      setObservationMode(OBSERVATION_MODES.BODY_LOCK);
+    }
+    setSelected(launchResult.shipId, true);
+  }
+  if (isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)) {
+    const shipId = String(launchResult?.shipId || "").trim();
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId: selectedMissionId,
+      launchMode: missionLaunchMode,
+      phase: "launch-accepted",
+      detail: "ship created and selection updated",
+      reason: "",
+      key: "",
+      shipId,
+      selectedBodyId: String(selectedId || ""),
+      selectedMatches: shipId ? String(selectedId || "") === shipId : false,
+      dynamicPresent: shipId ? Boolean(nBodyState?.dynamicBodies?.has?.(shipId)) : false,
+      visualMounted: shipId ? Boolean(bodyVisuals.get(shipId)?.root) : false,
+      visualVisible: shipId ? Boolean(bodyVisuals.get(shipId)?.root?.visible) : false,
+    });
+  }
+  updateLaunchControls();
+  updateLaunchStatusPanel(true);
+  return true;
+}
+
+function rejectMissionShipLaunch(launchResult, selectedMissionId, missionLaunchMode, prefix = "Mission launch rejected") {
+  const rejectLabel = missionLaunchRejectLabel(launchResult?.reason);
+  appendLaunchLogEntry("error", {
+    name: "fleet_mission_ship_launch_rejected",
+    reason: String(launchResult?.reason || "launch_not_allowed"),
+    missionId: selectedMissionId,
+    mode: missionLaunchMode,
+  });
+  if (isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)) {
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId: selectedMissionId,
+      launchMode: missionLaunchMode,
+      phase: "launch-rejected",
+      detail: prefix,
+      reason: String(launchResult?.reason || "launch_not_allowed"),
+      shipId: String(launchResult?.shipId || ""),
+    });
+  }
+  updateLaunchStatusPanel(true, `${prefix}: ${rejectLabel}`);
+  updateLaunchControls();
+}
+
+async function beginMoonOrbitInjectBrowserLaunch(state, missionId, launchMode, launchOptions = {}) {
+  const options = missionShipLaunchOptions(missionId, launchMode, launchOptions);
+  const key = `${String(missionId || "").trim().toLowerCase()}|${String(launchMode || "").trim().toLowerCase()}|${Number(options.orbitInjectAltitudeKm) || 0}`;
+  updateMoonOrbitInjectDebugState({
+    active: true,
+    missionId,
+    launchMode,
+    phase: "launch-clicked",
+    detail: "requesting Moon direct inject launch",
+    reason: "",
+    key,
+    shipId: "",
+  });
+  updateLaunchStatusPanel(true, "Computing best Moon inject window...");
+  try {
+    if (typeof launchController?.warmMoonOrbitInjectLaunchSolve !== "function") {
+      updateMoonOrbitInjectDebugState({
+        active: true,
+        missionId,
+        launchMode,
+        phase: "launch-rejected-immediate",
+        detail: "launch controller does not expose Moon inject solve",
+        reason: "orbit_inject_solver_unavailable",
+        key,
+      });
+      return {
+        accepted: false,
+        reason: "orbit_inject_solver_unavailable",
+      };
+    }
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId,
+      launchMode,
+      phase: "solve-started",
+      detail: "starting bounded Moon inject solve for launch click",
+      reason: "",
+      key,
+    });
+    updateLaunchStatusPanel(
+      true,
+      "Computing Moon inject route for launch...",
+    );
+    let pendingProgressIntervalId = null;
+    const stopPendingProgressLogs = () => {
+      if (pendingProgressIntervalId !== null) {
+        clearInterval(pendingProgressIntervalId);
+        pendingProgressIntervalId = null;
+      }
+    };
+    const emitPendingProgress = () => {
+      const controllerState = currentMoonOrbitInjectSolveDebugState();
+      const pendingStartedAtMs = Number(controllerState?.pendingStartedAtMs) || 0;
+      const elapsedMs = pendingStartedAtMs > 0
+        ? Math.max(0, Date.now() - pendingStartedAtMs)
+        : 0;
+      updateMoonOrbitInjectDebugState({
+        active: true,
+        missionId,
+        launchMode,
+        phase: "solve-still-pending",
+        detail: `Moon inject solve still pending (${Math.round(elapsedMs / 1000)}s elapsed)`,
+        reason: "",
+        key,
+      });
+    };
+    pendingProgressIntervalId = setInterval(
+      emitPendingProgress,
+      MOON_ORBIT_INJECT_PENDING_LOG_INTERVAL_MS,
+    );
+    emitPendingProgress();
+    const solveResponse = await launchController.warmMoonOrbitInjectLaunchSolve(
+      state,
+      missionId,
+      {
+        ...options,
+        allowLocalFallback: true,
+        forceLocalFallback: true,
+        forceRestart: false,
+        reuseAnyPending: false,
+      },
+    );
+    stopPendingProgressLogs();
+    if (
+      !solveResponse?.solution?.valid
+      || !solveResponse?.solution?.ready
+      || !solveResponse?.solution?.corridorAccepted
+    ) {
+      updateMoonOrbitInjectDebugState({
+        active: true,
+        missionId,
+        launchMode,
+        phase: "solve-rejected",
+        detail: "solve completed without acceptable corridor",
+        reason: String(solveResponse?.error || "orbit_inject_solver_error"),
+        key,
+      });
+      return {
+        accepted: false,
+        reason: String(solveResponse?.error || "orbit_inject_solver_error"),
+      };
+    }
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId,
+      launchMode,
+      phase: "seed-ready",
+      detail: "accepted Moon inject seed ready; launching ship",
+      reason: "",
+      key,
+    });
+    updateLaunchStatusPanel(true, "Moon direct inject route ready. Launching...");
+    return launchController.launchMissionShipAsync(
+      state,
+      missionId,
+      Date.now(),
+      {
+        ...options,
+        moonDepartureWindowSeed: solveResponse.solution,
+      },
+    );
+  } catch (error) {
+    console.warn("[launch] Async moon inject solve failed before launch.", error);
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId,
+      launchMode,
+      phase: "solve-error",
+      detail: "async Moon inject solve failed before launch",
+      reason: error instanceof Error ? error.message : String(error || "orbit_inject_solver_error"),
+      key,
+    });
+    updateLaunchStatusPanel(true, "Moon inject solve failed before launch.");
+    return {
+      accepted: false,
+      reason: "orbit_inject_solver_error",
+    };
+  }
+}
+
+async function requestMissionShipLaunch(state, missionId, launchMode, launchOptions = {}) {
+  const options = missionShipLaunchOptions(missionId, launchMode, launchOptions);
   if (isAsyncMoonOrbitInjectLaunch(missionId, launchMode)) {
+    if (typeof window !== "undefined") {
+      return beginMoonOrbitInjectBrowserLaunch(state, missionId, launchMode, launchOptions);
+    }
     updateLaunchStatusPanel(true, "Computing best Moon inject window...");
     try {
-      return await launchController.launchMissionShipAsync(state, missionId, Date.now(), options);
+      let launchResult = await launchController.launchMissionShipAsync(state, missionId, Date.now(), options);
+      const launchReason = String(launchResult?.reason || "").trim().toLowerCase();
+      if (
+        !launchResult?.accepted
+        && isPendingOrbitInjectLaunchReason(launchReason)
+        && typeof launchController?.warmMoonOrbitInjectLaunchSolve === "function"
+      ) {
+        updateLaunchStatusPanel(
+          true,
+          launchReason === "orbit_inject_solver_pending"
+            ? "Moon direct inject route is still computing. Launch will continue when ready..."
+            : "Preparing Moon direct inject route. Launch will continue when ready...",
+        );
+        const solveResponse = await launchController.warmMoonOrbitInjectLaunchSolve(
+          state,
+          missionId,
+          {
+            ...options,
+            allowLocalFallback: true,
+          },
+        );
+        if (!solveResponse?.solution?.valid || !solveResponse?.solution?.ready || !solveResponse?.solution?.corridorAccepted) {
+          return {
+            accepted: false,
+            reason: String(solveResponse?.error || launchReason || "orbit_inject_solver_error"),
+          };
+        }
+        updateLaunchStatusPanel(true, "Moon direct inject route ready. Launching...");
+        launchResult = await launchController.launchMissionShipAsync(
+          state,
+          missionId,
+          Date.now(),
+          {
+            ...options,
+            moonDepartureWindowSeed: solveResponse.solution,
+          },
+        );
+      }
+      return launchResult;
     } catch (error) {
       console.warn("[launch] Async moon inject solve failed before launch.", error);
       updateLaunchStatusPanel(true, "Moon inject solve failed before launch.");
@@ -4157,19 +4661,52 @@ function warmSelectedMissionLaunchSolve() {
     || String(missionLaunchMode || "").trim().toLowerCase() !== "orbit_inject"
     || typeof launchController?.warmMoonOrbitInjectLaunchSolve !== "function"
   ) {
+    renderMoonOrbitInjectDebugState();
     return;
   }
+  if (typeof window !== "undefined") {
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId: selectedMissionId,
+      launchMode: missionLaunchMode,
+      phase: "warm-skipped",
+      detail: "browser moon inject warm is disabled; route solve starts on launch click",
+      reason: "",
+      key: "",
+    });
+    renderMoonOrbitInjectDebugState();
+    return;
+  }
+  updateMoonOrbitInjectDebugState({
+    active: true,
+    missionId: selectedMissionId,
+    launchMode: missionLaunchMode,
+    phase: "warm-requested",
+    detail: "background route solve started",
+    reason: "",
+    key: "",
+  });
   void launchController.warmMoonOrbitInjectLaunchSolve(
     nBodyState,
     selectedMissionId,
     {
-      allowLocalFallback: true,
+      allowLocalFallback: false,
       mode: missionLaunchMode,
       orbitInjectAltitudeKm: missionOrbitInjectAltitudeKm(selectedMissionId),
+      orbitInjectSearchProfile: MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
+      orbitInjectNodeSamples: MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
       vehicleRole: "mission",
     },
   ).catch((error) => {
     console.warn("[launch] Failed to warm Moon direct inject solve.", error);
+    updateMoonOrbitInjectDebugState({
+      active: true,
+      missionId: selectedMissionId,
+      launchMode: missionLaunchMode,
+      phase: "warm-error",
+      detail: "background route solve failed",
+      reason: error instanceof Error ? error.message : String(error || "warm-error"),
+    });
   });
 }
 
@@ -4231,6 +4768,16 @@ function setupLaunchControls() {
         primaryLaunchActive: primaryLaunchActive(),
         missionLaunchMode,
       });
+      if (isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)) {
+        updateMoonOrbitInjectDebugState({
+          active: true,
+          missionId: selectedMissionId,
+          launchMode: missionLaunchMode,
+          phase: "launch-action-resolved",
+          detail: `resolved action ${missionLaunchAction}`,
+          reason: "",
+        });
+      }
       if (missionLaunchAction === "mission_additional_fleet") {
         let launchResult = await requestMissionShipLaunch(
           nBodyState,
@@ -4251,52 +4798,15 @@ function setupLaunchControls() {
           );
         }
         if (!launchResult?.accepted) {
-          const rejectLabel = missionLaunchRejectLabel(launchResult?.reason);
-          appendLaunchLogEntry("error", {
-            name: "fleet_mission_ship_launch_rejected",
-            reason: String(launchResult?.reason || "launch_not_allowed"),
-            missionId: selectedMissionId,
-            mode: missionLaunchMode,
-          });
-          updateLaunchStatusPanel(true, `Additional mission launch rejected: ${rejectLabel}`);
-          updateLaunchControls();
+          rejectMissionShipLaunch(
+            launchResult,
+            selectedMissionId,
+            missionLaunchMode,
+            "Additional mission launch rejected",
+          );
           return;
         }
-        if (String(launchResult?.vehicleRole || "").toLowerCase() === "tanker") {
-          appendLaunchLogEntry("error", {
-            name: "fleet_mission_ship_launch_rejected",
-            reason: "unexpected_tanker_route",
-            missionId: selectedMissionId,
-            mode: missionLaunchMode,
-          });
-          updateLaunchStatusPanel(true, "Mission launch routed to tanker path unexpectedly; launch cancelled.");
-          updateLaunchControls();
-          return;
-        }
-        appendLaunchLogEntry("info", {
-          name: "fleet_mission_ship_launch_requested",
-          shipId: launchResult.shipId,
-          missionId: launchResult.missionId || selectedMissionId,
-          missionPhase: launchResult.missionPhase || "",
-          launchMode: launchResult.launchMode || missionLaunchMode,
-          orbitInjectAltitudeKm: Number(launchResult.orbitInjectAltitudeKm) || null,
-          orbitInjectPeriapsisKm: Number(launchResult.orbitInjectPeriapsisKm) || null,
-          orbitInjectApoapsisKm: Number(launchResult.orbitInjectApoapsisKm) || null,
-          orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
-        });
-        if (launchResult?.shipMeta) {
-          try {
-            await ensureRuntimeCatalogBody(launchResult.shipMeta);
-          } catch (error) {
-            console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
-          }
-        }
-        if (launchResult?.shipId) {
-          syncRuntimeScenePositionsNow(Date.now());
-          setSelected(launchResult.shipId, true);
-        }
-        updateLaunchControls();
-        updateLaunchStatusPanel(true);
+        await finalizeAcceptedMissionShipLaunch(launchResult, selectedMissionId, missionLaunchMode);
         return;
       }
       if (missionLaunchAction === "mission_orbit_inject") {
@@ -4321,53 +4831,44 @@ function setupLaunchControls() {
             missionLaunchMode,
           );
         }
+        if (launchResult?.pending && launchResult?.autoLaunchPromise) {
+          updateLaunchControls();
+          void launchResult.autoLaunchPromise.then(async (resolvedLaunchResult) => {
+            if (!resolvedLaunchResult?.accepted) {
+              rejectMissionShipLaunch(
+                resolvedLaunchResult,
+                selectedMissionId,
+                missionLaunchMode,
+                "Mission launch rejected",
+              );
+              return;
+            }
+            await finalizeAcceptedMissionShipLaunch(
+              resolvedLaunchResult,
+              selectedMissionId,
+              missionLaunchMode,
+            );
+          }).catch((error) => {
+            console.warn("[launch] Deferred Moon orbit inject launch failed.", error);
+            rejectMissionShipLaunch(
+              { accepted: false, reason: "orbit_inject_solver_error" },
+              selectedMissionId,
+              missionLaunchMode,
+              "Mission launch rejected",
+            );
+          });
+          return;
+        }
         if (!launchResult?.accepted) {
-          const rejectLabel = missionLaunchRejectLabel(launchResult?.reason);
-          appendLaunchLogEntry("error", {
-            name: "fleet_mission_ship_launch_rejected",
-            reason: String(launchResult?.reason || "launch_not_allowed"),
-            missionId: selectedMissionId,
-            mode: missionLaunchMode,
-          });
-          updateLaunchStatusPanel(true, `Mission launch rejected: ${rejectLabel}`);
-          updateLaunchControls();
+          rejectMissionShipLaunch(
+            launchResult,
+            selectedMissionId,
+            missionLaunchMode,
+            "Mission launch rejected",
+          );
           return;
         }
-        if (String(launchResult?.vehicleRole || "").toLowerCase() === "tanker") {
-          appendLaunchLogEntry("error", {
-            name: "fleet_mission_ship_launch_rejected",
-            reason: "unexpected_tanker_route",
-            missionId: selectedMissionId,
-            mode: missionLaunchMode,
-          });
-          updateLaunchStatusPanel(true, "Mission launch routed to tanker path unexpectedly; launch cancelled.");
-          updateLaunchControls();
-          return;
-        }
-        appendLaunchLogEntry("info", {
-          name: "fleet_mission_ship_launch_requested",
-          shipId: launchResult.shipId,
-          missionId: launchResult.missionId || selectedMissionId,
-          missionPhase: launchResult.missionPhase || "",
-          launchMode: launchResult.launchMode || missionLaunchMode,
-          orbitInjectAltitudeKm: Number(launchResult.orbitInjectAltitudeKm) || null,
-          orbitInjectPeriapsisKm: Number(launchResult.orbitInjectPeriapsisKm) || null,
-          orbitInjectApoapsisKm: Number(launchResult.orbitInjectApoapsisKm) || null,
-          orbitInjectSpawnAtPeriapsis: Boolean(launchResult.orbitInjectSpawnAtPeriapsis),
-        });
-        if (launchResult?.shipMeta) {
-          try {
-            await ensureRuntimeCatalogBody(launchResult.shipMeta);
-          } catch (error) {
-            console.warn("[launch] Runtime catalog registration failed for mission ship.", error);
-          }
-        }
-        if (launchResult?.shipId) {
-          syncRuntimeScenePositionsNow(Date.now());
-          setSelected(launchResult.shipId, true);
-        }
-        updateLaunchControls();
-        updateLaunchStatusPanel(true);
+        await finalizeAcceptedMissionShipLaunch(launchResult, selectedMissionId, missionLaunchMode);
         return;
       }
       if (selectedMissionId) {
@@ -4574,6 +5075,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     return;
   }
   updateLaunchControls();
+  renderMoonOrbitInjectDebugState();
   const nowMs = Date.now();
   const launchActive = Boolean(launchController?.isActive());
   const viewState = missionControlVehicleViewState();
@@ -4640,7 +5142,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   }
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
   const throttlePct = Number.isFinite(snapshot.throttle) ? snapshot.throttle * 100 : 0;
-  const guidanceLine = snapshot.autopilotMode || snapshot.guidanceMode || "guidance";
+  const guidanceLine = snapshot.guidanceDisplayMode || snapshot.autopilotMode || snapshot.guidanceMode || "guidance";
   const missionElapsed = formatDurationSeconds(snapshot.elapsedSeconds);
   const orbitTarget = Number.isFinite(Number(snapshot.targetOrbitAltitudeKm))
     ? ` | Target ${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km`
@@ -10944,7 +11446,7 @@ function updateInfoOverlay() {
     const missionElapsedLine = launchSnapshot
       ? `${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}`
       : "Mission Elapsed: n/a";
-    const launchGuidanceMode = launchSnapshot?.guidanceMode || launchSnapshot?.autopilotMode || "n/a";
+    const launchGuidanceMode = launchSnapshot?.guidanceDisplayMode || launchSnapshot?.guidanceMode || launchSnapshot?.autopilotMode || "n/a";
     const boosterGuidanceMode = launchSnapshot?.boosterGuidanceMode || "n/a";
     const starshipAltitudeLine = Number.isFinite(launchSnapshot?.altitudeKm)
       ? `${formatNumber(launchSnapshot.altitudeKm)} km`
@@ -11001,6 +11503,22 @@ function updateInfoOverlay() {
     const earthDirectionStateLine = String(launchSnapshot?.earthDirectionState || "").trim() || "n/a";
     const earthDirectionAngleLine = Number.isFinite(Number(launchSnapshot?.earthDirectionAngleDeg))
       ? `${formatNumber(launchSnapshot.earthDirectionAngleDeg, 1)}°`
+      : "n/a";
+    const guidanceVelocityStateLine = String(launchSnapshot?.guidanceVelocityState || "").trim() || "n/a";
+    const guidanceVelocityAngleLine = Number.isFinite(Number(launchSnapshot?.guidanceVelocityAngleDeg))
+      ? `${formatNumber(launchSnapshot.guidanceVelocityAngleDeg, 1)}°`
+      : "n/a";
+    const guidanceRadialStateLine = String(launchSnapshot?.guidanceRadialState || "").trim() || "n/a";
+    const guidanceRadialAngleLine = Number.isFinite(Number(launchSnapshot?.guidanceRadialAngleDeg))
+      ? `${formatNumber(launchSnapshot.guidanceRadialAngleDeg, 1)}°`
+      : "n/a";
+    const bodyVelocityStateLine = String(launchSnapshot?.bodyVelocityState || "").trim() || "n/a";
+    const bodyVelocityAngleLine = Number.isFinite(Number(launchSnapshot?.bodyVelocityAngleDeg))
+      ? `${formatNumber(launchSnapshot.bodyVelocityAngleDeg, 1)}°`
+      : "n/a";
+    const bodyRadialStateLine = String(launchSnapshot?.bodyRadialState || "").trim() || "n/a";
+    const bodyRadialAngleLine = Number.isFinite(Number(launchSnapshot?.bodyRadialAngleDeg))
+      ? `${formatNumber(launchSnapshot.bodyRadialAngleDeg, 1)}°`
       : "n/a";
     const earthRelativeVectorLine = (
       launchSnapshot?.earthRelativePositionKm
@@ -11155,6 +11673,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">Earth Vector (km): ${earthRelativeVectorLine}</p>
         <p class="line launch-line">Moon LOS: ${moonDirectionStateLine} | Off-Target: ${moonDirectionAngleLine} | Approach: ${targetBodyId === "moon" ? targetClosingLine : "n/a"}</p>
         <p class="line launch-line">Moon Vector (km): ${moonRelativeVectorLine}</p>
+        <p class="line launch-line">Cmd Axis: ${guidanceVelocityStateLine} | Off-Vel: ${guidanceVelocityAngleLine} | Off-Up: ${guidanceRadialAngleLine} | Radial: ${guidanceRadialStateLine}</p>
+        <p class="line launch-line">Nose Axis: ${bodyVelocityStateLine} | Off-Vel: ${bodyVelocityAngleLine} | Off-Up: ${bodyRadialAngleLine} | Radial: ${bodyRadialStateLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>
@@ -11178,6 +11698,8 @@ function updateInfoOverlay() {
         <p class="line launch-line">Earth Vector (km): ${earthRelativeVectorLine}</p>
         <p class="line launch-line">Moon LOS: ${moonDirectionStateLine} | Off-Target: ${moonDirectionAngleLine} | Approach: ${targetBodyId === "moon" ? targetClosingLine : "n/a"}</p>
         <p class="line launch-line">Moon Vector (km): ${moonRelativeVectorLine}</p>
+        <p class="line launch-line">Cmd Axis: ${guidanceVelocityStateLine} | Off-Vel: ${guidanceVelocityAngleLine} | Off-Up: ${guidanceRadialAngleLine} | Radial: ${guidanceRadialStateLine}</p>
+        <p class="line launch-line">Nose Axis: ${bodyVelocityStateLine} | Off-Vel: ${bodyVelocityAngleLine} | Off-Up: ${bodyRadialAngleLine} | Radial: ${bodyRadialStateLine}</p>
         <p class="line launch-line">Moon Rel Speed: ${moonRelativeSpeedLine} | Projected Miss: ${moonProjectedMissLine} | Miss Trend: ${moonProjectedMissTrendLine}</p>
         <p class="line launch-line">Perilune Estimate: ${moonPeriluneEstimateLine} | B-Plane Error: ${moonBPlaneErrorLine}</p>
         <p class="line launch-line">Window Score: ${moonWindowScoreLine} | TLI Target: ${moonTliTargetModeLine} | Miss/Gate: ${moonTliTargetMissLine} / ${moonTliTargetMissGateLine}</p>

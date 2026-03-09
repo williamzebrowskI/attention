@@ -111,7 +111,7 @@ function main() {
   assert(shipBody, "moon_coast_departure_hold_planned_eta: missing ship body");
 
   vehicle.missionPhase = "coast_to_moon";
-  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast+ballistic-track";
+  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast";
   vehicle.elapsedSeconds = 1800;
   vehicle.moonDeparturePlanTransitStartElapsedSec = 900;
   vehicle.moonDeparturePlanTransferTimeSec = 12_000;
@@ -136,8 +136,8 @@ function main() {
     `moon_coast_departure_hold_planned_eta: expected coast_to_moon, got ${snapshot?.missionPhase}`,
   );
   assert(
-    String(snapshot.guidanceMode || "").includes("ballistic-track"),
-    `moon_coast_departure_hold_planned_eta: expected ballistic-track guidance, got ${snapshot.guidanceMode}`,
+    String(snapshot.guidanceMode || "").includes("navsys:gnc-lambert-midcourse-coast"),
+    `moon_coast_departure_hold_planned_eta: expected lunar coast tracking guidance, got ${snapshot.guidanceMode}`,
   );
   assert(
     snapshot.targetEtaSource === "planned-transfer",

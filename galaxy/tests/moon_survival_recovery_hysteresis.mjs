@@ -22,8 +22,8 @@ function main() {
   });
   assert(initial, "moon survival hysteresis: expected initial recovery override");
   assert(
-    String(initial.mode || "").includes("moon-survival-periapsis-recovery"),
-    `moon survival hysteresis: expected periapsis recovery mode, got ${initial?.mode}`,
+    String(initial.mode || "").includes("moon-survival-recovery"),
+    `moon survival hysteresis: expected survival recovery mode, got ${initial?.mode}`,
   );
 
   const latched = computeMoonSurvivalRecoveryOverride({

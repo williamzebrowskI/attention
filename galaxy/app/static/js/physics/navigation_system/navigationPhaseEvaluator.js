@@ -9,6 +9,7 @@ import {
   evaluateMoonCaptureEntryGate,
   evaluateMoonTliExitGate,
 } from "./lunar/lunarPhaseGates.js";
+import { moonParkingOrbitReady } from "./lunar/moonParkingOrbitGate.js";
 
 function finiteOr(value, fallback) {
   return Number.isFinite(Number(value)) ? Number(value) : Number(fallback);
@@ -40,10 +41,7 @@ export function evaluateMoonMissionPhase({
   );
 
   if (currentPhase === NAVIGATION_MISSION_PHASES.LAUNCH_TO_PARKING) {
-    const parkingReady =
-      boundedOrbit(orbital)
-      && periapsisKm >= profile.parkingOrbitPeriapsisMinKm
-      && apoapsisKm >= profile.parkingOrbitApoapsisMinKm;
+    const parkingReady = moonParkingOrbitReady(orbital, profile);
     if (parkingReady) {
       return {
         nextPhase: NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL,

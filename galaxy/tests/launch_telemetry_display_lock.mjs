@@ -24,7 +24,7 @@ function main() {
 
   const coastSnapshot = {
     missionPhase: "coast_to_moon",
-    guidanceMode: "navsys:gnc-lambert-midcourse-coast+ballistic-track",
+    guidanceMode: "navsys:gnc-lambert-midcourse-coast",
     altitudeKm: 3351.9,
     altitudeAboveTerrainKm: 0,
     targetDistanceKm: 388_600.6,
@@ -35,7 +35,7 @@ function main() {
     "expected terrain-relative altitude to be suppressed during translunar coast",
   );
   const coastTargetTelemetry = resolveSnapshotTargetTelemetry(coastSnapshot);
-  assert(coastTargetTelemetry.plannedCoastActive, "expected ballistic coast state to be detected");
+  assert(coastTargetTelemetry.plannedCoastActive, "expected translunar coast state to be detected");
   assert(coastTargetTelemetry.targetRateLabel === "Approach", `expected Approach label, got ${coastTargetTelemetry.targetRateLabel}`);
   assert(coastTargetTelemetry.targetEtaLabel === "Plan ETA", `expected Plan ETA label, got ${coastTargetTelemetry.targetEtaLabel}`);
   assert(coastTargetTelemetry.targetEtaSeconds === null, "expected instantaneous ETA fallback to be suppressed during departure hold");
@@ -48,8 +48,8 @@ function main() {
   };
   const plannedTargetTelemetry = resolveSnapshotTargetTelemetry(plannedCoastSnapshot);
   assert(plannedTargetTelemetry.targetEtaSeconds === 110_000, "expected planned departure ETA to be preserved");
-  assert(plannedTargetTelemetry.targetRateLabel === "Approach", `expected ballistic-coast label normalization, got ${plannedTargetTelemetry.targetRateLabel}`);
-  assert(plannedTargetTelemetry.targetEtaLabel === "Plan ETA", `expected ballistic-coast ETA label normalization, got ${plannedTargetTelemetry.targetEtaLabel}`);
+  assert(plannedTargetTelemetry.targetRateLabel === "Approach", `expected translunar-coast label normalization, got ${plannedTargetTelemetry.targetRateLabel}`);
+  assert(plannedTargetTelemetry.targetEtaLabel === "Plan ETA", `expected translunar-coast ETA label normalization, got ${plannedTargetTelemetry.targetEtaLabel}`);
 
   const normalTargetTelemetry = resolveSnapshotTargetTelemetry({
     missionPhase: "launch_to_parking",

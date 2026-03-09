@@ -187,7 +187,7 @@ function main() {
     }
 
     const guidanceMode = String(snapshot.guidanceMode || "");
-    if (!firstSurvivalSnapshot && guidanceMode.includes("navsys:moon-survival-periapsis-recovery")) {
+    if (!firstSurvivalSnapshot && guidanceMode.includes("navsys:moon-survival-recovery")) {
       firstSurvivalSnapshot = {
         second,
         guidanceMode,
@@ -195,7 +195,7 @@ function main() {
         altitudeKm: Number(snapshot.altitudeKm),
       };
     }
-    if (!firstReacquireSnapshot && guidanceMode.includes("navsys:gnc-lambert-tli-reacquire-window")) {
+    if (!firstReacquireSnapshot && guidanceMode.includes("navsys:gnc-lambert-tli-hold")) {
       firstReacquireSnapshot = {
         second,
         guidanceMode,

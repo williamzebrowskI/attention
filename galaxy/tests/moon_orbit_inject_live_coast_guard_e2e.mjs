@@ -1,6 +1,10 @@
 import { createLaunchFleetController } from "../app/static/js/physics/launch/launchFleetController.js";
 import { LAUNCH_VEHICLE_CONFIG } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
+import {
+  MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
+  MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
+} from "../app/static/js/physics/launch/lunar/constants.js";
 import { solveMoonOrbitInjectWindowForLaunch } from "../app/static/js/physics/navigation_system/lunar/departureWindowSolver.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
@@ -197,8 +201,8 @@ function main() {
     earthMuKm3S2,
     engineAccelAtThrottle1KmS2,
     spacecraftMassKg,
-    nodeSamples: 8,
-    searchProfile: "fast",
+    nodeSamples: MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
+    searchProfile: MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
   });
   assert(
     moonDepartureWindowSeed?.valid && moonDepartureWindowSeed?.ready && moonDepartureWindowSeed?.corridorAccepted,
@@ -243,9 +247,8 @@ function main() {
     `moon_orbit_inject_live_coast_guard: expected coast guidance, got ${lateCoastSnapshot.guidanceMode}`,
   );
   assert(
-    !String(lateCoastSnapshot.guidanceMode || "").includes("ballistic-track")
-    || Number(lateCoastSnapshot.targetClosingSpeedKmS) > MIN_COAST_CLOSE_SPEED_KM_S,
-    `moon_orbit_inject_live_coast_guard: departure hold persisted with weak closure (${lateCoastSnapshot.targetClosingSpeedKmS} km/s)`,
+    Number(lateCoastSnapshot.targetClosingSpeedKmS) > MIN_COAST_CLOSE_SPEED_KM_S,
+    `moon_orbit_inject_live_coast_guard: passive translunar coast persisted with weak closure (${lateCoastSnapshot.targetClosingSpeedKmS} km/s)`,
   );
   assert(
     String(lateCoastSnapshot.moonDirectionState || "") !== "away",

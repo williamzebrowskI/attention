@@ -101,10 +101,10 @@ function makeLaunchHarness() {
     stageIndex: 1,
     stagePropellantKg: 900_000,
     elapsedSeconds: 1800,
-    guidanceMode: "navsys:gnc-lambert-midcourse-coast+ballistic-track",
+    guidanceMode: "navsys:gnc-lambert-midcourse-coast",
     lastStep: {
       throttle: 0,
-      guidanceMode: "navsys:gnc-lambert-midcourse-coast+ballistic-track",
+      guidanceMode: "navsys:gnc-lambert-midcourse-coast",
       guidanceBurnRequested: false,
       guidanceRequestedThrottle: 0,
     },
@@ -121,15 +121,17 @@ function makeLaunchHarness() {
   state.dynamicBodies.set(shipId, shipBody);
   vehicle.missionPhase = "coast_to_moon";
   vehicle.elapsedSeconds = 1800;
-  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast+ballistic-track";
+  vehicle.guidanceMode = "navsys:gnc-lambert-midcourse-coast";
   vehicle.lastStep = {
     throttle: 0,
     guidanceMode: vehicle.guidanceMode,
     guidanceBurnRequested: false,
     guidanceRequestedThrottle: 0,
+    requestedDirectionKm: { x: 1, y: 0, z: 0 },
+    bodyAxisDirectionKm: { x: 1, y: 0, z: 0 },
   };
   shipBody.position = { x: 10000, y: 0, z: 0 };
-  return { controller, state, shipId, shipBody };
+  return { controller, runtime, state, shipId, shipBody };
 }
 
 function main() {
@@ -150,11 +152,22 @@ function main() {
     assert(Number(snapshot.moonDirectionAngleDeg) < 1, `expected near-zero moon off-target angle, got ${snapshot.moonDirectionAngleDeg}`);
     assert(Number(snapshot.moonRelativePositionKm?.x) > 0, `expected positive x moon vector, got ${snapshot.moonRelativePositionKm?.x}`);
     assert(Number(snapshot.earthRelativePositionKm?.x) < 0, `expected negative x earth vector, got ${snapshot.earthRelativePositionKm?.x}`);
+    assert(snapshot.guidanceVelocityState === "prograde", `expected prograde command axis, got ${snapshot.guidanceVelocityState}`);
+    assert(snapshot.guidanceRadialState === "upward", `expected upward command axis, got ${snapshot.guidanceRadialState}`);
+    assert(snapshot.bodyVelocityState === "prograde", `expected prograde nose axis, got ${snapshot.bodyVelocityState}`);
+    assert(snapshot.bodyRadialState === "upward", `expected upward nose axis, got ${snapshot.bodyRadialState}`);
+    assert(Number(snapshot.guidanceVelocityAngleDeg) < 1, `expected near-zero command off-velocity angle, got ${snapshot.guidanceVelocityAngleDeg}`);
+    assert(Number(snapshot.bodyVelocityAngleDeg) < 1, `expected near-zero nose off-velocity angle, got ${snapshot.bodyVelocityAngleDeg}`);
   }
 
   {
-    const { controller, state, shipId, shipBody } = makeLaunchHarness();
+    const { controller, runtime, state, shipId, shipBody } = makeLaunchHarness();
     shipBody.velocity = { x: -2, y: 0, z: 0 };
+    const vehicle = runtime?.fleet?.vehicles?.get?.(shipId) || null;
+    if (vehicle?.lastStep) {
+      vehicle.lastStep.requestedDirectionKm = { x: -1, y: 0, z: 0 };
+      vehicle.lastStep.bodyAxisDirectionKm = { x: -1, y: 0, z: 0 };
+    }
     const snapshot = controller.statusSnapshotForBody({
       state,
       bodyId: shipId,
@@ -167,6 +180,10 @@ function main() {
     assert(Number(snapshot.targetClosingSpeedKmS) < 0, `expected negative moon approach rate, got ${snapshot.targetClosingSpeedKmS}`);
     assert(Number(snapshot.earthDirectionAngleDeg) > 179, `expected near-180 earth off-radial angle, got ${snapshot.earthDirectionAngleDeg}`);
     assert(Number(snapshot.moonDirectionAngleDeg) > 179, `expected near-180 moon off-target angle, got ${snapshot.moonDirectionAngleDeg}`);
+    assert(snapshot.guidanceVelocityState === "prograde", `expected retro burn along current velocity vector, got ${snapshot.guidanceVelocityState}`);
+    assert(snapshot.guidanceRadialState === "downward", `expected downward command axis, got ${snapshot.guidanceRadialState}`);
+    assert(snapshot.bodyVelocityState === "prograde", `expected prograde nose axis on reversed velocity case, got ${snapshot.bodyVelocityState}`);
+    assert(snapshot.bodyRadialState === "downward", `expected downward nose axis, got ${snapshot.bodyRadialState}`);
   }
 
   console.log("PASS moon-directional-telemetry-lock");

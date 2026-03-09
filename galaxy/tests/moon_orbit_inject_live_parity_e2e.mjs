@@ -236,8 +236,8 @@ function main() {
     `moon orbit inject parity: expected seed-lock guidance after commit window (${commitWindowSec}s), got ${seedLock.guidanceMode}`,
   );
   assert(
-    !String(seedLock.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
-    `moon orbit inject parity: should not fall into reacquire-window at ${seedLockCheckpointSec}s, got ${seedLock.guidanceMode}`,
+    !String(seedLock.guidanceMode || "").includes("navsys:gnc-lambert-tli-hold"),
+    `moon orbit inject parity: should not fall into tli-hold at ${seedLockCheckpointSec}s, got ${seedLock.guidanceMode}`,
   );
   assert(
     Number(seedLock.guidanceRequestedThrottle) > 0.5,

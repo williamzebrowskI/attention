@@ -18,6 +18,10 @@ import {
 } from "./launchGuidance.js";
 import { planRefuelRendezvousCommand } from "../navigation_system/planners/refuelRendezvousPlanner.js";
 import {
+  MOON_PARKING_ORBIT_GATE_TOLERANCE_KM,
+  moonParkingOrbitReady,
+} from "../navigation_system/lunar/moonParkingOrbitGate.js";
+import {
   MOON_PARKING_ORBIT_APOAPSIS_KM,
   MOON_PARKING_ORBIT_PERIAPSIS_KM,
 } from "./lunar/constants.js";
@@ -25,6 +29,7 @@ import {
 const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   parkingOrbitPeriapsisMinKm: MOON_PARKING_ORBIT_PERIAPSIS_KM,
   parkingOrbitApoapsisMinKm: MOON_PARKING_ORBIT_APOAPSIS_KM,
+  parkingOrbitToleranceKm: MOON_PARKING_ORBIT_GATE_TOLERANCE_KM,
   orbitalRefuelTargetFraction: 0.88,
   orbitalRefuelMinFlights: 2,
   tliTargetApoapsisKm: 382_000,
@@ -330,9 +335,7 @@ function computeMoonOrbitReturnAutopilotCommand({
   const config = MOON_RETURN_MISSION_CONFIG;
 
   if (phase === "launch_to_parking") {
-    const parkingReady = Number(orbital.periapsisKm) >= config.parkingOrbitPeriapsisMinKm
-      && Number(orbital.apoapsisKm) >= config.parkingOrbitApoapsisMinKm
-      && orbital.specificEnergy < 0;
+    const parkingReady = moonParkingOrbitReady(orbital, config);
     if (parkingReady) {
       setMissionPhase(runtime, "orbital_refuel");
       return {

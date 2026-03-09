@@ -106,10 +106,10 @@ function integrateBody(bodyState, commandedAccelerationKmS2, dtSec) {
 
 function modeFamily(mode = "") {
   const label = String(mode || "");
-  if (label.includes("navsys:moon-survival-periapsis-recovery")) {
+  if (label.includes("navsys:moon-survival-recovery")) {
     return "survival";
   }
-  if (label.includes("navsys:gnc-lambert-tli-reacquire-window")) {
+  if (label.includes("navsys:gnc-lambert-tli-hold")) {
     return "reacquire_hold";
   }
   if (label.includes("go-no-go-hold")) {

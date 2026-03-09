@@ -404,7 +404,7 @@ function testPrimaryLaunchControllerConflictProgression() {
   const holdSnapshot = controller.statusSnapshotForBody(state, shipId, NOW_MS);
   if (
     String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn")
-    && !String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window")
+    && !String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-hold")
   ) {
     assert(
       Number(holdSnapshot.guidanceRequestedThrottle) > 0.5,
@@ -412,7 +412,7 @@ function testPrimaryLaunchControllerConflictProgression() {
     );
   } else {
     assert(
-      String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+      String(holdSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-hold"),
       `primary telemetry progression: expected early powered TLI or reacquire hold, got ${holdSnapshot.guidanceMode}`,
     );
   }
@@ -427,7 +427,7 @@ function testPrimaryLaunchControllerConflictProgression() {
   const burnSnapshot = controller.statusSnapshotForBody(state, shipId, NOW_MS + 1000);
   assert(
     String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-burn")
-      || String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
+      || String(burnSnapshot.guidanceMode || "").includes("navsys:gnc-lambert-tli-hold"),
     `primary telemetry progression: expected public controller burn or hold mode, got ${burnSnapshot.guidanceMode}`,
   );
   if (

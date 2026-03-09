@@ -178,8 +178,8 @@ function main() {
     `moon orbit inject seed track continuity: expected seed-lock TLI burn at 620s, got ${checkpoint.guidanceMode}`,
   );
   assert(
-    !String(checkpoint.guidanceMode || "").includes("navsys:gnc-lambert-tli-reacquire-window"),
-    `moon orbit inject seed track continuity: should not fall into reacquire-window at 620s, got ${checkpoint.guidanceMode}`,
+    !String(checkpoint.guidanceMode || "").includes("navsys:gnc-lambert-tli-hold"),
+    `moon orbit inject seed track continuity: should not fall into tli-hold at 620s, got ${checkpoint.guidanceMode}`,
   );
   assert(
     Number(checkpoint.guidanceRequestedThrottle) > 0.5,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +68,7 @@ space_weather_service = SpaceWeatherService(
 earth_eop_service = EarthEopService(
     forcing_context_provider=environment_forcing_service.current_context,
 )
+client_log_logger = logging.getLogger("uvicorn.error")
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -148,6 +151,18 @@ async def runtime_earth_eop(
 ) -> dict[str, object]:
     snapshot = await earth_eop_service.get_snapshot(force_refresh=force_refresh)
     return snapshot.to_dict()
+
+
+@app.post("/api/client-log")
+async def client_log(entry: dict[str, object]) -> dict[str, bool]:
+    payload = dict(entry or {})
+    channel = str(payload.get("channel") or "client").strip().lower() or "client"
+    client_log_logger.warning(
+        "[client-log:%s] %s",
+        channel,
+        json.dumps(payload, sort_keys=True, default=str),
+    )
+    return {"accepted": True}
 
 
 @app.get("/api/bodies")
