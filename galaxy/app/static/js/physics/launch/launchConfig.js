@@ -192,6 +192,14 @@ export const LAUNCH_RCS_CONFIG = Object.freeze({
   minReferenceSpeedKmS: 0.05,
 });
 
+export const LAUNCH_MOON_COAST_TRIM_CONFIG = Object.freeze({
+  enabled: true,
+  alignThresholdDeg: 6.0,
+  pulseThrottle: 0.01,
+  pulseDurationSec: 3.0,
+  cooldownSec: 900.0,
+});
+
 export const LAUNCH_INITIAL_MASS_KG = LAUNCH_VEHICLE_CONFIG.stages.reduce(
   (mass, stage) => mass + stage.dryMassKg + stage.propellantMassKg,
   LAUNCH_VEHICLE_CONFIG.payloadMassKg,

@@ -81,6 +81,7 @@ import {
 } from "./lunar/constants.js";
 import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 import {
+  resolveMoonCoastTrimBurn,
   computeMoonAimTelemetry,
   resolveMoonMissionAttitudeDirection,
 } from "./lunar/moonAttitudePolicy.js";
@@ -2051,6 +2052,9 @@ export function createLaunchFleetController({
       moonBurnAttitudeGateActive: false,
       moonBurnAttitudeGateDirection: null,
       moonBurnAttitudeGateAlignSec: 0,
+      moonCoastTrimPending: false,
+      moonCoastTrimActiveUntilSec: null,
+      moonCoastTrimLastBurnSec: null,
       moonEarthGuardActive: false,
       moonProjectedPeriluneAltitudeKm: null,
       moonBPlaneErrorKm: null,
@@ -3148,6 +3152,32 @@ export function createLaunchFleetController({
         dtSeconds: safeDtSeconds,
       });
       desiredDirection = moonAttitudePolicy.requestedDirection;
+      const moonCoastTrimBurn = resolveMoonCoastTrimBurn({
+        missionId: vehicle.missionId,
+        missionPhase: vehicle.missionPhase,
+        requestedThrottle,
+        passiveMoonCoastPointing: moonAttitudePolicy.passiveMoonCoastPointing,
+        passiveMoonCoastAttitudeAssist: moonAttitudePolicy.passiveMoonCoastAttitudeAssist,
+        moonDirectionKm: toMoonVectorKm,
+        currentDirection: vehicle.stageActuator?.directionActual || desiredDirection,
+        nowSec,
+        trimPending: vehicle.moonCoastTrimPending,
+        trimActiveUntilSec: vehicle.moonCoastTrimActiveUntilSec,
+        trimLastBurnSec: vehicle.moonCoastTrimLastBurnSec,
+      });
+      vehicle.moonCoastTrimPending = Boolean(moonCoastTrimBurn.pending);
+      vehicle.moonCoastTrimActiveUntilSec = moonCoastTrimBurn.activeUntilSec;
+      vehicle.moonCoastTrimLastBurnSec = moonCoastTrimBurn.lastBurnSec;
+      if (moonCoastTrimBurn.active) {
+        desiredDirection = normalize(
+          moonCoastTrimBurn.direction || desiredDirection,
+          desiredDirection,
+        );
+        requestedThrottle = Math.max(
+          Number(requestedThrottle) || 0,
+          Number(moonCoastTrimBurn.throttle) || 0,
+        );
+      }
       if (
         moonAttitudePolicy.passiveMoonCoastPointing
         && moonAttitudePolicy.passiveMoonCoastAttitudeAssist?.active

@@ -1,5 +1,8 @@
 import { LAUNCH_MISSION_IDS } from "../launchMissions.js";
-import { LAUNCH_RCS_CONFIG } from "../launchConfig.js";
+import {
+  LAUNCH_MOON_COAST_TRIM_CONFIG,
+  LAUNCH_RCS_CONFIG,
+} from "../launchConfig.js";
 import {
   clamp,
   cross,
@@ -22,6 +25,9 @@ function finiteVectorValue(value) {
 }
 
 function finiteOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -200,6 +206,107 @@ export function resolveMoonMissionAttitudeDirection({
       : desired,
     passiveMoonCoastPointing,
     passiveMoonCoastAttitudeAssist,
+  };
+}
+
+export function resolveMoonCoastTrimBurn({
+  missionId,
+  missionPhase,
+  requestedThrottle,
+  passiveMoonCoastPointing,
+  passiveMoonCoastAttitudeAssist,
+  moonDirectionKm,
+  currentDirection,
+  nowSec,
+  trimPending = false,
+  trimActiveUntilSec = null,
+  trimLastBurnSec = null,
+} = {}) {
+  const enabled = (
+    Boolean(LAUNCH_MOON_COAST_TRIM_CONFIG?.enabled)
+    && String(missionId || "") === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+    && String(missionPhase || "") === "coast_to_moon"
+    && !(Number(requestedThrottle) > 1e-3)
+    && Boolean(passiveMoonCoastPointing)
+    && finiteVectorValue(moonDirectionKm)
+  );
+  const currentNowSec = finiteOrNull(nowSec);
+  const alignThresholdDeg = Math.max(
+    0.1,
+    Number(LAUNCH_MOON_COAST_TRIM_CONFIG?.alignThresholdDeg) || 6.0,
+  );
+  const pulseThrottle = clamp(
+    Number(LAUNCH_MOON_COAST_TRIM_CONFIG?.pulseThrottle) || 0.01,
+    0,
+    0.15,
+  );
+  const pulseDurationSec = Math.max(
+    0.1,
+    Number(LAUNCH_MOON_COAST_TRIM_CONFIG?.pulseDurationSec) || 3.0,
+  );
+  const cooldownSec = Math.max(
+    0,
+    Number(LAUNCH_MOON_COAST_TRIM_CONFIG?.cooldownSec) || 900.0,
+  );
+  const turnActive = Boolean(passiveMoonCoastAttitudeAssist?.active);
+  const alignErrorDeg = finiteOrNull(passiveMoonCoastAttitudeAssist?.errorDeg);
+  let pending = Boolean(trimPending);
+  let activeUntil = finiteOrNull(trimActiveUntilSec);
+  let lastBurn = finiteOrNull(trimLastBurnSec);
+  let active = Boolean(
+    enabled
+    && currentNowSec !== null
+    && activeUntil !== null
+    && currentNowSec < activeUntil
+  );
+
+  if (!enabled) {
+    return {
+      active: false,
+      pending: false,
+      activeUntilSec: null,
+      lastBurnSec: lastBurn,
+      throttle: 0,
+      direction: null,
+    };
+  }
+
+  if (turnActive) {
+    pending = true;
+  }
+
+  if (
+    !active
+    && pending
+    && currentNowSec !== null
+    && (alignErrorDeg === null || alignErrorDeg <= alignThresholdDeg)
+    && (lastBurn === null || (currentNowSec - lastBurn) >= cooldownSec)
+  ) {
+    active = true;
+    activeUntil = currentNowSec + pulseDurationSec;
+    lastBurn = currentNowSec;
+    pending = false;
+  }
+
+  if (
+    active
+    && currentNowSec !== null
+    && activeUntil !== null
+    && currentNowSec >= activeUntil
+  ) {
+    active = false;
+    activeUntil = null;
+  }
+
+  return {
+    active,
+    pending,
+    activeUntilSec: activeUntil,
+    lastBurnSec: lastBurn,
+    throttle: active ? pulseThrottle : 0,
+    direction: active
+      ? normalize(moonDirectionKm, currentDirection || moonDirectionKm)
+      : null,
   };
 }
 

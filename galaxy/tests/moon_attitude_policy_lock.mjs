@@ -1,5 +1,6 @@
 import {
   computeMoonAimTelemetry,
+  resolveMoonCoastTrimBurn,
   resolveMoonMissionAttitudeDirection,
 } from "../app/static/js/physics/launch/lunar/moonAttitudePolicy.js";
 
@@ -39,6 +40,44 @@ function main() {
       && coastPolicy.passiveMoonCoastAttitudeAssist.jets.length > 0,
     "expected passive coast attitude assist jets",
   );
+
+  const trimPending = resolveMoonCoastTrimBurn({
+    missionId: "moon_orbit_return",
+    missionPhase: "coast_to_moon",
+    requestedThrottle: 0,
+    passiveMoonCoastPointing: true,
+    passiveMoonCoastAttitudeAssist: coastPolicy.passiveMoonCoastAttitudeAssist,
+    moonDirectionKm: { x: 1, y: 0, z: 0 },
+    currentDirection: coastPolicy.requestedDirection,
+    nowSec: 100,
+    trimPending: false,
+    trimActiveUntilSec: null,
+    trimLastBurnSec: null,
+  });
+  assert(!trimPending.active, "expected trim burn to stay inactive while RCS assist is still turning");
+  assert(trimPending.pending, "expected trim burn to arm after passive coast attitude assist engages");
+
+  const trimActive = resolveMoonCoastTrimBurn({
+    missionId: "moon_orbit_return",
+    missionPhase: "coast_to_moon",
+    requestedThrottle: 0,
+    passiveMoonCoastPointing: true,
+    passiveMoonCoastAttitudeAssist: {
+      active: false,
+      errorDeg: 2,
+      authority: 0,
+      jets: [],
+    },
+    moonDirectionKm: { x: 1, y: 0, z: 0 },
+    currentDirection: { x: 0.999, y: 0.03, z: 0 },
+    nowSec: 101,
+    trimPending: true,
+    trimActiveUntilSec: null,
+    trimLastBurnSec: null,
+  });
+  assert(trimActive.active, "expected trim burn to activate once moon alignment is achieved");
+  assert(Number(trimActive.throttle) > 0, `expected positive trim throttle, got ${trimActive.throttle}`);
+  assert(Math.abs((trimActive.direction?.x ?? 0) - 1) < 1e-3, `expected moonward trim direction, got ${JSON.stringify(trimActive.direction)}`);
 
   const burnPolicy = resolveMoonMissionAttitudeDirection({
     missionId: "moon_orbit_return",

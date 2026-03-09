@@ -125,7 +125,10 @@ import {
   MOON_PARKING_ORBIT_APOAPSIS_KM,
 } from "./lunar/constants.js";
 import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
-import { resolveMoonMissionAttitudeDirection } from "./lunar/moonAttitudePolicy.js";
+import {
+  resolveMoonCoastTrimBurn,
+  resolveMoonMissionAttitudeDirection,
+} from "./lunar/moonAttitudePolicy.js";
 import {
   canUseMoonDepartureSolveWorker,
   requestMoonDepartureSolvePromise,
@@ -1036,6 +1039,9 @@ export function createLaunchController(options) {
     moonBurnAttitudeGateActive: false,
     moonBurnAttitudeGateDirection: null,
     moonBurnAttitudeGateAlignSec: 0,
+    moonCoastTrimPending: false,
+    moonCoastTrimActiveUntilSec: null,
+    moonCoastTrimLastBurnSec: null,
     missionPhaseGateReason: "",
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
@@ -4083,6 +4089,32 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           dtSeconds,
         });
         directionRequested = moonAttitudePolicy.requestedDirection;
+        const moonCoastTrimBurn = resolveMoonCoastTrimBurn({
+          missionId: runtime.mission.selectedId,
+          missionPhase: runtime.mission.phase,
+          requestedThrottle,
+          passiveMoonCoastPointing: moonAttitudePolicy.passiveMoonCoastPointing,
+          passiveMoonCoastAttitudeAssist: moonAttitudePolicy.passiveMoonCoastAttitudeAssist,
+          moonDirectionKm: toMoonVectorKm,
+          currentDirection: runtime.stageActuator?.directionActual || directionRequested,
+          nowSec: nowMs / 1000,
+          trimPending: runtime.moonCoastTrimPending,
+          trimActiveUntilSec: runtime.moonCoastTrimActiveUntilSec,
+          trimLastBurnSec: runtime.moonCoastTrimLastBurnSec,
+        });
+        runtime.moonCoastTrimPending = Boolean(moonCoastTrimBurn.pending);
+        runtime.moonCoastTrimActiveUntilSec = moonCoastTrimBurn.activeUntilSec;
+        runtime.moonCoastTrimLastBurnSec = moonCoastTrimBurn.lastBurnSec;
+        if (moonCoastTrimBurn.active) {
+          directionRequested = normalize(
+            moonCoastTrimBurn.direction || directionRequested,
+            directionRequested,
+          );
+          requestedThrottle = Math.max(
+            Number(requestedThrottle) || 0,
+            Number(moonCoastTrimBurn.throttle) || 0,
+          );
+        }
         const bodyKind = stageBodyKindFromStageIndex(runtime.stageIndex);
         const stageForStep = stageAtIndex(runtime.stageIndex);
         const lowAltitudeQAlphaBypass =
