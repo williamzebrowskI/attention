@@ -705,6 +705,55 @@ function testLateCoastWeakClosureTriggersRescueCorrection() {
   );
 }
 
+function testLateHealthyCoastPreservesCommittedDepartureCorridor() {
+  const runtime = createPlannerRuntime();
+  const result = runCommand({
+    phase: "coast_to_moon",
+    plannerRuntime: runtime,
+    timestampSec: 1200,
+    targetVectors: {
+      departurePlanBurnDirectionKm: { x: 0.16, y: 0.986, z: 0.02 },
+      shipEarthPositionKm: { x: 22_000, y: 8_500, z: 0 },
+      shipEarthVelocityKmS: { x: 0.25, y: 10.55, z: 0.02 },
+      moonEarthPositionKm: { x: 348_000, y: 136_000, z: 10_000 },
+      moonEarthVelocityKmS: { x: -0.35, y: 0.93, z: 0.01 },
+    },
+    metrics: {
+      moonDistanceKm: 392_000,
+      moonClosingSpeedKmS: 3.8,
+      moonProjectedMissTrendKmS: 0,
+      timeToPeriapsisSec: 999999,
+      missionPhaseElapsedSec: 1200,
+      departurePlanReady: true,
+      departurePlanThrottle: 1,
+      departurePlanBurnDurationSec: 834,
+      departurePlanCommitWindowSec: 105,
+      departurePlanPredictedMissDistanceKm: 8_400,
+      departurePlanPredictedPeriluneAltitudeKm: 290,
+      departurePlanBPlaneErrorKm: 2_700,
+      departurePlanGeometryScore: 0.95,
+      departurePlanAlignNow: 0.8,
+      earthDistanceKm: 24_000,
+      periapsisKm: 245,
+      stageMassKg: 1_450_000,
+      engineAccelAtThrottle1KmS2: 0.01,
+    },
+  });
+  assert(result, "late_healthy_coast_commit_lock: missing result");
+  assert(
+    String(result.mode || "").includes("navsys:gnc-lambert-midcourse-coast"),
+    `late_healthy_coast_commit_lock: expected passive coast, got ${result.mode}`,
+  );
+  assert(
+    result.phase === "coast",
+    `late_healthy_coast_commit_lock: expected coast phase, got ${result.phase}`,
+  );
+  assert(
+    Number(result.throttle) === 0,
+    `late_healthy_coast_commit_lock: expected zero throttle, got ${result.throttle}`,
+  );
+}
+
 function testPassiveCoastRejectedForCatastrophicLiveCorridor() {
   const eligibility = evaluateMoonPassiveCoastEligibility({
     phaseName: "coast_to_moon",
@@ -746,6 +795,7 @@ testLateCoastDepartureHoldReleasesWhenMovingAway();
   testDepartureCommitOverridesEarlyTliHold();
   testDepartureCommitUsesLiveDiagnosticsNotSeedTelemetry();
   testDepartureCommitRejectsBadCorridorSeed();
+  testLateHealthyCoastPreservesCommittedDepartureCorridor();
   testLateCoastWeakClosureTriggersRescueCorrection();
   testPassiveCoastRejectedForCatastrophicLiveCorridor();
   console.log("PASS moon-gnc-conflict-e2e");

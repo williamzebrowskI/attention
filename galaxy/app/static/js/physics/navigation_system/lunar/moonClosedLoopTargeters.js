@@ -224,6 +224,23 @@ export function doesMoonCorridorCandidateImproveCommittedPlan({
   return candidateNotWorse && materiallyBetter;
 }
 
+function isMoonCorridorAcceptable({
+  predictedMissDistanceKm = Number.NaN,
+  predictedPeriluneAltitudeKm = Number.NaN,
+  bPlaneErrorKm = Number.NaN,
+  plannerConfig = null,
+  missGateKm = Number.NaN,
+} = {}) {
+  const corridor = evaluateMoonDepartureCorridor({
+    predictedMissDistanceKm,
+    predictedPeriluneAltitudeKm,
+    bPlaneErrorKm,
+    plannerConfig,
+    missGateKm,
+  });
+  return Boolean(corridor?.accepted);
+}
+
 function ensureMoonGncRuntime(moonRuntime) {
   if (!moonRuntime || typeof moonRuntime !== "object") {
     return null;
@@ -1035,9 +1052,20 @@ export function planMoonClosedLoopMissionCommand({
       missGateKm,
       plannerConfig,
     });
+    const bestCorridorAcceptable = (
+      phaseName === "coast_to_moon"
+      && isMoonCorridorAcceptable({
+        predictedMissDistanceKm: best.predictedMissDistanceKm,
+        predictedPeriluneAltitudeKm: best.predictedPeriluneAltitudeKm,
+        bPlaneErrorKm: best.bPlaneErrorKm,
+        plannerConfig,
+        missGateKm,
+      })
+    );
     const bestImprovesCommittedDeparturePlan = (
       phaseName === "coast_to_moon"
       && departurePlanCorridorAcceptable
+      && bestCorridorAcceptable
       && doesMoonCorridorCandidateImproveCommittedPlan({
         candidatePredictedMissDistanceKm: best.predictedMissDistanceKm,
         candidatePredictedPeriluneAltitudeKm: best.predictedPeriluneAltitudeKm,
@@ -1052,6 +1080,7 @@ export function planMoonClosedLoopMissionCommand({
       phaseName === "coast_to_moon"
       && departurePlanCorridorAcceptable
       && ballisticCoastCandidate
+      && ballisticCoastCorridorAcceptable
       && doesMoonCorridorCandidateImproveCommittedPlan({
         candidatePredictedMissDistanceKm: ballisticCoastCandidate.predictedMissDistanceKm,
         candidatePredictedPeriluneAltitudeKm: ballisticCoastCandidate.predictedPeriluneAltitudeKm,
