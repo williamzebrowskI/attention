@@ -73,14 +73,14 @@ import {
 import {
   createLaunchSiteStructureVisual,
   updateLaunchSiteStructureVisual,
-} from "./physics/launch/launchSiteStructures.js?v=20260419h";
+} from "./physics/launch/launchSiteStructures.js?v=20260419i";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
 } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419h";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419i";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -253,7 +253,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419h";
+const FRONTEND_MODULE_VERSION = "20260419i";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -5736,6 +5736,7 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
   const snapshot = launchController?.statusSnapshot?.() || null;
   const altitudeKm = Number(snapshot?.altitudeKm);
   const stageIndex = Number(snapshot?.stageIndex);
+  const rocketPositionKm = runtimeCoordsOrLiveById(LAUNCH_BODY_ID);
   const stackPresent = (
     !snapshot
     || String(snapshot?.phase || "").trim().toLowerCase() === "idle"
@@ -5749,6 +5750,7 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
     scene,
     earthPositionKm: earthCoordsKm,
     earthAxes,
+    rocketPositionKm,
     distanceScale: DISTANCE_SCALE,
     dtSeconds: deltaSeconds,
     launchSite: RUNTIME_LAUNCH_SITE,

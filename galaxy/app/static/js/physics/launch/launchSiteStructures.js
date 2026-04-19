@@ -1,5 +1,6 @@
 import {
   LAUNCH_SITE,
+  STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
 import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js";
@@ -63,6 +64,17 @@ function rad(value) {
   return (Number(value) || 0) * (Math.PI / 180);
 }
 
+function bodyFixedUpUnitVector(latitudeDeg, longitudeDeg) {
+  const latRad = rad(clamp(latitudeDeg, -90, 90));
+  const lonRad = rad(longitudeDeg);
+  const cosLat = Math.cos(latRad);
+  return {
+    x: cosLat * Math.cos(lonRad),
+    y: cosLat * Math.sin(lonRad),
+    z: Math.sin(latRad),
+  };
+}
+
 function approach(current, target, maxDelta) {
   if (!Number.isFinite(current)) return target;
   if (!Number.isFinite(target)) return current;
@@ -120,6 +132,109 @@ function transformBodyFixedVectorToWorld(THREE, bodyFixedVector, earthAxes) {
       + ((Number(earthAxes?.yAxis?.z) || 0) * (Number(bodyFixedVector?.y) || 0))
       + ((Number(earthAxes?.pole?.z) || 0) * (Number(bodyFixedVector?.z) || 0)),
   );
+}
+
+function finiteNumber(value) {
+  return Number.isFinite(Number(value));
+}
+
+function finiteVectorKm(vector) {
+  return (
+    vector
+    && finiteNumber(vector.x)
+    && finiteNumber(vector.y)
+    && finiteNumber(vector.z)
+  );
+}
+
+function subtractVectorKm(a, b) {
+  return {
+    x: (Number(a?.x) || 0) - (Number(b?.x) || 0),
+    y: (Number(a?.y) || 0) - (Number(b?.y) || 0),
+    z: (Number(a?.z) || 0) - (Number(b?.z) || 0),
+  };
+}
+
+function scaleVectorKm(vector, scalar) {
+  return {
+    x: (Number(vector?.x) || 0) * scalar,
+    y: (Number(vector?.y) || 0) * scalar,
+    z: (Number(vector?.z) || 0) * scalar,
+  };
+}
+
+function addVectorKm(a, b) {
+  return {
+    x: (Number(a?.x) || 0) + (Number(b?.x) || 0),
+    y: (Number(a?.y) || 0) + (Number(b?.y) || 0),
+    z: (Number(a?.z) || 0) + (Number(b?.z) || 0),
+  };
+}
+
+function normalizeVectorKm(vector, fallback = { x: 0, y: 0, z: 1 }) {
+  const x = Number(vector?.x) || 0;
+  const y = Number(vector?.y) || 0;
+  const z = Number(vector?.z) || 0;
+  const magnitude = Math.sqrt((x * x) + (y * y) + (z * z));
+  if (!(magnitude > 1e-12)) {
+    return { ...fallback };
+  }
+  return {
+    x: x / magnitude,
+    y: y / magnitude,
+    z: z / magnitude,
+  };
+}
+
+export function resolveLaunchSiteAnchorWorldKm(options = {}) {
+  const launchSite = options?.launchSite || LAUNCH_SITE;
+  const latitudeDeg = Number(launchSite?.latitudeDeg) || 0;
+  const longitudeDeg = Number(launchSite?.longitudeDeg) || 0;
+  const altitudeKm = Math.max(0, Number(launchSite?.altitudeKm) || 0);
+  const earthPositionKm = options?.earthPositionKm;
+  const earthAxes = options?.earthAxes;
+  const rocketPositionKm = options?.rocketPositionKm;
+  const stackPresent = Boolean(options?.stackPresent);
+
+  if (stackPresent && finiteVectorKm(rocketPositionKm) && finiteVectorKm(earthPositionKm)) {
+    const upWorldKm = normalizeVectorKm(
+      subtractVectorKm(rocketPositionKm, earthPositionKm),
+    );
+    return addVectorKm(
+      rocketPositionKm,
+      scaleVectorKm(upWorldKm, -STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM),
+    );
+  }
+
+  if (!finiteVectorKm(earthPositionKm) || !earthAxes) {
+    return null;
+  }
+
+  const up = bodyFixedUpUnitVector(latitudeDeg, longitudeDeg);
+  const upWorld = {
+    x: ((Number(earthAxes?.xAxis?.x) || 0) * (Number(up?.x) || 0))
+      + ((Number(earthAxes?.yAxis?.x) || 0) * (Number(up?.y) || 0))
+      + ((Number(earthAxes?.pole?.x) || 0) * (Number(up?.z) || 0)),
+    y: ((Number(earthAxes?.xAxis?.y) || 0) * (Number(up?.x) || 0))
+      + ((Number(earthAxes?.yAxis?.y) || 0) * (Number(up?.y) || 0))
+      + ((Number(earthAxes?.pole?.y) || 0) * (Number(up?.z) || 0)),
+    z: ((Number(earthAxes?.xAxis?.z) || 0) * (Number(up?.x) || 0))
+      + ((Number(earthAxes?.yAxis?.z) || 0) * (Number(up?.y) || 0))
+      + ((Number(earthAxes?.pole?.z) || 0) * (Number(up?.z) || 0)),
+  };
+  const padSurface = surfacePointRelativeKmAtLatLon(
+    latitudeDeg,
+    longitudeDeg,
+    earthAxes,
+    { includeTerrain: false },
+  );
+  const padRelativeKm = padSurface?.pointRelativeKm || upWorld;
+  const padNormalKm = padSurface?.surfaceNormal || upWorld;
+  return {
+    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * altitudeKm),
+    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * altitudeKm),
+    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * altitudeKm),
+  };
 }
 
 function makeAnchoredBeam(THREE, length, thickness, depth, material) {
@@ -606,6 +721,7 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const scene = options?.scene;
   const earthPositionKm = options?.earthPositionKm;
   const earthAxes = options?.earthAxes;
+  const rocketPositionKm = options?.rocketPositionKm;
   if (!root || !state || !THREE || !scene || !earthPositionKm || !earthAxes) {
     if (root) {
       root.visible = false;
@@ -627,22 +743,17 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const eastWorld = transformBodyFixedVectorToWorld(THREE, east, earthAxes);
   const northWorld = transformBodyFixedVectorToWorld(THREE, north, earthAxes);
   const upWorld = transformBodyFixedVectorToWorld(THREE, up, earthAxes);
-  const padSurface = surfacePointRelativeKmAtLatLon(latitudeDeg, longitudeDeg, earthAxes, { includeTerrain: false });
-  const padRelativeKm = padSurface?.pointRelativeKm || {
-    x: Number(upWorld.x) || 0,
-    y: Number(upWorld.y) || 0,
-    z: Number(upWorld.z) || 0,
-  };
-  const padNormalKm = padSurface?.surfaceNormal || {
-    x: Number(upWorld.x) || 0,
-    y: Number(upWorld.y) || 0,
-    z: Number(upWorld.z) || 0,
-  };
-  const rootWorldKm = {
-    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * altitudeKm),
-    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * altitudeKm),
-    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * altitudeKm),
-  };
+  const rootWorldKm = resolveLaunchSiteAnchorWorldKm({
+    launchSite,
+    earthPositionKm,
+    earthAxes,
+    rocketPositionKm,
+    stackPresent: options?.stackPresent,
+  });
+  if (!finiteVectorKm(rootWorldKm)) {
+    root.visible = false;
+    return;
+  }
   root.position.copy(sceneVectorFromKm(THREE, rootWorldKm).multiplyScalar(distanceScale));
 
   const eastScene = sceneVectorFromKm(THREE, eastWorld).normalize();
