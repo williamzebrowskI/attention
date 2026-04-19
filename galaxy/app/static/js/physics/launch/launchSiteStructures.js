@@ -49,12 +49,21 @@ const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   towerTopCapHeightKm: 0.004,
   lightningMastHeightKm: 0.010,
   lightningMastRadiusKm: 0.0007,
+  towerRailWidthKm: 0.0015,
+  towerRailDepthKm: 0.0012,
+  towerCableRadiusKm: 0.00035,
+  towerPulleyRadiusKm: 0.0016,
+  towerPulleyThicknessKm: 0.0015,
+  towerWinchRadiusKm: 0.0018,
+  towerWinchThicknessKm: 0.0042,
   carriageHeightKm: 0.022,
   carriageWidthKm: 0.021,
   carriageDepthKm: 0.017,
   carriageRailInsetKm: 0.0048,
   carriageBeamThicknessKm: 0.0018,
   carriageBackplateThicknessKm: 0.0024,
+  carriageSidePlateThicknessKm: 0.0021,
+  carriageCapThicknessKm: 0.0018,
   carriageRollerRadiusKm: 0.0011,
   chopstickCatchHeightKm: BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
   chopstickArmMinLengthKm: 0.010,
@@ -62,11 +71,18 @@ const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   chopstickArmThicknessKm: 0.0019,
   chopstickArmDepthKm: 0.0038,
   chopstickArmSpacingKm: 0.010,
+  chopstickBoxHeightKm: 0.0056,
+  chopstickBoxDepthKm: 0.0044,
+  chopstickChordThicknessKm: 0.00088,
+  chopstickRailThicknessKm: 0.00072,
+  chopstickRailDepthKm: 0.0012,
+  chopstickTrussPanelCount: 5,
   chopstickForkLengthKm: 0.0048,
   chopstickForkSpreadKm: 0.0038,
   chopstickPivotInsetKm: 0.0012,
   chopstickPivotRadiusKm: 0.0016,
   chopstickBraceThicknessKm: 0.001,
+  chopstickActuatorRadiusKm: 0.00062,
   quickDisconnectHeightKm:
     STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm
     + (STARSHIP_STACK_DIMENSIONS_KM.shipCylinderHeightKm * 0.74),
@@ -297,6 +313,30 @@ function addStrutBetweenPoints(THREE, parent, start, end, thickness, material) {
   return mesh;
 }
 
+function createAdjustableCylinder(THREE, radius, material, radialSegments = 10) {
+  return new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, 1, radialSegments),
+    material,
+  );
+}
+
+function setCylinderBetweenPoints(mesh, start, end) {
+  if (!mesh || !start || !end) return;
+  const direction = new mesh.position.constructor().subVectors(end, start);
+  const length = direction.length();
+  if (!(length > 1e-9)) {
+    mesh.visible = false;
+    return;
+  }
+  mesh.visible = true;
+  mesh.position.copy(start).addScaledVector(direction, 0.5);
+  mesh.scale.set(1, length, 1);
+  mesh.quaternion.setFromUnitVectors(
+    new mesh.position.constructor(0, 1, 0),
+    direction.normalize(),
+  );
+}
+
 function createTowerLattice(THREE, towerGroup, profile, darkSteel, stainless) {
   const halfW = profile.towerWidthKm * 0.5;
   const halfD = profile.towerDepthKm * 0.5;
@@ -401,84 +441,184 @@ function createChopstickArmAssembly(THREE, profile, material) {
   hinge.rotation.z = Math.PI * 0.5;
   group.add(hinge);
 
-  const mainBeam = makeAnchoredBeam(
-    THREE,
-    profile.chopstickArmMaxLengthKm,
-    profile.chopstickArmThicknessKm,
-    profile.chopstickArmDepthKm,
-    material,
-  );
-  group.add(mainBeam);
+  const armCore = new THREE.Group();
+  group.add(armCore);
 
-  const forkUpper = makeAnchoredBeam(
-    THREE,
-    profile.chopstickForkLengthKm,
-    profile.chopstickArmThicknessKm * 0.82,
-    profile.chopstickArmDepthKm * 0.7,
-    material,
-  );
-  group.add(forkUpper);
+  const chordHalfHeight = profile.chopstickBoxHeightKm * 0.5;
+  const chordHalfDepth = profile.chopstickBoxDepthKm * 0.5;
+  const chordOffsets = [
+    [chordHalfHeight, -chordHalfDepth],
+    [-chordHalfHeight, -chordHalfDepth],
+    [chordHalfHeight, chordHalfDepth],
+    [-chordHalfHeight, chordHalfDepth],
+  ];
+  for (const [y, z] of chordOffsets) {
+    const chord = makeAnchoredBeam(
+      THREE,
+      profile.chopstickArmMaxLengthKm,
+      profile.chopstickChordThicknessKm,
+      profile.chopstickChordThicknessKm,
+      material,
+    );
+    chord.position.set(0, y, z);
+    armCore.add(chord);
+  }
 
-  const forkLower = makeAnchoredBeam(
-    THREE,
-    profile.chopstickForkLengthKm,
-    profile.chopstickArmThicknessKm * 0.82,
-    profile.chopstickArmDepthKm * 0.7,
-    material,
-  );
-  group.add(forkLower);
+  const railOffsets = [-0.26 * profile.chopstickBoxDepthKm, 0.26 * profile.chopstickBoxDepthKm];
+  for (const z of railOffsets) {
+    const catchRail = makeAnchoredBeam(
+      THREE,
+      profile.chopstickArmMaxLengthKm,
+      profile.chopstickRailThicknessKm,
+      profile.chopstickRailDepthKm,
+      material,
+    );
+    catchRail.position.set(0, chordHalfHeight + profile.chopstickRailThicknessKm, z);
+    armCore.add(catchRail);
+  }
 
-  const upperBrace = new THREE.Mesh(
+  const panelLength = profile.chopstickArmMaxLengthKm / profile.chopstickTrussPanelCount;
+  for (let i = 0; i <= profile.chopstickTrussPanelCount; i += 1) {
+    const x = -panelLength * i;
+    const verticalFront = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.chopstickChordThicknessKm,
+        profile.chopstickBoxHeightKm,
+        profile.chopstickChordThicknessKm,
+      ),
+      material,
+    );
+    verticalFront.position.set(x, 0, -chordHalfDepth);
+    armCore.add(verticalFront);
+
+    const verticalRear = verticalFront.clone();
+    verticalRear.position.z = chordHalfDepth;
+    armCore.add(verticalRear);
+
+    const crossTop = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.chopstickChordThicknessKm,
+        profile.chopstickChordThicknessKm,
+        profile.chopstickBoxDepthKm,
+      ),
+      material,
+    );
+    crossTop.position.set(x, chordHalfHeight, 0);
+    armCore.add(crossTop);
+
+    const crossBottom = crossTop.clone();
+    crossBottom.position.y = -chordHalfHeight;
+    armCore.add(crossBottom);
+  }
+
+  for (let i = 0; i < profile.chopstickTrussPanelCount; i += 1) {
+    const x0 = -panelLength * i;
+    const x1 = -panelLength * (i + 1);
+    const rising = (i % 2) === 0;
+    const startFront = new THREE.Vector3(x0, rising ? chordHalfHeight : -chordHalfHeight, -chordHalfDepth);
+    const endFront = new THREE.Vector3(x1, rising ? -chordHalfHeight : chordHalfHeight, -chordHalfDepth);
+    const startRear = new THREE.Vector3(x0, rising ? chordHalfHeight : -chordHalfHeight, chordHalfDepth);
+    const endRear = new THREE.Vector3(x1, rising ? -chordHalfHeight : chordHalfHeight, chordHalfDepth);
+    addStrutBetweenPoints(
+      THREE,
+      armCore,
+      startFront,
+      endFront,
+      profile.chopstickBraceThicknessKm,
+      material,
+    );
+    addStrutBetweenPoints(
+      THREE,
+      armCore,
+      startRear,
+      endRear,
+      profile.chopstickBraceThicknessKm,
+      material,
+    );
+  }
+
+  const tipGroup = new THREE.Group();
+  tipGroup.position.x = -profile.chopstickArmMaxLengthKm;
+  armCore.add(tipGroup);
+
+  const forkUpper = new THREE.Mesh(
     new THREE.BoxGeometry(
-      profile.chopstickBraceThicknessKm,
-      profile.chopstickBraceThicknessKm,
-      profile.chopstickArmDepthKm * 0.72,
+      profile.chopstickForkLengthKm,
+      profile.chopstickArmThicknessKm * 1.05,
+      profile.chopstickRailDepthKm * 1.45,
     ),
     material,
   );
-  group.add(upperBrace);
+  forkUpper.position.set(
+    -0.5 * profile.chopstickForkLengthKm,
+    profile.chopstickForkSpreadKm,
+    0,
+  );
+  tipGroup.add(forkUpper);
 
-  const lowerBrace = upperBrace.clone();
-  group.add(lowerBrace);
+  const forkLower = forkUpper.clone();
+  forkLower.position.y = -profile.chopstickForkSpreadKm;
+  tipGroup.add(forkLower);
+
+  const forkCap = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.chopstickChordThicknessKm * 2.4,
+      profile.chopstickForkSpreadKm * 2.55,
+      profile.chopstickBoxDepthKm,
+    ),
+    material,
+  );
+  tipGroup.add(forkCap);
+
+  const actuatorOuter = createAdjustableCylinder(
+    THREE,
+    profile.chopstickActuatorRadiusKm,
+    material,
+    10,
+  );
+  group.add(actuatorOuter);
+
+  const actuatorRod = createAdjustableCylinder(
+    THREE,
+    profile.chopstickActuatorRadiusKm * 0.55,
+    material,
+    10,
+  );
+  group.add(actuatorRod);
 
   return {
     group,
     hinge,
-    mainBeam,
+    armCore,
+    tipGroup,
     forkUpper,
     forkLower,
-    upperBrace,
-    lowerBrace,
+    actuatorOuter,
+    actuatorRod,
   };
 }
 
 function updateChopstickArmAssembly(assembly, profile, armLength) {
   if (!assembly) return;
-  setAnchoredBeamLength(assembly.mainBeam, armLength);
-  const forkLength = profile.chopstickForkLengthKm;
-  const tipX = -Math.max(armLength, 1e-9);
-  setAnchoredBeamLength(assembly.forkUpper, forkLength);
-  setAnchoredBeamLength(assembly.forkLower, forkLength);
-  assembly.forkUpper.position.set(
-    tipX,
-    profile.chopstickForkSpreadKm,
+  const extensionRatio = Math.max(
+    profile.chopstickArmMinLengthKm / Math.max(profile.chopstickArmMaxLengthKm, 1e-9),
+    Math.min(1, armLength / Math.max(profile.chopstickArmMaxLengthKm, 1e-9)),
+  );
+  assembly.armCore.scale.x = extensionRatio;
+
+  const actuatorBase = new THREE.Vector3(
+    profile.chopstickPivotRadiusKm * 1.8,
+    -profile.chopstickBoxHeightKm * 0.44,
     0,
   );
-  assembly.forkLower.position.set(
-    tipX,
-    -profile.chopstickForkSpreadKm,
+  const actuatorMid = new THREE.Vector3(
+    -Math.max(armLength * 0.36, profile.chopstickPivotRadiusKm * 6),
+    -profile.chopstickBoxHeightKm * 0.1,
     0,
   );
-  const braceX = -Math.max(armLength * 0.62, profile.chopstickPivotRadiusKm * 4);
-  assembly.upperBrace.position.set(
-    braceX,
-    profile.chopstickForkSpreadKm * 0.62,
+  const actuatorTip = new THREE.Vector3(
+    -Math.max(armLength * 0.52, profile.chopstickPivotRadiusKm * 8),
     0,
-  );
-  assembly.upperBrace.rotation.z = -0.62;
-  assembly.lowerBrace.position.set(
-    braceX,
-    -profile.chopstickForkSpreadKm * 0.62,
     0,
   );
   assembly.lowerBrace.rotation.z = 0.62;
@@ -513,11 +653,22 @@ export function resolveLaunchStructureArmTarget(input = {}) {
   return 0.72;
 }
 
-function resolveQuickDisconnectTarget(input = {}) {
+export function resolveQuickDisconnectTarget(input = {}) {
   const stackPresent = Boolean(input.stackPresent);
   const launchPhase = String(input.launchPhase || "").trim().toLowerCase();
+  const guidanceMode = String(input.guidanceMode || "").trim().toLowerCase();
+  const elapsedSeconds = Number(input.elapsedSeconds);
   const altitudeKm = Number(input.altitudeKm);
   const lowAltitude = Number.isFinite(altitudeKm) && altitudeKm < 0.35;
+  const launchCommitActive = launchPhase === "powered"
+    && (
+      guidanceMode.includes("pad-release")
+      || guidanceMode.includes("tower-clear")
+      || (Number.isFinite(elapsedSeconds) && elapsedSeconds >= 0.15)
+    );
+  if (launchCommitActive) {
+    return 1.0;
+  }
   if (stackPresent || launchPhase === "idle" || (launchPhase === "powered" && lowAltitude)) {
     return 0.1;
   }
@@ -532,7 +683,10 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   const radius = STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5 * ds;
   const profile = Object.fromEntries(
     Object.entries(LAUNCH_STRUCTURE_PROFILE_KM).map(([key, value]) => (
-      key === "mountLegCount" || key === "towerCrossLevelCount" || key === "armRatePerSec"
+      key === "mountLegCount"
+        || key === "towerCrossLevelCount"
+        || key === "armRatePerSec"
+        || key === "chopstickTrussPanelCount"
         ? [key, value]
         : [key, value * ds]
     )),
@@ -760,6 +914,24 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     0,
   );
   towerGroup.add(serviceSpine);
+
+  const towerRailX = -0.5 * profile.towerWidthKm + (0.75 * profile.towerRailWidthKm);
+  for (const zSign of [-1, 1]) {
+    const towerRail = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.towerRailWidthKm,
+        profile.towerHeightKm * 0.96,
+        profile.towerRailDepthKm,
+      ),
+      carriageSteel,
+    );
+    towerRail.position.set(
+      towerRailX,
+      0,
+      zSign * (0.32 * profile.carriageDepthKm),
+    );
+    towerGroup.add(towerRail);
+  }
   createTowerLattice(THREE, towerGroup, profile, darkSteel, towerSteel);
 
   const towerTopCap = new THREE.Mesh(
@@ -841,6 +1013,34 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   );
   carriageGroup.add(carriageBackplate);
 
+  for (const zSign of [-1, 1]) {
+    const sidePlate = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.carriageWidthKm * 0.85,
+        profile.carriageHeightKm * 0.86,
+        profile.carriageSidePlateThicknessKm,
+      ),
+      darkSteel,
+    );
+    sidePlate.position.set(
+      0.04 * profile.carriageWidthKm,
+      0,
+      zSign * (0.5 * profile.carriageDepthKm),
+    );
+    carriageGroup.add(sidePlate);
+  }
+
+  const carriageCap = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.carriageWidthKm * 0.92,
+      profile.carriageCapThicknessKm,
+      profile.carriageDepthKm * 1.02,
+    ),
+    carriageSteel,
+  );
+  carriageCap.position.set(0, 0.5 * profile.carriageHeightKm, 0);
+  carriageGroup.add(carriageCap);
+
   const carriageRails = [
     [0, 0.5 * profile.carriageHeightKm, -0.5 * profile.carriageDepthKm],
     [0, -0.5 * profile.carriageHeightKm, -0.5 * profile.carriageDepthKm],
@@ -892,10 +1092,52 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   const chopstickAssemblies = [];
   for (const zOffset of armZOffsets) {
     const assembly = createChopstickArmAssembly(THREE, profile, carriageSteel);
-    assembly.group.position.set(chopstickPivotX, profile.chopstickCatchHeightKm, zOffset);
-    structureGroup.add(assembly.group);
+    assembly.group.position.set(chopstickPivotX - towerGroup.position.x, 0, zOffset);
+    carriageGroup.add(assembly.group);
     chopstickAssemblies.push(assembly);
   }
+
+  const topPulley = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      profile.towerPulleyRadiusKm,
+      profile.towerPulleyRadiusKm,
+      profile.towerPulleyThicknessKm,
+      16,
+    ),
+    carriageSteel,
+  );
+  topPulley.rotation.x = Math.PI * 0.5;
+  topPulley.position.set(
+    towerRailX,
+    (0.5 * profile.towerHeightKm) - (profile.towerPulleyRadiusKm * 1.8),
+    0,
+  );
+  towerGroup.add(topPulley);
+
+  const winchDrum = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      profile.towerWinchRadiusKm,
+      profile.towerWinchRadiusKm,
+      profile.towerWinchThicknessKm,
+      16,
+    ),
+    darkSteel,
+  );
+  winchDrum.rotation.x = Math.PI * 0.5;
+  winchDrum.position.set(
+    (0.5 * profile.towerWidthKm) + (0.5 * profile.towerServiceSpineWidthKm),
+    -0.5 * profile.towerHeightKm + profile.towerBaseHeightKm + (profile.towerWinchRadiusKm * 1.6),
+    0,
+  );
+  towerGroup.add(winchDrum);
+
+  const carriageCable = createAdjustableCylinder(
+    THREE,
+    profile.towerCableRadiusKm,
+    carriageSteel,
+    8,
+  );
+  towerGroup.add(carriageCable);
 
   const qdSupport = new THREE.Mesh(
     new THREE.BoxGeometry(
@@ -977,6 +1219,10 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
       quickDisconnectOpen: 0.1,
       profile,
       chopstickAssemblies,
+      carriageGroup,
+      towerGroup,
+      carriageCable,
+      topPulley,
       quickDisconnectBeam,
       quickDisconnectHead,
       quickDisconnectUmbilical,
@@ -1047,6 +1293,14 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   for (const assembly of state.chopstickAssemblies) {
     updateChopstickArmAssembly(assembly, state.profile, armLength);
   }
+
+  const cableStart = new THREE.Vector3().copy(state.topPulley.position);
+  const cableEnd = new THREE.Vector3(
+    state.topPulley.position.x,
+    state.carriageGroup.position.y + (0.5 * state.profile.carriageHeightKm),
+    0,
+  );
+  setCylinderBetweenPoints(state.carriageCable, cableStart, cableEnd);
 
   const qdLength = (
     state.profile.quickDisconnectBoomMinLengthKm
