@@ -33,8 +33,8 @@ export const LAUNCH_REALISM_CONFIG = Object.freeze({
       powerOnBaseDragFactor: 0.028,
       stabilityGain: 1.45,
       qAlphaTargetPaRad: 1_350,
-      qAlphaThrottleFloor: 0.44,
-      qAlphaThrottleGain: 1.05,
+      qAlphaThrottleFloor: 0.62,
+      qAlphaThrottleGain: 0.55,
     }),
     stage2: Object.freeze({
       mach: Object.freeze([0, 0.8, 1.0, 1.2, 2.0, 5.0, 10.0]),

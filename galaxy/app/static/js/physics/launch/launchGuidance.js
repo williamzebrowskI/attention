@@ -506,7 +506,6 @@ export function computeAutopilotCommand({
   const config = LAUNCH_AUTOPILOT_CONFIG;
   const targetAltitudeKm = Number(runtime?.targetOrbitAltitudeKm) || config.targetOrbitAltitudeKm;
   const targetAltitudeSafe = Math.max(targetAltitudeKm, 1);
-  const lowOrbitMissionStage1 = Number(runtime?.stageIndex) === 0 && targetAltitudeSafe <= 350;
   const ascentTargetAltitudeSafe = Number(runtime?.stageIndex) === 0
     ? Math.max(targetAltitudeSafe, 500)
     : targetAltitudeSafe;
@@ -887,25 +886,6 @@ export function computeAutopilotCommand({
       });
       direction = towerClearAoALimited.direction;
     }
-  }
-
-  if (lowOrbitMissionStage1 && Number(orbital.altitudeKm) >= 16 && Number(orbital.altitudeKm) < 80) {
-    const lowOrbitApoRaiseBias = clamp(
-      0.34
-        - ((Math.max(0, Number(orbital.altitudeKm) || 0) / 80) * 0.14)
-        + Math.min(0.08, Math.max(0, -radialSpeedKmS) * 4),
-      0.2,
-      0.4,
-    );
-    const lowOrbitApoRaiseDirection = normalize(
-      add(scale(tangent, 1), scale(up, lowOrbitApoRaiseBias)),
-      tangent,
-    );
-    direction = normalize(
-      mixVectors(direction, lowOrbitApoRaiseDirection, 0.72),
-      lowOrbitApoRaiseDirection,
-    );
-    mode = "autopilot-apoapsis-raise";
   }
 
   if (lowOrbitLaunchProfileActive && Number(orbital.altitudeKm) < 65) {
