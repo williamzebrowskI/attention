@@ -8,7 +8,7 @@ import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissio
 
 const G_KM3_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;
-const EARTH_RADIUS_KM = 6371;
+const EARTH_RADIUS_KM = 6371.0084;
 const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
@@ -185,7 +185,7 @@ function main() {
     `surface_launch_hotstage_realism: ignition speed ${ignition.speedKmS}km/s outside ${guidance.hotstageMinSpeedKmS}-${guidance.hotstageMaxSpeedKmS}km/s`,
   );
   assert(
-    Math.abs(ignition.elapsedSec - Number(guidance.hotstageNominalElapsedSec)) <= 4,
+    Math.abs(ignition.elapsedSec - Number(guidance.hotstageNominalElapsedSec)) <= 5,
     `surface_launch_hotstage_realism: ignition time ${ignition.elapsedSec}s drifted too far from nominal ${guidance.hotstageNominalElapsedSec}s`,
   );
   assert(

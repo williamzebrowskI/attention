@@ -8,7 +8,7 @@ import {
 
 const G_KM3_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;
-const EARTH_RADIUS_KM = 6371;
+const EARTH_RADIUS_KM = 6371.0084;
 const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const SUN_MASS_KG = 1.9885e30;

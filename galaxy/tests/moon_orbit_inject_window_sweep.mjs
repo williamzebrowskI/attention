@@ -3,7 +3,7 @@ import { solveBestMoonOrbitInjectWindow } from "../app/static/js/physics/navigat
 const G_KM3_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;
 const MOON_MASS_KG = 7.342e22;
-const EARTH_RADIUS_KM = 6371;
+const EARTH_RADIUS_KM = 6371.0084;
 const MOON_ORBIT_RADIUS_KM = 384400;
 const MOON_ORBIT_SPEED_KM_S = 1.022;
 

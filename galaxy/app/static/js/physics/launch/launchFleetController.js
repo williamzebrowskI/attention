@@ -84,7 +84,7 @@ import {
   resolveMoonCoastTrimBurn,
   computeMoonAimTelemetry,
   resolveMoonMissionAttitudeDirection,
-} from "./lunar/moonAttitudePolicy.js";
+} from "./lunar/moonAttitudePolicy.js?v=20260418a";
 import { NAVIGATION_DEFAULTS } from "../navigation_system/navigationSystemConfig.js";
 import {
   NAVIGATION_MISSION_IDS,
@@ -1313,7 +1313,7 @@ export function createLaunchFleetController({
         flightsById.set(id, flight);
       }
     }
-    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084);
     const earthVelocity = earthState.velocity || { x: 0, y: 0, z: 0 };
     const shipVelocity = shipState.velocity || { x: 0, y: 0, z: 0 };
     const shipRelPosEarth = subtract(shipState.position, earthState.position);
@@ -1477,7 +1477,7 @@ export function createLaunchFleetController({
     sequenceNumber = 1,
     nowMs = Date.now(),
   }) {
-    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084);
     const axes = typeof earthAxes === "function"
       ? (earthAxes(nowMs) || { xAxis: { x: 1, y: 0, z: 0 }, yAxis: { x: 0, y: 1, z: 0 }, pole: { x: 0, y: 0, z: 1 } })
       : { xAxis: { x: 1, y: 0, z: 0 }, yAxis: { x: 0, y: 1, z: 0 }, pole: { x: 0, y: 0, z: 1 } };
@@ -1521,7 +1521,7 @@ export function createLaunchFleetController({
     apoapsisAltitudeKm = Number.NaN,
     spawnAtPeriapsis = false,
   }) {
-    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084);
     const muKm3S2 = Number(gravitationalConstantKm3PerKgS2) * (Number(getEarthMassKg?.()) || 0);
     if (!(muKm3S2 > 0)) {
       return null;
@@ -1718,7 +1718,7 @@ export function createLaunchFleetController({
           moonState,
           inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
           orbitAltitudeKm: orbitInjectAltitudeKm,
-          earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+          earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
           earthMuKm3S2,
           engineAccelAtThrottle1KmS2: moonDepartureSolverEngineAccelAtThrottle1KmS2,
           spacecraftMassKg: moonDepartureSolverStageMassKg,
@@ -2294,7 +2294,7 @@ export function createLaunchFleetController({
       ? (earthAxes(nowMs) || { pole: { x: 0, y: 0, z: 1 } })
       : { pole: { x: 0, y: 0, z: 1 } };
     const earthPole = currentEarthAxes?.pole || { x: 0, y: 0, z: 1 };
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const earthMuKm3S2 = Number(gravitationalConstantKm3PerKgS2)
       * (Number(getEarthMassKg?.()) || Number(earthState.massKg) || 0);
     const moonState = bodyStateFromNBody(state, "moon");
@@ -2414,6 +2414,7 @@ export function createLaunchFleetController({
           || (Number(vehicle.lastStep?.thrustN) || 0) > 1
         ),
       };
+      const nowSec = Math.max(0, Number(vehicle.elapsedSeconds) || 0);
       let desiredDirection = prograde;
       let requestedThrottle = 0;
       let guidanceMode = "autopilot-orbital-hold";
@@ -3465,7 +3466,7 @@ export function createLaunchFleetController({
           rocketState: shipState,
           earthState,
           earthAxes: contactAxes,
-          earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+          earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
           earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
           referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
           dtSeconds: safeDtSeconds,
@@ -3478,7 +3479,7 @@ export function createLaunchFleetController({
         shipState.velocity || { x: 0, y: 0, z: 0 },
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
-      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
       const earthMuKm3S2 = Number(gravitationalConstantKm3PerKgS2)
         * (Number(getEarthMassKg?.()) || Number(earthState.massKg) || 0);
       const earthOrbit = earthMuKm3S2 > 0
@@ -3798,7 +3799,7 @@ export function createLaunchFleetController({
       };
     }
 
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const muKm3S2 = Number(gravitationalConstantKm3PerKgS2) * (Number(getEarthMassKg?.()) || 0);
     const relPos = subtract(shipState.position, earthState.position);
     const relVel = subtract(

@@ -85,7 +85,7 @@ export function updateMoonDepartureWindowClock({
     shipPositionKm,
     inclinationDeg: Number(launchLatitudeDeg) || 28.5,
     orbitAltitudeKm: PRIMARY_MOON_WINDOW_REFERENCE_ORBIT_ALTITUDE_KM,
-    earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+    earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
     earthMuKm3S2,
     padAngularRateRadS: Number(padAngularRateRadS),
   };

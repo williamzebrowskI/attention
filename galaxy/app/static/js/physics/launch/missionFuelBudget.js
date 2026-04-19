@@ -121,7 +121,7 @@ export function estimateMoonRoundTripFuelBudget({
   shipState = null,
   earthState = null,
   moonState = null,
-  earthRadiusKm = 6371,
+  earthRadiusKm = 6371.0084,
   moonRadiusKm = 1737.4,
   earthMuKm3S2 = 398600.4418,
   moonMuKm3S2 = 4902.800066,
@@ -148,12 +148,12 @@ export function estimateMoonRoundTripFuelBudget({
     shipState.velocity || { x: 0, y: 0, z: 0 },
     moonState.velocity || { x: 0, y: 0, z: 0 },
   );
-  const shipEarthRadiusKm = Math.max(safePositive(earthRadiusKm, 6371) + 80, length(shipEarthRel));
+  const shipEarthRadiusKm = Math.max(safePositive(earthRadiusKm, 6371.0084) + 80, length(shipEarthRel));
   const moonEarthRadiusKm = Math.max(shipEarthRadiusKm + 1, length(moonEarthRel));
   const shipMoonDistanceKm = Math.max(0, length(shipMoonRel));
   const shipMoonRelSpeedKmS = Math.max(0, length(shipMoonRelVel));
 
-  const earthCaptureOrbitRadiusKm = Math.max(safePositive(earthRadiusKm, 6371) + 180, shipEarthRadiusKm * 0.25);
+  const earthCaptureOrbitRadiusKm = Math.max(safePositive(earthRadiusKm, 6371.0084) + 180, shipEarthRadiusKm * 0.25);
   const moonParkingOrbitRadiusKm = Math.max(safePositive(moonRadiusKm, 1737.4) + 110, 1800);
   const lunarCircularSpeedKmS = Math.sqrt(
     safePositive(moonMuKm3S2, 4902.800066) / moonParkingOrbitRadiusKm,
@@ -205,7 +205,7 @@ export function estimateOrbitalRefuelDemoFuelBudget({
   missionPhase = "",
   shipState = null,
   earthState = null,
-  earthRadiusKm = 6371,
+  earthRadiusKm = 6371.0084,
   stageIspVacuumS = 380,
   stagePropellantKg = 0,
   target = null,
@@ -216,7 +216,7 @@ export function estimateOrbitalRefuelDemoFuelBudget({
 
   const phase = String(missionPhase || "").trim().toLowerCase();
   const shipEarthRel = subtract(shipState.position, earthState.position);
-  const shipAltitudeKm = Math.max(0, length(shipEarthRel) - safePositive(earthRadiusKm, 6371));
+  const shipAltitudeKm = Math.max(0, length(shipEarthRel) - safePositive(earthRadiusKm, 6371.0084));
   const targetDistanceKmRaw = Number(target?.distanceKm);
   const targetDistanceKnown = Number.isFinite(targetDistanceKmRaw);
   const targetDistanceKm = targetDistanceKnown ? Math.max(0, targetDistanceKmRaw) : Number.NaN;

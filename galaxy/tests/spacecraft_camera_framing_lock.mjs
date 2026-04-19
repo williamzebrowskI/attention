@@ -65,7 +65,7 @@ function main() {
 
   const earthScene = { x: 0, y: 0, z: 0 };
   const padTargetScene = {
-    x: (6371 * distanceScale),
+    x: (6371.0084 * distanceScale),
     y: 0,
     z: 0,
   };
@@ -87,7 +87,7 @@ function main() {
   );
 
   const orbitTargetScene = {
-    x: ((6371 + 500) * distanceScale),
+    x: ((6371.0084 + 500) * distanceScale),
     y: 0,
     z: 0,
   };

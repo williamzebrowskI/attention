@@ -16,7 +16,7 @@ function testSafeTliDepartureDoesNotTriggerLowEarthGuard() {
     previousApplied: false,
     toMoonVectorKm: { x: 390000, y: 12000, z: 8000 },
     earthDistanceKm: 6556,
-    earthRadiusKm: 6371,
+    earthRadiusKm: 6371.0084,
     periapsisKm: 184.4,
   });
   assert(result, "safe_tli: missing result");
@@ -33,7 +33,7 @@ function testLowEarthInwardBurnStillTriggersGuard() {
     previousApplied: false,
     toMoonVectorKm: { x: 1000, y: 390000, z: 2000 },
     earthDistanceKm: 6485,
-    earthRadiusKm: 6371,
+    earthRadiusKm: 6371.0084,
     periapsisKm: 128,
   });
   assert(result, "low_earth_guard: missing result");

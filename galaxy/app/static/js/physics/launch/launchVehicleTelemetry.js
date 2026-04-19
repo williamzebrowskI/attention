@@ -165,7 +165,7 @@ export function buildVehicleStatusSnapshot({
     };
   }
 
-  const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+  const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
   const mu = Number(gravitationalConstantKm3PerKgS2) * (Number(getEarthMassKg?.()) || 0);
   const relPos = subtract(bodyState.position, earthState.position);
   const relVel = subtract(

@@ -74,7 +74,7 @@ export function tankerRcsJetsFromCommand({
 export function tankerOrbitHoldCommand({
   tankerState,
   earthState,
-  earthRadiusKm = 6371,
+  earthRadiusKm = 6371.0084,
   earthMuKm3S2 = 0,
   config = REFUEL_TANKER_CONFIG,
 } = {}) {
@@ -101,7 +101,7 @@ export function tankerOrbitHoldCommand({
   const radialSpeedKmS = vectorDot(relVel, localUp);
   const tangentialVelocityKmS = subtract(relVel, scale(localUp, radialSpeedKmS));
   const tangentialSpeedKmS = vectorMagnitude(tangentialVelocityKmS);
-  const altitudeKm = Math.max(0, radiusKm - Math.max(1, Number(earthRadiusKm) || 6371));
+  const altitudeKm = Math.max(0, radiusKm - Math.max(1, Number(earthRadiusKm) || 6371.0084));
   const altitudeMinKm = Math.max(80, Number(config?.orbitHoldAltitudeMinKm) || 150);
   const altitudeMaxKm = Math.max(altitudeMinKm + 1, Number(config?.orbitHoldAltitudeMaxKm) || 160);
   const targetAltitudeKm = clamp(
@@ -112,7 +112,7 @@ export function tankerOrbitHoldCommand({
   const responseSec = Math.max(20, Number(config?.orbitHoldResponseSec) || 120);
   const maxAccelKmS2 = Math.max(0.00002, Number(config?.orbitHoldMaxAccelKmS2) || 0.00014);
   const maxRadialSpeedKmS = Math.max(0.0004, Number(config?.orbitHoldMaxRadialSpeedKmS) || 0.018);
-  const targetRadiusKm = Math.max(1, (Number(earthRadiusKm) || 6371) + targetAltitudeKm);
+  const targetRadiusKm = Math.max(1, (Number(earthRadiusKm) || 6371.0084) + targetAltitudeKm);
   const circularSpeedKmS = earthMuKm3S2 > 0
     ? Math.sqrt(earthMuKm3S2 / targetRadiusKm)
     : tangentialSpeedKmS;
@@ -150,8 +150,8 @@ export function tankerOrbitHoldCommand({
       if (semiMajorKm > 1) {
         const periRadiusKm = semiMajorKm * Math.max(0, 1 - eccentricity);
         const apoRadiusKm = semiMajorKm * (1 + eccentricity);
-        estimatedPeriapsisKm = Math.max(0, periRadiusKm - (Number(earthRadiusKm) || 6371));
-        estimatedApoapsisKm = Math.max(0, apoRadiusKm - (Number(earthRadiusKm) || 6371));
+        estimatedPeriapsisKm = Math.max(0, periRadiusKm - (Number(earthRadiusKm) || 6371.0084));
+        estimatedApoapsisKm = Math.max(0, apoRadiusKm - (Number(earthRadiusKm) || 6371.0084));
       }
     }
   }

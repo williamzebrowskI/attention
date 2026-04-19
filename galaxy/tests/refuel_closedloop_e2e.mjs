@@ -5,7 +5,7 @@ import {
 import { REFUEL_TANKER_CONFIG } from "../app/static/js/physics/launch/refuel/config.js";
 
 const MU_EARTH_KM3_S2 = 398600.4418;
-const EARTH_RADIUS_KM = 6371;
+const EARTH_RADIUS_KM = 6371.0084;
 const MAIN_ENGINE_MAX_ACCEL_KM_S2 = 0.0022;
 const RCS_ACCEL_KM_S2 = 0.00003;
 const PHASE = Object.freeze({

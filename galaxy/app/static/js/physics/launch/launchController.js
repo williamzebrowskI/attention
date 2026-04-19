@@ -28,7 +28,7 @@ import {
 import {
   applyEarthSurfaceContactForVehicle,
   sampleEarthSurfaceAtRelativePosition,
-  terrainHeightKmAtLatLon,
+  surfacePointRelativeKmAtLatLon,
 } from "../surface/earthSurfacePhysics.js";
 import {
   add,
@@ -98,7 +98,7 @@ import {
   buildVehicleStatusSnapshot,
   tankerMetaForId,
 } from "./launchVehicleTelemetry.js";
-import { createLaunchFleetController } from "./launchFleetController.js";
+import { createLaunchFleetController } from "./launchFleetController.js?v=20260418a";
 import {
   createNavigationSystem,
   DEFAULT_MOON_MISSION_PROFILE,
@@ -128,7 +128,7 @@ import { evaluateMoonBurnAttitudeGate } from "./lunar/moonBurnAttitudeGate.js";
 import {
   resolveMoonCoastTrimBurn,
   resolveMoonMissionAttitudeDirection,
-} from "./lunar/moonAttitudePolicy.js";
+} from "./lunar/moonAttitudePolicy.js?v=20260418a";
 import {
   canUseMoonDepartureSolveWorker,
   requestMoonDepartureSolvePromise,
@@ -314,22 +314,26 @@ function computePadState({
   if (!earthState?.position) {
     return null;
   }
-  const up = bodyDirectionFromLatLon(
+  const surfaceState = surfacePointRelativeKmAtLatLon(
+    LAUNCH_SITE.latitudeDeg,
+    LAUNCH_SITE.longitudeDeg,
     earthAxes,
-    LAUNCH_SITE.latitudeDeg,
-    LAUNCH_SITE.longitudeDeg,
+    { includeTerrain: false },
   );
-  const terrainElevationKm = terrainHeightKmAtLatLon(
-    LAUNCH_SITE.latitudeDeg,
-    LAUNCH_SITE.longitudeDeg,
+  if (!surfaceState?.pointRelativeKm || !surfaceState?.surfaceNormal) {
+    return null;
+  }
+  const lodSec = Number(earthAxes?.earthOrientation?.lodSec);
+  const angularRateRadS = EARTH_SIDEREAL_ANGULAR_RATE_RAD_S
+    * (1 - ((Number.isFinite(lodSec) ? lodSec : 0) / 86400));
+  const relPositionKm = add(
+    surfaceState.pointRelativeKm,
+    scale(
+      surfaceState.surfaceNormal,
+      LAUNCH_SITE.altitudeKm + Math.max(0, Number(referenceOffsetKm) || 0),
+    ),
   );
-  const launchRadiusKm =
-    earthRadiusKm
-    + terrainElevationKm
-    + LAUNCH_SITE.altitudeKm
-    + Math.max(0, Number(referenceOffsetKm) || 0);
-  const relPositionKm = scale(up, launchRadiusKm);
-  const angularVelocity = scale(earthAxes.pole, EARTH_SIDEREAL_ANGULAR_RATE_RAD_S);
+  const angularVelocity = scale(earthAxes.pole, angularRateRadS);
   const localRotationalVelocityKmS = cross(angularVelocity, relPositionKm);
   return {
     position: add(earthState.position, relPositionKm),
@@ -685,6 +689,9 @@ function telemetryFromState({
   const vehicleAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
     ? centerAltitudeAboveTerrainKm - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM
     : null;
+  const reportedAltitudeKm = Number.isFinite(vehicleAltitudeAboveTerrainKm) && Number(orbital.altitudeKm) < 25
+    ? Math.max(0, vehicleAltitudeAboveTerrainKm)
+    : orbital.altitudeKm;
   const refuelTargetPropellantKg = resolveRefuelTargetKg(
     runtime.refuel,
     stage2PropellantCapacityKg(runtime?.mission?.selectedId),
@@ -699,7 +706,7 @@ function telemetryFromState({
     stageIndex: runtime.stageIndex,
     stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
     massKg: rocketState.massKg,
-    altitudeKm: orbital.altitudeKm,
+    altitudeKm: reportedAltitudeKm,
     speedKmS: orbital.speedKmS,
     radialSpeedKmS: orbital.radialSpeedKmS,
     tangentialSpeedKmS: orbital.tangentialSpeedKmS,
@@ -810,6 +817,9 @@ function boosterTelemetryFromState({
   const boosterAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
     ? centerAltitudeAboveTerrainKm - BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM
     : null;
+  const reportedAltitudeKm = Number.isFinite(boosterAltitudeAboveTerrainKm) && Number(orbital.altitudeKm) < 25
+    ? Math.max(0, boosterAltitudeAboveTerrainKm)
+    : orbital.altitudeKm;
   return {
     phase: runtime.booster.phase,
     guidanceMode: runtime.booster.guidanceMode,
@@ -819,7 +829,7 @@ function boosterTelemetryFromState({
     fuelFraction: runtime.booster.initialPropellantKg > 1e-6
       ? clamp(runtime.booster.propellantKg / runtime.booster.initialPropellantKg, 0, 1)
       : null,
-    altitudeKm: orbital.altitudeKm,
+    altitudeKm: reportedAltitudeKm,
     speedKmS: orbital.speedKmS,
     radialSpeedKmS: orbital.radialSpeedKmS,
     tangentialSpeedKmS: orbital.tangentialSpeedKmS,
@@ -1765,7 +1775,7 @@ export function createLaunchController(options) {
       previousApplied: Boolean(runtime.moonEarthGuardActive),
       toMoonVectorKm,
       earthDistanceKm,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       periapsisKm: Number(orbital?.periapsisKm),
     });
     runtime.moonEarthGuardActive = constrainedCommand.applied;
@@ -2231,7 +2241,7 @@ export function createLaunchController(options) {
         flightsById.set(id, flight);
       }
     }
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const earthMassKg = Number(getEarthMassKg?.()) || Number(earthState.massKg) || 0;
     const muKm3S2 = Number(gravitationalConstantKm3PerKgS2) * earthMassKg;
     for (const [bodyId, tankerState] of state.dynamicBodies.entries()) {
@@ -2363,7 +2373,7 @@ export function createLaunchController(options) {
       moonState,
       inclinationDeg: Number(LAUNCH_SITE.latitudeDeg) || 28.5,
       orbitAltitudeKm,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthMuKm3S2,
       engineAccelAtThrottle1KmS2,
       spacecraftMassKg,
@@ -3002,6 +3012,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       relativePosition,
       earthFrameAxes,
       earthRadiusKm,
+      { includeTerrain: false },
     );
     runtime.lastSurfaceSample = sample || null;
     return runtime.lastSurfaceSample;
@@ -3125,7 +3136,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     };
     const pad = computePadState({
       earthState,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthAxes: earthAxes(timestampMs),
     });
     if (!pad) {
@@ -3155,7 +3166,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
     const pad = computePadState({
       earthState,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthAxes: earthAxes(nowMs),
     });
     if (!pad) {
@@ -3188,7 +3199,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     ) {
       return false;
     }
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const currentEarthAxes = earthAxes(nowMs);
     const pad = computePadState({
       earthState,
@@ -3294,7 +3305,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const currentEarthAxes = earthAxes(nowMs);
     const pad = computePadState({
       earthState,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthAxes: currentEarthAxes,
     });
     if (!pad) {
@@ -3310,7 +3321,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rocketState,
       earthState,
       earthAxes: currentEarthAxes,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
       referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
       dtSeconds: 0,
@@ -3326,7 +3337,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rocketState,
       earthState,
       currentEarthAxes,
-      Number(getEarthRadiusKm?.()) || 6371,
+      Number(getEarthRadiusKm?.()) || 6371.0084,
     );
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(currentEarthAxes);
     runtime.phase = "idle";
@@ -3346,7 +3357,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
       earthMassKg: Number(getEarthMassKg?.()) || 0,
-      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371,
+      earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthState,
       rocketState,
       atmosphereSample,
@@ -3560,7 +3571,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       return;
     }
 
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const currentEarthAxes = earthAxes(nowMs);
     const relPos = subtract(boosterState.position, earthState.position);
     const relVel = subtract(
@@ -3854,7 +3865,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       runtime.booster.propellantKg = Math.max(0, runtime.booster.propellantKg - totalBurnKg);
     }
 
-    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+    const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const currentEarthAxes = earthAxes(nowMs);
     const contact = applyEarthSurfaceContactForVehicle({
       rocketState: boosterState,
@@ -4009,13 +4020,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         return;
       }
 
-      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
       const currentEarthAxes = earthAxes(nowMs);
       const relPos = subtract(rocketState.position, earthState.position);
       const relVel = subtract(
         rocketState.velocity || { x: 0, y: 0, z: 0 },
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
+      const moonState = bodyStateFromNBody(state, "moon");
+      const toMoonVectorKm = finiteVector(moonState?.position)
+        ? subtract(moonState.position, rocketState.position)
+        : null;
       updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
       const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
       const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
@@ -4600,7 +4615,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
-      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371;
+      const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
       const currentEarthAxes = earthAxes(nowMs);
       const moonRefuelRecoveryEligible =
         runtime.stageIndex > 1

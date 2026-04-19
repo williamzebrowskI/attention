@@ -1,6 +1,7 @@
 import { sampleUpperAtmosphereNRLMSISEApprox } from "./upperAtmosphereModel.js";
+import { sampleEarthSurfaceAtRelativePosition } from "../surface/earthSurfacePhysics.js";
 
-const EARTH_MEAN_RADIUS_KM = 6_371.0;
+const EARTH_MEAN_RADIUS_KM = 6_371.0084;
 const EARTH_GEOPOTENTIAL_RADIUS_KM = 6_356.766;
 const EARTH_MU_M3_PER_S2 = 3.986004418e14;
 const EARTH_SIDEREAL_ANGULAR_RATE_RAD_PER_SEC = 7.2921150e-5;
@@ -214,12 +215,17 @@ function effectiveDragCoefficient(bodyId, baseDragCoefficient, speedMS, atmosphe
   return clamp((0.35 * baseDragCoefficient) + (0.65 * machModelCd), 0.16, 0.9);
 }
 
-function earthCoRotationVelocityKmS(relativePositionKm, spinAxisEcliptic) {
-  const axis = normalizeOrNull(spinAxisEcliptic) || { x: 0, y: 0, z: 1 };
+function earthAngularRateRadS(earthAxes = null) {
+  const lodSec = Number(earthAxes?.earthOrientation?.lodSec);
+  return EARTH_SIDEREAL_ANGULAR_RATE_RAD_PER_SEC * (1 - ((Number.isFinite(lodSec) ? lodSec : 0) / 86400));
+}
+
+function earthCoRotationVelocityKmS(relativePositionKm, earthAxes = null) {
+  const axis = normalizeOrNull(earthAxes?.pole) || { x: 0, y: 0, z: 1 };
   const omega = {
-    x: axis.x * EARTH_SIDEREAL_ANGULAR_RATE_RAD_PER_SEC,
-    y: axis.y * EARTH_SIDEREAL_ANGULAR_RATE_RAD_PER_SEC,
-    z: axis.z * EARTH_SIDEREAL_ANGULAR_RATE_RAD_PER_SEC,
+    x: axis.x * earthAngularRateRadS(earthAxes),
+    y: axis.y * earthAngularRateRadS(earthAxes),
+    z: axis.z * earthAngularRateRadS(earthAxes),
   };
   return cross(omega, relativePositionKm);
 }
@@ -311,15 +317,20 @@ export function createAtmosphereDynamicsController(options) {
       return { x: 0, y: 0, z: 0 };
     }
 
-    const altitudeKm = relDistanceKm - earthRadiusKm;
-    if (!(altitudeKm >= 0 && altitudeKm <= 1000)) {
-      return { x: 0, y: 0, z: 0 };
-    }
-
     const earthAxes = typeof getEarthFixedAxesEcliptic === "function"
       ? (getEarthFixedAxesEcliptic(nowMs) || null)
       : null;
-    const latLon = earthLatLonFromRelativePosition(relPos, earthAxes);
+    const surfaceSample = sampleEarthSurfaceAtRelativePosition(
+      relPos,
+      earthAxes,
+      earthRadiusKm,
+      { includeTerrain: false },
+    );
+    const altitudeKm = Number(surfaceSample?.altitudeAboveTerrainKm);
+    if (!(altitudeKm >= 0 && altitudeKm <= 1000)) {
+      return { x: 0, y: 0, z: 0 };
+    }
+    const latLon = surfaceSample || earthLatLonFromRelativePosition(relPos, earthAxes);
     const atmosphereSampler = typeof sampleEarthAtmosphere === "function"
       ? sampleEarthAtmosphere
       : earthAtmosphereSampleUS1976;
@@ -344,8 +355,7 @@ export function createAtmosphereDynamicsController(options) {
     }
 
     const earthVelocity = earthState.velocity || { x: 0, y: 0, z: 0 };
-    const spinAxis = getBodySpinAxisEcliptic?.("earth") || { x: 0, y: 0, z: 1 };
-    const atmoCorotationVelocity = earthCoRotationVelocityKmS(relPos, spinAxis);
+    const atmoCorotationVelocity = earthCoRotationVelocityKmS(relPos, earthAxes);
     const relVelocityKmS = {
       x: bodyState.velocity.x - earthVelocity.x - atmoCorotationVelocity.x,
       y: bodyState.velocity.y - earthVelocity.y - atmoCorotationVelocity.y,

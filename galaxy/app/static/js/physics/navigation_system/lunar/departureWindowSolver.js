@@ -18,7 +18,7 @@ import { evaluateMoonDepartureCorridor } from "./moonDepartureCorridor.js";
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
 
 const DEFAULT_MOON_ORBIT_PERIOD_SEC = 27.321661 * 86400;
-const DEFAULT_EARTH_RADIUS_KM = 6371;
+const DEFAULT_EARTH_RADIUS_KM = 6371.0084;
 const DEFAULT_MOON_RADIUS_KM = 1737.4;
 const DEFAULT_EARTH_MASS_KG = 5.97237e24;
 const DEFAULT_MOON_MASS_KG = 7.342e22;

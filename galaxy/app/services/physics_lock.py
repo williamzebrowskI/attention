@@ -9,7 +9,7 @@ from app.services.catalog import BODY_DEFINITIONS, BodyDefinition
 # Fail fast if critical physical constants drift from the locked baseline.
 PHYSICS_LOCK_ENFORCED = True
 LOCKED_CATALOG_BODY_COUNT = 72
-LOCKED_CATALOG_SHA256 = "3661a89e35d02d5109cd1a82b01e594a1ab7ee79b0139aff6fa10f20cb00de70"
+LOCKED_CATALOG_SHA256 = "7a23aebc86161fe97d6afe900fb7f29220d860fe4835d523c129233b52a42da6"
 
 
 class PhysicsLockError(RuntimeError):

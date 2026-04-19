@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.services.launch_site import LaunchSiteService
@@ -24,6 +24,21 @@ from app.services.solar_system import SolarSystemService, create_default_service
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+
+
+def _apply_no_store_cache_headers(response: Response, path: str = "") -> Response:
+    normalizedPath = str(path or "").strip().lower()
+    if normalizedPath.endswith((".html", ".js", ".css")):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
+class DevelopmentStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        return _apply_no_store_cache_headers(response, path)
 
 
 def _load_dotenv_file(dotenv_path: Path) -> None:
@@ -70,12 +85,12 @@ earth_eop_service = EarthEopService(
 )
 client_log_logger = logging.getLogger("uvicorn.error")
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", DevelopmentStaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return _apply_no_store_cache_headers(FileResponse(STATIC_DIR / "index.html"), "index.html")
 
 
 @app.get("/healthz")

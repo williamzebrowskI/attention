@@ -11,7 +11,7 @@ function assert(condition, message) {
 }
 
 const EARTH_MU_KM3_S2 = 398600.4418;
-const EARTH_RADIUS_KM = 6371;
+const EARTH_RADIUS_KM = 6371.0084;
 
 function main() {
   const radiusKm = EARTH_RADIUS_KM + 500;

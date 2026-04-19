@@ -591,7 +591,7 @@ export function createLaunchRefuelController({
           ? Math.max(
             0,
             vectorMagnitude(subtract(eligibility.rocketState.position, eligibility.earthState.position))
-              - (Math.max(1000, Number(getEarthRadiusKm?.()) || 6371)),
+              - (Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084)),
           )
           : null;
         return {
@@ -619,7 +619,7 @@ export function createLaunchRefuelController({
     if (!identity) {
       return { accepted: false, reason: "tanker_id_exhausted" };
     }
-    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084);
     const orbitMinAltitudeKm = Math.max(120, Number(config.orbitHoldAltitudeMinKm) || 150);
     const orbitMaxAltitudeKm = Math.max(
       orbitMinAltitudeKm + 0.1,
@@ -778,7 +778,7 @@ export function createLaunchRefuelController({
       0.02,
       (Number(STARSHIP_STACK_DIMENSIONS_KM.diameterKm) || 0.009) * 2.5,
     );
-    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084);
     const earthMuKm3S2 = Number(gravitationalConstantKm3PerKgS2)
       * (Number(getEarthMassKg?.()) || Number(earthState.massKg) || 0);
     const safeDtSeconds = Math.max(0, Number(dtSeconds) || 0);
@@ -1581,7 +1581,7 @@ export function createLaunchRefuelController({
     }
     const earthState = earthStateFromNBody?.(state);
     const earthVelocity = earthState?.velocity || { x: 0, y: 0, z: 0 };
-    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371);
+    const earthRadiusKm = Math.max(1000, Number(getEarthRadiusKm?.()) || 6371.0084);
     const rocketPrograde = (
       earthState
       && finiteVector?.(earthState.position)
