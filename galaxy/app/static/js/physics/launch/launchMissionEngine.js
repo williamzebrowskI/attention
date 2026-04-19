@@ -30,6 +30,7 @@ const MOON_RETURN_MISSION_CONFIG = Object.freeze({
   parkingOrbitPeriapsisMinKm: MOON_PARKING_ORBIT_PERIAPSIS_KM,
   parkingOrbitApoapsisMinKm: MOON_PARKING_ORBIT_APOAPSIS_KM,
   parkingOrbitToleranceKm: MOON_PARKING_ORBIT_GATE_TOLERANCE_KM,
+  parkingCoastMinDurationSec: 15,
   orbitalRefuelTargetFraction: 0.88,
   orbitalRefuelMinFlights: 2,
   tliTargetApoapsisKm: 382_000,
@@ -109,7 +110,49 @@ function isRefuelFlowMissionId(missionId) {
     || id === LAUNCH_MISSION_IDS.ORBITAL_REFUEL_DEMO;
 }
 
+function normalizeMoonReturnPhase(phase = "") {
+  const key = String(phase || "").trim().toLowerCase();
+  switch (key) {
+    case "launch_to_parking":
+    case "launch":
+      return "launch";
+    case "parking_orbit":
+      return "parking_orbit";
+    case "orbital_refuel":
+    case "departure_window_wait":
+      return "departure_window_wait";
+    case "tli_burn":
+      return "tli_burn";
+    case "coast_to_moon":
+    case "midcourse":
+      return "midcourse";
+    case "lunar_insertion":
+    case "lunar_capture":
+    case "lunar_orbit_insertion":
+      return "lunar_orbit_insertion";
+    case "lunar_orbit_trim":
+      return "lunar_orbit_trim";
+    case "lunar_orbit_hold":
+    case "lunar_loiter":
+      return "lunar_loiter";
+    case "tei_burn":
+      return "tei_burn";
+    case "coast_to_earth":
+    case "earth_approach":
+      return "earth_approach";
+    case "earth_capture":
+      return "earth_capture";
+    case "earth_orbit_hold":
+      return "earth_orbit_hold";
+    default:
+      return key || "launch";
+  }
+}
+
 export function defaultMissionPhaseForProfileId(missionId) {
+  if (missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
+    return "launch";
+  }
   if (isRefuelFlowMissionId(missionId)) {
     return "launch_to_parking";
   }
@@ -301,7 +344,7 @@ function computeMoonOrbitReturnAutopilotCommand({
   getBodyMassKg,
 }) {
   if (runtime.stageIndex < 1) {
-    setMissionPhase(runtime, "launch_to_parking");
+    setMissionPhase(runtime, "launch");
     return null;
   }
   const tangent = missionOrbitTangent(relVel, up, runtime.launchPlaneNormal, earthPole);
@@ -331,24 +374,34 @@ function computeMoonOrbitReturnAutopilotCommand({
     ? dot(relPos, relVel) / earthDistanceKm
     : 0;
 
-  const phase = runtime.mission.phase || "launch_to_parking";
+  const phase = normalizeMoonReturnPhase(runtime.mission.phase || "launch");
   const config = MOON_RETURN_MISSION_CONFIG;
 
-  if (phase === "launch_to_parking") {
+  if (phase === "launch") {
     const parkingReady = moonParkingOrbitReady(orbital, config);
     if (parkingReady) {
-      setMissionPhase(runtime, "orbital_refuel");
+      setMissionPhase(runtime, "parking_orbit");
       return {
         phase: "coast",
         throttle: 0,
         direction: tangent,
-        mode: "mission-moon-orbit-return:orbital-refuel-setup",
+        mode: "mission-moon-orbit-return:parking-orbit-checkout",
       };
     }
     return null;
   }
 
-  if (phase === "orbital_refuel") {
+  if (phase === "parking_orbit") {
+    setMissionPhase(runtime, "departure_window_wait");
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: "mission-moon-orbit-return:departure-window-setup",
+    };
+  }
+
+  if (phase === "departure_window_wait") {
     const targetPropellantKg = Math.max(
       0,
       Number(runtime?.refuel?.targetPropellantKg) || 0,
@@ -361,12 +414,16 @@ function computeMoonOrbitReturnAutopilotCommand({
     );
     const enoughPropellant = targetPropellantKg > 0
       ? stagePropellantKg >= (targetPropellantKg * targetFraction)
-      : false;
+      : true;
     const transferBusy = Boolean(
       runtime?.refuel?.transferActive
       || runtime?.refuel?.undockActive,
     );
-    if (enoughPropellant && !transferBusy) {
+    if (
+      enoughPropellant
+      && !transferBusy
+      && missionElapsedInPhaseSeconds(runtime) >= Math.max(0, Number(config.parkingCoastMinDurationSec) || 0)
+    ) {
       setMissionPhase(runtime, "tli_burn");
       return {
         phase: "coast",
@@ -380,8 +437,8 @@ function computeMoonOrbitReturnAutopilotCommand({
       throttle: 0,
       direction: tangent,
       mode: transferBusy
-        ? "mission-moon-orbit-return:orbital-refuel-transfer"
-        : "mission-moon-orbit-return:orbital-refuel-hold",
+        ? "mission-moon-orbit-return:departure-window-transfer"
+        : "mission-moon-orbit-return:departure-window-wait",
     };
   }
 
@@ -393,12 +450,12 @@ function computeMoonOrbitReturnAutopilotCommand({
       || moonClosingSpeedKmS >= config.midcourseMinClosingSpeedKmS;
     const escapeReady = Number(orbital.specificEnergy) >= config.tliMinSpecificEnergyKm2S2;
     if (apoReached && lunarInterceptTrending && escapeReady) {
-      setMissionPhase(runtime, "coast_to_moon");
+      setMissionPhase(runtime, "midcourse");
       return {
         phase: "coast",
         throttle: 0,
         direction: tangent,
-        mode: "mission-moon-orbit-return:coast-to-moon",
+        mode: "mission-moon-orbit-return:midcourse",
       };
     }
     const apoDeficitKm = Number.isFinite(apo) ? (config.tliTargetApoapsisKm - apo) : config.tliTargetApoapsisKm;
@@ -439,14 +496,14 @@ function computeMoonOrbitReturnAutopilotCommand({
     };
   }
 
-  if (phase === "coast_to_moon") {
+  if (phase === "midcourse") {
     if (moonDistanceKm <= config.moonApproachDistanceKm) {
-      setMissionPhase(runtime, "lunar_insertion");
+      setMissionPhase(runtime, "lunar_orbit_insertion");
       return {
         phase: "coast",
         throttle: 0,
         direction: tangent,
-        mode: "mission-moon-orbit-return:lunar-insertion-setup",
+        mode: "mission-moon-orbit-return:lunar-orbit-insertion-setup",
       };
     }
     const needsEscapeReignite =
@@ -519,23 +576,18 @@ function computeMoonOrbitReturnAutopilotCommand({
       phase: "coast",
       throttle: 0,
       direction: moonDirection,
-      mode: "mission-moon-orbit-return:coast-to-moon",
+      mode: "mission-moon-orbit-return:midcourse",
     };
   }
 
-  if (phase === "lunar_insertion") {
-    if (
-      moonOrbit && moonOrbit.specificEnergy < 0
-      && Number(moonOrbit.apoapsisKm) > 0
-      && Number(moonOrbit.apoapsisKm) <= config.lunarOrbitApoapsisMaxKm
-      && Number(moonOrbit.periapsisKm) >= config.lunarOrbitPeriapsisMinKm
-    ) {
-      setMissionPhase(runtime, "lunar_orbit_hold");
+  if (phase === "lunar_orbit_insertion") {
+    if (moonOrbit && moonOrbit.specificEnergy < 0) {
+      setMissionPhase(runtime, "lunar_orbit_trim");
       return {
         phase: "coast",
         throttle: 0,
         direction: normalize(scale(moonRelVel || tangent, 1), tangent),
-        mode: "mission-moon-orbit-return:lunar-orbit-hold",
+        mode: "mission-moon-orbit-return:lunar-orbit-trim-setup",
       };
     }
     if (moonRelVel && moonRelPos && moonAltitudeKm <= config.lunarInsertionAltitudeGateKm) {
@@ -559,7 +611,7 @@ function computeMoonOrbitReturnAutopilotCommand({
         phase: "powered",
         throttle,
         direction,
-        mode: "mission-moon-orbit-return:lunar-insertion",
+        mode: "mission-moon-orbit-return:lunar-orbit-insertion",
       };
     }
     return {
@@ -570,7 +622,54 @@ function computeMoonOrbitReturnAutopilotCommand({
     };
   }
 
-  if (phase === "lunar_orbit_hold") {
+  if (phase === "lunar_orbit_trim") {
+    if (
+      moonOrbit && moonOrbit.specificEnergy < 0
+      && Number(moonOrbit.apoapsisKm) > 0
+      && Number(moonOrbit.apoapsisKm) <= config.lunarOrbitApoapsisMaxKm
+      && Number(moonOrbit.periapsisKm) >= config.lunarOrbitPeriapsisMinKm
+    ) {
+      setMissionPhase(runtime, "lunar_loiter");
+      return {
+        phase: "coast",
+        throttle: 0,
+        direction: normalize(scale(moonRelVel || tangent, 1), tangent),
+        mode: "mission-moon-orbit-return:lunar-loiter",
+      };
+    }
+    if (moonRelVel && moonRelPos && moonAltitudeKm <= config.lunarInsertionAltitudeGateKm) {
+      const moonRetrograde = normalize(scale(moonRelVel, -1), earthDirection);
+      const moonUp = normalize(moonRelPos, up);
+      const direction = normalize(add(scale(moonRetrograde, 1), scale(moonUp, 0.22)), moonRetrograde);
+      const moonSpeedTargetKmS = clamp(
+        (moonMuKm3S2 > 0 && moonDistanceKm > 1)
+          ? (Math.sqrt(moonMuKm3S2 / moonDistanceKm) * 1.08)
+          : 1.4,
+        0.55,
+        2.2,
+      );
+      const moonSpeedErrorKmS = (Number(moonOrbit?.speedKmS) || 0) - moonSpeedTargetKmS;
+      const throttle = clamp(
+        0.14 + (moonSpeedErrorKmS * 0.38) + clamp((6000 - moonAltitudeKm) / 6000, 0, 1) * 0.26,
+        0.08,
+        0.96,
+      );
+      return {
+        phase: "powered",
+        throttle,
+        direction,
+        mode: "mission-moon-orbit-return:lunar-orbit-trim",
+      };
+    }
+    return {
+      phase: "coast",
+      throttle: 0,
+      direction: tangent,
+      mode: "mission-moon-orbit-return:lunar-orbit-trim",
+    };
+  }
+
+  if (phase === "lunar_loiter") {
     if (missionElapsedInPhaseSeconds(runtime) >= config.lunarHoldDurationSec) {
       setMissionPhase(runtime, "tei_burn");
     }
@@ -578,7 +677,7 @@ function computeMoonOrbitReturnAutopilotCommand({
       phase: "coast",
       throttle: 0,
       direction: moonRelVel ? normalize(moonRelVel, tangent) : tangent,
-      mode: "mission-moon-orbit-return:lunar-orbit-hold",
+      mode: "mission-moon-orbit-return:lunar-loiter",
     };
   }
 
@@ -594,12 +693,12 @@ function computeMoonOrbitReturnAutopilotCommand({
       0.86,
     );
     if (moonDistanceKm >= config.teiDepartureDistanceKm && dot(relPos, relVel) < 0) {
-      setMissionPhase(runtime, "coast_to_earth");
+      setMissionPhase(runtime, "earth_approach");
       return {
         phase: "coast",
         throttle: 0,
         direction: teiDirection,
-        mode: "mission-moon-orbit-return:coast-to-earth",
+        mode: "mission-moon-orbit-return:earth-approach",
       };
     }
     return {
@@ -610,7 +709,7 @@ function computeMoonOrbitReturnAutopilotCommand({
     };
   }
 
-  if (phase === "coast_to_earth") {
+  if (phase === "earth_approach") {
     if (earthDistanceKm <= config.earthCaptureDistanceKm) {
       setMissionPhase(runtime, "earth_capture");
     }
@@ -618,7 +717,7 @@ function computeMoonOrbitReturnAutopilotCommand({
       phase: "coast",
       throttle: 0,
       direction: tangent,
-      mode: "mission-moon-orbit-return:coast-to-earth",
+      mode: "mission-moon-orbit-return:earth-approach",
     };
   }
 

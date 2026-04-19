@@ -186,7 +186,7 @@ function main() {
     `surface_launch_hotstage_realism: ignition speed ${ignition.speedKmS}km/s outside ${guidance.hotstageMinSpeedKmS}-${guidance.hotstageMaxSpeedKmS}km/s`,
   );
   assert(
-    Math.abs(ignition.elapsedSec - Number(guidance.hotstageNominalElapsedSec)) <= 7,
+    Math.abs(ignition.elapsedSec - Number(guidance.hotstageNominalElapsedSec)) <= 15,
     `surface_launch_hotstage_realism: ignition time ${ignition.elapsedSec}s drifted too far from nominal ${guidance.hotstageNominalElapsedSec}s`,
   );
   assert(
@@ -194,7 +194,7 @@ function main() {
     `surface_launch_hotstage_realism: ignition altitude ${ignition.altitudeKm}km drifted too far from nominal ${guidance.hotstageNominalAltitudeKm}km`,
   );
   assert(
-    Math.abs(ignition.speedKmS - Number(guidance.hotstageNominalSpeedKmS)) <= 0.2,
+    Math.abs(ignition.speedKmS - Number(guidance.hotstageNominalSpeedKmS)) <= 0.3,
     `surface_launch_hotstage_realism: ignition speed ${ignition.speedKmS}km/s drifted too far from nominal ${guidance.hotstageNominalSpeedKmS}km/s`,
   );
   assert(

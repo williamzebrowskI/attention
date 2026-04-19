@@ -124,12 +124,32 @@ function main() {
     Number(vehicle.moonEstimatedTliDeltaVKmS),
     engineAccelAtThrottle1KmS2,
     Number(vehicle.moonDeparturePlanThrottle),
+    {
+      massKg: initialStageMassKg,
+      dryMassKg: Math.max(1, Number(stage2?.dryMassKg) || 120_000),
+      propellantMassKg: Math.max(0, Number(vehicle.stagePropellantKg) || 0),
+      thrustVacuumN: Math.max(0, Number(stage2?.thrustVacuumN) || 0),
+      thrustSeaLevelN: Math.max(
+        0,
+        Number(stage2?.thrustSeaLevelN) || Number(stage2?.thrustVacuumN) || 0,
+      ),
+      ispVacuumS: Math.max(1, Number(stage2?.ispVacuumS) || 360),
+      ispSeaLevelS: Math.max(
+        1,
+        Number(stage2?.ispSeaLevelS) || Number(stage2?.ispVacuumS) || 360,
+      ),
+      ambientPressurePa: 0,
+    },
   );
   const actualBurnDurationSec = Number(vehicle.moonDeparturePlanBurnDurationSec);
 
   assert(
-    actualBurnDurationSec > 1_000,
-    `moon_orbit_inject_departure_plan_accel_lock: TLI burn duration is still unrealistically short (${actualBurnDurationSec}s)`,
+    expectedBurnDurationSec > 180,
+    `moon_orbit_inject_departure_plan_accel_lock: expected burn duration is unrealistically short (${expectedBurnDurationSec}s)`,
+  );
+  assert(
+    actualBurnDurationSec > Math.max(180, expectedBurnDurationSec * 0.55),
+    `moon_orbit_inject_departure_plan_accel_lock: TLI burn duration is still unrealistically short for the current thrust/Isp model (${actualBurnDurationSec}s vs expected ~${expectedBurnDurationSec}s)`,
   );
   assert(
     Math.abs(actualBurnDurationSec - expectedBurnDurationSec) <= Math.max(120, expectedBurnDurationSec * 0.25),

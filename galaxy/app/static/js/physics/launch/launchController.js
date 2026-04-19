@@ -110,6 +110,11 @@ import {
   NAVIGATION_DEFAULTS,
   NAVIGATION_SYSTEM_MODES,
 } from "../navigation_system/index.js";
+import {
+  displayMissionPhase,
+  NAVIGATION_MISSION_PHASES,
+  normalizeMissionPhase,
+} from "../navigation_system/navigationMissionProfiles.js";
 import { enforceMoonEarthAvoidanceDirection } from "./lunar/guidanceSafety.js";
 import { computeMoonRefuelRecoveryOverride } from "./lunar/refuelRecovery.js";
 import {
@@ -152,6 +157,18 @@ const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
 const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
 const PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM = 105;
 const PRIMARY_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA = 120;
+
+function canonicalMoonMissionPhase(phase) {
+  return normalizeMissionPhase(phase, LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
+}
+
+function displayMissionPhaseForMission(missionId, phase) {
+  const id = normalizeMissionId(missionId);
+  return id === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+    ? displayMissionPhase(phase, id)
+    : String(phase || "").trim();
+}
+
 function fallbackAxes() {
   return {
     xAxis: { x: 1, y: 0, z: 0 },
@@ -1558,36 +1575,42 @@ export function createLaunchController(options) {
     if (phaseDecisionReason) {
       return gateReasonLabel(phaseDecisionReason);
     }
-    const missionPhase = String(phase || "").trim();
-    if (missionPhase === "launch_to_parking") {
+    const missionPhase = canonicalMoonMissionPhase(phase);
+    if (missionPhase === NAVIGATION_MISSION_PHASES.LAUNCH) {
       return `Awaiting parking orbit gate: apo/peri near ${formatGateKm(profile.parkingOrbitApoapsisMinKm)} / ${formatGateKm(profile.parkingOrbitPeriapsisMinKm)} (tol ${formatGateKm(MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.apoapsisKm)} / ${formatGateKm(MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.periapsisKm)}).`;
     }
-    if (missionPhase === "orbital_refuel") {
-      return `Awaiting refuel target: fill ${formatGatePercent(refuelFillFraction)} / ${formatGatePercent(profile.refuelTargetFillFraction)}.`;
+    if (missionPhase === NAVIGATION_MISSION_PHASES.PARKING_ORBIT) {
+      return "Parking orbit established. Verifying stable departure setup.";
     }
-    if (missionPhase === "tli_burn") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.DEPARTURE_WINDOW_WAIT) {
+      return `Awaiting departure window: parking coast ${Math.round(Math.max(0, Number(profile.parkingCoastMinDurationSec) - Math.max(0, Number(missionElapsedInPhaseSec) || 0)))}s minimum, fill ${formatGatePercent(refuelFillFraction)}.`;
+    }
+    if (missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
       return `Awaiting TLI gate: apo >= ${formatGateKm(profile.tliTargetApoapsisKm - profile.tliApoapsisMarginKm)}, miss <= ${formatGateKm(profile.tliInterceptMissDistanceKm)}.`;
     }
-    if (missionPhase === "coast_to_moon") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.MIDCOURSE) {
       return `Awaiting lunar approach: distance ${formatGateKm(moonDistanceKm)} <= ${formatGateKm(profile.moonApproachDistanceKm)} (closing ${formatGateSpeed(moonClosingSpeedKmS)}, miss ${formatGateKm(moonProjectedMissDistanceKm)}).`;
     }
-    if (missionPhase === "lunar_insertion") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION) {
       return `Awaiting lunar capture: altitude ${formatGateKm(moonAltitudeKm)} | periapsis est ${formatGateKm(moonProjectedPeriluneAltitudeKm)} | B-plane ${formatGateKm(moonBPlaneErrorKm)}.`;
     }
-    if (missionPhase === "lunar_orbit_hold") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_TRIM) {
+      return `Trimming lunar orbit: apo/peri settling toward ${formatGateKm(profile.lunarOrbitApoapsisMaxKm)} / ${formatGateKm(profile.lunarOrbitPeriapsisMinKm)}.`;
+    }
+    if (missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_LOITER) {
       const remainingSec = Math.max(0, Number(profile.lunarHoldDurationSec) - Math.max(0, Number(missionElapsedInPhaseSec) || 0));
       return `Holding lunar orbit: TEI unlock in ${Math.round(remainingSec)}s.`;
     }
-    if (missionPhase === "tei_burn") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.TEI_BURN) {
       return `Awaiting TEI departure: moon distance ${formatGateKm(moonDistanceKm)} >= ${formatGateKm(profile.teiDepartureDistanceKm)} and Earth radial < 0 (${formatGateSpeed(earthRadialSpeedKmS)}).`;
     }
-    if (missionPhase === "coast_to_earth") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.EARTH_APPROACH) {
       return `Awaiting Earth capture approach: Earth distance ${formatGateKm(earthDistanceKm)} <= ${formatGateKm(profile.earthCaptureDistanceKm)}.`;
     }
-    if (missionPhase === "earth_capture") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.EARTH_CAPTURE) {
       return `Awaiting Earth capture orbit: apo/peri <= ${formatGateKm(profile.earthCaptureApoapsisMaxKm)} / >= ${formatGateKm(profile.earthCapturePeriapsisMinKm)}.`;
     }
-    if (missionPhase === "earth_orbit_hold") {
+    if (missionPhase === NAVIGATION_MISSION_PHASES.EARTH_ORBIT_HOLD) {
       return "Mission phase gate complete: Earth orbit hold.";
     }
     if (Number(orbital?.specificEnergy) >= 0 && Number(orbital?.periapsisKm) < 0) {
@@ -1800,14 +1823,14 @@ export function createLaunchController(options) {
     }
     runtime.mission.completed = Boolean(navState?.missionCompleted);
     const navDrivenMoonPhases = new Set([
-      "orbital_refuel",
-      "tli_burn",
-      "coast_to_moon",
-      "lunar_insertion",
-      "lunar_orbit_hold",
-      "tei_burn",
-      "coast_to_earth",
-      "earth_capture",
+      NAVIGATION_MISSION_PHASES.TLI_BURN,
+      NAVIGATION_MISSION_PHASES.MIDCOURSE,
+      NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION,
+      NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_TRIM,
+      NAVIGATION_MISSION_PHASES.LUNAR_LOITER,
+      NAVIGATION_MISSION_PHASES.TEI_BURN,
+      NAVIGATION_MISSION_PHASES.EARTH_APPROACH,
+      NAVIGATION_MISSION_PHASES.EARTH_CAPTURE,
     ]);
     if (runtime.stageIndex < 1 || !navDrivenMoonPhases.has(navPhase)) {
       return null;
@@ -2294,15 +2317,19 @@ export function createLaunchController(options) {
 
   function missionTargetDescriptor() {
     const missionId = runtime.mission.selectedId;
-    const missionPhase = runtime.mission.phase || "";
+    const missionPhase = missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
+      ? canonicalMoonMissionPhase(runtime.mission.phase)
+      : (runtime.mission.phase || "");
     if (missionId === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN) {
       const moonwardPhases = new Set([
-        "launch_to_parking",
-        "orbital_refuel",
-        "tli_burn",
-        "coast_to_moon",
-        "lunar_insertion",
-        "lunar_orbit_hold",
+        NAVIGATION_MISSION_PHASES.LAUNCH,
+        NAVIGATION_MISSION_PHASES.PARKING_ORBIT,
+        NAVIGATION_MISSION_PHASES.DEPARTURE_WINDOW_WAIT,
+        NAVIGATION_MISSION_PHASES.TLI_BURN,
+        NAVIGATION_MISSION_PHASES.MIDCOURSE,
+        NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION,
+        NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_TRIM,
+        NAVIGATION_MISSION_PHASES.LUNAR_LOITER,
       ]);
       if (moonwardPhases.has(missionPhase)) {
         return {
@@ -2620,9 +2647,12 @@ function solveMoonOrbitInjectLaunchLocally(payload = null) {
 
 function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   const pending = new Promise((resolve) => {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       resolve(solveMoonOrbitInjectLaunchLocally(payload));
     }, 0);
+    if (typeof timer?.unref === "function") {
+      timer.unref();
+    }
   }).then((response) => cacheMoonOrbitInjectLaunchSolveResponse(key, response));
   runtime.moonOrbitInjectSolve.key = key;
   runtime.moonOrbitInjectSolve.pending = pending;
@@ -2719,13 +2749,16 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ? Promise.race([
         workerSolvePromise,
         new Promise((resolve) => {
-          setTimeout(() => {
+          const timer = setTimeout(() => {
             resolve({
               error: "worker-timeout",
               type: "solveMoonOrbitInjectWindowForLaunch",
               solution: null,
             });
           }, MOON_ORBIT_INJECT_WORKER_TIMEOUT_MS);
+          if (typeof timer?.unref === "function") {
+            timer.unref();
+          }
         }),
       ])
       : workerSolvePromise;
@@ -3866,6 +3899,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       propellantFraction: boosterPropellantFraction,
       bodyKind: "booster",
       dtSeconds,
+      dryMassKg: Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0,
+      propellantMassKg: Number(runtime.booster.initialPropellantKg) || 0,
+      attachedMassKg: 0,
     });
     runtime.boosterActuator = applyActuatorModel(runtime.boosterActuator, {
       requestedThrottle,
@@ -3909,6 +3945,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       bodyAxisDirection: directionActual,
       referenceAreaM2: Number(LAUNCH_BOOSTER_CONFIG.referenceAreaM2) || 0,
       massKg: effectiveMassKg,
+      massModel: runtime.boosterMassModel,
+      throttle: throttleActual,
     });
     runtime.booster.phase = command.phase || "descent";
     runtime.booster.guidanceMode = command.guidanceMode || "booster-guidance";
@@ -3955,6 +3993,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       machNumber: aero.machNumber,
       dragCoefficient: aero.dragCoefficient,
       liftCoefficient: aero.liftCoefficient,
+      momentCoefficient: aero.momentCoefficient,
       gimbalErrorDeg: runtime.boosterActuator.gimbalErrorDeg,
       windSpeedKmS: windSample.speedKmS,
       windEastMS: windSample.eastMS,
@@ -4239,6 +4278,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const toMoonVectorKm = finiteVector(moonState?.position)
         ? subtract(moonState.position, rocketState.position)
         : null;
+      const moonApproachVelocityKmS = finiteVector(moonState?.velocity)
+        ? subtract(
+          moonState.velocity,
+          rocketState.velocity || { x: 0, y: 0, z: 0 },
+        )
+        : null;
       updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
       const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
       const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
@@ -4267,10 +4312,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const stagePropellantFraction = stageNominalPropellantKg > 1e-6
         ? clamp(runtime.stagePropellantKg / stageNominalPropellantKg, 0, 1)
         : 0;
+      const stageDryMassKg = Number(activeStage?.dryMassKg) || 0;
+      const stageAttachedMassKg = runtime.stageIndex === 0
+        ? Math.max(0, (Number(rocketState.massKg) || 0) - stageDryMassKg - Math.max(0, Number(runtime.stagePropellantKg) || 0))
+        : 0;
       runtime.stageMassModel = updateMassModelState(runtime.stageMassModel, {
         propellantFraction: stagePropellantFraction,
         bodyKind: stageBodyKindFromStageIndex(runtime.stageIndex),
         dtSeconds,
+        dryMassKg: stageDryMassKg,
+        propellantMassKg: stageNominalPropellantKg,
+        attachedMassKg: stageAttachedMassKg,
       });
 
       const updateTelemetry = () => {
@@ -4303,6 +4355,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           requestedThrottle,
           desiredDirection: directionRequested,
           toMoonVectorKm,
+          moonApproachVelocityKmS,
           fallbackDirection: orbital.up,
           currentDirection: runtime.stageActuator?.directionActual || directionRequested,
           dtSeconds,
@@ -4312,6 +4365,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           missionId: runtime.mission.selectedId,
           missionPhase: runtime.mission.phase,
           requestedThrottle,
+          desiredDirection: directionRequested,
           passiveMoonCoastPointing: moonAttitudePolicy.passiveMoonCoastPointing,
           passiveMoonCoastAttitudeAssist: moonAttitudePolicy.passiveMoonCoastAttitudeAssist,
           moonDirectionKm: toMoonVectorKm,
@@ -4467,6 +4521,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           bodyAxisDirection: directionActual,
           referenceAreaM2: Number(LAUNCH_VEHICLE_CONFIG.referenceAreaM2) || 0,
           massKg: effectiveMassKg,
+          massModel: runtime.stageMassModel,
+          throttle: throttleActual,
         });
         const moonCoastRcsAssist = (
           moonAttitudePolicy.passiveMoonCoastPointing
@@ -4516,6 +4572,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           machNumber: aero.machNumber,
           dragCoefficient: aero.dragCoefficient,
           liftCoefficient: aero.liftCoefficient,
+          momentCoefficient: aero.momentCoefficient,
           gimbalErrorDeg: runtime.stageActuator.gimbalErrorDeg,
           windSpeedKmS: windSample.speedKmS,
           windEastMS: windSample.eastMS,
@@ -5231,6 +5288,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         missionId: runtime.mission.selectedId,
         missionName: safeMissionProfile(runtime.mission.selectedId)?.name || "Mission",
         missionPhase: runtime.mission.phase,
+        missionPhaseDisplay: displayMissionPhaseForMission(runtime.mission.selectedId, runtime.mission.phase),
         missionCompleted: Boolean(runtime.mission.completed),
         stagePropellantKg: Math.max(0, Number(runtime.stagePropellantKg) || 0),
         refuelRequiredFlights,
@@ -5393,6 +5451,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       missionId: telemetry.missionId,
       missionName: telemetry.missionName,
       missionPhase: telemetry.missionPhase,
+      missionPhaseDisplay: displayMissionPhaseForMission(telemetry.missionId, telemetry.missionPhase),
       missionCompleted: telemetry.missionCompleted,
       stagePropellantKg: Number(telemetry.stagePropellantKg) || 0,
       refuelRequiredFlights: Number(telemetry.refuelRequiredFlights) || refuelRequiredFlights,

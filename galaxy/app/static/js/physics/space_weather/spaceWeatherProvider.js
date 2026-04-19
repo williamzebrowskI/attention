@@ -1,5 +1,6 @@
 const DEFAULT_SPACE_WEATHER = Object.freeze({
   f107: 150,
+  f107a: 150,
   kp: 3,
   source: "default_quiet",
   refreshedAtUtc: "",
@@ -48,6 +49,17 @@ function normalizeSnapshot(payload, fallback = DEFAULT_SPACE_WEATHER) {
     : Number.POSITIVE_INFINITY;
   return {
     f107: clamp(finiteOr(payload?.f107_sfu ?? payload?.f107, base.f107), 60, 300),
+    f107a: clamp(
+      finiteOr(
+        payload?.f107a_sfu
+          ?? payload?.f107a
+          ?? payload?.f107_average_sfu
+          ?? payload?.f107AverageSfu,
+        payload?.f107_sfu ?? payload?.f107 ?? base.f107a,
+      ),
+      60,
+      300,
+    ),
     kp: clamp(finiteOr(payload?.kp_index ?? payload?.kp, base.kp), 0, 9),
     source: String(payload?.source || base.source || "default_quiet").trim() || "default_quiet",
     refreshedAtUtc: refreshedRaw || "",
@@ -133,6 +145,7 @@ export function createSpaceWeatherProvider(options = {}) {
       latitudeDeg: Number(optionsInput?.latitudeDeg) || 0,
       longitudeDeg: Number(optionsInput?.longitudeDeg) || 0,
       f107: current.f107,
+      f107a: current.f107a,
       kp: current.kp,
       kpHistory: Array.isArray(current.kpHistory) ? current.kpHistory.map((entry) => ({ ...entry })) : [],
       source: current.source,

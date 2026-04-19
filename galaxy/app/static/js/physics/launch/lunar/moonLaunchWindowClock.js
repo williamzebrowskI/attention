@@ -114,6 +114,13 @@ export function updateMoonDepartureWindowClock({
     }
     return;
   }
+  const solvedAtMs = Number(runtime.moonDepartureWindowClockWorkerSolvedAtMs);
+  const stale = !Number.isFinite(solvedAtMs) || Math.abs(Number(nowMs) - solvedAtMs) >= 5000;
+  if (!stale) {
+    return;
+  }
   const window = solveMoonDepartureWindow(payload);
   applyMoonDepartureWindowClockSolution(runtime, window, nowMs);
+  runtime.moonDepartureWindowClockWorkerSolvedAtMs = Number(nowMs);
+  runtime.moonDepartureWindowClockWorkerError = "";
 }

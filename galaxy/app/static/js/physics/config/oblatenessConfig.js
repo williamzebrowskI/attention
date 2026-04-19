@@ -2,14 +2,15 @@ export const OBLATE_GRAVITY_ENABLED = true;
 
 export const OBLATE_GRAVITY_MODEL = Object.freeze({
   earth: Object.freeze({
-    j2: 1.08262668e-3,
-    j4: -1.61962159137e-6,
-    // Added degree-6 zonal for improved long-arc Earth-orbit fidelity.
-    j6: 5.406812e-7,
-    // Degree-2 tesseral terms to model longitudinal gravity asymmetry.
-    c22: 1.57446e-6,
-    s22: -0.90376e-6,
-    equatorialRadiusKm: 6378.137,
+    // Earth low-degree harmonics are sourced dynamically at runtime from the
+    // hybrid IERS + EGM2008 gravity model; keep these as static fallback values.
+    j5: -2.2775359073083618e-7,
+    j6: 5.406665762838132e-7,
+    c21: -2.667394752374837e-10,
+    s21: 1.7872706485240434e-9,
+    c22: 1.574615325722917e-6,
+    s22: -0.9038727891965667e-6,
+    equatorialRadiusKm: 6378.1363,
   }),
   // Axisymmetric first-pass for giant planets: include zonals (J2/J4),
   // keep tesseral terms at zero unless validated non-zero fields are added.

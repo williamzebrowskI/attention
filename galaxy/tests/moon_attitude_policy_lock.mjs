@@ -17,6 +17,7 @@ function main() {
     requestedThrottle: 0,
     desiredDirection: { x: 0, y: 1, z: 0 },
     toMoonVectorKm: { x: 1, y: 0, z: 0 },
+    moonApproachVelocityKmS: { x: 0.8, y: 0.6, z: 0 },
     fallbackDirection: { x: 0, y: 1, z: 0 },
     currentDirection: { x: 0, y: 1, z: 0 },
     dtSeconds: 1,
@@ -40,11 +41,17 @@ function main() {
       && coastPolicy.passiveMoonCoastAttitudeAssist.jets.length > 0,
     "expected passive coast attitude assist jets",
   );
+  assert(
+    Number(coastPolicy.passiveMoonCoastAttitudeAssist?.targetDirection?.x) > 0.2
+      && Number(coastPolicy.passiveMoonCoastAttitudeAssist?.targetDirection?.y) > 0.2,
+    `expected passive coast target to blend Moon LOS with approach/guidance geometry, got ${JSON.stringify(coastPolicy.passiveMoonCoastAttitudeAssist?.targetDirection)}`,
+  );
 
   const trimPending = resolveMoonCoastTrimBurn({
     missionId: "moon_orbit_return",
     missionPhase: "coast_to_moon",
     requestedThrottle: 0,
+    desiredDirection: coastPolicy.requestedDirection,
     passiveMoonCoastPointing: true,
     passiveMoonCoastAttitudeAssist: coastPolicy.passiveMoonCoastAttitudeAssist,
     moonDirectionKm: { x: 1, y: 0, z: 0 },
@@ -61,12 +68,14 @@ function main() {
     missionId: "moon_orbit_return",
     missionPhase: "coast_to_moon",
     requestedThrottle: 0,
+    desiredDirection: { x: 0.8, y: 0.6, z: 0 },
     passiveMoonCoastPointing: true,
     passiveMoonCoastAttitudeAssist: {
       active: false,
       errorDeg: 2,
       authority: 0,
       jets: [],
+      targetDirection: { x: 0.8, y: 0.6, z: 0 },
     },
     moonDirectionKm: { x: 1, y: 0, z: 0 },
     currentDirection: { x: 0.999, y: 0.03, z: 0 },
@@ -77,7 +86,10 @@ function main() {
   });
   assert(trimActive.active, "expected trim burn to activate once moon alignment is achieved");
   assert(Number(trimActive.throttle) > 0, `expected positive trim throttle, got ${trimActive.throttle}`);
-  assert(Math.abs((trimActive.direction?.x ?? 0) - 1) < 1e-3, `expected moonward trim direction, got ${JSON.stringify(trimActive.direction)}`);
+  assert(
+    Number(trimActive.direction?.x) > 0.7 && Number(trimActive.direction?.y) > 0.5,
+    `expected trim burn to follow blended coast target instead of pure Moon LOS, got ${JSON.stringify(trimActive.direction)}`,
+  );
 
   const burnPolicy = resolveMoonMissionAttitudeDirection({
     missionId: "moon_orbit_return",
@@ -85,6 +97,7 @@ function main() {
     requestedThrottle: 0.4,
     desiredDirection: { x: 0, y: 1, z: 0 },
     toMoonVectorKm: { x: 1, y: 0, z: 0 },
+    moonApproachVelocityKmS: { x: 0.8, y: 0.6, z: 0 },
     fallbackDirection: { x: 0, y: 1, z: 0 },
     currentDirection: { x: 0, y: 1, z: 0 },
     dtSeconds: 1,

@@ -1,4 +1,5 @@
 import { LAUNCH_MISSION_IDS } from "../launchMissions.js";
+import { normalizeMissionPhase } from "../../navigation_system/navigationMissionProfiles.js";
 import {
   LAUNCH_MOON_COAST_TRIM_CONFIG,
   LAUNCH_RCS_CONFIG,
@@ -129,9 +130,45 @@ function rcsJetSelection(correctionDir, referenceForward, referenceUp) {
   return jets;
 }
 
+function resolveMoonCoastTargetDirection({
+  desiredDirection,
+  moonDirection,
+  moonApproachVelocityKmS,
+  fallbackDirection,
+} = {}) {
+  const guidanceAxis = normalize(
+    desiredDirection || fallbackDirection || moonDirection || { x: 0, y: 0, z: 1 },
+    fallbackDirection || moonDirection || { x: 0, y: 0, z: 1 },
+  );
+  const moonAxis = normalize(moonDirection || guidanceAxis, guidanceAxis);
+  const approachAxis = unitVectorOrNull(moonApproachVelocityKmS);
+  if (!approachAxis) {
+    return normalize(mixVectors(guidanceAxis, moonAxis, 0.3), moonAxis);
+  }
+  const guidanceApproachAlignment = clamp(dot(guidanceAxis, approachAxis), -1, 1);
+  const guidanceMoonAlignment = clamp(dot(guidanceAxis, moonAxis), -1, 1);
+  const approachMoonAlignment = clamp(dot(approachAxis, moonAxis), -1, 1);
+  const approachBlend = clamp(
+    0.22 + (Math.max(0, guidanceApproachAlignment) * 0.38),
+    0.18,
+    0.6,
+  );
+  const transitAxis = normalize(mixVectors(guidanceAxis, approachAxis, approachBlend), guidanceAxis);
+  const moonBlend = clamp(
+    0.16
+      + (Math.max(0, guidanceMoonAlignment) * 0.18)
+      + (Math.max(0, approachMoonAlignment) * 0.26),
+    0.14,
+    0.58,
+  );
+  return normalize(mixVectors(transitAxis, moonAxis, moonBlend), transitAxis);
+}
+
 function resolveMoonCoastAttitudeAssist({
+  desiredDirection,
   currentDirection,
   moonDirection,
+  moonApproachVelocityKmS,
   fallbackDirection,
   dtSeconds = 0,
 } = {}) {
@@ -139,7 +176,12 @@ function resolveMoonCoastAttitudeAssist({
     currentDirection || fallbackDirection || moonDirection || { x: 0, y: 0, z: 1 },
     fallbackDirection || moonDirection || { x: 0, y: 0, z: 1 },
   );
-  const targetAxis = normalize(moonDirection || currentAxis, currentAxis);
+  const targetAxis = resolveMoonCoastTargetDirection({
+    desiredDirection,
+    moonDirection,
+    moonApproachVelocityKmS,
+    fallbackDirection: fallbackDirection || currentAxis,
+  });
   const maxTurnRateDegS = Math.max(0.1, Number(LAUNCH_RCS_CONFIG?.moonCoastTurnRateDegS) || 3.0);
   const maxTurnRad = rad(maxTurnRateDegS) * Math.max(0, Number(dtSeconds) || 0);
   const requestedDirection = rotateTowardDirection(currentAxis, targetAxis, maxTurnRad);
@@ -155,6 +197,7 @@ function resolveMoonCoastAttitudeAssist({
   const correctionDir = unitVectorOrNull(lateralCorrection);
   return {
     requestedDirection,
+    targetDirection: targetAxis,
     active: Boolean(correctionDir) && authority > 1e-4,
     errorDeg,
     authority,
@@ -168,10 +211,12 @@ export function resolveMoonMissionAttitudeDirection({
   requestedThrottle,
   desiredDirection,
   toMoonVectorKm,
+  moonApproachVelocityKmS,
   fallbackDirection,
   currentDirection,
   dtSeconds = 0,
 } = {}) {
+  const canonicalPhase = normalizeMissionPhase(missionPhase, missionId);
   const fallback = normalize(
     fallbackDirection || currentDirection || desiredDirection || toMoonVectorKm || { x: 0, y: 0, z: 1 },
     { x: 0, y: 0, z: 1 },
@@ -182,14 +227,16 @@ export function resolveMoonMissionAttitudeDirection({
     : desired;
   const passiveMoonCoastPointing = (
     String(missionId || "") === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
-    && String(missionPhase || "") === "coast_to_moon"
+    && canonicalPhase === "midcourse"
     && !(Number(requestedThrottle) > 1e-3)
     && finiteVectorValue(toMoonVectorKm)
   );
   const passiveMoonCoastAttitudeAssist = passiveMoonCoastPointing
     ? resolveMoonCoastAttitudeAssist({
+      desiredDirection: desired,
       currentDirection: currentDirection || desired,
       moonDirection,
+      moonApproachVelocityKmS,
       fallbackDirection: fallback,
       dtSeconds,
     })
@@ -213,6 +260,7 @@ export function resolveMoonCoastTrimBurn({
   missionId,
   missionPhase,
   requestedThrottle,
+  desiredDirection,
   passiveMoonCoastPointing,
   passiveMoonCoastAttitudeAssist,
   moonDirectionKm,
@@ -222,10 +270,11 @@ export function resolveMoonCoastTrimBurn({
   trimActiveUntilSec = null,
   trimLastBurnSec = null,
 } = {}) {
+  const canonicalPhase = normalizeMissionPhase(missionPhase, missionId);
   const enabled = (
     Boolean(LAUNCH_MOON_COAST_TRIM_CONFIG?.enabled)
     && String(missionId || "") === LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN
-    && String(missionPhase || "") === "coast_to_moon"
+    && canonicalPhase === "midcourse"
     && !(Number(requestedThrottle) > 1e-3)
     && Boolean(passiveMoonCoastPointing)
     && finiteVectorValue(moonDirectionKm)
@@ -250,6 +299,9 @@ export function resolveMoonCoastTrimBurn({
   );
   const turnActive = Boolean(passiveMoonCoastAttitudeAssist?.active);
   const alignErrorDeg = finiteOrNull(passiveMoonCoastAttitudeAssist?.errorDeg);
+  const trimReferenceDirection = unitVectorOrNull(passiveMoonCoastAttitudeAssist?.targetDirection)
+    || unitVectorOrNull(desiredDirection)
+    || unitVectorOrNull(moonDirectionKm);
   let pending = Boolean(trimPending);
   let activeUntil = finiteOrNull(trimActiveUntilSec);
   let lastBurn = finiteOrNull(trimLastBurnSec);
@@ -305,7 +357,7 @@ export function resolveMoonCoastTrimBurn({
     lastBurnSec: lastBurn,
     throttle: active ? pulseThrottle : 0,
     direction: active
-      ? normalize(moonDirectionKm, currentDirection || moonDirectionKm)
+      ? normalize(trimReferenceDirection || moonDirectionKm, currentDirection || moonDirectionKm)
       : null,
   };
 }

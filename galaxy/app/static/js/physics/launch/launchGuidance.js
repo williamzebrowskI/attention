@@ -229,14 +229,10 @@ function applyVerticalHoldSteering({
   relVel,
   earthPole,
   altitudeKm,
-  elapsedSeconds,
 }) {
   const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
-  const holdSeconds = Math.max(0, Number(guidance.verticalHoldSeconds) || 0);
   const holdAltitudeKm = Math.max(0, Number(guidance.verticalHoldMaxAltitudeKm) || 0);
-  const holdActive =
-    (holdSeconds > 0 && elapsedSeconds < holdSeconds)
-    || (holdAltitudeKm > 0 && altitudeKm < holdAltitudeKm);
+  const holdActive = holdAltitudeKm > 0 && altitudeKm < holdAltitudeKm;
   if (!holdActive) {
     return {
       direction: normalize(baseDirection, normalize(relPos)),
@@ -253,8 +249,8 @@ function applyVerticalHoldSteering({
 
   if (!(lateralSpeedKmS > maxLateralSpeedKmS + 1e-9)) {
     return {
-      direction: up,
-      active: true,
+      direction: normalize(baseDirection, up),
+      active: false,
     };
   }
 
@@ -277,86 +273,13 @@ function applyVerticalHoldSteering({
   };
 }
 
-function applyHotstageTargetShaping({
-  runtime,
-  orbital,
-  up,
-  direction,
-  throttle,
-  config,
-} = {}) {
-  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
-  if (Number(runtime?.stageIndex) !== 0) {
-    return { direction, throttle, active: false };
-  }
-
-  const nominalElapsedSec = Math.max(0, Number(guidance.hotstageNominalElapsedSec) || 0);
-  const minElapsedSec = Math.max(0, Number(guidance.hotstageMinElapsedSec) || 0);
-  const maxElapsedSec = Math.max(minElapsedSec, Number(guidance.hotstageMaxElapsedSec) || minElapsedSec);
-  const activationLeadSec = clamp(
-    Math.max(20, nominalElapsedSec - minElapsedSec),
-    20,
-    55,
-  );
-  const elapsedSec = Math.max(0, Number(runtime?.elapsedSeconds) || 0);
-  const timeToNominalSec = nominalElapsedSec - elapsedSec;
-  if (!(timeToNominalSec <= activationLeadSec && elapsedSec <= maxElapsedSec)) {
-    return { direction, throttle, active: false };
-  }
-
-  const altitudeKm = Math.max(0, Number(orbital?.altitudeKm) || 0);
-  const speedKmS = Math.max(0, Number(orbital?.speedKmS) || 0);
-  const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
-  const nominalAltitudeKm = Math.max(1, Number(guidance.hotstageNominalAltitudeKm) || 70);
-  const nominalSpeedKmS = Math.max(0.1, Number(guidance.hotstageNominalSpeedKmS) || 1.9);
-
-  // Shape the late Stage 1 climb toward the intended Starship-style hot-stage point.
-  const predictedAltitudeKm = altitudeKm + (Math.max(-0.02, radialSpeedKmS) * Math.max(0, timeToNominalSec));
-  const altitudeErrorKm = nominalAltitudeKm - predictedAltitudeKm;
-  const speedErrorKmS = nominalSpeedKmS - speedKmS;
-  const altitudeAssist = clamp(altitudeErrorKm / nominalAltitudeKm, -0.18, 0.24);
-  const speedAssist = clamp(speedErrorKmS / nominalSpeedKmS, -0.14, 0.18);
-  const upWeight = clamp((altitudeAssist * 0.72) + (speedAssist * 0.28), -0.10, 0.22);
-  const shapedDirection = Math.abs(upWeight) > 1e-6
-    ? normalize(add(scale(direction, 1), scale(up, upWeight)), direction)
-    : direction;
-
-  let throttleScale = 1;
-  if (speedErrorKmS < -0.05 && altitudeErrorKm < -2) {
-    throttleScale -= clamp(
-      ((-speedErrorKmS / 0.45) * 0.08) + ((-altitudeErrorKm / 35) * 0.04),
-      0,
-      0.12,
-    );
-  } else if (speedErrorKmS > 0.08 || altitudeErrorKm > 3) {
-    throttleScale += clamp(
-      ((speedErrorKmS / 0.35) * 0.05) + ((altitudeErrorKm / 30) * 0.05),
-      0,
-      0.10,
-    );
-  }
-  const shapedThrottle = clamp(
-    throttle * throttleScale,
-    0.68,
-    Number(config?.ascentMaxThrottle) || 1,
-  );
-
-  return {
-    direction: shapedDirection,
-    throttle: shapedThrottle,
-    active: true,
-  };
-}
-
 export function throttleForState(stageIndex, elapsedSeconds, dynamicPressurePa = 0) {
+  void elapsedSeconds;
   const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
   if (stageIndex !== 0) {
     return 1;
   }
   let throttle = 1;
-  if (elapsedSeconds < guidance.liftoffThrottleSec) {
-    throttle = Math.min(throttle, clamp(guidance.liftoffThrottleValue, 0.3, 1));
-  }
 
   const qTargetPa = Number(guidance.maxQTargetPa) || 0;
   const qControlStartRatio = clamp(Number(guidance.maxQControlStartRatio) || 0.78, 0.2, 1.2);
@@ -373,11 +296,169 @@ export function throttleForState(stageIndex, elapsedSeconds, dynamicPressurePa =
       throttle = Math.min(throttle, clamp(1 - reduction, floor, 1));
     }
   }
-
-  if (elapsedSeconds >= guidance.maxQThrottleStartSec && elapsedSeconds <= guidance.maxQThrottleEndSec) {
-    throttle = Math.min(throttle, clamp(Number(guidance.maxQThrottleValue) || 0.72, 0.3, 1));
-  }
   return clamp(throttle, 0, 1);
+}
+
+function smoothStep01(value) {
+  const t = clamp(value, 0, 1);
+  return t * t * (3 - (2 * t));
+}
+
+function projectOntoPlaneDirection(direction, planeNormal, fallback) {
+  return normalize(
+    subtract(direction, scale(planeNormal, dot(direction, planeNormal))),
+    fallback,
+  );
+}
+
+function limitDirectionAngle({
+  desiredDirection,
+  referenceDirection,
+  maxAngleRad,
+  fallback,
+}) {
+  const reference = normalize(referenceDirection, fallback);
+  const desired = normalize(desiredDirection, reference);
+  const safeMaxAngleRad = Math.max(0, Number(maxAngleRad) || 0);
+  const angleRad = Math.acos(clamp(dot(desired, reference), -1, 1));
+  if (!(safeMaxAngleRad > 0) || !(angleRad > safeMaxAngleRad)) {
+    return {
+      direction: desired,
+      limited: false,
+      angleRad,
+    };
+  }
+  const blend = clamp(safeMaxAngleRad / Math.max(angleRad, 1e-6), 0, 1);
+  return {
+    direction: normalize(mixVectors(reference, desired, blend), reference),
+    limited: true,
+    angleRad,
+  };
+}
+
+function stateDrivenAscentProfile({
+  orbital,
+  relPos,
+  relVel,
+  up,
+  tangent,
+  planeNormal,
+  earthPole,
+  targetCircularSpeedKmS,
+  dynamicPressurePa,
+  verticalAscentMaxAltitudeKm,
+  gravityTurnEndAltitudeKm,
+  config,
+}) {
+  const altitudeKm = Math.max(0, Number(orbital?.altitudeKm) || 0);
+  const tangentialSpeedKmS = Math.max(0, Number(orbital?.tangentialSpeedKmS) || 0);
+  const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
+  const safeTurnStartKm = Math.max(0, verticalAscentMaxAltitudeKm * 0.15);
+  const turnAltitudeProgress = clamp(
+    (altitudeKm - safeTurnStartKm)
+      / Math.max(gravityTurnEndAltitudeKm - safeTurnStartKm, 1),
+    0,
+    1,
+  );
+  const tangentialProgress = clamp(
+    tangentialSpeedKmS / Math.max(targetCircularSpeedKmS, 0.1),
+    0,
+    1.2,
+  );
+  const qTargetPa = Math.max(1, Number(LAUNCH_VEHICLE_CONFIG.guidance?.maxQTargetPa) || 28_000);
+  const qRatio = clamp((Number(dynamicPressurePa) || 0) / qTargetPa, 0, 2.5);
+  const kickStartKm = Math.max(
+    verticalAscentMaxAltitudeKm * 0.2,
+    Number(config.pitchKickStartAltitudeKm) || 0.12,
+  );
+  const kickEndKm = Math.max(
+    kickStartKm + 0.1,
+    Number(config.pitchKickEndAltitudeKm) || 8.5,
+  );
+  const kickProgress = smoothStep01(
+    (altitudeKm - kickStartKm) / Math.max(kickEndKm - kickStartKm, 0.1),
+  );
+  const kickAngleRad = rad(clamp(Number(config.pitchKickMaxDeg) || 10.5, 0, 20)) * kickProgress;
+  const scheduledDirection = normalize(
+    add(
+      scale(up, Math.cos(kickAngleRad)),
+      scale(tangent, Math.sin(kickAngleRad)),
+    ),
+    up,
+  );
+  const relAir = atmosphereRelativeVelocityKmS(relPos, relVel, earthPole);
+  const airspeedKmS = length(relAir);
+  const minTrackAirspeedKmS = Math.max(0.02, Number(config.progradeTrackMinAirSpeedKmS) || 0.12);
+  const inertialPrograde = projectOntoPlaneDirection(relVel, planeNormal, tangent);
+  const trackReference = airspeedKmS >= minTrackAirspeedKmS
+    ? projectOntoPlaneDirection(relAir, planeNormal, inertialPrograde)
+    : inertialPrograde;
+  const radialTargetKmS = clamp(
+    0.80
+      - (0.62 * Math.pow(turnAltitudeProgress, 0.78))
+      - (0.14 * tangentialProgress),
+    0.06,
+    0.80,
+  );
+  const radialDeficit = clamp(
+    (radialTargetKmS - radialSpeedKmS) / Math.max(radialTargetKmS, 0.08),
+    -1,
+    1,
+  );
+  const progradeCapture = clamp(
+    (0.14 * kickProgress)
+      + (0.62 * Math.pow(turnAltitudeProgress, 0.82))
+      + (0.38 * Math.pow(tangentialProgress, 0.92))
+      + (0.24 * Math.max(0, qRatio - 0.60)),
+    0,
+    1,
+  );
+  let direction = normalize(
+    mixVectors(scheduledDirection, trackReference, progradeCapture),
+    scheduledDirection,
+  );
+  const climbAssistWeight = clamp(
+    0.12
+      + (Math.max(0, radialDeficit) * 0.16)
+      + (Math.max(0, qRatio - 1) * 0.08)
+      - (0.16 * turnAltitudeProgress)
+      - (0.10 * tangentialProgress),
+    0,
+    0.28,
+  );
+  if (climbAssistWeight > 1e-6) {
+    direction = normalize(
+      add(scale(direction, 1), scale(up, climbAssistWeight)),
+      direction,
+    );
+  }
+  const aoaLimitStartRatio = clamp(Number(config.maxQAoALimitStartRatio) || 0.55, 0.2, 1.2);
+  const aoaLimitDeg = qRatio >= aoaLimitStartRatio
+    ? clamp(Number(config.maxQAoALimitDeg) || 4.5, 1, 15)
+    : clamp(Number(config.ascentAoALimitDeg) || 7.5, 1, 20);
+  const aoaLimited = airspeedKmS >= minTrackAirspeedKmS
+    ? limitDirectionAngle({
+      desiredDirection: direction,
+      referenceDirection: trackReference,
+      maxAngleRad: rad(aoaLimitDeg),
+      fallback: trackReference,
+    })
+    : {
+      direction: normalize(direction, scheduledDirection),
+      limited: false,
+      angleRad: 0,
+    };
+  direction = aoaLimited.direction;
+  return {
+    direction,
+    climbWeight: dot(direction, up),
+    turnAltitudeProgress,
+    tangentialProgress,
+    radialTargetKmS,
+    kickProgress,
+    progradeCapture,
+    aoaLimited: aoaLimited.limited,
+  };
 }
 
 export function computeAutopilotCommand({
@@ -394,6 +475,7 @@ export function computeAutopilotCommand({
   const config = LAUNCH_AUTOPILOT_CONFIG;
   const targetAltitudeKm = Number(runtime?.targetOrbitAltitudeKm) || config.targetOrbitAltitudeKm;
   const targetAltitudeSafe = Math.max(targetAltitudeKm, 1);
+  const verticalAscentMaxAltitudeKm = Math.max(0.05, Number(config.verticalAscentMaxAltitudeKm) || 0.05);
   const apoapsisKm = Number(orbital.apoapsisKm);
   const periapsisKm = Number(orbital.periapsisKm);
   const apoDefined = Number.isFinite(apoapsisKm);
@@ -403,7 +485,15 @@ export function computeAutopilotCommand({
   const tangentialSpeedKmS = Number(orbital.tangentialSpeedKmS) || 0;
   const targetRadiusKm = Math.max(1, earthRadiusKm + targetAltitudeKm);
   const targetCircularSpeedKmS = circularOrbitSpeedKmS(muKm3S2, targetRadiusKm);
-  const stableTargetOrbit = orbitInsertionWithinTolerance(orbital, config, targetAltitudeKm);
+  const stableTargetOrbit = targetAltitudeSafe > 350
+    ? (
+      Number(orbital.specificEnergy) < 0
+      && apoDefined
+      && periDefined
+      && apoapsisKm >= targetAltitudeKm
+      && periapsisKm >= targetAltitudeKm
+    )
+    : orbitInsertionWithinTolerance(orbital, config, targetAltitudeKm);
 
   const planeNormal = runtime.launchPlaneNormal || normalize(cross(up, relVel), earthPole);
   const tangent = autopilotDirectionInTargetPlane(relVel, up, planeNormal, earthPole);
@@ -427,6 +517,9 @@ export function computeAutopilotCommand({
   }
 
   if (runtime.autopilotMode === "autopilot-coast-to-circularize") {
+    const circularizationLeadSeconds = targetAltitudeSafe > 350
+      ? Math.min(config.circularizationIgnitionLeadSeconds, 8)
+      : config.circularizationIgnitionLeadSeconds;
     const coastMinAltitudeKm = Math.max(config.ascentCoastMinAltitudeKm || 0, 0);
     const belowSafeCoastAltitude = orbital.altitudeKm < coastMinAltitudeKm;
     const descendingTooFast = radialSpeedKmS < (config.ascentClimbRecoverRadialSpeedKmS ?? -0.01);
@@ -444,10 +537,20 @@ export function computeAutopilotCommand({
       };
     }
     const tta = Number(orbital.timeToApoapsisSec);
+    const highOrbitEarlyCircularization =
+      targetAltitudeSafe > 350
+      && Number.isFinite(tta)
+      && tta > 1200
+      && apoDefined
+      && periDefined
+      && apoapsisKm >= targetAltitudeKm
+      && periapsisKm < (targetAltitudeKm - Math.max(targetAltitudeSafe * 0.18, 60))
+      && orbital.altitudeKm >= Math.max(coastMinAltitudeKm, targetAltitudeSafe * 0.18);
     const readyForCircularization =
-      (Number.isFinite(tta) && tta <= config.circularizationIgnitionLeadSeconds)
+      (Number.isFinite(tta) && tta <= circularizationLeadSeconds)
       || (radialSpeedKmS <= 0 && orbital.altitudeKm >= config.circularizationMinAltitudeKm)
-      || (!Number.isFinite(tta) && orbital.altitudeKm >= config.circularizationMinAltitudeKm);
+      || (!Number.isFinite(tta) && orbital.altitudeKm >= config.circularizationMinAltitudeKm)
+      || highOrbitEarlyCircularization;
     if (!readyForCircularization) {
       return {
         phase: "coast",
@@ -460,9 +563,33 @@ export function computeAutopilotCommand({
   }
 
   if (runtime.autopilotMode === "autopilot-circularization") {
+    const timeToApoapsisSec = Number(orbital.timeToApoapsisSec);
     const periErrorKm = periDefined ? targetAltitudeKm - periapsisKm : targetAltitudeKm;
     const tangentialSpeedErrorKmS = circularSpeedKmS - tangentialSpeedKmS;
     const aboveCircularSpeed = tangentialSpeedErrorKmS <= -0.02;
+    const periTrimWindowKm = Math.max(8, targetAltitudeSafe * 0.024);
+    const gentleOverspeedWindowKmS = 0.18;
+    const canFineTrimCircularization =
+      periErrorKm > 0
+      && periErrorKm <= periTrimWindowKm
+      && tangentialSpeedErrorKmS > -gentleOverspeedWindowKmS;
+    const highOrbitApoVicinityActive =
+      targetAltitudeSafe > 350
+      && apoDefined
+      && orbital.altitudeKm >= (targetAltitudeKm * 0.95)
+      && apoapsisKm <= (targetAltitudeKm + Math.max(targetAltitudeSafe * 0.32, 160));
+    const highOrbitPeriRaiseActive =
+      targetAltitudeSafe > 350
+      && apoDefined
+      && periDefined
+      && apoapsisKm >= targetAltitudeKm
+      && periErrorKm > periTrimWindowKm
+      && (
+        (Number.isFinite(timeToApoapsisSec) && timeToApoapsisSec <= 20)
+        || Math.abs(radialSpeedKmS) <= 0.03
+        || highOrbitApoVicinityActive
+      )
+      && orbital.altitudeKm >= Math.max(config.ascentCoastMinAltitudeKm || 0, targetAltitudeSafe * 0.18);
     const doneCircularizing = stableTargetOrbit && tangentialSpeedErrorKmS <= 0.02;
     if (doneCircularizing) {
       runtime.autopilotMode = "autopilot-orbital-hold";
@@ -473,7 +600,7 @@ export function computeAutopilotCommand({
         mode: "autopilot-orbital-hold",
       };
     }
-    if (aboveCircularSpeed) {
+    if (aboveCircularSpeed && !canFineTrimCircularization && !highOrbitPeriRaiseActive) {
       runtime.autopilotMode = "autopilot-coast-to-circularize";
       return {
         phase: "coast",
@@ -483,14 +610,81 @@ export function computeAutopilotCommand({
       };
     }
     const radialDamping = clamp(-radialSpeedKmS * 0.55, -0.22, 0.22);
-    const direction = normalize(
+    let direction = normalize(
       add(scale(tangent, 1), scale(up, radialDamping)),
       tangent,
     );
-    const throttle = clamp(
-      config.circularizationThrottle + clamp(periErrorKm / targetAltitudeSafe, -0.2, 0.35),
-      0.18,
+    const positivePeriErrorKm = Math.max(0, periErrorKm);
+    const closeInFactor = clamp(
+      positivePeriErrorKm / Math.max(targetAltitudeSafe * 0.2, 50),
+      0,
       1,
+    );
+    const apoWindowThrottleFactor = (
+      targetAltitudeSafe > 350
+      && Number.isFinite(timeToApoapsisSec)
+      && timeToApoapsisSec > 0
+    )
+      ? clamp(1 - (timeToApoapsisSec / 18), 0.1, 1)
+      : 1;
+    if (highOrbitPeriRaiseActive) {
+      const apoOvershootRatio = clamp(
+        (apoapsisKm - targetAltitudeKm) / Math.max(targetAltitudeSafe * 0.1, 20),
+        0,
+        1,
+      );
+      const inwardBias = clamp(
+        0.02 + (apoOvershootRatio * 0.10),
+        0.02,
+        0.12,
+      );
+      direction = normalize(
+        add(scale(tangent, 1), scale(up, -inwardBias)),
+        tangent,
+      );
+      const throttle = clamp(
+        0.10 + (closeInFactor * 0.14),
+        0.10,
+        0.24,
+      );
+      return {
+        phase: "powered",
+        throttle,
+        direction,
+        mode: "autopilot-high-orbit-periapsis-raise",
+      };
+    }
+    const finalPeriTrimActive =
+      targetAltitudeSafe > 350
+      && positivePeriErrorKm > 0
+      && positivePeriErrorKm <= periTrimWindowKm
+      && apoDefined
+      && apoapsisKm >= targetAltitudeKm;
+    if (finalPeriTrimActive) {
+      const trimInwardBias = clamp(
+        0.08 + ((positivePeriErrorKm / Math.max(periTrimWindowKm, 1e-6)) * 0.16),
+        0.08,
+        0.24,
+      );
+      direction = normalize(
+        add(scale(tangent, 1), scale(up, -trimInwardBias)),
+        tangent,
+      );
+    }
+    const effectiveApoWindowThrottleFactor = finalPeriTrimActive
+      ? Math.max(apoWindowThrottleFactor, 0.9)
+      : apoWindowThrottleFactor;
+    const minimumCircularizationThrottle = finalPeriTrimActive
+      ? 0.14
+      : (targetAltitudeSafe > 350 ? 0.14 : 0.16);
+    const throttle = clamp(
+      (
+        (config.circularizationThrottle * (0.35 + (0.65 * closeInFactor)))
+        + clamp(positivePeriErrorKm / targetAltitudeSafe, 0, 0.16)
+        + clamp(-periErrorKm / targetAltitudeSafe, -0.08, 0)
+      ) * effectiveApoWindowThrottleFactor,
+      minimumCircularizationThrottle,
+      0.72,
     );
     return {
       phase: "powered",
@@ -500,45 +694,80 @@ export function computeAutopilotCommand({
     };
   }
 
-  if (
-    runtime.elapsedSeconds < config.verticalAscentMinSeconds
-    || orbital.altitudeKm < config.verticalAscentMaxAltitudeKm
-  ) {
-    const hold = applyVerticalHoldSteering({
-      baseDirection: up,
-      relPos,
-      relVel,
-      earthPole,
-      altitudeKm: orbital.altitudeKm,
-      elapsedSeconds: runtime.elapsedSeconds,
-    });
-    runtime.autopilotMode = "autopilot-vertical-ascent";
-    return {
-      phase: "powered",
-      throttle: throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa),
-      direction: hold.direction,
-      mode: hold.active ? "autopilot-vertical-hold" : "autopilot-vertical-ascent",
-    };
-  }
-
-  const gravityTurnBlend = clamp(
-    (orbital.altitudeKm - config.verticalAscentMaxAltitudeKm)
-      / Math.max(config.gravityTurnEndAltitudeKm - config.verticalAscentMaxAltitudeKm, 1),
-    0,
-    1,
-  );
-  const turnDirection = normalize(
-    mixVectors(up, tangent, Math.pow(gravityTurnBlend, 0.85)),
+  const ascentProfile = stateDrivenAscentProfile({
+    orbital,
+    relPos,
+    relVel,
+    up,
     tangent,
-  );
-
-  let direction = turnDirection;
+    planeNormal,
+    earthPole,
+    targetCircularSpeedKmS,
+    dynamicPressurePa,
+    verticalAscentMaxAltitudeKm,
+    gravityTurnEndAltitudeKm: config.gravityTurnEndAltitudeKm,
+    config,
+  });
+  let direction = ascentProfile.direction;
   let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa);
-  let mode = "autopilot-gravity-turn";
-  if (gravityTurnBlend >= 1) {
+  let mode = ascentProfile.progradeCapture < 0.58
+    ? "autopilot-pitch-program"
+    : "autopilot-gravity-turn";
+  if (ascentProfile.turnAltitudeProgress >= 1) {
     runtime.autopilotMode = "autopilot-apoapsis-raise";
     const apoDeficitKm = apoDefined ? targetAltitudeKm - apoapsisKm : targetAltitudeKm;
-    const radialBias = clamp((apoDeficitKm / targetAltitudeSafe) * 0.30, -0.12, 0.18);
+    const highOrbitTargetActive = targetAltitudeSafe > 350 && Number(runtime.stageIndex) >= 1;
+    const positivePeriapsisKm = periDefined ? Math.max(0, periapsisKm) : 0;
+    const highOrbitInsertionAltitudeKm = Math.max(
+      config.circularizationMinAltitudeKm,
+      targetAltitudeSafe * 0.55,
+    );
+    const highOrbitPeriGuideKm = targetAltitudeSafe * 0.35;
+    const highOrbitDirectInsertionActive = highOrbitTargetActive
+      && (
+        !apoDefined
+        || apoapsisKm < targetAltitudeKm
+      )
+      && (
+        orbital.altitudeKm < highOrbitInsertionAltitudeKm
+        || !periDefined
+        || periapsisKm < highOrbitPeriGuideKm
+      );
+    const radialBias = highOrbitDirectInsertionActive
+      ? (() => {
+        const altitudeProgress = clamp(
+          orbital.altitudeKm / Math.max(highOrbitInsertionAltitudeKm, 1),
+          0,
+          1,
+        );
+        const periProgress = clamp(
+          positivePeriapsisKm / Math.max(highOrbitPeriGuideKm, 1),
+          0,
+          1,
+        );
+        const insertionProgress = Math.max(altitudeProgress, periProgress);
+        const tangentialProgress = clamp(
+          tangentialSpeedKmS / Math.max(targetCircularSpeedKmS, 0.1),
+          0,
+          1.2,
+        );
+        const horizontalOverspeedRatio = Math.max(0, tangentialProgress - altitudeProgress);
+        const apoCloseProgress = 1 - clamp(
+          Math.max(0, apoDeficitKm) / Math.max(targetAltitudeSafe * 0.5, 200),
+          0,
+          1,
+        );
+        return clamp(
+          0.28
+            - (insertionProgress * 0.08)
+            + (Math.max(0, apoDeficitKm) / targetAltitudeSafe) * 0.03
+            + (horizontalOverspeedRatio * 1.2)
+            + (apoCloseProgress * 0.18),
+          0.22,
+          0.9,
+        );
+      })()
+      : clamp((apoDeficitKm / targetAltitudeSafe) * 0.13, -0.05, 0.06);
     direction = normalize(
       add(scale(tangent, 1), scale(up, radialBias)),
       tangent,
@@ -548,12 +777,31 @@ export function computeAutopilotCommand({
       0.72,
       config.ascentMaxThrottle,
     );
+    if (highOrbitDirectInsertionActive) {
+      const highOrbitInsertionThrottle = clamp(
+        0.36 + (
+          clamp(
+            Math.max(0, apoDeficitKm) / Math.max(targetAltitudeSafe * 0.5, 200),
+            0,
+            1,
+          ) * 0.52
+        ),
+        0.36,
+        0.88,
+      );
+      return {
+        phase: "powered",
+        throttle: highOrbitInsertionThrottle,
+        direction,
+        mode: "autopilot-high-orbit-insertion",
+      };
+    }
     mode = "autopilot-apoapsis-raise";
   } else {
     runtime.autopilotMode = "autopilot-gravity-turn";
   }
 
-  const climbGuardAltitudeKm = Math.max(config.ascentClimbGuardAltitudeKm || 0, config.verticalAscentMaxAltitudeKm || 0);
+  const climbGuardAltitudeKm = Math.max(config.ascentClimbGuardAltitudeKm || 0, verticalAscentMaxAltitudeKm || 0);
   if (orbital.altitudeKm < climbGuardAltitudeKm) {
     const altitudeDeficit = clamp(
       (climbGuardAltitudeKm - orbital.altitudeKm) / Math.max(climbGuardAltitudeKm, 1),
@@ -592,37 +840,40 @@ export function computeAutopilotCommand({
     mode = "autopilot-climb-guard";
   }
 
-  const hotstageShaping = applyHotstageTargetShaping({
-    runtime,
-    orbital,
-    up,
-    direction,
-    throttle,
-    config,
-  });
-  direction = hotstageShaping.direction;
-  throttle = hotstageShaping.throttle;
-  if (hotstageShaping.active && !mode.includes("hotstage-target")) {
-    mode = `${mode}+hotstage-target`;
-  }
-
   const coastApoapsisGateKm = Math.max(
     config.circularizationMinAltitudeKm,
-    targetAltitudeSafe * (targetAltitudeSafe > 350 ? 0.95 : 0.75),
+    targetAltitudeSafe > 350
+      ? targetAltitudeSafe
+      : (targetAltitudeSafe * 0.75),
   );
+  const highOrbitDirectInsertionIncomplete =
+    targetAltitudeSafe > 350
+    && (
+      !apoDefined
+      || apoapsisKm < targetAltitudeKm
+    )
+    && (
+      orbital.altitudeKm < Math.max(config.circularizationMinAltitudeKm, targetAltitudeSafe * 0.55)
+      || !periDefined
+      || periapsisKm < (targetAltitudeKm * 0.35)
+    );
   const shouldCoastToApoapsis =
-    (
+    !highOrbitDirectInsertionIncomplete
+    && (
       apoDefined
       && apoapsisKm >= (targetAltitudeKm + config.insertionCutoffApoapsisMarginKm)
       && radialSpeedKmS > -0.005
       && orbital.altitudeKm >= Math.max(config.ascentCoastMinAltitudeKm || 0, 0)
     )
     || (
+      !highOrbitDirectInsertionIncomplete
+      && (
       apoDefined
       && apoapsisKm >= coastApoapsisGateKm
       && orbital.altitudeKm >= config.circularizationMinAltitudeKm
       && tangentialSpeedKmS >= (targetCircularSpeedKmS * 0.9)
       && radialSpeedKmS > -0.01
+      )
     );
   if (shouldCoastToApoapsis) {
     runtime.autopilotMode = "autopilot-coast-to-circularize";
@@ -640,7 +891,6 @@ export function computeAutopilotCommand({
     relVel,
     earthPole,
     altitudeKm: orbital.altitudeKm,
-    elapsedSeconds: runtime.elapsedSeconds,
   });
   if (hold.active) {
     direction = hold.direction;

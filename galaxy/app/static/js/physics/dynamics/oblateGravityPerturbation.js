@@ -25,30 +25,72 @@ function add(a, b) {
 }
 
 function legendreAndDerivative(n, u) {
-  const order = Math.max(0, Math.floor(Number(n) || 0));
-  const x = Math.max(-1, Math.min(1, Number(u) || 0));
-  if (order === 0) {
-    return { p: 1, dp: 0 };
-  }
-  if (order === 1) {
-    return { p: x, dp: 1 };
-  }
+  return associatedLegendreAndDerivative(n, 0, u);
+}
 
-  let pNm2 = 1;
-  let pNm1 = x;
-  let dpNm2 = 0;
-  let dpNm1 = 1;
-  let pN = pNm1;
-  let dpN = dpNm1;
-  for (let l = 2; l <= order; l += 1) {
-    pN = (((2 * l) - 1) * x * pNm1 - ((l - 1) * pNm2)) / l;
-    dpN = ((((2 * l) - 1) * (pNm1 + (x * dpNm1))) - ((l - 1) * dpNm2)) / l;
-    pNm2 = pNm1;
-    pNm1 = pN;
-    dpNm2 = dpNm1;
-    dpNm1 = dpN;
+function associatedLegendreValue(n, m, x) {
+  const degree = Math.max(0, Math.floor(Number(n) || 0));
+  const order = Math.max(0, Math.floor(Number(m) || 0));
+  const u = Math.max(-1, Math.min(1, Number(x) || 0));
+  if (order > degree) {
+    return 0;
   }
-  return { p: pN, dp: dpN };
+  if (order === 0 && degree === 0) {
+    return 1;
+  }
+  if (degree === 0) {
+    return 1;
+  }
+  let pmm = 1;
+  if (order > 0) {
+    const root = Math.sqrt(Math.max(0, 1 - (u * u)));
+    let odd = 1;
+    for (let i = 1; i <= order; i += 1) {
+      pmm *= -(odd * root);
+      odd += 2;
+    }
+  }
+  if (degree === order) {
+    return pmm;
+  }
+  let pnm1m = u * ((2 * order) + 1) * pmm;
+  if (degree === order + 1) {
+    return pnm1m;
+  }
+  let pnm2m = pmm;
+  let pnm = pnm1m;
+  for (let l = order + 2; l <= degree; l += 1) {
+    pnm = ((((2 * l) - 1) * u * pnm1m) - ((l + order - 1) * pnm2m)) / (l - order);
+    pnm2m = pnm1m;
+    pnm1m = pnm;
+  }
+  return pnm;
+}
+
+function associatedLegendreAndDerivative(n, m, u) {
+  const degree = Math.max(0, Math.floor(Number(n) || 0));
+  const order = Math.max(0, Math.floor(Number(m) || 0));
+  const x = Math.max(-1, Math.min(1, Number(u) || 0));
+  const p = associatedLegendreValue(degree, order, x);
+  if (!(degree >= order)) {
+    return { p: 0, dp: 0 };
+  }
+  if (degree === 0) {
+    return { p, dp: 0 };
+  }
+  const denom = (x * x) - 1;
+  if (Math.abs(denom) <= 1e-10) {
+    const h = 1e-6;
+    const lo = Math.max(-1, Math.min(1, x - h));
+    const hi = Math.max(-1, Math.min(1, x + h));
+    const plo = associatedLegendreValue(degree, order, lo);
+    const phi = associatedLegendreValue(degree, order, hi);
+    const span = Math.max(1e-12, hi - lo);
+    return { p, dp: (phi - plo) / span };
+  }
+  const prev = associatedLegendreValue(degree - 1, order, x);
+  const dp = ((degree * x * p) - ((degree + order) * prev)) / denom;
+  return { p, dp };
 }
 
 function zonalTermAcceleration({
@@ -61,8 +103,8 @@ function zonalTermAcceleration({
   referenceRadiusKm,
   poleUnit,
 }) {
-  const order = Math.max(2, Math.floor(Number(n) || 0));
-  if (!(order >= 2)) {
+  const degree = Math.max(2, Math.floor(Number(n) || 0));
+  if (!(degree >= 2)) {
     return { x: 0, y: 0, z: 0 };
   }
   const term = finite(jn, 0);
@@ -70,14 +112,11 @@ function zonalTermAcceleration({
     return { x: 0, y: 0, z: 0 };
   }
   const refOverR = referenceRadiusKm * invRadius;
-  const refOverRn = Math.pow(refOverR, order);
+  const refOverRn = Math.pow(refOverR, degree);
   const u = dot(poleUnit, relPosKm) * invRadius;
-  const { p, dp } = legendreAndDerivative(order, u);
-
-  // Vector acceleration from zonal harmonic Jn:
-  // a_n = μ/r^3 * Jn*(Re/r)^n * [((n+1)Pn + u*Pn') r - (r*Pn') k]
+  const { p, dp } = associatedLegendreAndDerivative(degree, 0, u);
   const coeff = muOverR3 * term * refOverRn;
-  const radialFactor = ((order + 1) * p) + (u * dp);
+  const radialFactor = ((degree + 1) * p) + (u * dp);
   const polarFactor = dp * radiusKm;
   return {
     x: coeff * ((radialFactor * relPosKm.x) - (polarFactor * poleUnit.x)),
@@ -86,43 +125,93 @@ function zonalTermAcceleration({
   };
 }
 
-function degree22TesseralAcceleration({
+function genericTesseralHarmonicAcceleration({
+  harmonicTerms = null,
+  c21 = 0,
+  s21 = 0,
   c22 = 0,
   s22 = 0,
   relPosKm,
   radiusKm,
-  invRadius,
-  muOverR3,
+  invRadius = 0,
+  muOverR3 = 0,
   referenceRadiusKm,
   poleUnit,
   xAxis,
   yAxis,
 }) {
-  const c = finite(c22, 0);
-  const s = finite(s22, 0);
-  if (!(Math.abs(c) > 1e-20 || Math.abs(s) > 1e-20)) {
-    return { x: 0, y: 0, z: 0 };
-  }
   const xUnit = norm(xAxis);
   const yUnit = norm(yAxis);
   if (!xUnit || !yUnit || !poleUnit) {
     return { x: 0, y: 0, z: 0 };
   }
+  const terms = Array.isArray(harmonicTerms) && harmonicTerms.length > 0
+    ? harmonicTerms
+    : [
+      { n: 2, m: 1, c: finite(c21, 0), s: finite(s21, 0) },
+      { n: 2, m: 2, c: finite(c22, 0), s: finite(s22, 0) },
+    ].filter((term) => Math.abs(term.c) > 1e-20 || Math.abs(term.s) > 1e-20);
+  if (terms.length <= 0) {
+    return { x: 0, y: 0, z: 0 };
+  }
 
-  const ux = dot(xUnit, relPosKm) * invRadius;
-  const uy = dot(yUnit, relPosKm) * invRadius;
-  const uz = dot(poleUnit, relPosKm) * invRadius;
-  const q22 = (c * ((ux * ux) - (uy * uy))) + (2 * s * ux * uy);
-  const termX = (2 * ((c * ux) + (s * uy))) - (5 * ux * q22);
-  const termY = (2 * ((s * ux) - (c * uy))) - (5 * uy * q22);
-  const termZ = -5 * uz * q22;
-  const refOverR = referenceRadiusKm * invRadius;
-  const coeff22 = 3 * muOverR3 * refOverR * refOverR * radiusKm;
-  const bodyAccel = {
-    x: coeff22 * termX,
-    y: coeff22 * termY,
-    z: coeff22 * termZ,
+  const bodyX = dot(xUnit, relPosKm);
+  const bodyY = dot(yUnit, relPosKm);
+  const bodyZ = dot(poleUnit, relPosKm);
+  const rhoSq = (bodyX * bodyX) + (bodyY * bodyY);
+  const rho = Math.sqrt(Math.max(0, rhoSq));
+  const cosPhi = rho * invRadius;
+  const sinPhi = bodyZ * invRadius;
+  const lambda = Math.atan2(bodyY, bodyX);
+  const muOverR2 = muOverR3 * radiusKm;
+
+  let radial = 0;
+  let latitudinal = 0;
+  let longitudinal = 0;
+  for (const rawTerm of terms) {
+    const n = Math.max(2, Math.floor(Number(rawTerm?.n) || 0));
+    const m = Math.max(1, Math.floor(Number(rawTerm?.m) || 0));
+    const c = finite(rawTerm?.c, 0);
+    const s = finite(rawTerm?.s, 0);
+    if (!(n >= m) || !(Math.abs(c) > 1e-20 || Math.abs(s) > 1e-20)) {
+      continue;
+    }
+    const refOverRn = Math.pow(referenceRadiusKm * invRadius, n);
+    const { p, dp } = associatedLegendreAndDerivative(n, m, sinPhi);
+    const trigAngle = m * lambda;
+    const cosMLambda = Math.cos(trigAngle);
+    const sinMLambda = Math.sin(trigAngle);
+    const aCoeff = (c * cosMLambda) + (s * sinMLambda);
+    const bCoeff = (-c * sinMLambda) + (s * cosMLambda);
+    radial += -((n + 1) * refOverRn * p * aCoeff);
+    latitudinal += refOverRn * dp * cosPhi * aCoeff;
+    if (cosPhi > 1e-12) {
+      longitudinal += refOverRn * m * p * bCoeff / cosPhi;
+    }
+  }
+  const eR = {
+    x: bodyX * invRadius,
+    y: bodyY * invRadius,
+    z: bodyZ * invRadius,
   };
+  const ePhi = rho > 1e-12
+    ? {
+      x: -(sinPhi * bodyX) / rho,
+      y: -(sinPhi * bodyY) / rho,
+      z: cosPhi,
+    }
+    : { x: 0, y: 0, z: 1 };
+  const eLambda = rho > 1e-12
+    ? {
+      x: -bodyY / rho,
+      y: bodyX / rho,
+      z: 0,
+    }
+    : { x: 0, y: 1, z: 0 };
+  const bodyAccel = add(
+    add(scale(eR, muOverR2 * radial), scale(ePhi, muOverR2 * latitudinal)),
+    scale(eLambda, muOverR2 * longitudinal),
+  );
   return add(
     add(scale(xUnit, bodyAccel.x), scale(yUnit, bodyAccel.y)),
     scale(poleUnit, bodyAccel.z),
@@ -138,10 +227,15 @@ export function computeOblateGravityPerturbationKmS2({
   xAxis,
   yAxis,
   j2 = 0,
+  j3 = 0,
   j4 = 0,
+  j5 = 0,
   j6 = 0,
+  c21 = 0,
+  s21 = 0,
   c22 = 0,
   s22 = 0,
+  harmonicTerms = null,
 } = {}) {
   if (!relPosKm || !(radiusKm > 1e-12) || !(referenceRadiusKm > 0) || !(muOverR3 > 0)) {
     return { x: 0, y: 0, z: 0 };
@@ -164,8 +258,28 @@ export function computeOblateGravityPerturbationKmS2({
     poleUnit,
   }));
   acc = add(acc, zonalTermAcceleration({
+    n: 3,
+    jn: j3,
+    relPosKm,
+    radiusKm,
+    invRadius,
+    muOverR3,
+    referenceRadiusKm,
+    poleUnit,
+  }));
+  acc = add(acc, zonalTermAcceleration({
     n: 4,
     jn: j4,
+    relPosKm,
+    radiusKm,
+    invRadius,
+    muOverR3,
+    referenceRadiusKm,
+    poleUnit,
+  }));
+  acc = add(acc, zonalTermAcceleration({
+    n: 5,
+    jn: j5,
     relPosKm,
     radiusKm,
     invRadius,
@@ -184,7 +298,10 @@ export function computeOblateGravityPerturbationKmS2({
     poleUnit,
   }));
 
-  acc = add(acc, degree22TesseralAcceleration({
+  acc = add(acc, genericTesseralHarmonicAcceleration({
+    harmonicTerms,
+    c21,
+    s21,
     c22,
     s22,
     relPosKm,

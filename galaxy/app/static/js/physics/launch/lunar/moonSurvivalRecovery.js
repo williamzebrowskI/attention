@@ -4,12 +4,14 @@ import {
   normalize,
   scale,
 } from "../launchMath.js";
+import { normalizeMissionPhase } from "../../navigation_system/navigationMissionProfiles.js";
 
 const MOON_SURVIVAL_PHASES = new Set([
   "tli_burn",
-  "coast_to_moon",
-  "lunar_capture",
-  "coast_to_earth",
+  "midcourse",
+  "lunar_orbit_insertion",
+  "lunar_orbit_trim",
+  "earth_approach",
   "earth_capture",
 ]);
 
@@ -41,7 +43,7 @@ export function computeMoonSurvivalRecoveryOverride({
   recoveryWasActive = false,
   reasonPrefix = "",
 } = {}) {
-  if (!MOON_SURVIVAL_PHASES.has(String(missionPhase || "").trim().toLowerCase())) {
+  if (!MOON_SURVIVAL_PHASES.has(normalizeMissionPhase(missionPhase, "moon_orbit_return"))) {
     return null;
   }
   const propellantKg = Math.max(0, finite(availablePropellantKg, 0));

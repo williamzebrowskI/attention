@@ -2,6 +2,7 @@ import { finiteVector } from "../navigationMath.js";
 import {
   NAVIGATION_MISSION_IDS,
   NAVIGATION_MISSION_PHASES,
+  normalizeMissionPhase,
 } from "../navigationMissionProfiles.js";
 import { createMoonNavigationFilterState } from "../lunar/moonStateFilter.js";
 
@@ -30,6 +31,8 @@ function createMoonGncRuntime() {
     predictedPeriluneAltitudeKm: null,
     bPlaneErrorKm: null,
     deltaVNeedKmS: null,
+    sourceModelCache: null,
+    sourceModelCacheTimestampSec: null,
   };
 }
 
@@ -173,6 +176,8 @@ export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
           : null,
         bPlaneErrorKm: Number.isFinite(Number(gnc.bPlaneErrorKm)) ? Number(gnc.bPlaneErrorKm) : null,
         deltaVNeedKmS: Number.isFinite(Number(gnc.deltaVNeedKmS)) ? Number(gnc.deltaVNeedKmS) : null,
+        sourceModelCache: null,
+        sourceModelCacheTimestampSec: null,
       };
     }
     const approach = moonSnapshot.approach;
@@ -222,7 +227,7 @@ export function syncPlannerRuntime({
     return;
   }
   const nextMissionId = String(missionId || NAVIGATION_MISSION_IDS.EARTH_ORBIT_HOLD);
-  const nextMissionPhase = String(missionPhase || "").trim();
+  const nextMissionPhase = normalizeMissionPhase(missionPhase, nextMissionId);
   const missionChanged = plannerRuntime.missionId !== nextMissionId;
   const phaseChanged = plannerRuntime.missionPhase !== nextMissionPhase;
   if (missionChanged) {
@@ -230,7 +235,7 @@ export function syncPlannerRuntime({
   } else if (phaseChanged) {
     if (nextMissionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
       resetMoonGuidanceRuntime(plannerRuntime.moon, { clearFilter: true });
-    } else if (nextMissionPhase !== NAVIGATION_MISSION_PHASES.COAST_TO_MOON) {
+    } else if (nextMissionPhase !== NAVIGATION_MISSION_PHASES.MIDCOURSE) {
       resetMoonGuidanceRuntime(plannerRuntime.moon, { clearFilter: false });
     }
   }

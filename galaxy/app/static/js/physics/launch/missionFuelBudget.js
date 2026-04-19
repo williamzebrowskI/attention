@@ -1,4 +1,5 @@
 import { clamp, length, subtract } from "./launchMath.js";
+import { normalizeMissionPhase, NAVIGATION_MISSION_IDS, NAVIGATION_MISSION_PHASES } from "../navigation_system/navigationMissionProfiles.js";
 
 const G0_M_S2 = 9.80665;
 
@@ -24,29 +25,36 @@ function hohmannDepartureDeltaVKmS(muKm3S2, rFromKm, rToKm) {
 }
 
 function phaseWeightsForMoonRoundTrip(phaseRaw) {
-  const phase = String(phaseRaw || "").trim().toLowerCase();
-  if (phase === "launch_to_parking" || phase === "orbital_refuel") {
+  const phase = normalizeMissionPhase(phaseRaw, NAVIGATION_MISSION_IDS.MOON_ORBIT_RETURN);
+  if (
+    phase === NAVIGATION_MISSION_PHASES.LAUNCH
+    || phase === NAVIGATION_MISSION_PHASES.PARKING_ORBIT
+    || phase === NAVIGATION_MISSION_PHASES.DEPARTURE_WINDOW_WAIT
+  ) {
     return { outbound: 1, lunarCapture: 1, returnDepart: 1, earthCapture: 1, reserve: 1 };
   }
-  if (phase === "tli_burn") {
+  if (phase === NAVIGATION_MISSION_PHASES.TLI_BURN) {
     return { outbound: 0.7, lunarCapture: 1, returnDepart: 1, earthCapture: 1, reserve: 1 };
   }
-  if (phase === "coast_to_moon") {
+  if (phase === NAVIGATION_MISSION_PHASES.MIDCOURSE) {
     return { outbound: 0.2, lunarCapture: 1, returnDepart: 1, earthCapture: 1, reserve: 1 };
   }
-  if (phase === "lunar_capture") {
+  if (
+    phase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION
+    || phase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_TRIM
+  ) {
     return { outbound: 0, lunarCapture: 0.7, returnDepart: 1, earthCapture: 1, reserve: 0.8 };
   }
-  if (phase === "lunar_orbit_hold") {
+  if (phase === NAVIGATION_MISSION_PHASES.LUNAR_LOITER) {
     return { outbound: 0, lunarCapture: 0, returnDepart: 1, earthCapture: 1, reserve: 0.8 };
   }
-  if (phase === "tei_burn") {
+  if (phase === NAVIGATION_MISSION_PHASES.TEI_BURN) {
     return { outbound: 0, lunarCapture: 0, returnDepart: 0.7, earthCapture: 1, reserve: 0.6 };
   }
-  if (phase === "coast_to_earth") {
+  if (phase === NAVIGATION_MISSION_PHASES.EARTH_APPROACH) {
     return { outbound: 0, lunarCapture: 0, returnDepart: 0.15, earthCapture: 1, reserve: 0.4 };
   }
-  if (phase === "earth_capture") {
+  if (phase === NAVIGATION_MISSION_PHASES.EARTH_CAPTURE) {
     return { outbound: 0, lunarCapture: 0, returnDepart: 0, earthCapture: 0.8, reserve: 0.2 };
   }
   return { outbound: 0, lunarCapture: 0, returnDepart: 0, earthCapture: 0, reserve: 0 };

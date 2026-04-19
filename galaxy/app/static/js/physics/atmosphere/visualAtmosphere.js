@@ -1,8 +1,17 @@
-const EARTH_ATMOSPHERE_TOP_KM = 100;
+const VISIBLE_SCATTERING_TOP_KM = 100;
+const PHYSICAL_ATMOSPHERE_TOP_KM = 1000;
 const RAYLEIGH_SCALE_HEIGHT_KM = 8;
 const MIE_SCALE_HEIGHT_KM = 1.2;
 const OZONE_PEAK_ALTITUDE_KM = 25;
 const OZONE_HALF_WIDTH_KM = 15;
+const ATMOSPHERE_BOUNDARY_SHELLS = Object.freeze([
+  Object.freeze({ altitudeKm: 11, colorHex: 0x9be7ff, opacity: 0.06 }),
+  Object.freeze({ altitudeKm: 47, colorHex: 0x96f5d2, opacity: 0.045 }),
+  Object.freeze({ altitudeKm: 86, colorHex: 0x86a8ff, opacity: 0.038 }),
+  Object.freeze({ altitudeKm: 120, colorHex: 0xb9a0ff, opacity: 0.032 }),
+  Object.freeze({ altitudeKm: 700, colorHex: 0xffbfdc, opacity: 0.018 }),
+  Object.freeze({ altitudeKm: PHYSICAL_ATMOSPHERE_TOP_KM, colorHex: 0xf1f7ff, opacity: 0.014 }),
+]);
 
 const ATMOSPHERE_VERTEX_SHADER = `
   varying vec3 vWorldPosition;
@@ -177,7 +186,7 @@ function disposeObject3DResources(root) {
 function createEarthAtmosphereMesh(THREE, radius, distanceScale) {
   const scale = Number.isFinite(distanceScale) && distanceScale > 0 ? distanceScale : 1 / 700000;
   const sceneToKm = 1 / scale;
-  const atmosphereRadius = radius + (EARTH_ATMOSPHERE_TOP_KM * scale);
+  const atmosphereRadius = radius + (VISIBLE_SCATTERING_TOP_KM * scale);
   const geometry = new THREE.SphereGeometry(atmosphereRadius, 88, 88);
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -211,6 +220,45 @@ function createEarthAtmosphereMesh(THREE, radius, distanceScale) {
   const mesh = new THREE.Mesh(geometry, material);
   mesh.renderOrder = 42;
   return mesh;
+}
+
+function createAtmosphereBoundaryMesh(THREE, radius, distanceScale, {
+  altitudeKm = 0,
+  colorHex = 0xffffff,
+  opacity = 0.02,
+} = {}) {
+  const scale = Number.isFinite(distanceScale) && distanceScale > 0 ? distanceScale : 1 / 700000;
+  const shellRadius = radius + (Math.max(0, Number(altitudeKm) || 0) * scale);
+  const geometry = new THREE.SphereGeometry(shellRadius, 72, 72);
+  const material = new THREE.MeshBasicMaterial({
+    color: colorHex,
+    transparent: true,
+    opacity: Math.max(0, Number(opacity) || 0),
+    side: THREE.DoubleSide,
+    depthTest: false,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 43;
+  mesh.userData.atmosphereAltitudeKm = Math.max(0, Number(altitudeKm) || 0);
+  return mesh;
+}
+
+function createEarthAtmosphereVisualRoot(THREE, radius, distanceScale) {
+  const root = new THREE.Group();
+  const scatteringMesh = createEarthAtmosphereMesh(THREE, radius, distanceScale);
+  root.add(scatteringMesh);
+  const boundaryMeshes = ATMOSPHERE_BOUNDARY_SHELLS.map((shell, index) => {
+    const mesh = createAtmosphereBoundaryMesh(THREE, radius, distanceScale, shell);
+    mesh.renderOrder = 43 + index;
+    root.add(mesh);
+    return mesh;
+  });
+  root.userData.scatteringMesh = scatteringMesh;
+  root.userData.boundaryMeshes = boundaryMeshes;
+  return root;
 }
 
 export function createEarthAtmosphereController(options) {
@@ -249,7 +297,7 @@ export function createEarthAtmosphereController(options) {
       return mesh;
     }
     clear();
-    mesh = createEarthAtmosphereMesh(THREE, earthVisual.renderRadius, distanceScale);
+    mesh = createEarthAtmosphereVisualRoot(THREE, earthVisual.renderRadius, distanceScale);
     earthVisual.tiltGroup.add(mesh);
     earthVisual.atmosphereMesh = mesh;
     mesh.visible = enabled;
@@ -282,7 +330,8 @@ export function createEarthAtmosphereController(options) {
       return;
     }
     const scale = Number.isFinite(distanceScale) && distanceScale > 0 ? distanceScale : 1 / 700000;
-    const uniforms = atmosphereMesh.material?.uniforms;
+    const scatteringMesh = atmosphereMesh.userData?.scatteringMesh || atmosphereMesh;
+    const uniforms = scatteringMesh.material?.uniforms;
     if (!uniforms) {
       return;
     }
@@ -316,7 +365,7 @@ export function createEarthAtmosphereController(options) {
     uniforms.uSunDirection.value.copy(sunDirectionWorld);
     uniforms.uPlanetRadius.value = earthVisual.renderRadius;
     uniforms.uSceneToKm.value = 1 / scale;
-    uniforms.uAtmosphereRadius.value = earthVisual.renderRadius + (EARTH_ATMOSPHERE_TOP_KM * scale);
+    uniforms.uAtmosphereRadius.value = earthVisual.renderRadius + (VISIBLE_SCATTERING_TOP_KM * scale);
 
     atmosphereMesh.visible = enabled;
   }

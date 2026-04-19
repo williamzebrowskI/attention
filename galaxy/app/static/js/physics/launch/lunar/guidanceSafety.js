@@ -6,6 +6,7 @@ import {
   scale,
   subtract,
 } from "../launchMath.js";
+import { normalizeMissionPhase } from "../../navigation_system/navigationMissionProfiles.js";
 
 function finiteVector(v) {
   return Boolean(
@@ -38,7 +39,8 @@ export function enforceMoonEarthAvoidanceDirection({
     };
   }
 
-  const moonTransferBurn = missionPhase === "tli_burn" || missionPhase === "coast_to_moon";
+  const missionPhaseCanonical = normalizeMissionPhase(missionPhase, "moon_orbit_return");
+  const moonTransferBurn = missionPhaseCanonical === "tli_burn" || missionPhaseCanonical === "midcourse";
   if (!moonTransferBurn) {
     return {
       direction: baseDirection,

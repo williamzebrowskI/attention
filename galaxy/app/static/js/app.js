@@ -3556,7 +3556,7 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
 
   const vehicleMetrics = [
     { label: "Mission", value: snapshot.missionName || "n/a" },
-    { label: "Phase", value: snapshot.missionPhase || "n/a" },
+    { label: "Phase", value: snapshot.missionPhaseDisplay || snapshot.missionPhase || "n/a" },
     { label: "Guidance", value: guidance },
     { label: "Target Orbit", value: Number.isFinite(Number(snapshot.targetOrbitAltitudeKm)) ? `${formatNumber(snapshot.targetOrbitAltitudeKm, 0)} km` : "n/a" },
     { label: "Altitude", value: Number.isFinite(Number(snapshot.altitudeKm)) ? `${formatNumber(snapshot.altitudeKm, 3)} km` : "n/a" },
@@ -5296,7 +5296,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     ? ` | Booster ${snapshot.boosterPhase}${Number.isFinite(snapshot.boosterAltitudeKm) ? ` ${formatNumber(snapshot.boosterAltitudeKm, 2)} km` : ""}`
     : "";
   const missionLine = snapshot.missionName
-    ? ` | Mission ${snapshot.missionName}${snapshot.missionPhase ? ` (${snapshot.missionPhase})` : ""}${snapshot.missionCompleted ? " [complete]" : ""}`
+    ? ` | Mission ${snapshot.missionName}${(snapshot.missionPhaseDisplay || snapshot.missionPhase) ? ` (${snapshot.missionPhaseDisplay || snapshot.missionPhase})` : ""}${snapshot.missionCompleted ? " [complete]" : ""}`
     : "";
   const transferProgressPct = Number.isFinite(Number(snapshot.refuelTransferProgress))
     ? Number(snapshot.refuelTransferProgress) * 100
@@ -6023,14 +6023,20 @@ function resolveFleetVisualStageIndex(bodyId, snapshot) {
   if (!isTanker) {
     return baseStageIndex;
   }
-  const missionPhase = String(snapshot?.missionPhase || "").toLowerCase();
+  const missionPhase = String(snapshot?.missionPhaseDisplay || snapshot?.missionPhase || "").toLowerCase();
   const altitudeKm = Number(snapshot?.altitudeKm);
   const orbitalMissionPhase = (
     missionPhase === "orbital_hold"
     || missionPhase === "earth_orbit_hold"
     || missionPhase === "orbital_refuel"
+    || missionPhase === "parking_orbit"
+    || missionPhase === "departure_window_wait"
     || missionPhase === "tli_burn"
+    || missionPhase === "midcourse"
     || missionPhase === "coast_to_moon"
+    || missionPhase === "lunar_orbit_insertion"
+    || missionPhase === "lunar_orbit_trim"
+    || missionPhase === "lunar_loiter"
     || missionPhase === "lunar_capture"
     || missionPhase === "lunar_orbit_hold"
   );
@@ -6132,7 +6138,7 @@ function updateFleetSpacecraftVisuals() {
     }
 
     const guidanceMode = String(snapshot?.guidanceMode || snapshot?.autopilotMode || "").toLowerCase();
-    const missionPhase = String(snapshot?.missionPhase || "").toLowerCase();
+    const missionPhase = String(snapshot?.missionPhaseDisplay || snapshot?.missionPhase || "").toLowerCase();
     const stageName = String(snapshot?.stageName || "").toLowerCase();
     const launchMode = String(snapshot?.launchMode || "").toLowerCase();
     const isTanker = String(snapshot?.vehicleKind || "").toLowerCase() === "tanker"
@@ -6143,7 +6149,7 @@ function updateFleetSpacecraftVisuals() {
     const forceHorizontalInjectVisual = isMissionShip
       && launchMode === "orbit_inject";
     const forceHorizontalRefuelVisual = isMissionShip
-      && missionPhase === "orbital_refuel";
+      && (missionPhase === "orbital_refuel" || missionPhase === "departure_window_wait");
     const forceHorizontalVisual = forceHorizontalInjectVisual || forceHorizontalRefuelVisual;
     const dockingLock = refuelDockingVisualLockForBody(bodyId, snapshot);
     const thrustAxisKm = snapshot?.rcsThrustAxisKm;
@@ -12049,7 +12055,7 @@ function updateInfoOverlay() {
     const launchTelemetryContent = `
       <p class="line">Observation Mode: ${observationModeLabel}</p>
       <p class="line">Data Source: ${sourceLabel}${sourceError}</p>
-      <p class="line">Mission: ${launchSnapshot?.missionName || "n/a"} | Phase: ${launchSnapshot?.missionPhase || "n/a"} | Complete: ${launchSnapshot?.missionCompleted ? "yes" : "no"}</p>
+      <p class="line">Mission: ${launchSnapshot?.missionName || "n/a"} | Phase: ${launchSnapshot?.missionPhaseDisplay || launchSnapshot?.missionPhase || "n/a"} | Complete: ${launchSnapshot?.missionCompleted ? "yes" : "no"}</p>
       <p class="line launch-line">${missionElapsedLine}</p>
       <p class="line launch-line">Launch Site: ${launchSnapshot?.launchSiteName || "n/a"}</p>
       ${selectedVehicleLines}
@@ -12076,7 +12082,7 @@ function updateInfoOverlay() {
   const launchPhysicsLine = launchSnapshot
     ? `<p class="line launch-line">Launch Phase: ${launchSnapshot.phaseLabel || launchSnapshot.phase || "n/a"}</p>
        <p class="line launch-line">Launch Stage: ${launchSnapshot.stageName || "n/a"}</p>
-       <p class="line launch-line">Mission: ${launchSnapshot.missionName || "n/a"} | Phase: ${launchSnapshot.missionPhase || "n/a"} | Complete: ${launchSnapshot.missionCompleted ? "yes" : "no"}</p>
+       <p class="line launch-line">Mission: ${launchSnapshot.missionName || "n/a"} | Phase: ${launchSnapshot.missionPhaseDisplay || launchSnapshot.missionPhase || "n/a"} | Complete: ${launchSnapshot.missionCompleted ? "yes" : "no"}</p>
        <p class="line launch-line">${launchDurationLabel}: ${formatDurationSeconds(launchSnapshot.elapsedSeconds)}</p>
        <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
        <p class="line launch-line">Altitude Above Terrain: ${shouldShowTerrainRelativeAltitude(launchSnapshot) && Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>

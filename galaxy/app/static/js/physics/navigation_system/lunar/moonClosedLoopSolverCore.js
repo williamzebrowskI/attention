@@ -89,6 +89,19 @@ function minDistanceForBody(propagation, targetBodyId) {
   return propagation?.minMoonDistanceKm;
 }
 
+function gravitationalParameterForBody(sources = null, targetBodyId = "moon") {
+  const source = targetBodyId === "earth"
+    ? sources?.earth
+    : sources?.moon;
+  const massKg = Math.max(0, finiteNumber(source?.massKg, Number.NaN));
+  if (massKg > 0) {
+    return 6.67430e-20 * massKg;
+  }
+  return targetBodyId === "earth"
+    ? EARTH_MU_KM3_S2
+    : (6.67430e-20 * 7.342e22);
+}
+
 function minAltitudeForBody(propagation, targetBodyId) {
   if (targetBodyId === "earth") {
     return propagation?.minEarthAltitudeKm;
@@ -125,7 +138,7 @@ function evaluateTransferCandidate({
   safetyBodyId,
   safetyMinAltitudeKm,
 }) {
-  const burnDurationSec = burnDurationForDeltaVSec(deltaVNeedKmS, accelAtThrottle1KmS2, throttle);
+  const burnDurationSec = burnDurationForDeltaVSec(deltaVNeedKmS, accelAtThrottle1KmS2, throttle, spacecraft);
   const propagation = propagateMoonGuidanceState({
     initialState,
     durationSec: predictDurationSec,
@@ -160,6 +173,7 @@ function evaluateTransferCandidate({
     relativeVelocityKmS: closestTargetRelVel,
     targetPeriluneAltitudeKm,
     bodyRadiusKm: targetBodyRadiusKm,
+    bodyMuKm3S2: gravitationalParameterForBody(sources, targetBodyId),
   });
   const closestTargetRangeKm = finiteVector(closestTargetRelPos) ? length(closestTargetRelPos) : Number.NaN;
   const closestClosingSpeedKmS = (
@@ -250,6 +264,7 @@ export function evaluateBallisticTransferSync({
     relativeVelocityKmS: closestTargetRelVel,
     targetPeriluneAltitudeKm,
     bodyRadiusKm: targetBodyRadiusKm,
+    bodyMuKm3S2: gravitationalParameterForBody(sources, targetBodyId),
   });
   const closestTargetRangeKm = finiteVector(closestTargetRelPos) ? length(closestTargetRelPos) : Number.NaN;
   const closestClosingSpeedKmS = (

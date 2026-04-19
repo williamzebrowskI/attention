@@ -1,5 +1,7 @@
 import {
   missionDefaultPhase,
+  NAVIGATION_MISSION_PHASES,
+  normalizeMissionPhase,
   normalizeMissionId,
 } from "./navigationMissionProfiles.js";
 import { evaluateMissionPhase } from "./navigationPhaseEvaluator.js";
@@ -112,7 +114,7 @@ export function createNavigationSystem({
       timestampSec: nowSec,
     });
     runtime.lastCommand = command;
-    runtime.missionCompleted = runtime.missionPhase === "earth_orbit_hold";
+    runtime.missionCompleted = runtime.missionPhase === NAVIGATION_MISSION_PHASES.EARTH_ORBIT_HOLD;
     return {
       command,
       state: snapshot(),
@@ -169,7 +171,9 @@ export function createNavigationSystem({
     setMode(nextSnapshot.mode ?? modeFallback);
     runtime.missionId = normalizeMissionId(nextSnapshot.missionId ?? missionIdFallback);
     const missionPhaseRaw = String(nextSnapshot.missionPhase || "").trim();
-    runtime.missionPhase = missionPhaseRaw || missionDefaultPhase(runtime.missionId);
+    runtime.missionPhase = missionPhaseRaw
+      ? normalizeMissionPhase(missionPhaseRaw, runtime.missionId)
+      : missionDefaultPhase(runtime.missionId);
     runtime.missionCompleted = Boolean(nextSnapshot.missionCompleted);
     runtime.initializedAtSec = Number.isFinite(Number(nextSnapshot.initializedAtSec))
       ? Number(nextSnapshot.initializedAtSec)

@@ -2,6 +2,7 @@ import {
   resolveSnapshotTargetTelemetry,
   shouldShowTerrainRelativeAltitude,
 } from "./launchTelemetryDisplay.js";
+import { displayMissionPhase } from "../physics/navigation_system/navigationMissionProfiles.js";
 
 function fallbackEscapeHtml(value) {
   return String(value ?? "")
@@ -27,14 +28,23 @@ function toLaunchTitle(value) {
 function humanizeMissionPhase(phase) {
   const key = String(phase || "").trim().toLowerCase();
   const map = {
+    launch: "Launch",
     launch_to_parking: "Launch To Parking Orbit",
+    parking_orbit: "Parking Orbit",
+    departure_window_wait: "Departure Window Wait",
     orbital_refuel: "Orbital Refueling",
     tli_burn: "Trans-Lunar Injection Burn",
-    coast_to_moon: "Coast To Moon",
-    lunar_insertion: "Lunar Insertion Burn",
-    lunar_orbit_hold: "Lunar Orbit Hold",
+    midcourse: "Midcourse",
+    coast_to_moon: "Midcourse",
+    lunar_orbit_insertion: "Lunar Orbit Insertion",
+    lunar_insertion: "Lunar Orbit Insertion",
+    lunar_capture: "Lunar Orbit Insertion",
+    lunar_orbit_trim: "Lunar Orbit Trim",
+    lunar_loiter: "Lunar Loiter",
+    lunar_orbit_hold: "Lunar Loiter",
     tei_burn: "Trans-Earth Injection Burn",
-    coast_to_earth: "Coast To Earth",
+    earth_approach: "Earth Approach",
+    coast_to_earth: "Earth Approach",
     earth_capture: "Earth Capture Burn",
     earth_orbit_hold: "Earth Orbit Hold",
   };
@@ -937,7 +947,9 @@ export function createMissionControlScreenController(options = {}) {
 
   function buildMissionSequence(snapshot, launchEventLogEntries) {
     const missionId = String(snapshot?.missionId || "earth_orbit_hold");
-    const missionPhase = String(snapshot?.missionPhase || "");
+    const missionPhase = missionId === "moon_orbit_return"
+      ? displayMissionPhase(snapshot?.missionPhase, missionId)
+      : String(snapshot?.missionPhase || "");
     const elapsedSec = Number(snapshot?.elapsedSeconds) || 0;
     const stageIndex = Number(snapshot?.stageIndex) || 0;
     const dynamicPressurePa = Number(snapshot?.dynamicPressurePa) || 0;
@@ -1002,40 +1014,46 @@ export function createMissionControlScreenController(options = {}) {
 
     if (missionId === "moon_orbit_return") {
       const phaseOrder = [
-        "orbital_refuel",
+        "parking_orbit",
+        "departure_window_wait",
         "tli_burn",
-        "coast_to_moon",
-        "lunar_insertion",
-        "lunar_orbit_hold",
+        "midcourse",
+        "lunar_orbit_insertion",
+        "lunar_orbit_trim",
+        "lunar_loiter",
         "tei_burn",
-        "coast_to_earth",
+        "earth_approach",
         "earth_capture",
         "earth_orbit_hold",
       ];
       const currentRank = phaseOrder.indexOf(missionPhase);
       const moonStages = [
         {
-          key: "orbital_refuel",
-          title: "Orbital Refueling Campaign",
-          note: `Flights ${refuelCompletedFlights}/${refuelRequiredFlights} | Fill ${(refuelFillFraction * 100).toFixed(1)}%`,
+          key: "parking_orbit",
+          title: "Parking Orbit Checkout",
+          note: "Confirm bounded parking orbit and mission geometry before departure.",
         },
-        { key: "tli_burn", title: "Trans-Lunar Injection Burn", note: "Raise Earth apogee to lunar transfer corridor." },
-        { key: "coast_to_moon", title: "Coast To Moon", note: "Guided cruise and trajectory maintenance." },
-        { key: "lunar_insertion", title: "Lunar Orbit Insertion", note: "Capture into lunar gravity well." },
-        { key: "lunar_orbit_hold", title: "Lunar Orbit Hold", note: "Complete lunar orbital objective." },
+        {
+          key: "departure_window_wait",
+          title: "Departure Window Wait",
+          note: Number.isFinite(snapshot?.moonDepartureWindowWaitSec)
+            ? `Best TLI slot in ${formatDurationSeconds(Number(snapshot.moonDepartureWindowWaitSec))}.`
+            : "Awaiting the departure geometry window.",
+        },
+        { key: "tli_burn", title: "Trans-Lunar Injection Burn", note: "Raise Earth apogee to the lunar transfer corridor." },
+        { key: "midcourse", title: "Midcourse", note: "Guided cruise and transfer maintenance toward the Moon." },
+        { key: "lunar_orbit_insertion", title: "Lunar Orbit Insertion", note: "Capture into lunar gravity." },
+        { key: "lunar_orbit_trim", title: "Lunar Orbit Trim", note: "Settle lunar apoapsis and periapsis into the target orbit." },
+        { key: "lunar_loiter", title: "Lunar Loiter", note: "Hold lunar orbit before departure." },
         { key: "tei_burn", title: "Trans-Earth Injection Burn", note: "Depart lunar orbit onto Earth return trajectory." },
-        { key: "coast_to_earth", title: "Coast To Earth", note: "Return cruise and Earth approach targeting." },
+        { key: "earth_approach", title: "Earth Approach", note: "Return cruise and Earth capture targeting." },
         { key: "earth_capture", title: "Earth Capture", note: "Recapture into Earth orbit." },
         { key: "earth_orbit_hold", title: "Earth Orbit Hold", note: "Mission return profile achieved." },
       ];
       for (let i = 0; i < moonStages.length; i += 1) {
         const stage = moonStages[i];
         const isCurrent = currentRank === i;
-        const isComplete = (
-          i === 0
-            ? refuelReady
-            : (currentRank > i || (i === moonStages.length - 1 && Boolean(snapshot?.missionCompleted)))
-        );
+        const isComplete = currentRank > i || (i === moonStages.length - 1 && Boolean(snapshot?.missionCompleted));
         const isActive = isCurrent || (i === 0 && parkingReady && currentRank < 0);
         steps.push({
           title: stage.title,
@@ -1566,7 +1584,13 @@ export function createMissionControlScreenController(options = {}) {
     const phaseLabel = snapshot.phaseLabel || phaseLabelForLaunch(snapshot.phase);
     const stageName = snapshot.stageName || "n/a";
     const missionName = snapshot.missionName || "Mission";
-    const missionPhase = humanizeMissionPhase(snapshot.missionPhase);
+    const missionPhaseKey = String(
+      snapshot.missionPhaseDisplay
+      || displayMissionPhase(snapshot.missionPhase, snapshot.missionId || "")
+      || snapshot.missionPhase
+      || "",
+    ).trim();
+    const missionPhase = humanizeMissionPhase(missionPhaseKey);
     const met = formatDurationSeconds(snapshot.elapsedSeconds);
     const missionEvents = filterMissionControlEvents(launchEventLogEntries, snapshot);
     const missionLastEventSummary = String(
@@ -1673,7 +1697,7 @@ export function createMissionControlScreenController(options = {}) {
       if (snapshot.missionId === "moon_orbit_return") {
         const lunarLabel = snapshot.moonDepartureWindowReady
           ? "Window Ready"
-          : (snapshot.missionPhase === "coast_to_moon" || snapshot.missionPhase === "lunar_insertion"
+          : (missionPhaseKey === "midcourse" || missionPhaseKey === "lunar_orbit_insertion"
             ? "Lunar Corridor"
             : "Window Pending");
         const lunarDetail = snapshot.moonDepartureWindowReady
@@ -1725,9 +1749,10 @@ export function createMissionControlScreenController(options = {}) {
         && Number.isFinite(moonWindowWaitSec)
         && moonWindowWaitSec > 1
         && (
-          snapshot.missionPhase === "launch_to_parking"
-          || snapshot.missionPhase === "orbital_refuel"
-          || snapshot.missionPhase === "tli_burn"
+          missionPhaseKey === "launch"
+          || missionPhaseKey === "parking_orbit"
+          || missionPhaseKey === "departure_window_wait"
+          || missionPhaseKey === "tli_burn"
         )
       ) {
         return {

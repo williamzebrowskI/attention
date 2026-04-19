@@ -1,22 +1,32 @@
+import { displayMissionPhase } from "../physics/navigation_system/navigationMissionProfiles.js";
+
 function finiteNumberOrNull(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
 
 const TERRAIN_RELEVANT_MISSION_PHASES = new Set([
+  "launch",
   "launch_to_parking",
   "earth_capture",
   "earth_descent",
 ]);
 
 const SPACE_TRANSFER_MISSION_PHASES = new Set([
+  "parking_orbit",
+  "departure_window_wait",
   "orbital_refuel",
   "earth_orbit_hold",
   "tli_burn",
+  "midcourse",
   "coast_to_moon",
+  "lunar_orbit_insertion",
+  "lunar_orbit_trim",
+  "lunar_loiter",
   "lunar_capture",
   "lunar_orbit_hold",
   "tei_burn",
+  "earth_approach",
   "coast_to_earth",
 ]);
 
@@ -28,7 +38,12 @@ export function shouldShowTerrainRelativeAltitude(snapshot = null, options = {})
   if (altitudeAglKm === null) {
     return false;
   }
-  const missionPhase = String(snapshot.missionPhase || "").trim().toLowerCase();
+  const missionPhase = String(
+    snapshot.missionPhaseDisplay
+    || displayMissionPhase(snapshot.missionPhase, snapshot.missionId || "")
+    || snapshot.missionPhase
+    || "",
+  ).trim().toLowerCase();
   if (SPACE_TRANSFER_MISSION_PHASES.has(missionPhase)) {
     return false;
   }
@@ -47,10 +62,15 @@ export function resolveSnapshotTargetTelemetry(snapshot = null) {
   const targetClosingSpeedKmS = finiteNumberOrNull(snapshot?.targetClosingSpeedKmS);
   const targetEtaSecondsRaw = finiteNumberOrNull(snapshot?.targetEtaSeconds);
   const targetEtaSource = String(snapshot?.targetEtaSource || "").trim().toLowerCase();
-  const missionPhase = String(snapshot?.missionPhase || "").trim().toLowerCase();
+  const missionPhase = String(
+    snapshot?.missionPhaseDisplay
+    || displayMissionPhase(snapshot?.missionPhase, snapshot?.missionId || "")
+    || snapshot?.missionPhase
+    || "",
+  ).trim().toLowerCase();
   const guidanceText = `${String(snapshot?.autopilotMode || "").trim()} ${String(snapshot?.guidanceMode || "").trim()}`
     .toLowerCase();
-  const ballisticCoastActive = missionPhase === "coast_to_moon"
+  const ballisticCoastActive = (missionPhase === "midcourse" || missionPhase === "coast_to_moon")
     && guidanceText.includes("navsys:gnc-lambert-midcourse-coast");
   const plannedCoastActive = ballisticCoastActive;
 

@@ -2,11 +2,13 @@ import { clamp, normalize } from "../../launch/launchMath.js";
 import { LAUNCH_MISSION_IDS } from "../../launch/launchMissions.js";
 import { computeMoonSurvivalRecoveryOverride } from "../../launch/lunar/moonSurvivalRecovery.js";
 import { evaluateMoonTliGoNoGo } from "../../launch/lunar/moonGoNoGoGates.js";
+import { normalizeMissionPhase } from "../navigationMissionProfiles.js";
 
 const MOON_BURN_PHASES = new Set([
   "tli_burn",
-  "coast_to_moon",
-  "lunar_capture",
+  "midcourse",
+  "lunar_orbit_insertion",
+  "lunar_orbit_trim",
 ]);
 
 function finiteNumber(value, fallback = Number.NaN) {
@@ -15,7 +17,7 @@ function finiteNumber(value, fallback = Number.NaN) {
 }
 
 function normalizePhase(value = "") {
-  return String(value || "").trim().toLowerCase();
+  return normalizeMissionPhase(value, LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
 }
 
 function isEarthEscapeTrajectory(orbital = null) {
@@ -31,10 +33,14 @@ function allowsEarthPeriapsisRecovery({
   if (phase === "tli_burn") {
     return true;
   }
-  if (phase === "coast_to_moon" || phase === "lunar_capture") {
+  if (
+    phase === "midcourse"
+    || phase === "lunar_orbit_insertion"
+    || phase === "lunar_orbit_trim"
+  ) {
     return !isEarthEscapeTrajectory(orbital);
   }
-  return phase === "coast_to_earth" || phase === "earth_capture";
+  return phase === "earth_approach" || phase === "earth_capture";
 }
 
 function applySurvivalRecovery({

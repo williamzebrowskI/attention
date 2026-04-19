@@ -5,6 +5,7 @@ const DEFAULT_EOP_SNAPSHOT = Object.freeze({
   stale: true,
   ageSeconds: Number.POSITIVE_INFINITY,
 });
+const DEFAULT_EOP_STORAGE_KEY = "galaxy.earth_eop_snapshot";
 
 function finiteOr(value, fallback = Number.NaN) {
   const numeric = Number(value);
@@ -65,6 +66,80 @@ function normalizeSnapshot(payload, fallback = DEFAULT_EOP_SNAPSHOT) {
   };
 }
 
+function resolveStorageAdapter(storageOverride = undefined) {
+  if (storageOverride === null) {
+    return null;
+  }
+  if (typeof storageOverride !== "undefined") {
+    return storageOverride;
+  }
+  try {
+    return typeof window !== "undefined" && window?.localStorage
+      ? window.localStorage
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCacheableSnapshot(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.records) || snapshot.records.length <= 0) {
+    return false;
+  }
+  const source = String(snapshot.source || "").trim().toLowerCase();
+  if (!source) {
+    return false;
+  }
+  return source !== "default_empty" && !source.startsWith("simulated_earth_eop");
+}
+
+function readStoredSnapshot(storage, storageKey) {
+  if (!storage || !storageKey) {
+    return null;
+  }
+  try {
+    const raw = storage.getItem(storageKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return normalizeSnapshot(parsed, DEFAULT_EOP_SNAPSHOT);
+  } catch {
+    return null;
+  }
+}
+
+function persistStoredSnapshot(storage, storageKey, snapshot) {
+  if (!storage || !storageKey || !isCacheableSnapshot(snapshot)) {
+    return;
+  }
+  try {
+    storage.setItem(storageKey, JSON.stringify({
+      source: snapshot.source,
+      refreshedAtUtc: snapshot.refreshedAtUtc,
+      records: snapshot.records,
+    }));
+  } catch {
+    return;
+  }
+}
+
+function setRefreshTimeout(callback, delayMs) {
+  const timerApi = typeof globalThis?.setTimeout === "function"
+    ? globalThis.setTimeout
+    : null;
+  return timerApi ? timerApi(callback, delayMs) : null;
+}
+
+function clearRefreshTimeout(handle) {
+  const clearApi = typeof globalThis?.clearTimeout === "function"
+    ? globalThis.clearTimeout
+    : null;
+  if (clearApi && handle !== null) {
+    clearApi(handle);
+  }
+}
+
 function interpolate(a, b, t) {
   return a + ((b - a) * t);
 }
@@ -106,17 +181,20 @@ export function createEarthEopProvider(options = {}) {
     : ((...args) => fetch(...args));
   const onUpdate = typeof options.onUpdate === "function" ? options.onUpdate : null;
   const onError = typeof options.onError === "function" ? options.onError : null;
+  const storage = resolveStorageAdapter(options.storage);
+  const storageKey = String(options.storageKey || DEFAULT_EOP_STORAGE_KEY).trim() || DEFAULT_EOP_STORAGE_KEY;
 
-  let snapshotState = normalizeSnapshot(options.initialSnapshot || null, DEFAULT_EOP_SNAPSHOT);
+  const storedSnapshot = readStoredSnapshot(storage, storageKey);
+  let snapshotState = normalizeSnapshot(options.initialSnapshot || storedSnapshot || null, DEFAULT_EOP_SNAPSHOT);
   let refreshTimer = null;
   let refreshPromise = null;
 
   function scheduleNextRefresh() {
     if (refreshTimer !== null) {
-      clearTimeout(refreshTimer);
+      clearRefreshTimeout(refreshTimer);
       refreshTimer = null;
     }
-    refreshTimer = window.setTimeout(() => {
+    refreshTimer = setRefreshTimeout(() => {
       void refresh();
     }, refreshIntervalMs);
   }
@@ -142,8 +220,17 @@ export function createEarthEopProvider(options = {}) {
         }
         const payload = await response.json();
         snapshotState = normalizeSnapshot(payload, snapshotState);
+        persistStoredSnapshot(storage, storageKey, snapshotState);
         onUpdate?.(snapshot());
       } catch (error) {
+        const cachedSnapshot = readStoredSnapshot(storage, storageKey);
+        if (
+          isCacheableSnapshot(cachedSnapshot)
+          && (!Array.isArray(snapshotState.records) || snapshotState.records.length <= 0)
+        ) {
+          snapshotState = cachedSnapshot;
+          onUpdate?.(snapshot());
+        }
         onError?.(error, snapshot());
       } finally {
         scheduleNextRefresh();
@@ -163,7 +250,7 @@ export function createEarthEopProvider(options = {}) {
 
   function stop() {
     if (refreshTimer !== null) {
-      clearTimeout(refreshTimer);
+      clearRefreshTimeout(refreshTimer);
       refreshTimer = null;
     }
   }
@@ -223,4 +310,3 @@ export function createEarthEopProvider(options = {}) {
 }
 
 export const EARTH_EOP_DEFAULTS = DEFAULT_EOP_SNAPSHOT;
-

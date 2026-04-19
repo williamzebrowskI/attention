@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 try:
@@ -18,6 +20,7 @@ from app.services.simulated_environment import generate_simulated_earth_eop_snap
 
 CELESTRAK_EOP_LAST5Y_URL = "https://celestrak.org/spacedata/EOP-Last5Years.csv"
 CELESTRAK_EOP_ALL_URL = "https://celestrak.org/spacedata/EOP-All.csv"
+DEFAULT_EOP_CACHE_PATH = Path(__file__).resolve().parents[2] / ".runtime_cache" / "earth_eop_snapshot.json"
 
 
 def _utc_now_iso() -> str:
@@ -99,14 +102,20 @@ class EarthEopService:
         min_refresh_seconds: float = 6 * 3600.0,
         max_records: int = 2200,
         forcing_context_provider: Callable[[], dict[str, object]] | None = None,
+        mode: str | None = None,
+        cache_path: str | os.PathLike[str] | None = None,
     ) -> None:
         self._timeout_seconds = max(2.0, float(timeout_seconds))
         self._min_refresh_seconds = max(60.0, float(min_refresh_seconds))
         self._max_records = max(100, int(max_records))
-        self._mode = _normalize_forcing_mode(os.getenv("EARTH_EOP_MODE") or os.getenv("ENVIRONMENT_FORCING_MODE"))
+        self._mode = _normalize_forcing_mode(
+            mode or os.getenv("EARTH_EOP_MODE") or os.getenv("ENVIRONMENT_FORCING_MODE") or "hybrid"
+        )
         self._simulation_seed = str(os.getenv("SIM_EARTH_EOP_SEED") or os.getenv("SIM_ENV_SEED") or "galaxy-earth-eop-v1")
         self._forcing_context_provider = forcing_context_provider if callable(forcing_context_provider) else None
-        self._snapshot = DEFAULT_EOP_SNAPSHOT
+        self._cache_path = self._resolve_cache_path(cache_path)
+        self._cached_snapshot = self._load_cached_snapshot()
+        self._snapshot = self._cached_snapshot or DEFAULT_EOP_SNAPSHOT
         self._last_refresh_monotonic = 0.0
         self._refresh_lock = asyncio.Lock()
 
@@ -147,10 +156,98 @@ class EarthEopService:
             fetched = await self._fetch_celestrak_snapshot()
             if fetched is not None:
                 self._snapshot = fetched
+                self._persist_cached_snapshot(fetched)
+            elif self._cached_snapshot is not None:
+                self._snapshot = self._cached_snapshot
             elif self._mode == "hybrid":
                 self._snapshot = simulated
             self._last_refresh_monotonic = now_monotonic
             return self._snapshot
+
+    def _resolve_cache_path(self, cache_path: str | os.PathLike[str] | None) -> Path | None:
+        raw = cache_path if cache_path is not None else os.getenv("EARTH_EOP_CACHE_FILE")
+        if raw is None:
+            return DEFAULT_EOP_CACHE_PATH
+        label = str(raw).strip()
+        if not label:
+            return None
+        return Path(label).expanduser().resolve()
+
+    def _record_from_mapping(self, row: object) -> EarthEopRecord | None:
+        if not isinstance(row, dict):
+            return None
+        mjd = _finite_float(row.get("mjd"))
+        x_arcsec = _finite_float(row.get("x_arcsec", row.get("xArcsec")))
+        y_arcsec = _finite_float(row.get("y_arcsec", row.get("yArcsec")))
+        ut1_utc_sec = _finite_float(row.get("ut1_utc_sec", row.get("ut1UtcSec")))
+        if mjd is None or x_arcsec is None or y_arcsec is None or ut1_utc_sec is None:
+            return None
+        lod_sec = _finite_float(row.get("lod_sec", row.get("lodSec")))
+        return EarthEopRecord(
+            mjd=mjd,
+            x_arcsec=x_arcsec,
+            y_arcsec=y_arcsec,
+            ut1_utc_sec=ut1_utc_sec,
+            lod_sec=lod_sec,
+            data_type=str(row.get("data_type", row.get("dataType", "")) or "").strip(),
+            time_utc=str(row.get("time_utc", row.get("timeUtc", "")) or _mjd_to_iso(mjd)),
+        )
+
+    def _snapshot_from_payload(self, payload: object) -> EarthEopSnapshot | None:
+        if not isinstance(payload, dict):
+            return None
+        records = [
+            record
+            for record in (self._record_from_mapping(row) for row in (payload.get("records") or []))
+            if record is not None
+        ]
+        if not records:
+            return None
+        records.sort(key=lambda entry: entry.mjd)
+        if len(records) > self._max_records:
+            records = records[-self._max_records :]
+        refreshed_at_utc = str(payload.get("refreshed_at_utc") or payload.get("refreshedAtUtc") or "").strip() or _utc_now_iso()
+        source = str(payload.get("source") or "cached_earth_eop").strip() or "cached_earth_eop"
+        return EarthEopSnapshot(
+            source=source,
+            refreshed_at_utc=refreshed_at_utc,
+            records=records,
+        )
+
+    def _load_cached_snapshot(self) -> EarthEopSnapshot | None:
+        if self._cache_path is None or not self._cache_path.exists():
+            return None
+        try:
+            payload = json.loads(self._cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        snapshot = self._snapshot_from_payload(payload)
+        if snapshot is None or not self._is_cacheable_snapshot(snapshot):
+            return None
+        return snapshot
+
+    def _persist_cached_snapshot(self, snapshot: EarthEopSnapshot) -> None:
+        if self._cache_path is None or not self._is_cacheable_snapshot(snapshot):
+            return
+        self._cached_snapshot = snapshot
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._cache_path.write_text(
+                json.dumps(snapshot.to_dict(), indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except Exception:
+            return
+
+    def _is_cacheable_snapshot(self, snapshot: EarthEopSnapshot | None) -> bool:
+        if snapshot is None or not snapshot.records:
+            return False
+        source = str(snapshot.source or "").strip().lower()
+        if not source:
+            return False
+        if source.startswith("simulated_earth_eop") or source == "default_empty":
+            return False
+        return True
 
     def _snapshot_from_env(self) -> EarthEopSnapshot | None:
         ut1_raw = os.getenv("EARTH_EOP_UT1_UTC_SEC")
@@ -191,36 +288,8 @@ class EarthEopService:
             max_records=self._max_records,
             scenario=scenario,
         )
-        records: list[EarthEopRecord] = []
-        for row in payload.get("records") or []:
-            mjd = _finite_float(row.get("mjd"))
-            x_arcsec = _finite_float(row.get("x_arcsec"))
-            y_arcsec = _finite_float(row.get("y_arcsec"))
-            ut1_utc_sec = _finite_float(row.get("ut1_utc_sec"))
-            if mjd is None or x_arcsec is None or y_arcsec is None or ut1_utc_sec is None:
-                continue
-            lod_sec = _finite_float(row.get("lod_sec"))
-            records.append(
-                EarthEopRecord(
-                    mjd=mjd,
-                    x_arcsec=x_arcsec,
-                    y_arcsec=y_arcsec,
-                    ut1_utc_sec=ut1_utc_sec,
-                    lod_sec=lod_sec,
-                    data_type=str(row.get("data_type") or "").strip(),
-                    time_utc=str(row.get("time_utc") or _mjd_to_iso(mjd)),
-                )
-            )
-        if not records:
-            return DEFAULT_EOP_SNAPSHOT
-        records.sort(key=lambda entry: entry.mjd)
-        if len(records) > self._max_records:
-            records = records[-self._max_records :]
-        return EarthEopSnapshot(
-            source=str(payload.get("source") or "simulated_earth_eop"),
-            refreshed_at_utc=str(payload.get("refreshed_at_utc") or _utc_now_iso()),
-            records=records,
-        )
+        snapshot = self._snapshot_from_payload(payload)
+        return snapshot or DEFAULT_EOP_SNAPSHOT
 
     async def _fetch_celestrak_snapshot(self) -> EarthEopSnapshot | None:
         if httpx is None:

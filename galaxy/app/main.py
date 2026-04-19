@@ -108,6 +108,9 @@ async def startup_refresh_launch_site() -> None:
 @app.get("/api/config")
 async def runtime_config() -> dict[str, object]:
     forcing_mode = str(os.getenv("ENVIRONMENT_FORCING_MODE") or "simulated").strip().lower() or "simulated"
+    earth_eop_mode = str(
+        os.getenv("EARTH_EOP_MODE") or os.getenv("ENVIRONMENT_FORCING_MODE") or "hybrid"
+    ).strip().lower() or "hybrid"
     forcing_snapshot = environment_forcing_service.snapshot()
     return {
         "features": {
@@ -116,7 +119,7 @@ async def runtime_config() -> dict[str, object]:
         "environment_forcing": {
             "mode": forcing_mode,
             "space_weather_mode": str(os.getenv("SPACE_WEATHER_MODE") or forcing_mode).strip().lower() or forcing_mode,
-            "earth_eop_mode": str(os.getenv("EARTH_EOP_MODE") or forcing_mode).strip().lower() or forcing_mode,
+            "earth_eop_mode": earth_eop_mode,
             "scenario": forcing_snapshot.get("scenario"),
             "updated_at_utc": forcing_snapshot.get("updated_at_utc"),
             "profile": forcing_snapshot.get("profile"),

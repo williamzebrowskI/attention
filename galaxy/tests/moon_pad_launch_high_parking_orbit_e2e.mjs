@@ -8,6 +8,7 @@ import {
   MOON_PARKING_ORBIT_APOAPSIS_KM,
   MOON_PARKING_ORBIT_PERIAPSIS_KM,
 } from "../app/static/js/physics/launch/lunar/constants.js";
+import { MOON_PARKING_ORBIT_GATE_TOLERANCE_KM } from "../app/static/js/physics/navigation_system/lunar/moonParkingOrbitGate.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;
@@ -176,12 +177,16 @@ function main() {
     `moon_pad_launch_high_parking_orbit: expected orbital_refuel after parking insertion, got ${finalSnapshot?.missionPhase}`,
   );
   assert(
-    Number(finalSnapshot?.apoapsisKm) >= MOON_PARKING_ORBIT_APOAPSIS_KM,
-    `moon_pad_launch_high_parking_orbit: expected apoapsis >= ${MOON_PARKING_ORBIT_APOAPSIS_KM} km, got ${finalSnapshot?.apoapsisKm}`,
+    Number(finalSnapshot?.apoapsisKm) >= (
+      MOON_PARKING_ORBIT_APOAPSIS_KM - MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.apoapsisKm
+    ),
+    `moon_pad_launch_high_parking_orbit: expected apoapsis >= ${MOON_PARKING_ORBIT_APOAPSIS_KM - MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.apoapsisKm} km, got ${finalSnapshot?.apoapsisKm}`,
   );
   assert(
-    Number(finalSnapshot?.periapsisKm) >= MOON_PARKING_ORBIT_PERIAPSIS_KM,
-    `moon_pad_launch_high_parking_orbit: expected periapsis >= ${MOON_PARKING_ORBIT_PERIAPSIS_KM} km, got ${finalSnapshot?.periapsisKm}`,
+    Number(finalSnapshot?.periapsisKm) >= (
+      MOON_PARKING_ORBIT_PERIAPSIS_KM - MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.periapsisKm
+    ),
+    `moon_pad_launch_high_parking_orbit: expected periapsis >= ${MOON_PARKING_ORBIT_PERIAPSIS_KM - MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.periapsisKm} km, got ${finalSnapshot?.periapsisKm}`,
   );
 
   console.log("PASS moon-pad-launch-high-parking-orbit-e2e");

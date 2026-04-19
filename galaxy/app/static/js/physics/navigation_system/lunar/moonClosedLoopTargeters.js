@@ -12,6 +12,7 @@ import {
   buildMoonGuidanceSourceModel,
   burnDurationForDeltaVSec,
   propagateMoonGuidanceState,
+  restoreMoonGuidanceSourceModelFromCache,
 } from "./moonDynamicsModel.js";
 import { evaluateMoonDepartureCorridor } from "./moonDepartureCorridor.js";
 import {
@@ -282,6 +283,8 @@ function ensureMoonGncRuntime(moonRuntime) {
       predictedPeriluneAltitudeKm: null,
       bPlaneErrorKm: null,
       deltaVNeedKmS: null,
+      sourceModelCache: null,
+      sourceModelCacheTimestampSec: null,
       departureSeedTrackAccepted: null,
       departureSeedTrackPositionErrorKm: null,
       departureSeedTrackVelocityErrorKmS: null,
@@ -307,11 +310,11 @@ function ensureMoonGncRuntime(moonRuntime) {
 
 function getBallisticCoastEvalCadenceSec(plannerConfig = null) {
   const closedLoopCadenceSec = getMoonClosedLoopSolveCadenceSec(plannerConfig);
-  const baseCadenceSec = Math.max(5, Math.min(20, closedLoopCadenceSec * 0.25));
+  const baseCadenceSec = Math.max(10, Math.min(30, closedLoopCadenceSec * 0.25));
   if (typeof window !== "undefined") {
     return Math.max(10, baseCadenceSec);
   }
-  return baseCadenceSec;
+  return Math.max(120, Math.min(240, closedLoopCadenceSec * 0.8));
 }
 
 function storeBallisticCoastCandidate({
@@ -420,6 +423,36 @@ function storeClosedLoopSolveResult({
     solveReason
     || (solution ? "nbody-closed-loop-optimal" : "nbody-no-solution"),
   );
+}
+
+function restoreClosedLoopSourceModelCache({
+  runtime = null,
+  sources = null,
+  nowSec = Number.NaN,
+} = {}) {
+  if (!runtime || typeof runtime !== "object" || !sources || typeof sources !== "object") {
+    return false;
+  }
+  return restoreMoonGuidanceSourceModelFromCache({
+    sources,
+    cachedSources: runtime.sourceModelCache,
+    timestampSec: nowSec,
+    cachedTimestampSec: runtime.sourceModelCacheTimestampSec,
+  });
+}
+
+function storeClosedLoopSourceModelCache({
+  runtime = null,
+  sources = null,
+  nowSec = Number.NaN,
+} = {}) {
+  if (!runtime || typeof runtime !== "object" || !sources || typeof sources !== "object") {
+    return;
+  }
+  runtime.sourceModelCache = sources;
+  runtime.sourceModelCacheTimestampSec = Number.isFinite(Number(nowSec))
+    ? Number(nowSec)
+    : runtime.sourceModelCacheTimestampSec;
 }
 
 function solveBestClosedLoopTransfer({
@@ -681,7 +714,7 @@ function solveOrbitInsertionBurn({
           finiteNumber(plannerConfig.moonClosedLoopThrottleMin, 0.08),
           finiteNumber(plannerConfig.moonClosedLoopThrottleMax, 0.78),
         );
-        const burnDurationSec = burnDurationForDeltaVSec(deltaVNeedKmS, accelAtThrottle1KmS2, throttle);
+        const burnDurationSec = burnDurationForDeltaVSec(deltaVNeedKmS, accelAtThrottle1KmS2, throttle, spacecraft);
         const propagation = propagateMoonGuidanceState({
           initialState,
           durationSec: predictDurationSec,
@@ -766,62 +799,102 @@ export function planMoonClosedLoopMissionCommand({
   if (!gncRuntime || !finiteVector(estimatedPositionKm) || !finiteVector(estimatedVelocityKmS)) {
     return null;
   }
+  const nowSec = Number(timestampSec);
   const sources = buildMoonGuidanceSourceModel({ targetVectors, metrics, plannerConfig });
-  const spacecraft = {
-    bodyId: String(metrics.bodyId || "earth_launch_vehicle"),
-    massKg: Math.max(1, finiteNumber(metrics.stageMassKg, metrics.massKg || 1)),
-    radiusKm: 0.0045,
-    reflectivityCoeff: finiteNumber(metrics.reflectivityCoeff, 1.45),
-  };
-  const initialState = {
-    positionKm: estimatedPositionKm,
-    velocityKmS: estimatedVelocityKmS,
-  };
-  const engineAccelAtThrottle1KmS2 = Math.max(
+  restoreClosedLoopSourceModelCache({
+    runtime: gncRuntime,
+    sources,
+    nowSec,
+  });
+  try {
+    const stageMassKg = Math.max(1, finiteNumber(metrics.stageMassKg, metrics.massKg || 1));
+    const rawStagePropellantKg = finiteNumber(metrics.stagePropellantKg, Number.NaN);
+    const stagePropellantKg = Number.isFinite(rawStagePropellantKg)
+      ? Math.max(0, rawStagePropellantKg)
+      : Number.NaN;
+    const fallbackDryMassKg = Number.isFinite(stagePropellantKg)
+      ? Math.max(1, stageMassKg - stagePropellantKg)
+      : Number.NaN;
+    const stageDryMassKg = Math.max(
+      1,
+      finiteNumber(
+        metrics.stageDryMassKg,
+        finiteNumber(metrics.dryMassKg, fallbackDryMassKg),
+      ),
+    );
+    const boundedDryMassKg = Math.min(stageMassKg, stageDryMassKg);
+    const boundedPropellantMassKg = Number.isFinite(stagePropellantKg)
+      ? Math.min(stagePropellantKg, Math.max(0, stageMassKg - boundedDryMassKg))
+      : Math.max(0, stageMassKg - boundedDryMassKg);
+    const spacecraft = {
+      bodyId: String(metrics.bodyId || "earth_launch_vehicle"),
+      massKg: stageMassKg,
+      dryMassKg: boundedDryMassKg,
+      propellantMassKg: boundedPropellantMassKg,
+      thrustVacuumN: Math.max(0, finiteNumber(metrics.stageThrustVacuumN, 0)),
+      thrustSeaLevelN: Math.max(
+        0,
+        finiteNumber(metrics.stageThrustSeaLevelN, metrics.stageThrustVacuumN),
+      ),
+      ispVacuumS: Math.max(0, finiteNumber(metrics.stageIspVacuumS, 0)),
+      ispSeaLevelS: Math.max(
+        0,
+        finiteNumber(metrics.stageIspSeaLevelS, metrics.stageIspVacuumS),
+      ),
+      ambientPressurePa: Math.max(0, finiteNumber(metrics.ambientPressurePa, 0)),
+      radiusKm: 0.0045,
+      reflectivityCoeff: finiteNumber(metrics.reflectivityCoeff, 1.45),
+    };
+    const initialState = {
+      positionKm: estimatedPositionKm,
+      velocityKmS: estimatedVelocityKmS,
+      massKg: spacecraft.massKg,
+    };
+    const engineAccelAtThrottle1KmS2 = Math.max(
     0.0002,
     finiteNumber(metrics.engineAccelAtThrottle1KmS2, plannerConfig.engineAccelAtThrottle1KmS2 || 0.0055),
-  );
-  const moonDistanceKm = Math.max(0, finiteNumber(metrics.moonDistanceKm, length(subtract(estimatedPositionKm, sources.moon.positionKm))));
-  const moonClosingSpeedKmS = finiteNumber(metrics.moonClosingSpeedKmS, 0);
-  const earthDistanceKm = Math.max(0, finiteNumber(metrics.earthDistanceKm, length(estimatedPositionKm)));
-  const earthClosingSpeedKmS = -finiteNumber(metrics.earthRadialSpeedKmS, 0);
-  const missTrendKmS = finiteNumber(metrics.moonProjectedMissTrendKmS, 0);
-  const missGateKm = Math.max(1_000, finiteNumber(plannerConfig.moonMidcourseMissDistanceKm, 95_000));
-  const periapsisMinKm = Math.max(80, finiteNumber(plannerConfig.tliPeriapsisProtectMinKm, 130));
-  const timeToPeriapsisSec = finiteNumber(metrics.timeToPeriapsisSec, Number.NaN);
-  const nearPeriapsisBurnWindow = Number.isFinite(timeToPeriapsisSec)
+    );
+    const moonDistanceKm = Math.max(0, finiteNumber(metrics.moonDistanceKm, length(subtract(estimatedPositionKm, sources.moon.positionKm))));
+    const moonClosingSpeedKmS = finiteNumber(metrics.moonClosingSpeedKmS, 0);
+    const earthDistanceKm = Math.max(0, finiteNumber(metrics.earthDistanceKm, length(estimatedPositionKm)));
+    const earthClosingSpeedKmS = -finiteNumber(metrics.earthRadialSpeedKmS, 0);
+    const missTrendKmS = finiteNumber(metrics.moonProjectedMissTrendKmS, 0);
+    const missGateKm = Math.max(1_000, finiteNumber(plannerConfig.moonMidcourseMissDistanceKm, 95_000));
+    const periapsisMinKm = Math.max(80, finiteNumber(plannerConfig.tliPeriapsisProtectMinKm, 130));
+    const timeToPeriapsisSec = finiteNumber(metrics.timeToPeriapsisSec, Number.NaN);
+    const nearPeriapsisBurnWindow = Number.isFinite(timeToPeriapsisSec)
     ? Math.abs(timeToPeriapsisSec) <= Math.max(30, finiteNumber(plannerConfig.tliPeriapsisBurnWindowSec, 260))
     : false;
-  const missionPhaseElapsedSec = finiteNumber(metrics.missionPhaseElapsedSec, Number.NaN);
-  const departurePlanDirection = finiteVector(targetVectors.departurePlanBurnDirectionKm)
+    const missionPhaseElapsedSec = finiteNumber(metrics.missionPhaseElapsedSec, Number.NaN);
+    const departurePlanDirection = finiteVector(targetVectors.departurePlanBurnDirectionKm)
     ? normalize(targetVectors.departurePlanBurnDirectionKm, tangent)
     : null;
-  const departurePlanThrottle = Number(metrics.departurePlanThrottle);
-  const departurePlanBurnDurationSec = Number(metrics.departurePlanBurnDurationSec);
-  const departurePlanCommitWindowSec = Math.max(1, finiteNumber(metrics.departurePlanCommitWindowSec, 0));
-  const departureSeedPositionKm = finiteVector(targetVectors.departureSeedPositionKm)
+    const departurePlanThrottle = Number(metrics.departurePlanThrottle);
+    const departurePlanBurnDurationSec = Number(metrics.departurePlanBurnDurationSec);
+    const departurePlanCommitWindowSec = Math.max(1, finiteNumber(metrics.departurePlanCommitWindowSec, 0));
+    const departureSeedPositionKm = finiteVector(targetVectors.departureSeedPositionKm)
     ? targetVectors.departureSeedPositionKm
     : null;
-  const departureSeedVelocityKmS = finiteVector(targetVectors.departureSeedVelocityKmS)
+    const departureSeedVelocityKmS = finiteVector(targetVectors.departureSeedVelocityKmS)
     ? targetVectors.departureSeedVelocityKmS
     : null;
-  const departurePlanPredictedMissDistanceKm = Number(metrics.departurePlanPredictedMissDistanceKm);
-  const departurePlanPredictedPeriluneAltitudeKm = Number(metrics.departurePlanPredictedPeriluneAltitudeKm);
-  const departurePlanBPlaneErrorKm = Number(metrics.departurePlanBPlaneErrorKm);
-  const departurePlanGeometryScore = Number(metrics.departurePlanGeometryScore);
-  const departurePlanAlignNow = Number(metrics.departurePlanAlignNow);
-  const departurePlanCorridor = evaluateMoonDepartureCorridor({
+    const departurePlanPredictedMissDistanceKm = Number(metrics.departurePlanPredictedMissDistanceKm);
+    const departurePlanPredictedPeriluneAltitudeKm = Number(metrics.departurePlanPredictedPeriluneAltitudeKm);
+    const departurePlanBPlaneErrorKm = Number(metrics.departurePlanBPlaneErrorKm);
+    const departurePlanGeometryScore = Number(metrics.departurePlanGeometryScore);
+    const departurePlanAlignNow = Number(metrics.departurePlanAlignNow);
+    const departurePlanCorridor = evaluateMoonDepartureCorridor({
     predictedMissDistanceKm: departurePlanPredictedMissDistanceKm,
     predictedPeriluneAltitudeKm: departurePlanPredictedPeriluneAltitudeKm,
     bPlaneErrorKm: departurePlanBPlaneErrorKm,
     plannerConfig,
-  });
-  const departurePlanGeometryAcceptable = !Number.isFinite(departurePlanGeometryScore)
+    });
+    const departurePlanGeometryAcceptable = !Number.isFinite(departurePlanGeometryScore)
     || departurePlanGeometryScore >= 0.55;
-  const departurePlanAlignmentAcceptable = !Number.isFinite(departurePlanAlignNow)
+    const departurePlanAlignmentAcceptable = !Number.isFinite(departurePlanAlignNow)
     || departurePlanAlignNow >= 0.7;
-  const departurePlanCorridorAcceptable = departurePlanCorridor.accepted;
-  const departureCommitActive = (
+    const departurePlanCorridorAcceptable = departurePlanCorridor.accepted;
+    const departureCommitActive = (
     phaseName === "tli_burn"
     && Boolean(metrics.departurePlanReady)
     && finiteVector(departurePlanDirection)
@@ -831,9 +904,8 @@ export function planMoonClosedLoopMissionCommand({
     && departurePlanGeometryAcceptable
     && departurePlanAlignmentAcceptable
     && departurePlanCorridorAcceptable
-  );
-  const nowSec = Number(timestampSec);
-  const departurePlanParityWindowSec = Math.max(
+    );
+    const departurePlanParityWindowSec = Math.max(
     Number.isFinite(departurePlanBurnDurationSec)
       ? departurePlanBurnDurationSec + 60
       : (departurePlanCommitWindowSec + 40),
@@ -933,6 +1005,16 @@ export function planMoonClosedLoopMissionCommand({
       ...plannerConfig,
       engineAccelAtThrottle1KmS2,
     };
+  if (phaseName === "coast_to_moon" && typeof window === "undefined") {
+    solvePlannerConfig.moonClosedLoopSolveCadenceSec = Math.max(
+      300,
+      finiteNumber(solvePlannerConfig.moonClosedLoopSolveCadenceSec, 120),
+    );
+    solvePlannerConfig.moonClosedLoopPropagationStepSec = Math.min(
+      300,
+      Math.max(180, finiteNumber(solvePlannerConfig.moonClosedLoopPropagationStepSec, 90)),
+    );
+  }
 
   if (phaseName === "tli_burn" || phaseName === "coast_to_moon") {
     const shipEarthRadiusKm = length(initialState.positionKm);
@@ -1805,5 +1887,12 @@ export function planMoonClosedLoopMissionCommand({
     };
   }
 
-  return null;
+    return null;
+  } finally {
+    storeClosedLoopSourceModelCache({
+      runtime: gncRuntime,
+      sources,
+      nowSec,
+    });
+  }
 }

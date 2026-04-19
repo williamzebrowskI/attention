@@ -144,18 +144,18 @@ function runNominalMoonMissionE2E() {
     return result;
   }
 
-  // launch_to_parking hold
+  // launch hold
   step({
     label: "pre-parking-hold",
-    expectedPhase: NAVIGATION_MISSION_PHASES.LAUNCH_TO_PARKING,
+    expectedPhase: NAVIGATION_MISSION_PHASES.LAUNCH,
     orbital: makeOrbital({ periapsisKm: 80, apoapsisKm: 100, specificEnergy: 0.1, altitudeKm: 90 }),
     metrics: baseMetrics({ refuelFillFraction: 0.2 }),
   });
 
-  // launch_to_parking -> orbital_refuel
+  // launch -> parking_orbit
   step({
     label: "parking-ready-transition",
-    expectedPhase: NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL,
+    expectedPhase: NAVIGATION_MISSION_PHASES.PARKING_ORBIT,
     orbital: makeOrbital({
       periapsisKm: MOON_READY_PERIAPSIS_KM,
       apoapsisKm: MOON_READY_APOAPSIS_KM,
@@ -165,10 +165,10 @@ function runNominalMoonMissionE2E() {
     metrics: baseMetrics({ refuelFillFraction: 0.2 }),
   });
 
-  // orbital_refuel hold
+  // parking_orbit -> departure_window_wait
   step({
-    label: "refuel-hold",
-    expectedPhase: NAVIGATION_MISSION_PHASES.ORBITAL_REFUEL,
+    label: "departure-window-hold",
+    expectedPhase: NAVIGATION_MISSION_PHASES.DEPARTURE_WINDOW_WAIT,
     orbital: makeOrbital({
       periapsisKm: MOON_READY_PERIAPSIS_KM,
       apoapsisKm: MOON_READY_APOAPSIS_KM,
@@ -178,9 +178,9 @@ function runNominalMoonMissionE2E() {
     metrics: baseMetrics({ refuelFillFraction: 0.45 }),
   });
 
-  // orbital_refuel -> tli_burn
+  // departure_window_wait -> tli_burn
   step({
-    label: "refuel-complete-transition",
+    label: "departure-window-open-transition",
     expectedPhase: NAVIGATION_MISSION_PHASES.TLI_BURN,
     orbital: makeOrbital({
       periapsisKm: MOON_READY_PERIAPSIS_KM,
@@ -189,6 +189,7 @@ function runNominalMoonMissionE2E() {
       altitudeKm: MOON_PARKING_ORBIT_PERIAPSIS_KM + 15,
     }),
     metrics: baseMetrics({ refuelFillFraction: 0.9 }),
+    dtSec: 180,
   });
 
   // tli_burn hold
@@ -205,10 +206,10 @@ function runNominalMoonMissionE2E() {
     }),
   });
 
-  // tli_burn -> coast_to_moon
+  // tli_burn -> midcourse
   step({
     label: "tli-ready-transition",
-    expectedPhase: NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
+    expectedPhase: NAVIGATION_MISSION_PHASES.MIDCOURSE,
     orbital: makeOrbital({ periapsisKm: 155, apoapsisKm: 381000, specificEnergy: -0.1, altitudeKm: 350 }),
     metrics: baseMetrics({
       refuelFillFraction: 0.9,
@@ -220,10 +221,10 @@ function runNominalMoonMissionE2E() {
     }),
   });
 
-  // coast_to_moon hold
+  // midcourse hold
   step({
     label: "coast-hold",
-    expectedPhase: NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
+    expectedPhase: NAVIGATION_MISSION_PHASES.MIDCOURSE,
     orbital: makeOrbital({ periapsisKm: 160, apoapsisKm: 390000, specificEnergy: 0.2, altitudeKm: 1000 }),
     metrics: baseMetrics({
       moonDistanceKm: 250000,
@@ -236,10 +237,10 @@ function runNominalMoonMissionE2E() {
     dtSec: 180,
   });
 
-  // coast_to_moon -> lunar_insertion
+  // midcourse -> lunar_orbit_insertion
   step({
     label: "lunar-approach-transition",
-    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
+    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION,
     orbital: makeOrbital({ periapsisKm: 170, apoapsisKm: 392000, specificEnergy: 0.35, altitudeKm: 3000 }),
     metrics: baseMetrics({
       moonDistanceKm: 50000,
@@ -253,10 +254,10 @@ function runNominalMoonMissionE2E() {
     dtSec: 240,
   });
 
-  // lunar_insertion hold
+  // lunar_orbit_insertion hold
   step({
     label: "lunar-insertion-hold",
-    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
+    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION,
     orbital: makeOrbital({ periapsisKm: 200, apoapsisKm: 395000, specificEnergy: 0.4, altitudeKm: 3200 }),
     moonOrbit: makeMoonOrbit({ specificEnergy: 0.1, apoapsisKm: 50000, periapsisKm: 20, speedKmS: 2.4 }),
     metrics: baseMetrics({
@@ -270,10 +271,10 @@ function runNominalMoonMissionE2E() {
     dtSec: 240,
   });
 
-  // lunar_insertion -> lunar_orbit_hold
+  // lunar_orbit_insertion -> lunar_orbit_trim
   step({
     label: "lunar-capture-transition",
-    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_HOLD,
+    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_TRIM,
     orbital: makeOrbital({ periapsisKm: 200, apoapsisKm: 395000, specificEnergy: 0.4, altitudeKm: 3200 }),
     moonOrbit: makeMoonOrbit({ specificEnergy: -0.15, apoapsisKm: 9000, periapsisKm: 120, speedKmS: 1.2 }),
     metrics: baseMetrics({
@@ -287,17 +288,27 @@ function runNominalMoonMissionE2E() {
     dtSec: 180,
   });
 
-  // lunar_orbit_hold hold
+  // lunar_orbit_trim -> lunar_loiter
+  step({
+    label: "lunar-trim-complete-transition",
+    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_LOITER,
+    orbital: makeOrbital({ periapsisKm: 205, apoapsisKm: 392000, specificEnergy: 0.35, altitudeKm: 3200 }),
+    moonOrbit: makeMoonOrbit({ specificEnergy: -0.11, apoapsisKm: 9500, periapsisKm: 130, speedKmS: 1.16 }),
+    metrics: baseMetrics({ moonDistanceKm: 7400, moonAltitudeKm: 5660 }),
+    dtSec: 120,
+  });
+
+  // lunar_loiter hold
   step({
     label: "lunar-hold",
-    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_HOLD,
+    expectedPhase: NAVIGATION_MISSION_PHASES.LUNAR_LOITER,
     orbital: makeOrbital({ periapsisKm: 210, apoapsisKm: 390000, specificEnergy: 0.3, altitudeKm: 3200 }),
     moonOrbit: makeMoonOrbit({ specificEnergy: -0.1, apoapsisKm: 9500, periapsisKm: 130, speedKmS: 1.15 }),
     metrics: baseMetrics({ moonDistanceKm: 7500, moonAltitudeKm: 5750 }),
     dtSec: 3600,
   });
 
-  // lunar_orbit_hold -> tei_burn
+  // lunar_loiter -> tei_burn
   step({
     label: "lunar-hold-complete-transition",
     expectedPhase: NAVIGATION_MISSION_PHASES.TEI_BURN,
@@ -321,10 +332,10 @@ function runNominalMoonMissionE2E() {
     dtSec: 180,
   });
 
-  // tei_burn -> coast_to_earth
+  // tei_burn -> earth_approach
   step({
     label: "tei-departure-transition",
-    expectedPhase: NAVIGATION_MISSION_PHASES.COAST_TO_EARTH,
+    expectedPhase: NAVIGATION_MISSION_PHASES.EARTH_APPROACH,
     orbital: makeOrbital({ periapsisKm: 220, apoapsisKm: 380000, specificEnergy: 0.1, altitudeKm: 8000 }),
     moonOrbit: makeMoonOrbit({ specificEnergy: -0.06, apoapsisKm: 12000, periapsisKm: 160, speedKmS: 1.0 }),
     metrics: baseMetrics({
@@ -335,10 +346,10 @@ function runNominalMoonMissionE2E() {
     dtSec: 180,
   });
 
-  // coast_to_earth hold
+  // earth_approach hold
   step({
     label: "earth-coast-hold",
-    expectedPhase: NAVIGATION_MISSION_PHASES.COAST_TO_EARTH,
+    expectedPhase: NAVIGATION_MISSION_PHASES.EARTH_APPROACH,
     orbital: makeOrbital({ periapsisKm: 180, apoapsisKm: 350000, specificEnergy: -0.4, altitudeKm: 40000 }),
     metrics: baseMetrics({
       earthDistanceKm: 260000,
@@ -348,7 +359,7 @@ function runNominalMoonMissionE2E() {
     dtSec: 240,
   });
 
-  // coast_to_earth -> earth_capture
+  // earth_approach -> earth_capture
   step({
     label: "earth-capture-transition",
     expectedPhase: NAVIGATION_MISSION_PHASES.EARTH_CAPTURE,
@@ -429,6 +440,15 @@ function runGateHoldFailureMatrix() {
     }),
     metrics: baseMetrics({ refuelFillFraction: 0.95 }),
   });
+  updateOnce({
+    orbital: makeOrbital({
+      periapsisKm: MOON_READY_PERIAPSIS_KM,
+      apoapsisKm: MOON_READY_APOAPSIS_KM,
+      specificEnergy: -1.1,
+    }),
+    metrics: baseMetrics({ refuelFillFraction: 0.95 }),
+    dtSec: 180,
+  });
   assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN, "matrix setup: expected tli_burn");
 
   // Failure 1: TLI no-go (low periapsis + poor miss/B-plane).
@@ -447,7 +467,7 @@ function runGateHoldFailureMatrix() {
     "matrix failure-1: should remain in tli_burn",
   );
 
-  // Recover to coast_to_moon.
+  // Recover to midcourse.
   updateOnce({
     orbital: makeOrbital({ periapsisKm: 160, apoapsisKm: 382500, specificEnergy: -0.05 }),
     metrics: baseMetrics({
@@ -458,9 +478,9 @@ function runGateHoldFailureMatrix() {
       moonProjectedPeriluneAltitudeKm: 130,
     }),
   });
-  assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON, "matrix setup: expected coast_to_moon");
+  assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.MIDCOURSE, "matrix setup: expected midcourse");
 
-  // Failure 2: Coast-to-moon no capture gate.
+  // Failure 2: Midcourse no capture gate.
   const coastBlocked = updateOnce({
     orbital: makeOrbital({ periapsisKm: 170, apoapsisKm: 390000, specificEnergy: 0.2 }),
     metrics: baseMetrics({
@@ -474,8 +494,8 @@ function runGateHoldFailureMatrix() {
     dtSec: 180,
   });
   assert(
-    coastBlocked.state.missionPhase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
-    "matrix failure-2: should remain in coast_to_moon",
+    coastBlocked.state.missionPhase === NAVIGATION_MISSION_PHASES.MIDCOURSE,
+    "matrix failure-2: should remain in midcourse",
   );
 
   console.log("PASS moon-nav-e2e gate-hold matrix (expected failures held at gates)");
@@ -523,6 +543,15 @@ function runRepeatedHoldPersistenceMatrix() {
       }),
       metrics: baseMetrics({ refuelFillFraction: 0.95 }),
     });
+    updateOnce({
+      orbital: makeOrbital({
+        periapsisKm: MOON_READY_PERIAPSIS_KM,
+        apoapsisKm: MOON_READY_APOAPSIS_KM,
+        specificEnergy: -1.1,
+      }),
+      metrics: baseMetrics({ refuelFillFraction: 0.95 }),
+      dtSec: 180,
+    });
     assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.TLI_BURN, "repeat-hold setup A: expected tli_burn");
 
     for (let i = 0; i < 5; i += 1) {
@@ -555,8 +584,8 @@ function runRepeatedHoldPersistenceMatrix() {
       dtSec: 120,
     });
     assert(
-      recovered.state.missionPhase === NAVIGATION_MISSION_PHASES.COAST_TO_MOON,
-      "repeat-hold A recover: expected transition to coast_to_moon",
+      recovered.state.missionPhase === NAVIGATION_MISSION_PHASES.MIDCOURSE,
+      "repeat-hold A recover: expected transition to midcourse",
     );
   }
 
@@ -577,6 +606,15 @@ function runRepeatedHoldPersistenceMatrix() {
         specificEnergy: -1.1,
       }),
       metrics: baseMetrics({ refuelFillFraction: 0.95 }),
+    });
+    updateOnce({
+      orbital: makeOrbital({
+        periapsisKm: MOON_READY_PERIAPSIS_KM,
+        apoapsisKm: MOON_READY_APOAPSIS_KM,
+        specificEnergy: -1.1,
+      }),
+      metrics: baseMetrics({ refuelFillFraction: 0.95 }),
+      dtSec: 180,
     });
     updateOnce({
       orbital: makeOrbital({ periapsisKm: 160, apoapsisKm: 382000, specificEnergy: -0.05 }),
@@ -601,7 +639,7 @@ function runRepeatedHoldPersistenceMatrix() {
       }),
       dtSec: 240,
     });
-    assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_INSERTION, "repeat-hold setup B: expected lunar_insertion");
+    assert(nav.snapshot().missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION, "repeat-hold setup B: expected lunar_orbit_insertion");
 
     for (let i = 0; i < 4; i += 1) {
       const held = updateOnce({
@@ -618,8 +656,8 @@ function runRepeatedHoldPersistenceMatrix() {
         dtSec: 180,
       });
       assert(
-        held.state.missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_INSERTION,
-        `repeat-hold B.${i}: should remain in lunar_insertion`,
+        held.state.missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_INSERTION,
+        `repeat-hold B.${i}: should remain in lunar_orbit_insertion`,
       );
     }
 
@@ -637,8 +675,8 @@ function runRepeatedHoldPersistenceMatrix() {
       dtSec: 180,
     });
     assert(
-      captureRecovered.state.missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_HOLD,
-      "repeat-hold B recover: expected transition to lunar_orbit_hold",
+      captureRecovered.state.missionPhase === NAVIGATION_MISSION_PHASES.LUNAR_ORBIT_TRIM,
+      "repeat-hold B recover: expected transition to lunar_orbit_trim",
     );
   }
 

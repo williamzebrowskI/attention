@@ -64,13 +64,13 @@ function departureSolverProfile(searchProfile = "fast") {
     return {
       mode: "browser",
       approximate: false,
-      phaseSamples: 12,
-      apoapsisOffsetsKm: [0, 24, 52],
-      finalistCount: 3,
-      nodeFinalistCount: 3,
-      defaultNodeSamples: 12,
+      phaseSamples: 8,
+      apoapsisOffsetsKm: [0, 32, 64],
+      finalistCount: 2,
+      nodeFinalistCount: 2,
+      defaultNodeSamples: 8,
       minNodeSamples: 8,
-      maxNodeSamples: 24,
+      maxNodeSamples: 16,
       refinePasses: 1,
       initialApoRefineStepKm: 12,
       useAggressive: false,
@@ -168,6 +168,41 @@ function departureSolverProfile(searchProfile = "fast") {
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : Number(fallback);
+}
+
+function resolvePlannerSpacecraft({
+  spacecraft = null,
+  fallbackMassKg = 1_250_000,
+  defaultBodyId = "moon_departure_optimizer_vehicle",
+} = {}) {
+  const input = spacecraft && typeof spacecraft === "object"
+    ? spacecraft
+    : {};
+  const massKg = Math.max(1, finiteNumber(input.massKg, fallbackMassKg));
+  const rawPropellantMassKg = finiteNumber(input.propellantMassKg, Number.NaN);
+  const propellantMassKg = Number.isFinite(rawPropellantMassKg)
+    ? Math.max(0, rawPropellantMassKg)
+    : Number.NaN;
+  const derivedDryMassKg = Number.isFinite(propellantMassKg)
+    ? Math.max(1, massKg - propellantMassKg)
+    : Number.NaN;
+  const dryMassKg = Math.max(1, finiteNumber(input.dryMassKg, derivedDryMassKg));
+  const boundedDryMassKg = Math.min(massKg, dryMassKg);
+  return {
+    bodyId: String(input.bodyId || defaultBodyId),
+    massKg,
+    dryMassKg: boundedDryMassKg,
+    propellantMassKg: Number.isFinite(propellantMassKg)
+      ? Math.min(propellantMassKg, Math.max(0, massKg - boundedDryMassKg))
+      : Math.max(0, massKg - boundedDryMassKg),
+    thrustVacuumN: Math.max(0, finiteNumber(input.thrustVacuumN, 0)),
+    thrustSeaLevelN: Math.max(0, finiteNumber(input.thrustSeaLevelN, input.thrustVacuumN)),
+    ispVacuumS: Math.max(0, finiteNumber(input.ispVacuumS, 0)),
+    ispSeaLevelS: Math.max(0, finiteNumber(input.ispSeaLevelS, input.ispVacuumS)),
+    ambientPressurePa: Math.max(0, finiteNumber(input.ambientPressurePa, 0)),
+    radiusKm: Math.max(0, finiteNumber(input.radiusKm, 0.0045)),
+    reflectivityCoeff: finiteNumber(input.reflectivityCoeff, 1.45),
+  };
 }
 
 function totalPlanTimeSec({
@@ -695,6 +730,7 @@ function evaluateApproximateDepartureCandidate({
   nominalDeltaVKmS = Number.NaN,
   targetPeriluneAltitudeKm = GLOBAL_TARGET_PERILUNE_ALTITUDE_KM,
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
+  spacecraft = null,
 } = {}) {
   if (
     !finiteVector(earthState?.position)
@@ -801,6 +837,7 @@ function evaluateApproximateDepartureCandidate({
     deltaVNeedKmS,
     Math.max(0.0002, finiteNumber(engineAccelAtThrottle1KmS2, GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2)),
     throttle,
+    spacecraft,
   );
   const coastEntryAlignment = estimateCoastEntryAlignment({
     candidate,
@@ -903,6 +940,7 @@ function evaluatePropagatedDepartureCandidate({
       deltaVNeedKmS,
       Math.max(0.0002, finiteNumber(engineAccelAtThrottle1KmS2, GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2)),
       throttle,
+      spacecraft,
     );
     for (let radialIndex = 0; radialIndex < radialOffsets.length; radialIndex += 1) {
       for (let normalIndex = 0; normalIndex < normalOffsets.length; normalIndex += 1) {
@@ -961,6 +999,7 @@ function evaluatePropagatedDepartureCandidate({
             relativeVelocityKmS: closestMoonRelVel,
             targetPeriluneAltitudeKm,
             bodyRadiusKm: Number(sources.moon?.radiusKm) || DEFAULT_MOON_RADIUS_KM,
+            bodyMuKm3S2: 6.67430e-20 * Math.max(1, Number(sources.moon?.massKg) || DEFAULT_MOON_MASS_KG),
           });
           const safetyAltitudeKm = Number.isFinite(propagation.minEarthAltitudeKm)
             ? propagation.minEarthAltitudeKm
@@ -1083,6 +1122,7 @@ function buildStaticWindowSolve({
   searchProfile = "fast",
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
   spacecraftMassKg = 1_250_000,
+  spacecraft = null,
 } = {}) {
   if (!finiteVector(earthState?.position) || !finiteVector(moonState?.position)) {
     return null;
@@ -1122,14 +1162,13 @@ function buildStaticWindowSolve({
         moonClosedLoopPropagationStepSec: GLOBAL_PROPAGATION_STEP_SEC,
       },
     });
-  const spacecraft = profile.approximate
+  const propagationSpacecraft = profile.approximate
     ? null
-    : {
-      bodyId: "moon_departure_optimizer_vehicle",
-      massKg: Math.max(1, finiteNumber(spacecraftMassKg, 1_250_000)),
-      radiusKm: 0.0045,
-      reflectivityCoeff: 1.45,
-    };
+    : resolvePlannerSpacecraft({
+      spacecraft,
+      fallbackMassKg: spacecraftMassKg,
+      defaultBodyId: "moon_departure_optimizer_vehicle",
+    });
 
   const cheapCandidates = [];
   for (let phaseIndex = 0; phaseIndex < profile.phaseSamples; phaseIndex += 1) {
@@ -1169,6 +1208,7 @@ function buildStaticWindowSolve({
         candidate: finalists[index],
         nominalDeltaVKmS,
         engineAccelAtThrottle1KmS2,
+        spacecraft: propagationSpacecraft,
       })
       : evaluatePropagatedDepartureCandidate({
         sources,
@@ -1221,6 +1261,7 @@ function buildStaticWindowSolve({
               candidate: localCheap,
               nominalDeltaVKmS,
               engineAccelAtThrottle1KmS2,
+              spacecraft: propagationSpacecraft,
             })
             : evaluatePropagatedDepartureCandidate({
               sources,
@@ -1400,6 +1441,7 @@ function staticWindowCacheKey({
   searchProfile = "fast",
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
   spacecraftMassKg = 1_250_000,
+  spacecraft = null,
 } = {}) {
   const moonRelPosKm = finiteVector(earthState?.position) && finiteVector(moonState?.position)
     ? subtract(moonState.position, earthState.position)
@@ -1407,6 +1449,10 @@ function staticWindowCacheKey({
   const moonRelVelKmS = finiteVector(moonState?.velocity) && finiteVector(earthState?.velocity)
     ? subtract(moonState.velocity, earthState.velocity)
     : null;
+  const resolvedSpacecraft = resolvePlannerSpacecraft({
+    spacecraft,
+    fallbackMassKg: spacecraftMassKg,
+  });
   return [
     String(searchProfile || "normal"),
     quantize(inclinationDeg, 0.01),
@@ -1416,6 +1462,12 @@ function staticWindowCacheKey({
     quantize(earthMuKm3S2, 0.25),
     quantize(engineAccelAtThrottle1KmS2, 0.00001),
     quantize(spacecraftMassKg, 10),
+    quantize(resolvedSpacecraft.dryMassKg, 10),
+    quantize(resolvedSpacecraft.propellantMassKg, 10),
+    quantize(resolvedSpacecraft.thrustVacuumN, 10_000),
+    quantize(resolvedSpacecraft.thrustSeaLevelN, 10_000),
+    quantize(resolvedSpacecraft.ispVacuumS, 0.5),
+    quantize(resolvedSpacecraft.ispSeaLevelS, 0.5),
     quantize(moonRelPosKm?.x, 250),
     quantize(moonRelPosKm?.y, 250),
     quantize(moonRelPosKm?.z, 250),
@@ -1484,6 +1536,7 @@ function evaluateSinglePropagatedDepartureCandidate({
     nominalDeltaVKmS,
     targetPeriluneAltitudeKm,
     engineAccelAtThrottle1KmS2,
+    spacecraft,
   });
   if (!approx || !finiteVector(approx.burnDirection)) {
     return null;
@@ -1529,6 +1582,7 @@ function evaluateSinglePropagatedDepartureCandidate({
     relativeVelocityKmS: closestMoonRelVel,
     targetPeriluneAltitudeKm,
     bodyRadiusKm: Number(sources.moon?.radiusKm) || DEFAULT_MOON_RADIUS_KM,
+    bodyMuKm3S2: 6.67430e-20 * Math.max(1, Number(sources.moon?.massKg) || DEFAULT_MOON_MASS_KG),
   });
   const safetyAltitudeKm = Number.isFinite(propagation.minEarthAltitudeKm)
     ? propagation.minEarthAltitudeKm
@@ -1614,6 +1668,7 @@ function solveHybridMoonOrbitInjectWindow({
   nodeSamples = null,
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
   spacecraftMassKg = 1_250_000,
+  spacecraft = null,
 } = {}) {
   if (!finiteVector(earthState?.position) || !finiteVector(moonState?.position)) {
     return {
@@ -1662,12 +1717,11 @@ function solveHybridMoonOrbitInjectWindow({
       moonClosedLoopPropagationStepSec: GLOBAL_PROPAGATION_STEP_SEC,
     },
   });
-  const spacecraft = {
-    bodyId: "moon_departure_hybrid_optimizer_vehicle",
-    massKg: Math.max(1, finiteNumber(spacecraftMassKg, 1_250_000)),
-    radiusKm: 0.0045,
-    reflectivityCoeff: 1.45,
-  };
+  const propagationSpacecraft = resolvePlannerSpacecraft({
+    spacecraft,
+    fallbackMassKg: spacecraftMassKg,
+    defaultBodyId: "moon_departure_hybrid_optimizer_vehicle",
+  });
   const hybridEarthSafetyMinAltitudeKm = GLOBAL_EARTH_SAFETY_MIN_ALTITUDE_KM;
   const phaseSamples = Math.max(8, Math.round(Number(profile.phaseSamples) || FAST_PHASE_SAMPLES));
   const nodeStepRad = (Math.PI * 2) / sampleCount;
@@ -1705,7 +1759,7 @@ function solveHybridMoonOrbitInjectWindow({
           }
           const evaluated = evaluateSinglePropagatedDepartureCandidate({
             sources,
-            spacecraft,
+            spacecraft: propagationSpacecraft,
             earthState,
             moonRelPosKm,
             moonRelVelKmS,
@@ -1775,7 +1829,7 @@ function solveHybridMoonOrbitInjectWindow({
             }
             const evaluated = evaluateSinglePropagatedDepartureCandidate({
               sources,
-              spacecraft,
+            spacecraft: propagationSpacecraft,
               earthState,
               moonRelPosKm,
               moonRelVelKmS,
@@ -1958,6 +2012,7 @@ export function solveMoonDepartureWindow({
   searchProfile = "fast",
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
   spacecraftMassKg = 1_250_000,
+  spacecraft = null,
 } = {}) {
   if (!finiteVector(earthState?.position) || !finiteVector(moonState?.position)) {
     return {
@@ -1994,6 +2049,7 @@ export function solveMoonDepartureWindow({
     searchProfile,
     engineAccelAtThrottle1KmS2,
     spacecraftMassKg,
+    spacecraft,
   });
 
   const moonRelPosKm = subtract(moonState.position, earthState.position);
@@ -2114,6 +2170,7 @@ export function evaluateMoonOrbitInjectLocation({
   transferReserveSec = GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC,
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
   spacecraftMassKg = 1_250_000,
+  spacecraft = null,
 } = {}) {
   if (!finiteVector(earthState?.position) || !finiteVector(moonState?.position)) {
     return {
@@ -2189,18 +2246,17 @@ export function evaluateMoonOrbitInjectLocation({
         moonClosedLoopPropagationStepSec: GLOBAL_PROPAGATION_STEP_SEC,
       },
     });
-  const spacecraft = profile.approximate
+  const propagationSpacecraft = profile.approximate
     ? null
-    : {
-      bodyId: "moon_inject_location_probe",
-      massKg: Math.max(1, finiteNumber(spacecraftMassKg, 1_250_000)),
-      radiusKm: 0.0045,
-      reflectivityCoeff: 1.45,
-    };
+    : resolvePlannerSpacecraft({
+      spacecraft,
+      fallbackMassKg: spacecraftMassKg,
+      defaultBodyId: "moon_inject_location_probe",
+    });
   const evaluated = profile.mode === "hybrid"
     ? evaluateSinglePropagatedDepartureCandidate({
       sources,
-      spacecraft,
+      spacecraft: propagationSpacecraft,
       earthState,
       moonRelPosKm,
       moonRelVelKmS,
@@ -2216,6 +2272,7 @@ export function evaluateMoonOrbitInjectLocation({
       candidate,
       nominalDeltaVKmS,
       engineAccelAtThrottle1KmS2,
+      spacecraft: propagationSpacecraft,
     })
     : evaluatePropagatedDepartureCandidate({
       sources,
@@ -2486,6 +2543,7 @@ export function solveMoonOrbitInjectWindowForLaunch({
   earthMuKm3S2 = Number.NaN,
   engineAccelAtThrottle1KmS2 = GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2,
   spacecraftMassKg = 1_250_000,
+  spacecraft = null,
   nodeSamples = 24,
   searchProfile = "hybrid",
 } = {}) {
@@ -2530,6 +2588,7 @@ export function solveMoonOrbitInjectWindowForLaunch({
       earthMuKm3S2,
       engineAccelAtThrottle1KmS2,
       spacecraftMassKg,
+      spacecraft,
       nodeSamples: attempt.nodeSamples,
       searchProfile: attempt.searchProfile,
     });

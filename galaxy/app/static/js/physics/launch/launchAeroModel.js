@@ -306,7 +306,7 @@ export function dynamicPressurePaFromAtmosphere(
   earthPole,
   windVectorKmS = null,
 ) {
-  const densityKgM3 = Number(atmosphereSample?.densityKgM3) || 0;
+  const densityKgM3 = Number(atmosphereSample?.dragEffectiveDensityKgM3) || Number(atmosphereSample?.densityKgM3) || 0;
   if (!(densityKgM3 > 0) || !relPos || !relVel) {
     return 0;
   }
@@ -329,8 +329,10 @@ export function computeAerodynamicResponse({
   referenceAreaM2,
   massKg,
   minMassKg = 500,
+  massModel = null,
+  throttle = 0,
 }) {
-  const densityKgM3 = Number(atmosphereSample?.densityKgM3) || 0;
+  const densityKgM3 = Number(atmosphereSample?.dragEffectiveDensityKgM3) || Number(atmosphereSample?.densityKgM3) || 0;
   const safeMassKg = Math.max(minMassKg, Number(massKg) || minMassKg);
   const areaM2 = Math.max(0, Number(referenceAreaM2) || 0);
   if (!(densityKgM3 > MIN_AIR_DENSITY_KG_M3) || !(areaM2 > 0) || !relPos || !relVel) {
@@ -387,9 +389,31 @@ export function computeAerodynamicResponse({
   const profile = stageAeroProfile(bodyKind);
   const cd0 = sampleTableLinear(machNumber, profile.mach, profile.cd0);
   const clAlphaPerRad = sampleTableLinear(machNumber, profile.mach, profile.clAlphaPerRad);
-  const cmAlphaPerRad = sampleTableLinear(machNumber, profile.mach, profile.cmAlphaPerRad);
-  const cd = clamp(cd0 + (Number(profile.cdAlpha2) * aoaRad * aoaRad), 0.12, 1.8);
+  const cpNormalized = sampleTableLinear(machNumber, profile.mach, profile.cpNormalized || []);
+  const cgNormalized = clamp(Number(massModel?.comNormalized) || 0.5, 0, 1);
+  const staticMarginNormalized = cgNormalized - cpNormalized;
+  const stabilityGain = Math.max(0, Number(profile.stabilityGain) || 1.4);
+  const cmAlphaPerRad = -clAlphaPerRad * staticMarginNormalized * stabilityGain;
+  const transonicWaveDragCd =
+    Math.max(0, Number(profile.transonicWaveDragCd) || 0)
+    * gaussian(
+      machNumber,
+      Number(profile.transonicWaveDragMach) || 1.03,
+      Math.max(0.05, Number(profile.transonicWaveDragWidth) || 0.16),
+    );
+  const inducedDragFactor = Math.max(0, Number(profile.inducedDragFactor) || 0);
   const cl = clamp(clAlphaPerRad * aoaRad, -2.8, 2.8);
+  const poweredDragReliefCd = clamp(Number(throttle) || 0, 0, 1)
+    * Math.max(0, Number(profile.powerOnBaseDragFactor) || 0);
+  const cd = clamp(
+    cd0
+      + transonicWaveDragCd
+      + (Number(profile.cdAlpha2) * aoaRad * aoaRad)
+      + (inducedDragFactor * cl * cl)
+      - poweredDragReliefCd,
+    0.12,
+    1.8,
+  );
   const cm = clamp(cmAlphaPerRad * aoaRad, -1.4, 1.4);
 
   const dragAccKmS2 = (qPa * areaM2 * cd) / safeMassKg / 1000;
@@ -413,6 +437,8 @@ export function computeAerodynamicResponse({
     dragCoefficient: cd,
     liftCoefficient: cl,
     momentCoefficient: cm,
+    centerOfPressureNormalized: cpNormalized,
+    staticMarginNormalized,
     relAirVelocityKmS,
     relAirSpeedKmS,
   };
