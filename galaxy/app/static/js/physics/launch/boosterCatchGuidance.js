@@ -5,8 +5,8 @@ export const BOOSTER_CATCH_CONFIG = Object.freeze({
   maxTotalRangeKm: 0.55,
   maxTangentialSpeedKmS: 0.18,
   maxDownwardSpeedKmS: 0.18,
-  finalizeLateralRangeKm: 0.05,
-  finalizeBodyHeightKm: 0.08,
+  finalizeLateralRangeKm: 0.03,
+  finalizePinHeightErrorKm: 0.006,
   finalizeSpeedKmS: 0.05,
 });
 
@@ -73,14 +73,14 @@ export function shouldFinalizeBoosterCatch(input = {}) {
     return false;
   }
   const launchSiteLateralRangeKm = Math.max(0, Number(input.launchSiteLateralRangeKm) || 0);
-  const bodyAboveTerrainKm = Number(input.bodyAboveTerrainKm);
+  const catchPinHeightErrorKm = Math.abs(Number(input.catchPinHeightErrorKm));
   const speedKmS = Math.max(0, Number(input.speedKmS) || 0);
   const radialSpeedKmS = Math.abs(Number(input.radialSpeedKmS) || 0);
 
   return (
     launchSiteLateralRangeKm <= BOOSTER_CATCH_CONFIG.finalizeLateralRangeKm
-    && Number.isFinite(bodyAboveTerrainKm)
-    && bodyAboveTerrainKm <= BOOSTER_CATCH_CONFIG.finalizeBodyHeightKm
+    && Number.isFinite(catchPinHeightErrorKm)
+    && catchPinHeightErrorKm <= BOOSTER_CATCH_CONFIG.finalizePinHeightErrorKm
     && speedKmS <= BOOSTER_CATCH_CONFIG.finalizeSpeedKmS
     && radialSpeedKmS <= 0.03
   );

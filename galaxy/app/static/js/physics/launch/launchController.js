@@ -20,6 +20,10 @@ import {
 import { computeBoosterRecoveryCommand } from "./boosterRecovery.js";
 import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js";
 import {
+  computeBoosterCatchPinHeightErrorKm,
+  computeLaunchSiteCatchFrame,
+} from "./launchSiteCatchGeometry.js";
+import {
   DEFAULT_LAUNCH_MISSION_ID,
   LAUNCH_MISSION_IDS,
   LAUNCH_MISSION_PROFILES,
@@ -3739,6 +3743,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthAxes: currentEarthAxes,
       referenceOffsetKm: BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
     });
+    const catchFrame = computeLaunchSiteCatchFrame({
+      earthState,
+      earthRadiusKm,
+      earthAxes: currentEarthAxes,
+    });
     const launchSiteVector = padState
       ? subtract(padState.position, boosterState.position)
       : { x: 0, y: 0, z: 0 };
@@ -3770,10 +3779,16 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
 
     const up = orbital.up;
     let direction = composeBoosterDirection(up, relVel, orbital.tangentialVector, command.directionMix);
-    if (padState) {
+    const siteTargetState = command.captureLike && catchFrame
+      ? {
+        position: catchFrame.centerPosition,
+        velocity: catchFrame.centerVelocity,
+      }
+      : padState;
+    if (siteTargetState) {
       const lateralToSiteDirection = lateralDirectionTowardTarget(
         boosterState.position,
-        padState.position,
+        siteTargetState.position,
         up,
         direction,
       );
@@ -3791,7 +3806,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         altitudeKm > 25 ? 0.62 : altitudeKm > 8 ? 0.34 : 0.18,
       );
       if (siteVelocityWeight > 1e-6) {
-        const padRetrogradeDirection = normalize(scale(relVelocityToPad, -1), direction);
+        const targetVelocity = siteTargetState.velocity || padVelocity;
+        const relVelocityToTarget = subtract(
+          boosterState.velocity || { x: 0, y: 0, z: 0 },
+          targetVelocity,
+        );
+        const padRetrogradeDirection = normalize(scale(relVelocityToTarget, -1), direction);
         direction = normalize(mixVectors(direction, padRetrogradeDirection, siteVelocityWeight), direction);
       }
     }
@@ -4070,6 +4090,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthAxes: currentEarthAxes,
       referenceOffsetKm: BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
     });
+    const catchFrame = computeLaunchSiteCatchFrame({
+      earthState,
+      earthRadiusKm,
+      earthAxes: currentEarthAxes,
+    });
     const launchSiteVector = padState
       ? subtract(padState.position, boosterState.position)
       : { x: 0, y: 0, z: 0 };
@@ -4086,15 +4111,32 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       normalize(scale(relVelNow, -1), currentEarthAxes.pole),
     );
     const launchSiteLateralClosingSpeedKmS = dot(scale(relVelocityToPad, -1), launchSiteLateralDirection);
+    const catchCenterVector = catchFrame
+      ? subtract(catchFrame.centerPosition, boosterState.position)
+      : launchSiteVector;
+    const catchCenterLateralVector = subtract(
+      catchCenterVector,
+      scale(
+        normalize(relPosNow, currentEarthAxes.pole),
+        dot(catchCenterVector, normalize(relPosNow, currentEarthAxes.pole)),
+      ),
+    );
+    const catchCenterLateralRangeKm = catchFrame
+      ? length(catchCenterLateralVector)
+      : launchSiteLateralRangeKm;
+    const catchPinHeightErrorKm = computeBoosterCatchPinHeightErrorKm(bodyAboveTerrainKm);
     const catchFinalized = shouldFinalizeBoosterCatch({
       guidanceMode: runtime.booster.guidanceMode,
-      launchSiteLateralRangeKm,
-      bodyAboveTerrainKm,
+      launchSiteLateralRangeKm: catchCenterLateralRangeKm,
+      catchPinHeightErrorKm,
       speedKmS,
       radialSpeedKmS,
     });
     if (catchFinalized) {
-      if (padState) {
+      if (catchFrame) {
+        boosterState.position = { ...catchFrame.centerPosition };
+        boosterState.velocity = { ...catchFrame.centerVelocity };
+      } else if (padState) {
         boosterState.position = { ...padState.position };
         boosterState.velocity = { ...padVelocity };
       }
@@ -4123,6 +4165,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         : null;
       runtime.booster.telemetry.launchSiteLateralClosingSpeedKmS = Number.isFinite(launchSiteLateralClosingSpeedKmS)
         ? launchSiteLateralClosingSpeedKmS
+        : null;
+      runtime.booster.telemetry.catchCenterLateralRangeKm = Number.isFinite(catchCenterLateralRangeKm)
+        ? catchCenterLateralRangeKm
+        : null;
+      runtime.booster.telemetry.catchPinHeightErrorKm = Number.isFinite(catchPinHeightErrorKm)
+        ? catchPinHeightErrorKm
         : null;
     }
   }

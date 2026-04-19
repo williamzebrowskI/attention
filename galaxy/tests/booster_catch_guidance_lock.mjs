@@ -2,6 +2,7 @@ import {
   resolveBoosterCatchCommand,
   shouldFinalizeBoosterCatch,
 } from "../app/static/js/physics/launch/boosterCatchGuidance.js";
+import { BOOSTER_CATCH_BASE_CLEARANCE_KM } from "../app/static/js/physics/launch/launchSiteCatchGeometry.js";
 
 function assert(condition, message) {
   if (!condition) {
@@ -34,7 +35,7 @@ function main() {
   const finalizeCatch = shouldFinalizeBoosterCatch({
     guidanceMode: "booster-catch-burn",
     launchSiteLateralRangeKm: 0.02,
-    bodyAboveTerrainKm: 0.04,
+    catchPinHeightErrorKm: 0.001,
     speedKmS: 0.02,
     radialSpeedKmS: -0.01,
   });
@@ -43,7 +44,7 @@ function main() {
   const noFinalizeCatch = shouldFinalizeBoosterCatch({
     guidanceMode: "booster-landing-burn",
     launchSiteLateralRangeKm: 0.02,
-    bodyAboveTerrainKm: 0.04,
+    catchPinHeightErrorKm: BOOSTER_CATCH_BASE_CLEARANCE_KM,
     speedKmS: 0.02,
     radialSpeedKmS: -0.01,
   });

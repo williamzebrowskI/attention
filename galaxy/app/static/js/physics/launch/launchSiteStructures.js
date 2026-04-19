@@ -2,6 +2,7 @@ import {
   LAUNCH_SITE,
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
+import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js";
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
 const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
@@ -13,9 +14,7 @@ const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   towerWidthKm: 0.014,
   towerDepthKm: 0.014,
   towerOffsetKm: 0.018,
-  chopstickCatchHeightKm:
-    STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm
-    - (STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.55),
+  chopstickCatchHeightKm: BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
   chopstickArmMinLengthKm: 0.009,
   chopstickArmMaxLengthKm: 0.021,
   chopstickArmThicknessKm: 0.0022,
