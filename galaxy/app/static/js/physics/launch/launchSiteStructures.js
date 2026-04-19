@@ -6,25 +6,52 @@ import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchG
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
 const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
-  mountRadiusKm: 0.016,
-  mountHeightKm: 0.012,
-  holdClampHeightKm: 0.008,
-  holdClampOffsetKm: 0.0085,
+  slabRadiusKm: 0.028,
+  slabHeightKm: 0.0022,
+  mountDeckRadiusKm: 0.0185,
+  mountDeckThicknessKm: 0.004,
+  mountDeckHeightKm: 0.020,
+  mountRingTubeKm: 0.0015,
+  flamePlateRadiusKm: 0.013,
+  flamePlateHeightKm: 0.0016,
+  holdClampHeightKm: 0.009,
+  holdClampWidthKm: 0.003,
+  holdClampDepthKm: 0.005,
+  holdClampOffsetKm: 0.0095,
+  mountLegCount: 6,
+  mountLegThicknessKm: 0.0025,
+  mountLegFootRadiusKm: 0.022,
+  mountLegTopRadiusKm: 0.015,
   towerHeightKm: 0.146,
-  towerWidthKm: 0.014,
-  towerDepthKm: 0.014,
-  towerOffsetKm: 0.018,
+  towerWidthKm: 0.016,
+  towerDepthKm: 0.016,
+  towerOffsetKm: 0.024,
+  towerColumnThicknessKm: 0.0018,
+  towerBraceThicknessKm: 0.001,
+  towerCrossLevelCount: 16,
+  carriageHeightKm: 0.022,
+  carriageWidthKm: 0.021,
+  carriageDepthKm: 0.017,
+  carriageRailInsetKm: 0.0048,
+  carriageBeamThicknessKm: 0.0018,
   chopstickCatchHeightKm: BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
-  chopstickArmMinLengthKm: 0.009,
-  chopstickArmMaxLengthKm: 0.021,
-  chopstickArmThicknessKm: 0.0022,
+  chopstickArmMinLengthKm: 0.010,
+  chopstickArmMaxLengthKm: 0.024,
+  chopstickArmThicknessKm: 0.0019,
+  chopstickArmDepthKm: 0.0038,
   chopstickArmSpacingKm: 0.010,
+  chopstickForkLengthKm: 0.0048,
+  chopstickForkSpreadKm: 0.0038,
+  chopstickPivotInsetKm: 0.0012,
   quickDisconnectHeightKm:
     STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm
-    + (STARSHIP_STACK_DIMENSIONS_KM.shipCylinderHeightKm * 0.72),
-  quickDisconnectMinLengthKm: 0.005,
-  quickDisconnectMaxLengthKm: 0.013,
-  quickDisconnectThicknessKm: 0.0013,
+    + (STARSHIP_STACK_DIMENSIONS_KM.shipCylinderHeightKm * 0.74),
+  quickDisconnectBoomMinLengthKm: 0.006,
+  quickDisconnectBoomMaxLengthKm: 0.014,
+  quickDisconnectThicknessKm: 0.0012,
+  quickDisconnectHeadWidthKm: 0.0035,
+  quickDisconnectHeadHeightKm: 0.0026,
+  quickDisconnectHeadDepthKm: 0.0026,
   armRatePerSec: 1.4,
 });
 
@@ -112,6 +139,171 @@ function setAnchoredBeamLength(mesh, length) {
   mesh.position.x = -0.5 * clamped;
 }
 
+function addStrutBetweenPoints(THREE, parent, start, end, thickness, material) {
+  const direction = new THREE.Vector3().subVectors(end, start);
+  const length = direction.length();
+  if (!(length > 1e-9)) {
+    return null;
+  }
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(thickness, length, thickness),
+    material,
+  );
+  mesh.position.copy(start).addScaledVector(direction, 0.5);
+  mesh.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction.normalize(),
+  );
+  parent.add(mesh);
+  return mesh;
+}
+
+function createTowerLattice(THREE, towerGroup, profile, darkSteel, stainless) {
+  const halfW = profile.towerWidthKm * 0.5;
+  const halfD = profile.towerDepthKm * 0.5;
+  const columnOffsets = [
+    [-halfW, -halfD],
+    [halfW, -halfD],
+    [-halfW, halfD],
+    [halfW, halfD],
+  ];
+
+  for (const [x, z] of columnOffsets) {
+    const column = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.towerColumnThicknessKm,
+        profile.towerHeightKm,
+        profile.towerColumnThicknessKm,
+      ),
+      darkSteel,
+    );
+    column.position.set(x, 0, z);
+    towerGroup.add(column);
+  }
+
+  const levelCount = Math.max(2, Math.floor(profile.towerCrossLevelCount));
+  const yMin = -0.5 * profile.towerHeightKm;
+  const yMax = 0.5 * profile.towerHeightKm;
+  for (let i = 0; i < levelCount; i += 1) {
+    const t = i / (levelCount - 1);
+    const y = yMin + ((yMax - yMin) * t);
+
+    const frontBeam = new THREE.Mesh(
+      new THREE.BoxGeometry(profile.towerWidthKm, profile.towerBraceThicknessKm, profile.towerBraceThicknessKm),
+      stainless,
+    );
+    frontBeam.position.set(0, y, -halfD);
+    towerGroup.add(frontBeam);
+
+    const rearBeam = frontBeam.clone();
+    rearBeam.position.z = halfD;
+    towerGroup.add(rearBeam);
+
+    const leftBeam = new THREE.Mesh(
+      new THREE.BoxGeometry(profile.towerBraceThicknessKm, profile.towerBraceThicknessKm, profile.towerDepthKm),
+      stainless,
+    );
+    leftBeam.position.set(-halfW, y, 0);
+    towerGroup.add(leftBeam);
+
+    const rightBeam = leftBeam.clone();
+    rightBeam.position.x = halfW;
+    towerGroup.add(rightBeam);
+
+    if (i < levelCount - 1) {
+      const yNext = yMin + ((yMax - yMin) * ((i + 1) / (levelCount - 1)));
+      addStrutBetweenPoints(
+        THREE,
+        towerGroup,
+        new THREE.Vector3(-halfW, y, -halfD),
+        new THREE.Vector3(halfW, yNext, -halfD),
+        profile.towerBraceThicknessKm,
+        stainless,
+      );
+      addStrutBetweenPoints(
+        THREE,
+        towerGroup,
+        new THREE.Vector3(halfW, y, -halfD),
+        new THREE.Vector3(-halfW, yNext, -halfD),
+        profile.towerBraceThicknessKm,
+        stainless,
+      );
+      addStrutBetweenPoints(
+        THREE,
+        towerGroup,
+        new THREE.Vector3(-halfW, y, halfD),
+        new THREE.Vector3(halfW, yNext, halfD),
+        profile.towerBraceThicknessKm,
+        stainless,
+      );
+      addStrutBetweenPoints(
+        THREE,
+        towerGroup,
+        new THREE.Vector3(halfW, y, halfD),
+        new THREE.Vector3(-halfW, yNext, halfD),
+        profile.towerBraceThicknessKm,
+        stainless,
+      );
+    }
+  }
+}
+
+function createChopstickArmAssembly(THREE, profile, material) {
+  const group = new THREE.Group();
+  const mainBeam = makeAnchoredBeam(
+    THREE,
+    profile.chopstickArmMaxLengthKm,
+    profile.chopstickArmThicknessKm,
+    profile.chopstickArmDepthKm,
+    material,
+  );
+  group.add(mainBeam);
+
+  const forkUpper = makeAnchoredBeam(
+    THREE,
+    profile.chopstickForkLengthKm,
+    profile.chopstickArmThicknessKm * 0.82,
+    profile.chopstickArmDepthKm * 0.7,
+    material,
+  );
+  group.add(forkUpper);
+
+  const forkLower = makeAnchoredBeam(
+    THREE,
+    profile.chopstickForkLengthKm,
+    profile.chopstickArmThicknessKm * 0.82,
+    profile.chopstickArmDepthKm * 0.7,
+    material,
+  );
+  group.add(forkLower);
+
+  return {
+    group,
+    mainBeam,
+    forkUpper,
+    forkLower,
+  };
+}
+
+function updateChopstickArmAssembly(assembly, profile, armLength) {
+  if (!assembly) return;
+  setAnchoredBeamLength(assembly.mainBeam, armLength);
+  const forkLength = profile.chopstickForkLengthKm;
+  const tipX = -Math.max(armLength, 1e-9);
+  setAnchoredBeamLength(assembly.forkUpper, forkLength);
+  setAnchoredBeamLength(assembly.forkLower, forkLength);
+  assembly.forkUpper.position.set(
+    tipX,
+    profile.chopstickForkSpreadKm,
+    0,
+  );
+  assembly.forkLower.position.set(
+    tipX,
+    -profile.chopstickForkSpreadKm,
+    0,
+  );
+}
+
 export function resolveLaunchStructureArmTarget(input = {}) {
   const stackPresent = Boolean(input.stackPresent);
   const launchPhase = String(input.launchPhase || "").trim().toLowerCase();
@@ -147,12 +339,12 @@ function resolveQuickDisconnectTarget(input = {}) {
   const altitudeKm = Number(input.altitudeKm);
   const lowAltitude = Number.isFinite(altitudeKm) && altitudeKm < 0.35;
   if (stackPresent || launchPhase === "idle" || (launchPhase === "powered" && lowAltitude)) {
-    return 0.12;
+    return 0.1;
   }
   if (launchPhase && launchPhase !== "idle") {
     return 1.0;
   }
-  return 0.6;
+  return 0.55;
 }
 
 export function createLaunchSiteStructureVisual(THREE, distanceScale) {
@@ -160,7 +352,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   const radius = STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5 * ds;
   const profile = Object.fromEntries(
     Object.entries(LAUNCH_STRUCTURE_PROFILE_KM).map(([key, value]) => (
-      key === "armRatePerSec"
+      key === "mountLegCount" || key === "towerCrossLevelCount" || key === "armRatePerSec"
         ? [key, value]
         : [key, value * ds]
     )),
@@ -170,39 +362,102 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   const structureGroup = new THREE.Group();
   root.add(structureGroup);
 
-  const stainless = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0xaeb7c2),
-    roughness: 0.52,
-    metalness: 0.72,
+  const concrete = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x686b70),
+    roughness: 0.92,
+    metalness: 0.02,
   });
   const darkSteel = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0x273140),
-    roughness: 0.66,
-    metalness: 0.52,
+    color: new THREE.Color(0x2b3239),
+    roughness: 0.72,
+    metalness: 0.42,
   });
-  const orangeSteel = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0xd8a05a),
+  const towerSteel = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x8e949c),
     roughness: 0.58,
-    metalness: 0.34,
+    metalness: 0.64,
+  });
+  const carriageSteel = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0xb8bfc8),
+    roughness: 0.5,
+    metalness: 0.68,
+  });
+  const darkPaint = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x171b20),
+    roughness: 0.78,
+    metalness: 0.18,
   });
 
-  const mountDeck = new THREE.Mesh(
-    new THREE.CylinderGeometry(profile.mountRadiusKm, profile.mountRadiusKm, profile.mountHeightKm, 24, 1, false),
+  const slab = new THREE.Mesh(
+    new THREE.CylinderGeometry(profile.slabRadiusKm, profile.slabRadiusKm, profile.slabHeightKm, 36),
+    concrete,
+  );
+  slab.position.y = 0.5 * profile.slabHeightKm;
+  structureGroup.add(slab);
+
+  const waterPlate = new THREE.Mesh(
+    new THREE.CylinderGeometry(profile.flamePlateRadiusKm, profile.flamePlateRadiusKm, profile.flamePlateHeightKm, 28),
+    darkPaint,
+  );
+  waterPlate.position.y = profile.slabHeightKm + (0.5 * profile.flamePlateHeightKm);
+  structureGroup.add(waterPlate);
+
+  const mountDeckBaseY = profile.mountDeckHeightKm - profile.mountDeckThicknessKm;
+  const mountRing = new THREE.Mesh(
+    new THREE.TorusGeometry(profile.mountDeckRadiusKm, profile.mountRingTubeKm, 10, 48),
     darkSteel,
   );
-  mountDeck.position.y = 0.5 * profile.mountHeightKm;
-  structureGroup.add(mountDeck);
+  mountRing.rotation.x = Math.PI * 0.5;
+  mountRing.position.y = mountDeckBaseY + (0.5 * profile.mountDeckThicknessKm);
+  structureGroup.add(mountRing);
 
-  const clampCount = 4;
-  for (let i = 0; i < clampCount; i += 1) {
-    const angle = (i / clampCount) * Math.PI * 2;
+  const mountPlate = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      profile.mountDeckRadiusKm * 0.98,
+      profile.mountDeckRadiusKm * 0.98,
+      profile.mountDeckThicknessKm,
+      28,
+    ),
+    darkSteel,
+  );
+  mountPlate.position.y = mountDeckBaseY + (0.5 * profile.mountDeckThicknessKm);
+  structureGroup.add(mountPlate);
+
+  for (let i = 0; i < profile.mountLegCount; i += 1) {
+    const angle = (i / profile.mountLegCount) * Math.PI * 2;
+    const top = new THREE.Vector3(
+      Math.cos(angle) * profile.mountLegTopRadiusKm,
+      mountDeckBaseY,
+      Math.sin(angle) * profile.mountLegTopRadiusKm,
+    );
+    const bottom = new THREE.Vector3(
+      Math.cos(angle) * profile.mountLegFootRadiusKm,
+      profile.slabHeightKm,
+      Math.sin(angle) * profile.mountLegFootRadiusKm,
+    );
+    addStrutBetweenPoints(
+      THREE,
+      structureGroup,
+      top,
+      bottom,
+      profile.mountLegThicknessKm,
+      darkSteel,
+    );
+  }
+
+  for (let i = 0; i < 6; i += 1) {
+    const angle = (i / 6) * Math.PI * 2;
     const clampMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(profile.holdClampHeightKm, profile.holdClampHeightKm, profile.holdClampHeightKm * 1.8),
-      stainless,
+      new THREE.BoxGeometry(
+        profile.holdClampWidthKm,
+        profile.holdClampHeightKm,
+        profile.holdClampDepthKm,
+      ),
+      carriageSteel,
     );
     clampMesh.position.set(
       Math.cos(angle) * profile.holdClampOffsetKm,
-      profile.mountHeightKm + (0.5 * profile.holdClampHeightKm),
+      mountDeckBaseY + profile.mountDeckThicknessKm + (0.5 * profile.holdClampHeightKm),
       Math.sin(angle) * profile.holdClampOffsetKm,
     );
     clampMesh.rotation.y = angle;
@@ -216,81 +471,125 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     0,
   );
   structureGroup.add(towerGroup);
+  createTowerLattice(THREE, towerGroup, profile, darkSteel, towerSteel);
 
-  const columnOffsets = [
+  const carriageGroup = new THREE.Group();
+  carriageGroup.position.set(
+    0,
+    profile.chopstickCatchHeightKm - (0.5 * profile.towerHeightKm),
+    0,
+  );
+  towerGroup.add(carriageGroup);
+
+  const carriagePosts = [
     [-0.5, -0.5],
     [0.5, -0.5],
     [-0.5, 0.5],
     [0.5, 0.5],
   ];
-  for (const [xSign, zSign] of columnOffsets) {
-    const column = new THREE.Mesh(
-      new THREE.BoxGeometry(profile.towerWidthKm * 0.12, profile.towerHeightKm, profile.towerDepthKm * 0.12),
-      darkSteel,
+  for (const [xSign, zSign] of carriagePosts) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.carriageBeamThicknessKm,
+        profile.carriageHeightKm,
+        profile.carriageBeamThicknessKm,
+      ),
+      carriageSteel,
     );
-    column.position.set(
-      xSign * profile.towerWidthKm * 0.45,
+    post.position.set(
+      xSign * (0.5 * profile.carriageWidthKm),
       0,
-      zSign * profile.towerDepthKm * 0.45,
+      zSign * (0.5 * profile.carriageDepthKm),
     );
-    towerGroup.add(column);
+    carriageGroup.add(post);
   }
 
-  for (let i = 0; i < 8; i += 1) {
-    const brace = new THREE.Mesh(
-      new THREE.BoxGeometry(profile.towerWidthKm * 0.92, profile.towerHeightKm * 0.02, profile.towerDepthKm * 0.08),
-      stainless,
+  const carriageRails = [
+    [0, 0.5 * profile.carriageHeightKm, -0.5 * profile.carriageDepthKm],
+    [0, -0.5 * profile.carriageHeightKm, -0.5 * profile.carriageDepthKm],
+    [0, 0.5 * profile.carriageHeightKm, 0.5 * profile.carriageDepthKm],
+    [0, -0.5 * profile.carriageHeightKm, 0.5 * profile.carriageDepthKm],
+  ];
+  for (const [x, y, z] of carriageRails) {
+    const beam = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.carriageWidthKm,
+        profile.carriageBeamThicknessKm,
+        profile.carriageBeamThicknessKm,
+      ),
+      carriageSteel,
     );
-    brace.position.set(0, (-0.5 * profile.towerHeightKm) + (profile.towerHeightKm * (i / 7)), 0);
-    towerGroup.add(brace);
+    beam.position.set(x, y, z);
+    carriageGroup.add(beam);
   }
 
-  const chopstickPivotX = towerGroup.position.x - (0.5 * profile.towerWidthKm);
-  const chopstickY = profile.chopstickCatchHeightKm;
-  const chopstickArmDepth = profile.chopstickArmThicknessKm * 2.6;
+  const chopstickPivotX =
+    towerGroup.position.x
+    - (0.5 * profile.towerWidthKm)
+    + profile.chopstickPivotInsetKm;
   const armZOffsets = [
     -0.5 * profile.chopstickArmSpacingKm,
     0.5 * profile.chopstickArmSpacingKm,
   ];
-  const chopstickBeams = [];
+  const chopstickAssemblies = [];
   for (const zOffset of armZOffsets) {
-    const armBeam = makeAnchoredBeam(
-      THREE,
-      profile.chopstickArmMaxLengthKm,
-      profile.chopstickArmThicknessKm,
-      chopstickArmDepth,
-      orangeSteel,
-    );
-    armBeam.position.set(chopstickPivotX, chopstickY, zOffset);
-    structureGroup.add(armBeam);
-    chopstickBeams.push(armBeam);
+    const assembly = createChopstickArmAssembly(THREE, profile, carriageSteel);
+    assembly.group.position.set(chopstickPivotX, profile.chopstickCatchHeightKm, zOffset);
+    structureGroup.add(assembly.group);
+    chopstickAssemblies.push(assembly);
   }
 
-  const qdBeam = makeAnchoredBeam(
-    THREE,
-    profile.quickDisconnectMaxLengthKm,
-    profile.quickDisconnectThicknessKm,
-    profile.quickDisconnectThicknessKm * 1.8,
-    stainless,
+  const qdSupport = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.quickDisconnectThicknessKm * 1.5,
+      profile.quickDisconnectHeadHeightKm * 3.4,
+      profile.quickDisconnectThicknessKm * 1.5,
+    ),
+    carriageSteel,
   );
-  qdBeam.position.set(
-    chopstickPivotX + (profile.towerWidthKm * 0.18),
+  qdSupport.position.set(
+    towerGroup.position.x - (0.18 * profile.towerWidthKm),
     profile.quickDisconnectHeightKm,
     0,
   );
-  structureGroup.add(qdBeam);
+  structureGroup.add(qdSupport);
 
-  root.userData.launchStructureSource = "inline_launch_tower_chopsticks";
+  const quickDisconnectBeam = makeAnchoredBeam(
+    THREE,
+    profile.quickDisconnectBoomMaxLengthKm,
+    profile.quickDisconnectThicknessKm,
+    profile.quickDisconnectThicknessKm * 1.8,
+    carriageSteel,
+  );
+  quickDisconnectBeam.position.set(
+    towerGroup.position.x - (0.08 * profile.towerWidthKm),
+    profile.quickDisconnectHeightKm,
+    0,
+  );
+  structureGroup.add(quickDisconnectBeam);
+
+  const quickDisconnectHead = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.quickDisconnectHeadWidthKm,
+      profile.quickDisconnectHeadHeightKm,
+      profile.quickDisconnectHeadDepthKm,
+    ),
+    darkSteel,
+  );
+  structureGroup.add(quickDisconnectHead);
+
+  root.userData.launchStructureSource = "spacex_style_launch_tower_chopsticks";
 
   return {
     root,
-    materials: [stainless, darkSteel, orangeSteel],
+    materials: [concrete, darkSteel, towerSteel, carriageSteel, darkPaint],
     state: {
       armOpen: 0.24,
-      quickDisconnectOpen: 0.12,
+      quickDisconnectOpen: 0.1,
       profile,
-      chopstickBeams,
-      quickDisconnectBeam: qdBeam,
+      chopstickAssemblies,
+      quickDisconnectBeam,
+      quickDisconnectHead,
     },
   };
 }
@@ -360,13 +659,18 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
     state.profile.chopstickArmMinLengthKm
     + ((state.profile.chopstickArmMaxLengthKm - state.profile.chopstickArmMinLengthKm) * (1 - state.armOpen))
   );
-  for (const beam of state.chopstickBeams) {
-    setAnchoredBeamLength(beam, armLength);
+  for (const assembly of state.chopstickAssemblies) {
+    updateChopstickArmAssembly(assembly, state.profile, armLength);
   }
 
   const qdLength = (
-    state.profile.quickDisconnectMinLengthKm
-    + ((state.profile.quickDisconnectMaxLengthKm - state.profile.quickDisconnectMinLengthKm) * (1 - state.quickDisconnectOpen))
+    state.profile.quickDisconnectBoomMinLengthKm
+    + ((state.profile.quickDisconnectBoomMaxLengthKm - state.profile.quickDisconnectBoomMinLengthKm) * (1 - state.quickDisconnectOpen))
   );
   setAnchoredBeamLength(state.quickDisconnectBeam, qdLength);
+  state.quickDisconnectHead.position.set(
+    state.quickDisconnectBeam.position.x - qdLength,
+    state.quickDisconnectBeam.position.y,
+    state.quickDisconnectBeam.position.z,
+  );
 }
