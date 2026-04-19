@@ -1009,9 +1009,15 @@ export function createLaunchController(options) {
     getEarthFixedAxesEcliptic,
     sampleEarthAtmosphere,
     gravitationalConstantKm3PerKgS2,
+    windSeed,
     onEvent,
     onError,
   } = options || {};
+  const configuredWindSeed = Number(windSeed);
+  const initialWindSeed = Math.max(
+    0,
+    Math.floor(Number.isFinite(configuredWindSeed) ? configuredWindSeed : (Date.now() % 1_000_000)),
+  );
 
   const runtime = {
     phase: "idle",
@@ -1055,7 +1061,7 @@ export function createLaunchController(options) {
     missionPhaseGateReason: "",
     lastTrackedPositionKm: null,
     lastSurfaceSample: null,
-    windSeed: Date.now() % 1_000_000,
+    windSeed: initialWindSeed,
     stageActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     stageMassModel: createMassModelState(),
     boosterActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
@@ -1996,6 +2002,47 @@ export function createLaunchController(options) {
     return sanitizeAxes(getEarthFixedAxesEcliptic?.(timestampMs) || fallbackAxes());
   }
 
+  function launchEnvironmentSample(relPos, currentEarthAxes, earthRadiusKm, nowMs, windSeed = runtime.windSeed) {
+    const surfaceSample = sampleEarthSurfaceAtRelativePosition(
+      relPos,
+      currentEarthAxes,
+      earthRadiusKm,
+      { includeTerrain: false },
+    );
+    const surfaceAltitudeKm = Number(surfaceSample?.altitudeAboveTerrainKm);
+    const altitudeKm = Number.isFinite(surfaceAltitudeKm)
+      ? Math.max(0, surfaceAltitudeKm)
+      : Math.max(0, length(relPos) - earthRadiusKm);
+    const latitudeDeg = Number.isFinite(Number(surfaceSample?.geodeticLatitudeDeg))
+      ? Number(surfaceSample.geodeticLatitudeDeg)
+      : (Number(surfaceSample?.latitudeDeg) || 0);
+    const longitudeDeg = Number.isFinite(Number(surfaceSample?.longitudeDeg))
+      ? Number(surfaceSample.longitudeDeg)
+      : 0;
+    const atmosphereContext = {
+      timestampMs: nowMs,
+      latitudeDeg,
+      longitudeDeg,
+      relativePositionKm: relPos,
+      earthAxes: currentEarthAxes,
+      earthPole: currentEarthAxes?.pole,
+    };
+    return {
+      altitudeKm,
+      surfaceSample,
+      atmosphereSample: sampleEarthAtmosphere?.(altitudeKm, atmosphereContext) || null,
+      windSample: sampleWindVectorKmS({
+        altitudeKm,
+        relPos,
+        earthPole: currentEarthAxes?.pole,
+        earthAxes: currentEarthAxes,
+        timestampMs: nowMs,
+        elapsedSeconds: runtime.elapsedSeconds,
+        seed: windSeed,
+      }),
+    };
+  }
+
   function earthStateFromNBody(state) {
     return state?.dynamicBodies?.get("earth") || state?.staticSources?.get("earth") || null;
   }
@@ -2045,7 +2092,7 @@ export function createLaunchController(options) {
     runtime.missionPhaseGateReason = "";
     runtime.lastTrackedPositionKm = null;
     runtime.lastSurfaceSample = null;
-    runtime.windSeed = Date.now() % 1_000_000;
+    runtime.windSeed = initialWindSeed;
     runtime.stageActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.stageMassModel = createMassModelState();
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
@@ -3259,7 +3306,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
     updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
-    const atmosphereSample = sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null;
+    const environmentSample = launchEnvironmentSample(relPos, currentEarthAxes, earthRadiusKm, nowMs);
+    const atmosphereSample = environmentSample.atmosphereSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPos,
@@ -3347,7 +3395,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
     updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
-    const atmosphereSample = sampleEarthAtmosphere?.(LAUNCH_SITE.altitudeKm) || null;
+    const environmentSample = launchEnvironmentSample(
+      relPos,
+      currentEarthAxes,
+      Number(getEarthRadiusKm?.()) || 6371.0084,
+      nowMs,
+    );
+    const atmosphereSample = environmentSample.atmosphereSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPos,
@@ -3580,15 +3634,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     );
     const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
     const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
-    const altitudeKm = Math.max(0, orbital.altitudeKm);
-    const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
-    const windSample = sampleWindVectorKmS({
-      altitudeKm,
-      relPos,
-      earthPole: currentEarthAxes.pole,
-      elapsedSeconds: runtime.elapsedSeconds,
-      seed: runtime.windSeed,
-    });
+    const environmentSample = launchEnvironmentSample(relPos, currentEarthAxes, earthRadiusKm, nowMs);
+    const altitudeKm = environmentSample.altitudeKm;
+    const atmosphereSample = environmentSample.atmosphereSample;
+    const windSample = environmentSample.windSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPos,
@@ -3908,14 +3957,15 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       runtime.booster.active = false;
     }
 
-    const atmosphereSample = sampleEarthAtmosphere?.(Math.max(0, altitudeKm)) || null;
-    const windSample = sampleWindVectorKmS({
-      altitudeKm: Math.max(0, altitudeKm),
-      relPos: relPosNow,
-      earthPole: currentEarthAxes.pole,
-      elapsedSeconds: runtime.elapsedSeconds,
-      seed: (Number(runtime.windSeed) || 0) + 131_071,
-    });
+    const environmentSample = launchEnvironmentSample(
+      relPosNow,
+      currentEarthAxes,
+      earthRadiusKm,
+      nowMs,
+      (Number(runtime.windSeed) || 0) + 131_071,
+    );
+    const atmosphereSample = environmentSample.atmosphereSample;
+    const windSample = environmentSample.windSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPosNow,
@@ -4034,15 +4084,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
       const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
       const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
-      const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
-      const atmo = sampleEarthAtmosphere?.(altitudeKm) || null;
-      const windSample = sampleWindVectorKmS({
-        altitudeKm,
-        relPos,
-        earthPole: currentEarthAxes.pole,
-        elapsedSeconds: runtime.elapsedSeconds,
-        seed: runtime.windSeed,
-      });
+      const environmentSample = launchEnvironmentSample(relPos, currentEarthAxes, earthRadiusKm, nowMs);
+      const altitudeKm = environmentSample.altitudeKm;
+      const atmo = environmentSample.atmosphereSample;
+      const windSample = environmentSample.windSample;
       const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
         atmo,
         relPos,
@@ -4691,15 +4736,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           runtime.phase = "coast";
           runtime.autopilotMode = "autopilot-coast-to-circularize";
         } else {
-          const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
-          const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
-          const windSample = sampleWindVectorKmS({
-            altitudeKm,
-            relPos: relPosNow,
-            earthPole: currentEarthAxes.pole,
-            elapsedSeconds: runtime.elapsedSeconds,
-            seed: runtime.windSeed,
-          });
+          const environmentSample = launchEnvironmentSample(relPosNow, currentEarthAxes, earthRadiusKm, nowMs);
+          const atmosphereSample = environmentSample.atmosphereSample;
+          const windSample = environmentSample.windSample;
           const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
             atmosphereSample,
             relPosNow,
@@ -4945,15 +4984,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
       updateRuntimeTargetMetrics(state, relPosNow, relVelNow, nowMs);
-      const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
-      const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
-      const windSample = sampleWindVectorKmS({
-        altitudeKm,
-        relPos: relPosNow,
-        earthPole: currentEarthAxes.pole,
-        elapsedSeconds: runtime.elapsedSeconds,
-        seed: runtime.windSeed,
-      });
+      const environmentSample = launchEnvironmentSample(relPosNow, currentEarthAxes, earthRadiusKm, nowMs);
+      const atmosphereSample = environmentSample.atmosphereSample;
+      const windSample = environmentSample.windSample;
       const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
         atmosphereSample,
         relPosNow,

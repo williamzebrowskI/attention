@@ -99,13 +99,18 @@ export function earthGravityMs2AtAltitudeKm(altitudeKm) {
 
 export function earthAtmosphereSampleUS1976(geometricAltitudeKm, options = {}) {
   const altitudeKm = Math.max(0, Number(geometricAltitudeKm) || 0);
+  const geopotentialAltitudeKm = geometricAltitudeToGeopotentialKm(altitudeKm);
   if (altitudeKm > 1000) {
     return {
       altitudeKm,
+      geopotentialAltitudeKm,
       gravityMs2: earthGravityMs2AtAltitudeKm(altitudeKm),
       temperatureK: 0,
       pressurePa: 0,
       densityKgM3: 0,
+      gasConstantJPerKgK: AIR_GAS_CONSTANT_J_PER_KG_K,
+      heatCapacityRatio: DRY_AIR_HEAT_CAPACITY_RATIO,
+      speedOfSoundMs: 0,
     };
   }
 
@@ -115,12 +120,15 @@ export function earthAtmosphereSampleUS1976(geometricAltitudeKm, options = {}) {
   let exosphericTemperatureK = null;
   let meanMolarMassKgPerMol = null;
   let upperAtmosphereModel = null;
+  let gasConstantJPerKgK = AIR_GAS_CONSTANT_J_PER_KG_K;
+  let heatCapacityRatio = DRY_AIR_HEAT_CAPACITY_RATIO;
 
   if (altitudeKm <= 86) {
     const below = pressureAndTemperatureBelow86Km(altitudeKm);
     temperatureK = below.temperatureK;
     pressurePa = below.pressurePa;
     densityKgM3 = pressurePa / (AIR_GAS_CONSTANT_J_PER_KG_K * temperatureK);
+    meanMolarMassKgPerMol = 0.0289644;
   } else {
     const base86 = pressureAndTemperatureBelow86Km(86);
     const baseDensityKgM3 = base86.pressurePa / (AIR_GAS_CONSTANT_J_PER_KG_K * base86.temperatureK);
@@ -143,17 +151,29 @@ export function earthAtmosphereSampleUS1976(geometricAltitudeKm, options = {}) {
     meanMolarMassKgPerMol = Number.isFinite(Number(upper?.meanMolarMassKgPerMol))
       ? Number(upper.meanMolarMassKgPerMol)
       : null;
+    gasConstantJPerKgK = Number.isFinite(Number(upper?.gasConstantJPerKgK))
+      ? Number(upper.gasConstantJPerKgK)
+      : AIR_GAS_CONSTANT_J_PER_KG_K;
+    heatCapacityRatio = Number.isFinite(Number(upper?.heatCapacityRatio))
+      ? Number(upper.heatCapacityRatio)
+      : DRY_AIR_HEAT_CAPACITY_RATIO;
     upperAtmosphereModel = String(upper?.model || "nrlmsise-approx");
   }
 
+  const soundSpeedMs = speedOfSoundMs(temperatureK, gasConstantJPerKgK, heatCapacityRatio);
+
   return {
     altitudeKm,
+    geopotentialAltitudeKm,
     gravityMs2: earthGravityMs2AtAltitudeKm(altitudeKm),
     temperatureK,
     pressurePa,
     densityKgM3,
     exosphericTemperatureK,
     meanMolarMassKgPerMol,
+    gasConstantJPerKgK,
+    heatCapacityRatio,
+    speedOfSoundMs: soundSpeedMs,
     upperAtmosphereModel,
   };
 }
@@ -178,11 +198,11 @@ function lerp(a, b, t) {
   return a + ((b - a) * t);
 }
 
-function speedOfSoundMs(temperatureK) {
-  if (!(temperatureK > 0)) {
+function speedOfSoundMs(temperatureK, gasConstantJPerKgK = AIR_GAS_CONSTANT_J_PER_KG_K, heatCapacityRatio = DRY_AIR_HEAT_CAPACITY_RATIO) {
+  if (!(temperatureK > 0) || !(gasConstantJPerKgK > 0) || !(heatCapacityRatio > 1)) {
     return 0;
   }
-  return Math.sqrt(DRY_AIR_HEAT_CAPACITY_RATIO * AIR_GAS_CONSTANT_J_PER_KG_K * temperatureK);
+  return Math.sqrt(heatCapacityRatio * gasConstantJPerKgK * temperatureK);
 }
 
 function launchVehicleDragCoefficientForMach(mach) {
@@ -208,7 +228,13 @@ function effectiveDragCoefficient(bodyId, baseDragCoefficient, speedMS, atmosphe
   if (bodyId !== "earth_launch_vehicle" && bodyId !== "earth_launch_booster") {
     return baseDragCoefficient;
   }
-  const soundSpeedMs = speedOfSoundMs(Number(atmosphere?.temperatureK) || 0);
+  const soundSpeedMs = Number(atmosphere?.speedOfSoundMs) > 0
+    ? Number(atmosphere.speedOfSoundMs)
+    : speedOfSoundMs(
+      Number(atmosphere?.temperatureK) || 0,
+      Number(atmosphere?.gasConstantJPerKgK) || AIR_GAS_CONSTANT_J_PER_KG_K,
+      Number(atmosphere?.heatCapacityRatio) || DRY_AIR_HEAT_CAPACITY_RATIO,
+    );
   const mach = soundSpeedMs > 0 ? (speedMS / soundSpeedMs) : 0;
   const machModelCd = launchVehicleDragCoefficientForMach(mach);
   // Blend user/base Cd with Mach model to preserve tunability while adding transonic realism.

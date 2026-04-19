@@ -4,6 +4,10 @@ const EARTH_G0_MS2 = 9.80665;
 const BASE_ALTITUDE_KM = 86;
 const BASE_TEMPERATURE_K = 186.946;
 const BASE_MEAN_MOLAR_MASS_KG_PER_MOL = 0.0289644;
+const LOWER_THERMOSPHERE_BASE_TEMPERATURE_K = 263.1905;
+const THERMOSPHERE_BASE_TEMPERATURE_K = 360;
+const DRY_AIR_HEAT_CAPACITY_RATIO = 1.4;
+const MONATOMIC_HEAT_CAPACITY_RATIO = 5 / 3;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -51,14 +55,20 @@ function blend(a, b, t) {
 
 function meanMolarMassKgPerMol(altitudeKm) {
   const z = Math.max(BASE_ALTITUDE_KM, Number(altitudeKm) || BASE_ALTITUDE_KM);
-  const t1 = smoothStep(90, 130, z);
+  const t1 = smoothStep(90, 120, z);
   const t2 = smoothStep(120, 220, z);
   const t3 = smoothStep(220, 520, z);
   const t4 = smoothStep(520, 900, z);
-  const m120 = blend(BASE_MEAN_MOLAR_MASS_KG_PER_MOL, 0.020, t1);
-  const m220 = blend(m120, 0.012, t2);
-  const m520 = blend(m220, 0.006, t3);
+  const m120 = blend(BASE_MEAN_MOLAR_MASS_KG_PER_MOL, 0.0245, t1);
+  const m220 = blend(m120, 0.0140, t2);
+  const m520 = blend(m220, 0.0060, t3);
   return blend(m520, 0.0043, t4);
+}
+
+function heatCapacityRatio(altitudeKm) {
+  const z = Math.max(BASE_ALTITUDE_KM, Number(altitudeKm) || BASE_ALTITUDE_KM);
+  const monatomicBlend = smoothStep(110, 260, z);
+  return blend(DRY_AIR_HEAT_CAPACITY_RATIO, MONATOMIC_HEAT_CAPACITY_RATIO, monatomicBlend);
 }
 
 function effectiveGeomagneticIndex(kp, kpHistory) {
@@ -117,11 +127,30 @@ function exosphericTemperatureK({
   return clamp(tex, 500, 2200);
 }
 
+function lowerTransitionTemperatureK(altitudeKm) {
+  const z = Math.max(BASE_ALTITUDE_KM, Number(altitudeKm) || BASE_ALTITUDE_KM);
+  if (z <= 91) {
+    return BASE_TEMPERATURE_K;
+  }
+  if (z <= 110) {
+    const t = smoothStep(91, 110, z);
+    return blend(BASE_TEMPERATURE_K, LOWER_THERMOSPHERE_BASE_TEMPERATURE_K, t);
+  }
+  if (z <= 120) {
+    const t = smoothStep(110, 120, z);
+    return blend(LOWER_THERMOSPHERE_BASE_TEMPERATURE_K, THERMOSPHERE_BASE_TEMPERATURE_K, t);
+  }
+  return THERMOSPHERE_BASE_TEMPERATURE_K;
+}
+
 function thermosphereTemperatureK(altitudeKm, exosphereTempK) {
   const z = Math.max(BASE_ALTITUDE_KM, Number(altitudeKm) || BASE_ALTITUDE_KM);
-  const dz = z - BASE_ALTITUDE_KM;
-  const eFoldKm = 42;
-  return exosphereTempK - ((exosphereTempK - BASE_TEMPERATURE_K) * Math.exp(-dz / eFoldKm));
+  if (z <= 120) {
+    return lowerTransitionTemperatureK(z);
+  }
+  const dz = z - 120;
+  const eFoldKm = 58;
+  return exosphereTempK - ((exosphereTempK - THERMOSPHERE_BASE_TEMPERATURE_K) * Math.exp(-dz / eFoldKm));
 }
 
 export function sampleUpperAtmosphereNRLMSISEApprox({
@@ -158,7 +187,7 @@ export function sampleUpperAtmosphereNRLMSISEApprox({
   });
 
   let lnRho = Math.log(rho0);
-  const dzStepKm = 2;
+  const dzStepKm = 1;
   for (let sampleZ = BASE_ALTITUDE_KM; sampleZ < z; sampleZ += dzStepKm) {
     const midZ = Math.min(z, sampleZ + (0.5 * dzStepKm));
     const tempK = thermosphereTemperatureK(midZ, tex);
@@ -175,6 +204,7 @@ export function sampleUpperAtmosphereNRLMSISEApprox({
   const temperatureK = thermosphereTemperatureK(z, tex);
   const meanMolarMass = meanMolarMassKgPerMol(z);
   const specificGasConstant = UNIVERSAL_GAS_CONSTANT_J_PER_MOL_K / Math.max(1e-12, meanMolarMass);
+  const effectiveHeatCapacityRatio = heatCapacityRatio(z);
   const pressurePa = densityKgM3 * specificGasConstant * temperatureK;
 
   return {
@@ -183,6 +213,8 @@ export function sampleUpperAtmosphereNRLMSISEApprox({
     temperatureK,
     exosphericTemperatureK: tex,
     meanMolarMassKgPerMol: meanMolarMass,
+    gasConstantJPerKgK: specificGasConstant,
+    heatCapacityRatio: effectiveHeatCapacityRatio,
     model: "nrlmsise-approx",
   };
 }

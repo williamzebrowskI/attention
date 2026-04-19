@@ -98,6 +98,7 @@ import {
 import { resolveMoonMissionGuidanceArbitration } from "../navigation_system/gnc/moonMissionGuidanceArbiter.js";
 import {
   applyEarthSurfaceContactForVehicle,
+  sampleEarthSurfaceAtRelativePosition,
   terrainHeightKmAtLatLon,
 } from "../surface/earthSurfacePhysics.js";
 
@@ -1245,6 +1246,54 @@ export function createLaunchFleetController({
     return fleetVehicles().size > 0;
   }
 
+  function flightEnvironmentSample({
+    relPos,
+    currentEarthAxes,
+    earthRadiusKm,
+    nowMs,
+    elapsedSeconds = 0,
+    windSeed = 0,
+  }) {
+    const surfaceSample = sampleEarthSurfaceAtRelativePosition(
+      relPos,
+      currentEarthAxes,
+      earthRadiusKm,
+      { includeTerrain: false },
+    );
+    const surfaceAltitudeKm = Number(surfaceSample?.altitudeAboveTerrainKm);
+    const altitudeKm = Number.isFinite(surfaceAltitudeKm)
+      ? Math.max(0, surfaceAltitudeKm)
+      : Math.max(0, length(relPos) - earthRadiusKm);
+    const latitudeDeg = Number.isFinite(Number(surfaceSample?.geodeticLatitudeDeg))
+      ? Number(surfaceSample.geodeticLatitudeDeg)
+      : (Number(surfaceSample?.latitudeDeg) || 0);
+    const longitudeDeg = Number.isFinite(Number(surfaceSample?.longitudeDeg))
+      ? Number(surfaceSample.longitudeDeg)
+      : 0;
+    const atmosphereContext = {
+      timestampMs: nowMs,
+      latitudeDeg,
+      longitudeDeg,
+      relativePositionKm: relPos,
+      earthAxes: currentEarthAxes,
+      earthPole: currentEarthAxes?.pole,
+    };
+    return {
+      altitudeKm,
+      surfaceSample,
+      atmosphereSample: sampleEarthAtmosphere?.(altitudeKm, atmosphereContext) || null,
+      windSample: sampleWindVectorKmS({
+        altitudeKm,
+        relPos,
+        earthPole: currentEarthAxes?.pole,
+        earthAxes: currentEarthAxes,
+        timestampMs: nowMs,
+        elapsedSeconds,
+        seed: windSeed,
+      }),
+    };
+  }
+
   function removeVehicleById(state, bodyId, options = {}) {
     const id = String(bodyId || "").trim();
     if (!id) {
@@ -2331,15 +2380,17 @@ export function createLaunchFleetController({
         shipState.velocity || { x: 0, y: 0, z: 0 },
         earthState.velocity || { x: 0, y: 0, z: 0 },
       );
-      const altitudeKm = Math.max(0, length(relPos) - earthRadiusKm);
-      const atmosphereSample = sampleEarthAtmosphere?.(altitudeKm) || null;
-      const windSample = sampleWindVectorKmS({
-        altitudeKm,
+      const environmentSample = flightEnvironmentSample({
         relPos,
-        earthPole,
+        currentEarthAxes,
+        earthRadiusKm,
+        nowMs,
         elapsedSeconds: Math.max(0, Number(vehicle.elapsedSeconds) || 0),
-        seed: (Number(runtime?.windSeed) || 0) + ((Number(vehicle.sequenceNumber) || 1) * 8191),
+        windSeed: (Number(runtime?.windSeed) || 0) + ((Number(vehicle.sequenceNumber) || 1) * 8191),
       });
+      const altitudeKm = environmentSample.altitudeKm;
+      const atmosphereSample = environmentSample.atmosphereSample;
+      const windSample = environmentSample.windSample;
       const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
         atmosphereSample,
         relPos,
@@ -3811,7 +3862,15 @@ export function createLaunchFleetController({
       ? (earthAxes(nowMs) || { pole: { x: 0, y: 0, z: 1 } })
       : { pole: { x: 0, y: 0, z: 1 } };
     const earthPole = currentEarthAxes?.pole || { x: 0, y: 0, z: 1 };
-    const atmosphereSample = sampleEarthAtmosphere?.(Math.max(0, Number(orbital.altitudeKm) || 0)) || null;
+    const environmentSample = flightEnvironmentSample({
+      relPos,
+      currentEarthAxes,
+      earthRadiusKm,
+      nowMs,
+      elapsedSeconds: Math.max(0, Number(vehicle.elapsedSeconds) || 0),
+      windSeed: (Number(runtime?.windSeed) || 0) + ((Number(vehicle.sequenceNumber) || 1) * 8191),
+    });
+    const atmosphereSample = environmentSample.atmosphereSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPos,

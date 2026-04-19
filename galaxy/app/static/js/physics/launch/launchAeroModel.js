@@ -51,12 +51,14 @@ function sampleTableLinear(x, xs, ys) {
   return Number(ys[0]) || 0;
 }
 
-function speedOfSoundMs(temperatureK) {
-  const temp = Number(temperatureK) || 0;
-  if (!(temp > 0)) {
+function speedOfSoundMs(atmosphereSample) {
+  const temp = Number(atmosphereSample?.temperatureK) || 0;
+  const gasConstantJPerKgK = Number(atmosphereSample?.gasConstantJPerKgK) || 287.05287;
+  const heatCapacityRatio = Number(atmosphereSample?.heatCapacityRatio) || 1.4;
+  if (!(temp > 0) || !(gasConstantJPerKgK > 0) || !(heatCapacityRatio > 1)) {
     return 0;
   }
-  return Math.sqrt(1.4 * 287.05287 * temp);
+  return Math.sqrt(heatCapacityRatio * gasConstantJPerKgK * temp);
 }
 
 function localEastNorthAxes(up, earthPole) {
@@ -68,6 +70,69 @@ function localEastNorthAxes(up, earthPole) {
   );
   const north = normalize(cross(safeUp, east), pole);
   return { east, north };
+}
+
+function gaussian(x, center, sigma) {
+  const width = Math.max(1e-6, Number(sigma) || 1);
+  const delta = ((Number(x) || 0) - (Number(center) || 0)) / width;
+  return Math.exp(-(delta * delta));
+}
+
+function dayOfYearUtc(timestampMs) {
+  const date = new Date(Number(timestampMs) || Date.now());
+  const start = Date.UTC(date.getUTCFullYear(), 0, 1);
+  const current = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  return 1 + Math.floor((current - start) / 86_400_000);
+}
+
+function localSolarTimeHours(timestampMs, longitudeDeg) {
+  const ts = Number(timestampMs);
+  const lon = Number(longitudeDeg);
+  if (!Number.isFinite(ts) || !Number.isFinite(lon)) {
+    return 12;
+  }
+  const date = new Date(ts);
+  const utcHours = date.getUTCHours() + (date.getUTCMinutes() / 60) + (date.getUTCSeconds() / 3600);
+  let localHours = utcHours + (lon / 15);
+  while (localHours < 0) {
+    localHours += 24;
+  }
+  while (localHours >= 24) {
+    localHours -= 24;
+  }
+  return localHours;
+}
+
+function earthLatLonFromRelativePosition(relPos, earthAxes = null, earthPole = null) {
+  if (!finiteVectorLike(relPos)) {
+    return { latitudeDeg: 0, longitudeDeg: 0 };
+  }
+  const radius = length(relPos);
+  if (!(radius > EPSILON)) {
+    return { latitudeDeg: 0, longitudeDeg: 0 };
+  }
+  const pole = normalize(earthAxes?.pole || earthPole || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  let xAxis = finiteVectorLike(earthAxes?.xAxis)
+    ? normalize(earthAxes.xAxis, { x: 1, y: 0, z: 0 })
+    : null;
+  let yAxis = finiteVectorLike(earthAxes?.yAxis)
+    ? normalize(earthAxes.yAxis, { x: 0, y: 1, z: 0 })
+    : null;
+  if (!xAxis || !yAxis) {
+    xAxis = normalize(
+      { x: 1 - (pole.x * pole.x), y: -(pole.x * pole.y), z: -(pole.x * pole.z) },
+      { x: 1, y: 0, z: 0 },
+    );
+    yAxis = normalize(cross(pole, xAxis), { x: 0, y: 1, z: 0 });
+  }
+  const unit = scale(relPos, 1 / radius);
+  const localX = dot(unit, xAxis);
+  const localY = dot(unit, yAxis);
+  const localZ = clamp(dot(unit, pole), -1, 1);
+  return {
+    latitudeDeg: degrees(Math.asin(localZ)),
+    longitudeDeg: degrees(Math.atan2(localY, localX)),
+  };
 }
 
 function stageAeroProfile(kind) {
@@ -93,30 +158,106 @@ export function sampleWindVectorKmS({
   altitudeKm,
   relPos,
   earthPole,
+  earthAxes = null,
+  timestampMs = Date.now(),
   elapsedSeconds,
   seed = 0,
 }) {
   const altitudeSafeKm = Math.max(0, Number(altitudeKm) || 0);
   const up = normalize(relPos || earthPole || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
   const { east, north } = localEastNorthAxes(up, earthPole);
+  const { latitudeDeg, longitudeDeg } = earthLatLonFromRelativePosition(relPos, earthAxes, earthPole);
   const layers = LAUNCH_REALISM_CONFIG.wind.layers;
   const layerAltitudes = layers.map((layer) => Number(layer.altitudeKm) || 0);
   const eastSamples = layers.map((layer) => Number(layer.eastMS) || 0);
   const northSamples = layers.map((layer) => Number(layer.northMS) || 0);
-  const steadyEastMS = sampleTableLinear(altitudeSafeKm, layerAltitudes, eastSamples);
-  const steadyNorthMS = sampleTableLinear(altitudeSafeKm, layerAltitudes, northSamples);
+  const baseEastMS = sampleTableLinear(altitudeSafeKm, layerAltitudes, eastSamples);
+  const baseNorthMS = sampleTableLinear(altitudeSafeKm, layerAltitudes, northSamples);
+  const latitudeAbsDeg = Math.abs(latitudeDeg);
+  const latitudeRad = rad(latitudeDeg);
+  const dayOfYear = dayOfYearUtc(timestampMs);
+  const localSolarHours = localSolarTimeHours(timestampMs, longitudeDeg);
+  const winterPhase = Math.cos(((dayOfYear - 15) / 365.25) * Math.PI * 2);
+  const localWinterFactor = latitudeDeg >= 0 ? winterPhase : -winterPhase;
+  const subtropicalBand = gaussian(latitudeAbsDeg, 28, 14);
+  const midlatitudeBand = gaussian(latitudeAbsDeg, 42, 18);
+  const polarBand = gaussian(latitudeAbsDeg, 63, 13);
+  const boundaryLayerFactor = Math.exp(-altitudeSafeKm / 2.3);
+  const jetCoreFactor = gaussian(altitudeSafeKm, 11.5, 4.4);
+  const lowerStratosphereFactor = gaussian(altitudeSafeKm, 23, 8.5);
+  const mesosphereFactor = gaussian(altitudeSafeKm, 50, 13);
+  const winterJetBoost = Math.max(0, localWinterFactor);
+  const zonalBaseScale = clamp(
+    0.62
+      + (0.16 * subtropicalBand)
+      + (0.18 * midlatitudeBand)
+      + (0.12 * polarBand)
+      + (0.10 * winterJetBoost * jetCoreFactor),
+    0.35,
+    1.25,
+  );
+  const tradeWindMS = -7.5 * gaussian(latitudeAbsDeg, 15, 16) * Math.exp(-altitudeSafeKm / 3.6);
+  const surfaceWesterlyMS = 6.5 * midlatitudeBand * boundaryLayerFactor * (0.85 + (0.25 * winterJetBoost));
+  const jetAugmentationMS = (5 * subtropicalBand + 7 * midlatitudeBand + 6 * polarBand)
+    * (0.65 + (0.45 * winterJetBoost))
+    * jetCoreFactor;
+  const stratosphericReversalMS =
+    -6.5
+    * subtropicalBand
+    * Math.sin(((dayOfYear - 95) / 365.25) * Math.PI * 2)
+    * lowerStratosphereFactor;
+  const mesosphericReversalMS = -4.5 * midlatitudeBand * mesosphereFactor;
+  const steadyEastMS =
+    (baseEastMS * zonalBaseScale)
+    + tradeWindMS
+    + surfaceWesterlyMS
+    + jetAugmentationMS
+    + stratosphericReversalMS
+    + mesosphericReversalMS;
+  const seaBreezePhase = Math.sin(((localSolarHours - 14) / 24) * Math.PI * 2);
+  const diurnalMeridionalMS =
+    3.2
+    * gaussian(latitudeAbsDeg, 25, 18)
+    * seaBreezePhase
+    * Math.exp(-altitudeSafeKm / 2.8);
+  const jetCrossflowMS =
+    4.4
+    * Math.sin(2 * latitudeRad)
+    * Math.sin(((localSolarHours - 16) / 24) * Math.PI * 2)
+    * jetCoreFactor;
+  const seasonalMeridionalMS =
+    2.6
+    * (0.35 + (0.65 * midlatitudeBand))
+    * Math.sin(((dayOfYear - 172) / 365.25) * Math.PI * 2)
+    * lowerStratosphereFactor;
+  const steadyNorthMS =
+    (baseNorthMS * clamp(0.45 + (0.30 * midlatitudeBand) + (0.12 * polarBand), 0.2, 0.95))
+    + diurnalMeridionalMS
+    + jetCrossflowMS
+    + seasonalMeridionalMS;
 
   const t = Math.max(0, Number(elapsedSeconds) || 0);
   const posPhase = (Number(relPos?.x) || 0) * 0.0003
     + (Number(relPos?.y) || 0) * 0.0002
     + (Number(relPos?.z) || 0) * 0.00025;
   const seedPhase = ((Number(seed) || 0) * 0.000001) + posPhase;
-  const nearSurfaceFactor = clamp(1 - (altitudeSafeKm / 48), 0, 1);
-  const jetFactor = clamp(1 - (Math.abs(altitudeSafeKm - 14) / 22), 0, 1);
+  const shearEastMSPerKm = Math.abs(
+    sampleTableLinear(Math.max(0, altitudeSafeKm - 1), layerAltitudes, eastSamples)
+    - sampleTableLinear(altitudeSafeKm + 1, layerAltitudes, eastSamples),
+  ) / 2;
+  const nearSurfaceFactor = clamp(boundaryLayerFactor, 0, 1);
+  const jetFactor = clamp(jetCoreFactor, 0, 1);
+  const turbulenceEnvelope = clamp(
+    (0.60 * nearSurfaceFactor)
+      + (0.28 * jetFactor)
+      + (0.02 * Math.min(10, shearEastMSPerKm)),
+    0,
+    1,
+  );
   const gustScaleMS = linearInterpolate(
     LAUNCH_REALISM_CONFIG.wind.gustMinMS,
     LAUNCH_REALISM_CONFIG.wind.gustMaxMS,
-    clamp((nearSurfaceFactor * 0.45) + (jetFactor * 0.55), 0, 1),
+    turbulenceEnvelope,
   );
   const gustEastMS = gustScaleMS * (
     (0.48 * Math.sin((t * 0.28) + seedPhase))
@@ -141,6 +282,8 @@ export function sampleWindVectorKmS({
     northMS,
     gustEastMS,
     gustNorthMS,
+    latitudeDeg,
+    longitudeDeg,
     speedKmS: length(vectorKmS),
   };
 }
@@ -235,7 +378,9 @@ export function computeAerodynamicResponse({
   const aoaRad = angleBetweenRadians(bodyAxis, relAirDirection);
   const aoaDeg = degrees(aoaRad);
 
-  const soundSpeedMs = speedOfSoundMs(Number(atmosphereSample?.temperatureK) || 0);
+  const soundSpeedMs = Number(atmosphereSample?.speedOfSoundMs) > 0
+    ? Number(atmosphereSample.speedOfSoundMs)
+    : speedOfSoundMs(atmosphereSample);
   const machNumber = soundSpeedMs > 1e-9
     ? (relAirSpeedKmS * 1000) / soundSpeedMs
     : 0;

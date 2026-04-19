@@ -75,6 +75,7 @@ function createHarness() {
     getBodyMassKg: (id) => (String(id) === "moon" ? MOON_MASS_KG : EARTH_MASS_KG),
     getEarthFixedAxesEcliptic: earthAxes,
     sampleEarthAtmosphere,
+    windSeed: 1,
     gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
   });
 }
