@@ -340,7 +340,7 @@ function computePadState({
     LAUNCH_SITE.latitudeDeg,
     LAUNCH_SITE.longitudeDeg,
     earthAxes,
-    { includeTerrain: false },
+    { includeTerrain: true },
   );
   if (!surfaceState?.pointRelativeKm || !surfaceState?.surfaceNormal) {
     return null;
@@ -2094,7 +2094,7 @@ export function createLaunchController(options) {
       relPos,
       currentEarthAxes,
       earthRadiusKm,
-      { includeTerrain: false },
+      { includeTerrain: true },
     );
     const surfaceAltitudeKm = Number(surfaceSample?.altitudeAboveTerrainKm);
     const altitudeKm = Number.isFinite(surfaceAltitudeKm)
@@ -3178,7 +3178,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       relativePosition,
       earthFrameAxes,
       earthRadiusKm,
-      { includeTerrain: false },
+      { includeTerrain: true },
     );
     runtime.lastSurfaceSample = sample || null;
     return runtime.lastSurfaceSample;
@@ -3388,16 +3388,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const altitudeKm = length(relPos) - earthRadiusKm;
       needsRepair = !Number.isFinite(altitudeKm) || altitudeKm > 20 || altitudeKm < -1;
     }
-    if (!needsRepair) {
-      return false;
+    if (!rocketState) {
+      rocketState = {
+        id: LAUNCH_BODY_ID,
+        massKg: surfaceLaunchInitialMassKgForMission(runtime.mission.selectedId),
+        position: { ...pad.position },
+        velocity: { ...pad.velocity },
+      };
+      state.dynamicBodies.set(LAUNCH_BODY_ID, rocketState);
     }
-    rocketState = {
-      id: LAUNCH_BODY_ID,
-      massKg: surfaceLaunchInitialMassKgForMission(runtime.mission.selectedId),
-      position: { ...pad.position },
-      velocity: { ...pad.velocity },
-    };
-    state.dynamicBodies.set(LAUNCH_BODY_ID, rocketState);
+    rocketState.massKg = surfaceLaunchInitialMassKgForMission(runtime.mission.selectedId);
+    rocketState.position = { ...pad.position };
+    rocketState.velocity = { ...pad.velocity };
     applyEarthSurfaceContactForVehicle({
       rocketState,
       earthState,
@@ -3407,6 +3409,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
       dtSeconds: 0,
       thrustN: 0,
+      includeTerrain: true,
     });
     runtime.lastTrackedPositionKm = earthFixedRelativePositionKm(
       rocketState,
@@ -3447,10 +3450,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
-    emitLaunchEvent("launch_vehicle_idle_pad_repair", {
-      launchSiteName: LAUNCH_SITE.name || "Launch Site",
-      ...telemetryLogDetails(runtime.lastTelemetry),
-    });
+    if (needsRepair) {
+      emitLaunchEvent("launch_vehicle_idle_pad_repair", {
+        launchSiteName: LAUNCH_SITE.name || "Launch Site",
+        ...telemetryLogDetails(runtime.lastTelemetry),
+      });
+    }
     return true;
   }
 
@@ -3496,6 +3501,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
       dtSeconds: 0,
       thrustN: 0,
+      includeTerrain: true,
     });
     resetRuntime();
     runtime.lastTrackedPositionKm = earthFixedRelativePositionKm(
@@ -4073,6 +4079,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       referenceOffsetKm: BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
       dtSeconds,
       thrustN: Number(runtime.booster.lastStep?.thrustN) || 0,
+      includeTerrain: true,
     });
     if (contact?.surfaceSample) {
       runtime.booster.lastSurfaceSample = contact.surfaceSample;
@@ -4340,11 +4347,21 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         });
       };
 
+      const launchClearanceAltitudeKm = (() => {
+        const centerAltitudeAboveTerrainKm = Number(runtime.lastSurfaceSample?.altitudeAboveTerrainKm);
+        if (Number.isFinite(centerAltitudeAboveTerrainKm)) {
+          return Math.max(0, centerAltitudeAboveTerrainKm - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM);
+        }
+        const orbitalAltitudeKm = Number(orbital?.altitudeKm);
+        return Number.isFinite(orbitalAltitudeKm) ? Math.max(0, orbitalAltitudeKm) : 0;
+      })();
+
       const setFlightStep = ({
         desiredDirection,
         requestedThrottle = 0,
         guidanceMode = "coast",
       }) => {
+        let effectiveGuidanceMode = String(guidanceMode || "coast");
         let directionRequested = normalize(
           desiredDirection || normalize(relVel, orbital.up),
           orbital.up,
@@ -4390,11 +4407,38 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         }
         const bodyKind = stageBodyKindFromStageIndex(runtime.stageIndex);
         const stageForStep = stageAtIndex(runtime.stageIndex);
+        const padReleaseDurationSec = Math.max(
+          0,
+          Number(LAUNCH_AUTOPILOT_CONFIG.padReleaseDurationSec) || 0,
+        );
+        const towerClearAltitudeKm = Math.max(
+          0,
+          Number(LAUNCH_AUTOPILOT_CONFIG.towerClearAltitudeKm) || 0,
+        );
+        const earlyPadLaunchActive =
+          runtime.phase === "powered"
+          && runtime.stageIndex === 0
+          && (Number(requestedThrottle) || 0) > 1e-3
+          && Number.isFinite(launchClearanceAltitudeKm)
+          && launchClearanceAltitudeKm < towerClearAltitudeKm;
+        if (earlyPadLaunchActive) {
+          const earlyLaunchMode = runtime.elapsedSeconds < padReleaseDurationSec
+            ? "autopilot-pad-release"
+            : "autopilot-tower-clear";
+          const modeSuffixes = [];
+          if (effectiveGuidanceMode.includes("vertical-hold")) {
+            modeSuffixes.push("vertical-hold");
+          }
+          effectiveGuidanceMode = modeSuffixes.length > 0
+            ? `${earlyLaunchMode}+${modeSuffixes.join("+")}`
+            : earlyLaunchMode;
+          runtime.autopilotMode = earlyLaunchMode;
+        }
         const lowAltitudeQAlphaBypass =
           runtime.stageIndex === 0
           && (
-            orbital.altitudeKm <= ((Number(LAUNCH_AUTOPILOT_CONFIG.verticalAscentMaxAltitudeKm) || 0) + 2)
-            || String(guidanceMode || "").includes("vertical")
+            launchClearanceAltitudeKm <= ((Number(LAUNCH_AUTOPILOT_CONFIG.verticalAscentMaxAltitudeKm) || 0) + 2)
+            || effectiveGuidanceMode.includes("vertical")
           );
         const qAlphaAtmosphereActive = (
           Number.isFinite(orbital.altitudeKm)
@@ -4547,8 +4591,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           controlAuthorityScale: runtime.stageMassModel.controlAuthorityScale,
         });
         let guidanceModeLabel = qAlphaSteering.limited
-          ? `${guidanceMode}+qalpha-limit`
-          : guidanceMode;
+          ? `${effectiveGuidanceMode}+qalpha-limit`
+          : effectiveGuidanceMode;
         if (runtime.moonBurnAttitudeGateActive && !guidanceModeLabel.includes("attitude-align")) {
           guidanceModeLabel = `${guidanceModeLabel}+attitude-align`;
         }
@@ -4723,7 +4767,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         const activeRefuelTarget = refuelController.activeRendezvousTarget?.(state) || null;
         let autopilotCommand = computeAutopilotCommand({
           runtime,
-          orbital,
+          orbital: {
+            ...orbital,
+            altitudeKm: launchClearanceAltitudeKm,
+          },
           relPos,
           relVel,
           up: orbital.up,
@@ -4789,6 +4836,31 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         };
       }
 
+      const padReleaseDurationSec = Math.max(
+        0,
+        Number(LAUNCH_AUTOPILOT_CONFIG.padReleaseDurationSec) || 0,
+      );
+      const towerClearAltitudeKm = Math.max(
+        0,
+        Number(LAUNCH_AUTOPILOT_CONFIG.towerClearAltitudeKm) || 0,
+      );
+      if (
+        runtime.stageIndex === 0
+        && Number.isFinite(launchClearanceAltitudeKm)
+        && launchClearanceAltitudeKm < towerClearAltitudeKm
+      ) {
+        const earlyLaunchMode = runtime.elapsedSeconds < padReleaseDurationSec
+          ? "autopilot-pad-release"
+          : "autopilot-tower-clear";
+        runtime.autopilotMode = earlyLaunchMode;
+        guidance = {
+          direction: guidance.direction,
+          mode: guidance.mode.includes("vertical-hold")
+            ? `${earlyLaunchMode}+vertical-hold`
+            : earlyLaunchMode,
+        };
+      }
+
       // Gentle hot-staging ramp: avoid abrupt Stage 2 shove right after ignition.
       const ignitionTimeSec = Number(runtime.hotstage?.ignitionTimeSec);
       const timeSinceIgnitionSec = Number.isFinite(ignitionTimeSec)
@@ -4843,9 +4915,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     try {
       const fleetActive = fleetController.hasActiveVehicles();
       if (runtime.phase === "idle" && !runtime.booster.active && !fleetActive) {
+        repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs);
         return;
       }
       if (runtime.phase === "idle" && !runtime.booster.active) {
+        repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs);
         fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
@@ -4925,6 +4999,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
         dtSeconds,
         thrustN: Number(runtime.lastStep?.thrustN) || 0,
+        includeTerrain: true,
       });
       if (contact?.surfaceSample) {
         runtime.lastSurfaceSample = contact.surfaceSample;

@@ -93,7 +93,7 @@ const ORBITAL_REFUEL_DEMO_CONFIG = Object.freeze({
   recoveryThrottleMax: 0.58,
   recoveryEmergencyAltitudeKm: 170,
   recoveryEmergencyThrottleBase: 0.38,
-  recoveryEmergencyThrottleMax: 0.78,
+  recoveryEmergencyThrottleMax: 0.92,
   recoveryCloseRangeDistanceKm: 20,
   recoveryCloseRangeMaxRelativeSpeedKmS: 0.03,
   recoveryCloseRangeMinPeriapsisKm: 138,
@@ -101,7 +101,7 @@ const ORBITAL_REFUEL_DEMO_CONFIG = Object.freeze({
   recoveryImmediateAltitudeKm: 155,
   recoveryImmediateThrottleBase: 0.24,
   recoveryImmediateThrottleMax: 0.56,
-  recoveryImmediateUpBias: 0.16,
+  recoveryImmediateUpBias: 0.24,
 });
 
 function isRefuelFlowMissionId(missionId) {
@@ -775,6 +775,10 @@ function computeOrbitalRefuelDemoAutopilotCommand({
   const config = ORBITAL_REFUEL_DEMO_CONFIG;
 
   if (phase === "launch_to_parking") {
+    const periapsisKm = Number(orbital?.periapsisKm);
+    const apoapsisKm = Number(orbital?.apoapsisKm);
+    const altitudeKm = Number(orbital?.altitudeKm);
+    const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
     const parkingReady = Number(orbital.periapsisKm) >= config.parkingOrbitPeriapsisMinKm
       && Number(orbital.apoapsisKm) >= config.parkingOrbitApoapsisMinKm
       && orbital.specificEnergy < 0;
@@ -785,6 +789,62 @@ function computeOrbitalRefuelDemoAutopilotCommand({
         throttle: 0,
         direction: tangent,
         mode: "mission-orbital-refuel-demo:orbital-refuel-setup",
+      };
+    }
+    // Let the normal ascent/insertion controller own Stage 2 until the vehicle is high
+    // enough that orbit-recovery logic is physically meaningful. Arming this too early
+    // can drag the stack into a low-altitude tangential burn before parking insertion.
+    const parkingRecoveryArmed = Number(runtime.stageIndex) >= 1
+      && Number.isFinite(altitudeKm)
+      && altitudeKm >= Math.max(
+        Number(LAUNCH_AUTOPILOT_CONFIG.ascentCoastMinAltitudeKm) || 105,
+        Math.min(
+          Number(config.recoveryEmergencyAltitudeKm) || 170,
+          Number(config.recoveryImmediateAltitudeKm) || 155,
+        ) * 0.72,
+      );
+    const parkingRecoveryNeeded = parkingRecoveryArmed && (
+      !Number.isFinite(periapsisKm)
+      || periapsisKm < (Number(config.recoveryPeriapsisHardMinKm) || 130)
+      || (
+        Number.isFinite(altitudeKm)
+        && altitudeKm < Math.max(120, Number(config.recoveryEmergencyAltitudeKm) || 170)
+        && radialSpeedKmS < 0.04
+      )
+      || (
+        Number.isFinite(apoapsisKm)
+        && apoapsisKm < ((Number(config.parkingOrbitApoapsisMinKm) || 180) * 0.7)
+      )
+    );
+    if (parkingRecoveryNeeded) {
+      const periapsisDeficitKm = Number.isFinite(periapsisKm)
+        ? Math.max(0, (Number(config.recoveryPeriapsisSoftMinKm) || 145) - periapsisKm)
+        : (Number(config.recoveryPeriapsisSoftMinKm) || 145);
+      const apoapsisDeficitKm = Number.isFinite(apoapsisKm)
+        ? Math.max(0, (Number(config.parkingOrbitApoapsisMinKm) || 180) - apoapsisKm)
+        : (Number(config.parkingOrbitApoapsisMinKm) || 180);
+      const recoveryUpBias = clamp(
+        0.24
+          + Math.min(0.12, periapsisDeficitKm / 500)
+          + Math.min(0.10, apoapsisDeficitKm / 500)
+          + Math.min(0.08, Math.max(0, -radialSpeedKmS) * 10),
+        0.24,
+        0.46,
+      );
+      return {
+        phase: "powered",
+        throttle: clamp(
+          0.62
+            + Math.min(0.18, periapsisDeficitKm / 700)
+            + Math.min(0.12, apoapsisDeficitKm / 700),
+          0.62,
+          0.92,
+        ),
+        direction: normalize(
+          add(scale(tangent, 1 - recoveryUpBias), scale(up, recoveryUpBias)),
+          tangent,
+        ),
+        mode: "mission-orbital-refuel-demo:parking-recovery-burn",
       };
     }
     runtime.mission.completed = false;
@@ -838,8 +898,15 @@ function computeOrbitalRefuelDemoAutopilotCommand({
         Number(config.recoveryEmergencyThrottleBase) || 0.38,
         Number(config.recoveryEmergencyThrottleMax) || 0.78,
       );
+      const emergencyUpBias = clamp(
+        0.22
+          + Math.min(0.14, periapsisDeficitKm / 900)
+          + Math.min(0.08, Math.max(0, -radialSpeedKmS) * 10),
+        0.22,
+        0.44,
+      );
       const direction = normalize(
-        add(scale(tangent, 0.93), scale(up, 0.07)),
+        add(scale(tangent, 1 - emergencyUpBias), scale(up, emergencyUpBias)),
         tangent,
       );
       return {
@@ -901,8 +968,8 @@ function computeOrbitalRefuelDemoAutopilotCommand({
         );
         const guardUpBias = clamp(
           (Number(config.recoveryImmediateUpBias) || 0.16) + (Math.max(0, -radialSpeedKmS) * 18),
-          0.12,
-          0.32,
+          0.18,
+          0.44,
         );
         const direction = guardActive
           ? normalize(

@@ -353,6 +353,10 @@ function stateDrivenAscentProfile({
   const altitudeKm = Math.max(0, Number(orbital?.altitudeKm) || 0);
   const tangentialSpeedKmS = Math.max(0, Number(orbital?.tangentialSpeedKmS) || 0);
   const radialSpeedKmS = Number(orbital?.radialSpeedKmS) || 0;
+  const towerClearAltitudeKm = Math.max(
+    0,
+    Number(config.towerClearAltitudeKm) || 0,
+  );
   const safeTurnStartKm = Math.max(0, verticalAscentMaxAltitudeKm * 0.15);
   const turnAltitudeProgress = clamp(
     (altitudeKm - safeTurnStartKm)
@@ -449,6 +453,31 @@ function stateDrivenAscentProfile({
       angleRad: 0,
     };
   direction = aoaLimited.direction;
+  const towerClearActive = towerClearAltitudeKm > 0 && altitudeKm < towerClearAltitudeKm;
+  let towerClearLimited = false;
+  if (towerClearActive) {
+    const trueVerticalAltitudeKm = Math.max(0.03, towerClearAltitudeKm * 0.4);
+    if (altitudeKm <= trueVerticalAltitudeKm) {
+      direction = up;
+      towerClearLimited = true;
+    } else {
+    const towerClearProgress = smoothStep01(altitudeKm / Math.max(towerClearAltitudeKm, 1e-6));
+    const towerClearMaxPitchDeg = clamp(
+      Number(config.towerClearMaxPitchDeg) || 3.5,
+      0.5,
+      10,
+    );
+    const towerClearPitchDeg = 0.6 + (towerClearProgress * (towerClearMaxPitchDeg - 0.6));
+    const towerClearLimitedDirection = limitDirectionAngle({
+      desiredDirection: direction,
+      referenceDirection: up,
+      maxAngleRad: rad(towerClearPitchDeg),
+      fallback: up,
+    });
+    direction = towerClearLimitedDirection.direction;
+    towerClearLimited = towerClearLimitedDirection.limited;
+    }
+  }
   return {
     direction,
     climbWeight: dot(direction, up),
@@ -458,6 +487,8 @@ function stateDrivenAscentProfile({
     kickProgress,
     progradeCapture,
     aoaLimited: aoaLimited.limited,
+    towerClearActive,
+    towerClearLimited,
   };
 }
 
@@ -475,7 +506,12 @@ export function computeAutopilotCommand({
   const config = LAUNCH_AUTOPILOT_CONFIG;
   const targetAltitudeKm = Number(runtime?.targetOrbitAltitudeKm) || config.targetOrbitAltitudeKm;
   const targetAltitudeSafe = Math.max(targetAltitudeKm, 1);
+  const lowOrbitMissionStage1 = Number(runtime?.stageIndex) === 0 && targetAltitudeSafe <= 350;
+  const ascentTargetAltitudeSafe = Number(runtime?.stageIndex) === 0
+    ? Math.max(targetAltitudeSafe, 500)
+    : targetAltitudeSafe;
   const verticalAscentMaxAltitudeKm = Math.max(0.05, Number(config.verticalAscentMaxAltitudeKm) || 0.05);
+  const lowOrbitLaunchProfileActive = Number(runtime?.stageIndex) === 0 && ascentTargetAltitudeSafe <= 350;
   const apoapsisKm = Number(orbital.apoapsisKm);
   const periapsisKm = Number(orbital.periapsisKm);
   const apoDefined = Number.isFinite(apoapsisKm);
@@ -483,7 +519,7 @@ export function computeAutopilotCommand({
   const radialSpeedKmS = Number(orbital.radialSpeedKmS) || 0;
   const circularSpeedKmS = Number(orbital.circularSpeedKmS) || 0;
   const tangentialSpeedKmS = Number(orbital.tangentialSpeedKmS) || 0;
-  const targetRadiusKm = Math.max(1, earthRadiusKm + targetAltitudeKm);
+  const targetRadiusKm = Math.max(1, earthRadiusKm + ascentTargetAltitudeSafe);
   const targetCircularSpeedKmS = circularOrbitSpeedKmS(muKm3S2, targetRadiusKm);
   const stableTargetOrbit = targetAltitudeSafe > 350
     ? (
@@ -705,14 +741,44 @@ export function computeAutopilotCommand({
     targetCircularSpeedKmS,
     dynamicPressurePa,
     verticalAscentMaxAltitudeKm,
-    gravityTurnEndAltitudeKm: config.gravityTurnEndAltitudeKm,
+    gravityTurnEndAltitudeKm: lowOrbitLaunchProfileActive
+      ? Math.max(Number(config.gravityTurnEndAltitudeKm) || 0, 38)
+      : config.gravityTurnEndAltitudeKm,
     config,
   });
   let direction = ascentProfile.direction;
+  const lowOrbitStage1ClimbBias = lowOrbitLaunchProfileActive
+    ? clamp(
+      (72 - Math.max(0, Number(orbital?.altitudeKm) || 0)) / 72,
+      0,
+      1,
+    ) * 0.34
+    : 0;
+  if (lowOrbitStage1ClimbBias > 1e-6) {
+    direction = normalize(
+      add(scale(direction, 1), scale(up, lowOrbitStage1ClimbBias)),
+      direction,
+    );
+  }
   let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa);
   let mode = ascentProfile.progradeCapture < 0.58
     ? "autopilot-pitch-program"
     : "autopilot-gravity-turn";
+  const padReleaseDurationSec = Math.max(
+    0,
+    Number(config.padReleaseDurationSec) || 0,
+  );
+  const towerClearAltitudeKm = Math.max(
+    0,
+    Number(config.towerClearAltitudeKm) || 0,
+  );
+  const inPadReleaseWindow = runtime.stageIndex === 0 && runtime.elapsedSeconds < padReleaseDurationSec;
+  const towerClearActive = runtime.stageIndex === 0
+    && ascentProfile.towerClearActive
+    && orbital.altitudeKm < towerClearAltitudeKm;
+  if (towerClearActive) {
+    mode = inPadReleaseWindow ? "autopilot-pad-release" : "autopilot-tower-clear";
+  }
   if (ascentProfile.turnAltitudeProgress >= 1) {
     runtime.autopilotMode = "autopilot-apoapsis-raise";
     const apoDeficitKm = apoDefined ? targetAltitudeKm - apoapsisKm : targetAltitudeKm;
@@ -758,13 +824,19 @@ export function computeAutopilotCommand({
           0,
           1,
         );
+        const atmosphericClimbBias = clamp(
+          (140 - Math.max(0, Number(orbital.altitudeKm) || 0)) / 140,
+          0,
+          1,
+        ) * 0.32;
         return clamp(
           0.28
             - (insertionProgress * 0.08)
             + (Math.max(0, apoDeficitKm) / targetAltitudeSafe) * 0.03
             + (horizontalOverspeedRatio * 1.2)
-            + (apoCloseProgress * 0.18),
-          0.22,
+            + (apoCloseProgress * 0.18)
+            + atmosphericClimbBias,
+          0.28,
           0.9,
         );
       })()
@@ -800,6 +872,56 @@ export function computeAutopilotCommand({
     mode = "autopilot-apoapsis-raise";
   } else {
     runtime.autopilotMode = "autopilot-gravity-turn";
+  }
+
+  if (towerClearActive) {
+    const relAir = atmosphereRelativeVelocityKmS(relPos, relVel, earthPole);
+    const airspeedKmS = length(relAir);
+    const minTrackAirspeedKmS = Math.max(0.02, Number(config.progradeTrackMinAirSpeedKmS) || 0.12);
+    if (airspeedKmS >= minTrackAirspeedKmS) {
+      const towerClearAoALimited = limitDirectionAngle({
+        desiredDirection: direction,
+        referenceDirection: normalize(relAir, direction),
+        maxAngleRad: rad(clamp(Number(config.towerClearAoALimitDeg) || 2.5, 0.5, 8)),
+        fallback: direction,
+      });
+      direction = towerClearAoALimited.direction;
+    }
+  }
+
+  if (lowOrbitMissionStage1 && Number(orbital.altitudeKm) >= 16 && Number(orbital.altitudeKm) < 80) {
+    const lowOrbitApoRaiseBias = clamp(
+      0.34
+        - ((Math.max(0, Number(orbital.altitudeKm) || 0) / 80) * 0.14)
+        + Math.min(0.08, Math.max(0, -radialSpeedKmS) * 4),
+      0.2,
+      0.4,
+    );
+    const lowOrbitApoRaiseDirection = normalize(
+      add(scale(tangent, 1), scale(up, lowOrbitApoRaiseBias)),
+      tangent,
+    );
+    direction = normalize(
+      mixVectors(direction, lowOrbitApoRaiseDirection, 0.72),
+      lowOrbitApoRaiseDirection,
+    );
+    mode = "autopilot-apoapsis-raise";
+  }
+
+  if (lowOrbitLaunchProfileActive && Number(orbital.altitudeKm) < 65) {
+    const minClimbWeight = clamp(
+      0.66 - ((Math.max(0, Number(orbital.altitudeKm) || 0) / 65) * 0.4),
+      0.26,
+      0.66,
+    );
+    if (dot(direction, up) < minClimbWeight) {
+      direction = limitDirectionAngle({
+        desiredDirection: direction,
+        referenceDirection: up,
+        maxAngleRad: Math.acos(clamp(minClimbWeight, -1, 1)),
+        fallback: up,
+      }).direction;
+    }
   }
 
   const climbGuardAltitudeKm = Math.max(config.ascentClimbGuardAltitudeKm || 0, verticalAscentMaxAltitudeKm || 0);

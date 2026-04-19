@@ -5756,6 +5756,8 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
     launchSite: RUNTIME_LAUNCH_SITE,
     stackPresent,
     launchPhase: snapshot?.phase,
+    guidanceMode: snapshot?.guidanceMode,
+    elapsedSeconds: snapshot?.elapsedSeconds,
     altitudeKm,
     boosterPhase: snapshot?.boosterPhase,
     boosterLanded: snapshot?.boosterLanded,

@@ -189,14 +189,6 @@ function finiteVectorKm(vector) {
   );
 }
 
-function subtractVectorKm(a, b) {
-  return {
-    x: (Number(a?.x) || 0) - (Number(b?.x) || 0),
-    y: (Number(a?.y) || 0) - (Number(b?.y) || 0),
-    z: (Number(a?.z) || 0) - (Number(b?.z) || 0),
-  };
-}
-
 function scaleVectorKm(vector, scalar) {
   return {
     x: (Number(vector?.x) || 0) * scalar,
@@ -210,6 +202,14 @@ function addVectorKm(a, b) {
     x: (Number(a?.x) || 0) + (Number(b?.x) || 0),
     y: (Number(a?.y) || 0) + (Number(b?.y) || 0),
     z: (Number(a?.z) || 0) + (Number(b?.z) || 0),
+  };
+}
+
+function subtractVectorKm(a, b) {
+  return {
+    x: (Number(a?.x) || 0) - (Number(b?.x) || 0),
+    y: (Number(a?.y) || 0) - (Number(b?.y) || 0),
+    z: (Number(a?.z) || 0) - (Number(b?.z) || 0),
   };
 }
 
@@ -624,16 +624,25 @@ function updateChopstickArmAssembly(assembly, profile, armLength) {
     0,
     0,
   );
-  assembly.lowerBrace.rotation.z = 0.62;
+  setCylinderBetweenPoints(assembly.actuatorOuter, actuatorBase, actuatorMid);
+  setCylinderBetweenPoints(assembly.actuatorRod, actuatorMid, actuatorTip);
 }
 
 export function resolveLaunchStructureArmTarget(input = {}) {
   const stackPresent = Boolean(input.stackPresent);
   const launchPhase = String(input.launchPhase || "").trim().toLowerCase();
   const boosterPhase = String(input.boosterPhase || "").trim().toLowerCase();
+  const guidanceMode = String(input.guidanceMode || "").trim().toLowerCase();
+  const elapsedSeconds = Number(input.elapsedSeconds);
   const altitudeKm = Number(input.altitudeKm);
   const boosterLanded = Boolean(input.boosterLanded);
   const lowAltitude = Number.isFinite(altitudeKm) && altitudeKm < 0.75;
+  const launchCommitActive = launchPhase === "powered"
+    && (
+      guidanceMode.includes("pad-release")
+      || guidanceMode.includes("tower-clear")
+      || (Number.isFinite(elapsedSeconds) && elapsedSeconds >= 0.35)
+    );
 
   if (boosterLanded || boosterPhase.includes("caught")) {
     return 0.08;
@@ -643,6 +652,9 @@ export function resolveLaunchStructureArmTarget(input = {}) {
   }
   if (boosterPhase.includes("landing")) {
     return 0.26;
+  }
+  if (launchCommitActive && lowAltitude) {
+    return 0.82;
   }
   if (stackPresent || launchPhase === "idle" || (launchPhase === "powered" && lowAltitude)) {
     return 0.24;

@@ -54,7 +54,7 @@ export function computeLaunchSiteCatchFrame({
     LAUNCH_SITE.latitudeDeg,
     LAUNCH_SITE.longitudeDeg,
     earthAxes,
-    { includeTerrain: false },
+    { includeTerrain: true },
   );
   if (!surfaceState?.pointRelativeKm || !surfaceState?.surfaceNormal) {
     return null;
