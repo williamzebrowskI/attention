@@ -3,7 +3,7 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
 import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js";
-import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
+import { surfaceRadiusKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
 const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   slabRadiusKm: 0.028,
@@ -100,26 +100,32 @@ function eastNorthUpBasisBodyFixed(THREE, latitudeDeg, longitudeDeg) {
   return { east, north, up };
 }
 
-function sceneVectorFromKm(THREE, vectorKm) {
+function latLonToEarthLocalVector(THREE, latitudeDeg, longitudeDeg, radiusScene) {
+  const latRad = rad(clamp(Number(latitudeDeg) || 0, -90, 90));
+  const lonRad = rad(Number(longitudeDeg) || 0);
+  const cosLat = Math.cos(latRad);
   return new THREE.Vector3(
-    Number(vectorKm?.x) || 0,
-    Number(vectorKm?.z) || 0,
-    Number(vectorKm?.y) || 0,
+    radiusScene * cosLat * Math.cos(lonRad),
+    radiusScene * Math.sin(latRad),
+    -radiusScene * cosLat * Math.sin(lonRad),
   );
 }
 
-function transformBodyFixedVectorToWorld(THREE, bodyFixedVector, earthAxes) {
-  return new THREE.Vector3(
-    ((Number(earthAxes?.xAxis?.x) || 0) * (Number(bodyFixedVector?.x) || 0))
-      + ((Number(earthAxes?.yAxis?.x) || 0) * (Number(bodyFixedVector?.y) || 0))
-      + ((Number(earthAxes?.pole?.x) || 0) * (Number(bodyFixedVector?.z) || 0)),
-    ((Number(earthAxes?.xAxis?.y) || 0) * (Number(bodyFixedVector?.x) || 0))
-      + ((Number(earthAxes?.yAxis?.y) || 0) * (Number(bodyFixedVector?.y) || 0))
-      + ((Number(earthAxes?.pole?.y) || 0) * (Number(bodyFixedVector?.z) || 0)),
-    ((Number(earthAxes?.xAxis?.z) || 0) * (Number(bodyFixedVector?.x) || 0))
-      + ((Number(earthAxes?.yAxis?.z) || 0) * (Number(bodyFixedVector?.y) || 0))
-      + ((Number(earthAxes?.pole?.z) || 0) * (Number(bodyFixedVector?.z) || 0)),
-  );
+function earthLocalEastNorthUpBasis(THREE, latitudeDeg, longitudeDeg) {
+  const latRad = rad(clamp(Number(latitudeDeg) || 0, -90, 90));
+  const lonRad = rad(Number(longitudeDeg) || 0);
+  const up = latLonToEarthLocalVector(THREE, latitudeDeg, longitudeDeg, 1).normalize();
+  const east = new THREE.Vector3(
+    -Math.sin(lonRad),
+    0,
+    -Math.cos(lonRad),
+  ).normalize();
+  const north = new THREE.Vector3(
+    -Math.sin(latRad) * Math.cos(lonRad),
+    Math.cos(latRad),
+    Math.sin(latRad) * Math.sin(lonRad),
+  ).normalize();
+  return { east, north, up };
 }
 
 function makeAnchoredBeam(THREE, length, thickness, depth, material) {
@@ -598,18 +604,17 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const root = launchStructureVisual?.root;
   const state = launchStructureVisual?.state;
   const THREE = options?.THREE;
-  const scene = options?.scene;
-  const earthPositionKm = options?.earthPositionKm;
-  const earthAxes = options?.earthAxes;
-  if (!root || !state || !THREE || !scene || !earthPositionKm || !earthAxes) {
+  const earthVisual = options?.earthVisual;
+  const earthSpinGroup = earthVisual?.spinGroup;
+  if (!root || !state || !THREE || !earthSpinGroup) {
     if (root) {
       root.visible = false;
     }
     return;
   }
 
-  if (root.parent !== scene) {
-    scene.add(root);
+  if (root.parent !== earthSpinGroup) {
+    earthSpinGroup.add(root);
   }
 
   const launchSite = options?.launchSite || LAUNCH_SITE;
@@ -617,35 +622,21 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const longitudeDeg = Number(launchSite?.longitudeDeg) || 0;
   const altitudeKm = Math.max(0, Number(launchSite?.altitudeKm) || 0);
   const dtSeconds = Math.max(0, Number(options?.dtSeconds) || 0);
-
-  const { east, north, up } = eastNorthUpBasisBodyFixed(THREE, latitudeDeg, longitudeDeg);
-  const eastWorld = transformBodyFixedVectorToWorld(THREE, east, earthAxes);
-  const northWorld = transformBodyFixedVectorToWorld(THREE, north, earthAxes);
-  const upWorld = transformBodyFixedVectorToWorld(THREE, up, earthAxes);
-  const padSurface = surfacePointRelativeKmAtLatLon(latitudeDeg, longitudeDeg, earthAxes, { includeTerrain: false });
-  const padRelativeKm = padSurface?.pointRelativeKm || {
-    x: Number(upWorld.x) || 0,
-    y: Number(upWorld.y) || 0,
-    z: Number(upWorld.z) || 0,
-  };
-  const padNormalKm = padSurface?.surfaceNormal || {
-    x: Number(upWorld.x) || 0,
-    y: Number(upWorld.y) || 0,
-    z: Number(upWorld.z) || 0,
-  };
-  const rootWorldKm = {
-    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * altitudeKm),
-    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * altitudeKm),
-    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * altitudeKm),
-  };
   const distanceScale = Number(options?.distanceScale) || 1;
-  root.position.copy(sceneVectorFromKm(THREE, rootWorldKm).multiplyScalar(distanceScale));
+  const localSurfaceRadiusKm = surfaceRadiusKmAtLatLon(latitudeDeg, longitudeDeg, { includeTerrain: false }) + altitudeKm;
+  root.position.copy(
+    latLonToEarthLocalVector(
+      THREE,
+      latitudeDeg,
+      longitudeDeg,
+      localSurfaceRadiusKm * distanceScale,
+    ),
+  );
 
-  const eastScene = sceneVectorFromKm(THREE, eastWorld).normalize();
-  const northScene = sceneVectorFromKm(THREE, northWorld).normalize();
-  const upScene = sceneVectorFromKm(THREE, upWorld).normalize();
+  const { east, north, up } = earthLocalEastNorthUpBasis(THREE, latitudeDeg, longitudeDeg);
+  const south = north.clone().multiplyScalar(-1);
   const basis = new THREE.Matrix4();
-  basis.makeBasis(eastScene, upScene, northScene);
+  basis.makeBasis(east, up, south);
   root.quaternion.setFromRotationMatrix(basis);
   root.visible = true;
 
