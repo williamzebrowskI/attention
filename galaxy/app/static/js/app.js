@@ -73,14 +73,14 @@ import {
 import {
   createLaunchSiteStructureVisual,
   updateLaunchSiteStructureVisual,
-} from "./physics/launch/launchSiteStructures.js?v=20260419m";
+} from "./physics/launch/launchSiteStructures.js?v=20260419n";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
 } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419m";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419n";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -253,7 +253,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419m";
+const FRONTEND_MODULE_VERSION = "20260419n";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -521,6 +521,7 @@ const SPACECRAFT_WHEEL_ZOOM_MULTIPLIER = 1.9;
 const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
 const EARTH_SURFACE_CAMERA_CLEARANCE_KM = 1.5;
 const EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM = 0.005;
+const BODY_LOCK_EARTH_SURFACE_ASSIST_MAX_RADIUS_FACTOR = 1.14;
 const TIDAL_TARGET_CONFIG = Object.freeze([
   Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
   Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
@@ -1753,6 +1754,12 @@ const observation = {
   surfaceYaw: 0,
   surfacePitch: rad(2),
   surfaceAltitudeScale: 1,
+};
+const bodyLockSurfaceAssist = {
+  active: false,
+  bodyId: "",
+  latitudeDeg: 0,
+  longitudeDeg: 0,
 };
 const surfaceObserverRuntimeOverrides = new Map();
 const earthLocationState = {
@@ -6265,6 +6272,9 @@ function setObservationMode(mode) {
   const previousMode = observation.mode;
   observation.mode = nextMode;
   updateObservationControlVisibility();
+  if (nextMode !== OBSERVATION_MODES.BODY_LOCK) {
+    clearBodyLockSurfaceAssist();
+  }
 
   if (previousMode === OBSERVATION_MODES.SURFACE && nextMode !== OBSERVATION_MODES.SURFACE) {
     syncOrbitFromCurrentCamera();
@@ -6325,7 +6335,9 @@ function updateObservationStatus(anchor = null) {
   }
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK) {
     const bodyName = selectedId && metaById.has(selectedId) ? metaById.get(selectedId).name : "Sun";
-    observationStatusNode.textContent = `Body lock: ${bodyName}`;
+    observationStatusNode.textContent = earthBodyLockSurfaceAssistEnabled()
+      ? `Body lock: ${bodyName} (surface assist)`
+      : `Body lock: ${bodyName}`;
     return;
   }
   const preset = getSurfaceObserverPreset(observation.surfacePresetId);
@@ -9878,7 +9890,7 @@ function onPointerMove(event) {
     return;
   }
 
-  if (observation.mode === OBSERVATION_MODES.SURFACE) {
+  if (observation.mode === OBSERVATION_MODES.SURFACE || earthBodyLockSurfaceAssistEnabled()) {
     observation.surfaceYaw = normalizeAngle(observation.surfaceYaw - dx * orbit.rotateSpeed);
     observation.surfacePitch = clamp(
       observation.surfacePitch + (dy * orbit.rotateSpeed),
@@ -10272,9 +10284,156 @@ function syncLaunchVehicleViewSelection() {
   setSelected(LAUNCH_BOOSTER_BODY_ID, false);
 }
 
+function clearBodyLockSurfaceAssist() {
+  bodyLockSurfaceAssist.active = false;
+  bodyLockSurfaceAssist.bodyId = "";
+}
+
+function earthBodyLockSurfaceAssistEnabled() {
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK || selectedId !== "earth") {
+    return false;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  return Boolean(
+    earthVisual?.root?.visible
+    && (earthVisual?.renderRadius > 0)
+    && orbit.radius <= (earthVisual.renderRadius * BODY_LOCK_EARTH_SURFACE_ASSIST_MAX_RADIUS_FACTOR)
+  );
+}
+
+function resolveSurfaceAnchorOnBody({
+  bodyId,
+  latitudeDeg = 0,
+  longitudeDeg = 0,
+  altitudeKm = 1,
+  yawRad = observation.surfaceYaw,
+  pitchRad = observation.surfacePitch,
+  label = null,
+} = {}) {
+  const visual = bodyVisuals.get(bodyId);
+  if (!visual || !visual.root.visible) {
+    return null;
+  }
+  const altitudeScene = Math.max(0.0000001, Math.max(0.02, Number(altitudeKm) || 1) * DISTANCE_SCALE);
+  const radius = Math.max(visual.renderRadius + altitudeScene, visual.renderRadius * 1.0015);
+  const latDeg = Number(latitudeDeg) || 0;
+  const lonDeg = Number(longitudeDeg) || 0;
+  const latRad = rad(clamp(latDeg, -90, 90));
+  const lonRad = rad(lonDeg);
+
+  const upLocal = latLonToEarthVector(latDeg, lonDeg, 1).normalize();
+  const positionLocal = upLocal.clone().multiplyScalar(radius);
+  const eastLocal = new THREE_NS.Vector3(
+    -Math.sin(lonRad),
+    0,
+    -Math.cos(lonRad),
+  ).normalize();
+  const northLocal = new THREE_NS.Vector3(
+    -Math.sin(latRad) * Math.cos(lonRad),
+    Math.cos(latRad),
+    Math.sin(latRad) * Math.sin(lonRad),
+  ).normalize();
+
+  const worldQuat = new THREE_NS.Quaternion();
+  visual.spinGroup.getWorldQuaternion(worldQuat);
+  const upWorld = upLocal.clone().applyQuaternion(worldQuat).normalize();
+  const eastWorld = eastLocal.clone().applyQuaternion(worldQuat).normalize();
+  const northWorld = northLocal.clone().applyQuaternion(worldQuat).normalize();
+
+  const position = positionLocal.clone();
+  visual.spinGroup.localToWorld(position);
+  const cameraPosition = position.clone().addScaledVector(upWorld, Math.max(radius * 0.0024, 0.000005));
+
+  let heading = eastWorld.clone().applyAxisAngle(upWorld, yawRad).normalize();
+  if (heading.lengthSq() < 1e-10) {
+    heading = northWorld.clone();
+  }
+  let right = new THREE_NS.Vector3().crossVectors(heading, upWorld).normalize();
+  if (right.lengthSq() < 1e-10) {
+    right = new THREE_NS.Vector3().crossVectors(northWorld, upWorld).normalize();
+  }
+  const forward = heading.clone().applyAxisAngle(right, pitchRad).normalize();
+  const lookDistance = Math.max(visual.renderRadius * 9, altitudeScene * 12, 0.035);
+  const target = cameraPosition.clone().addScaledVector(forward, lookDistance);
+
+  return {
+    label: label || metaById.get(bodyId)?.name || bodyId,
+    bodyId,
+    altitudeKm: Math.max(0.02, Number(altitudeKm) || 1),
+    position: cameraPosition,
+    target,
+    up: upWorld,
+  };
+}
+
+function captureEarthBodyLockSurfaceAssistSeed() {
+  const earthVisual = bodyVisuals.get("earth");
+  if (!earthVisual?.root?.visible || !(earthVisual?.renderRadius > 0)) {
+    clearBodyLockSurfaceAssist();
+    return false;
+  }
+  const sinPolar = Math.sin(orbit.polar);
+  const cameraPosition = new THREE_NS.Vector3(
+    orbit.target.x + orbit.radius * sinPolar * Math.sin(orbit.azimuth),
+    orbit.target.y + orbit.radius * Math.cos(orbit.polar),
+    orbit.target.z + orbit.radius * sinPolar * Math.cos(orbit.azimuth),
+  );
+  const earthCenter = earthVisual.root.position;
+  const relWorld = cameraPosition.clone().sub(earthCenter);
+  if (relWorld.lengthSq() < 1e-12) {
+    clearBodyLockSurfaceAssist();
+    return false;
+  }
+
+  const worldQuat = new THREE_NS.Quaternion();
+  earthVisual.spinGroup.getWorldQuaternion(worldQuat);
+  const inverseQuat = worldQuat.clone().invert();
+  const localUnit = relWorld.clone().applyQuaternion(inverseQuat).normalize();
+  const latitudeDeg = (Math.asin(clamp(localUnit.y, -1, 1)) * 180) / Math.PI;
+  const longitudeDeg = (Math.atan2(-localUnit.z, localUnit.x) * 180) / Math.PI;
+
+  const upLocal = latLonToEarthVector(latitudeDeg, longitudeDeg, 1).normalize();
+  const eastLocal = new THREE_NS.Vector3(
+    -Math.sin(rad(longitudeDeg)),
+    0,
+    -Math.cos(rad(longitudeDeg)),
+  ).normalize();
+  let northLocal = new THREE_NS.Vector3().crossVectors(upLocal, eastLocal).normalize();
+  if (northLocal.lengthSq() < 1e-10) {
+    northLocal = new THREE_NS.Vector3(0, 1, 0);
+  }
+
+  const currentForwardWorld = orbit.target.clone().sub(cameraPosition).normalize();
+  const currentForwardLocal = currentForwardWorld.clone().applyQuaternion(inverseQuat).normalize();
+  const vertical = clamp(currentForwardLocal.dot(upLocal), -1, 1);
+  const horizontalForward = currentForwardLocal.clone().sub(upLocal.clone().multiplyScalar(vertical));
+  const headingLocal = horizontalForward.lengthSq() > 1e-12
+    ? horizontalForward.normalize()
+    : eastLocal.clone();
+
+  observation.surfaceYaw = Math.atan2(
+    headingLocal.dot(northLocal),
+    headingLocal.dot(eastLocal),
+  );
+  observation.surfacePitch = clamp(
+    Math.asin(vertical),
+    SURFACE_OBSERVER_PITCH_MIN,
+    SURFACE_OBSERVER_PITCH_MAX,
+  );
+
+  bodyLockSurfaceAssist.active = true;
+  bodyLockSurfaceAssist.bodyId = "earth";
+  bodyLockSurfaceAssist.latitudeDeg = latitudeDeg;
+  bodyLockSurfaceAssist.longitudeDeg = longitudeDeg;
+  return true;
+}
+
 function setSelected(bodyId, moveCamera) {
   const selectionChanged = selectedId !== bodyId;
   selectedId = bodyId;
+  if (bodyId !== "earth") {
+    clearBodyLockSurfaceAssist();
+  }
   if (selectionChanged) {
     gravityArrowFocusBodyId = bodyId;
     gravityArrowsLegendActivated = false;
@@ -10339,61 +10498,15 @@ function resolveSurfaceObserverAnchor(nowMs = Date.now()) {
 }
 
 function resolveSurfaceObserverAnchorOnBody(preset) {
-  const visual = bodyVisuals.get(preset.bodyId);
-  if (!visual || !visual.root.visible) {
-    return null;
-  }
-  const altitudeKm = Math.max(0.02, Number(preset.altitudeKm) || 1) * observation.surfaceAltitudeScale;
-  const altitudeScene = altitudeKm * DISTANCE_SCALE;
-  const radius = Math.max(visual.renderRadius + altitudeScene, visual.renderRadius * 1.0015);
-  const latitudeDeg = Number(preset.latitudeDeg) || 0;
-  const longitudeDeg = Number(preset.longitudeDeg) || 0;
-  const latRad = rad(clamp(latitudeDeg, -90, 90));
-  const lonRad = rad(longitudeDeg);
-
-  const upLocal = latLonToEarthVector(latitudeDeg, longitudeDeg, 1).normalize();
-  const positionLocal = upLocal.clone().multiplyScalar(radius);
-  const eastLocal = new THREE_NS.Vector3(
-    -Math.sin(lonRad),
-    0,
-    -Math.cos(lonRad),
-  ).normalize();
-  const northLocal = new THREE_NS.Vector3(
-    -Math.sin(latRad) * Math.cos(lonRad),
-    Math.cos(latRad),
-    Math.sin(latRad) * Math.sin(lonRad),
-  ).normalize();
-
-  const worldQuat = new THREE_NS.Quaternion();
-  visual.spinGroup.getWorldQuaternion(worldQuat);
-  const upWorld = upLocal.clone().applyQuaternion(worldQuat).normalize();
-  const eastWorld = eastLocal.clone().applyQuaternion(worldQuat).normalize();
-  const northWorld = northLocal.clone().applyQuaternion(worldQuat).normalize();
-
-  const position = positionLocal.clone();
-  visual.spinGroup.localToWorld(position);
-  const cameraPosition = position.clone().addScaledVector(upWorld, Math.max(radius * 0.0024, 0.000005));
-
-  let heading = eastWorld.clone().applyAxisAngle(upWorld, observation.surfaceYaw).normalize();
-  if (heading.lengthSq() < 1e-10) {
-    heading = northWorld.clone();
-  }
-  let right = new THREE_NS.Vector3().crossVectors(heading, upWorld).normalize();
-  if (right.lengthSq() < 1e-10) {
-    right = new THREE_NS.Vector3().crossVectors(northWorld, upWorld).normalize();
-  }
-  const forward = heading.clone().applyAxisAngle(right, observation.surfacePitch).normalize();
-  const lookDistance = Math.max(visual.renderRadius * 9, altitudeScene * 12, 0.035);
-  const target = cameraPosition.clone().addScaledVector(forward, lookDistance);
-
-  return {
-    label: preset.label,
+  return resolveSurfaceAnchorOnBody({
     bodyId: preset.bodyId,
-    altitudeKm,
-    position: cameraPosition,
-    target,
-    up: upWorld,
-  };
+    latitudeDeg: Number(preset.latitudeDeg) || 0,
+    longitudeDeg: Number(preset.longitudeDeg) || 0,
+    altitudeKm: Math.max(0.02, Number(preset.altitudeKm) || 1) * observation.surfaceAltitudeScale,
+    yawRad: observation.surfaceYaw,
+    pitchRad: observation.surfacePitch,
+    label: preset.label,
+  });
 }
 
 function resolveOrbitalObserverAnchor(preset, nowMs) {
@@ -10470,6 +10583,41 @@ function updateCameraFromOrbit() {
       updateObservationStatus(anchor);
       return;
     }
+  }
+
+  if (earthBodyLockSurfaceAssistEnabled()) {
+    if (!bodyLockSurfaceAssist.active || bodyLockSurfaceAssist.bodyId !== "earth") {
+      captureEarthBodyLockSurfaceAssistSeed();
+    }
+    const earthVisual = bodyVisuals.get("earth");
+    if (earthVisual?.renderRadius > 0 && bodyLockSurfaceAssist.active) {
+      const altitudeKm = Math.max(0.02, (orbit.radius - earthVisual.renderRadius) / DISTANCE_SCALE);
+      const anchor = resolveSurfaceAnchorOnBody({
+        bodyId: "earth",
+        latitudeDeg: bodyLockSurfaceAssist.latitudeDeg,
+        longitudeDeg: bodyLockSurfaceAssist.longitudeDeg,
+        altitudeKm,
+        yawRad: observation.surfaceYaw,
+        pitchRad: observation.surfacePitch,
+        label: "Earth Surface Assist",
+      });
+      if (anchor) {
+        const lookDistance = Math.max(anchor.position.distanceTo(anchor.target), 1e-6);
+        const desiredNear = clamp(lookDistance * 0.015, 0.00000002, 0.008);
+        if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
+          camera.near = desiredNear;
+          camera.updateProjectionMatrix();
+        }
+        camera.up.copy(anchor.up);
+        camera.position.copy(anchor.position);
+        camera.lookAt(anchor.target);
+        updateObservationStatus(anchor);
+        return;
+      }
+    }
+  } else if (bodyLockSurfaceAssist.active) {
+    clearBodyLockSurfaceAssist();
+    syncOrbitFromCurrentCamera();
   }
 
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
