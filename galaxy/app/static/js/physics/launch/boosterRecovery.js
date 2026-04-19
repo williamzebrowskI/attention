@@ -1,3 +1,5 @@
+import { resolveBoosterCatchCommand } from "./boosterCatchGuidance.js";
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -131,6 +133,17 @@ export function computeBoosterRecoveryCommand(input = {}) {
       siteVelocityWeight: clamp(0.24 + (0.18 * closingDeficitNorm), 0.16, 0.5),
       touchdownReady: false,
     };
+  }
+
+  const catchCommand = resolveBoosterCatchCommand({
+    altitudeKm,
+    radialSpeedKmS,
+    tangentialSpeedKmS,
+    launchSiteRangeKm,
+    launchSiteLateralRangeKm,
+  });
+  if (catchCommand) {
+    return catchCommand;
   }
 
   // Simple terminal guidance profile: reduce target descent as altitude decreases.

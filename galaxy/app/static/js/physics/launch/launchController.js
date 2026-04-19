@@ -18,6 +18,7 @@ import {
   STANDARD_GRAVITY_M_S2,
 } from "./launchConfig.js";
 import { computeBoosterRecoveryCommand } from "./boosterRecovery.js";
+import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js";
 import {
   DEFAULT_LAUNCH_MISSION_ID,
   LAUNCH_MISSION_IDS,
@@ -664,6 +665,7 @@ function telemetryFromState({
   rocketState,
   atmosphereSample,
   earthPole,
+  windVectorKmS,
   dynamicPressurePaOverride,
   runtime,
 }) {
@@ -679,11 +681,27 @@ function telemetryFromState({
   const orbital = orbitalStateFromRelative(mu, earthRadiusKm, relPos, relVel);
   const apoapsisKm = Number.isFinite(orbital.apoapsisKm) ? orbital.apoapsisKm : null;
   const periapsisKm = Number.isFinite(orbital.periapsisKm) ? orbital.periapsisKm : null;
+  const inertialSpeedKmS = length(rocketState.velocity || { x: 0, y: 0, z: 0 });
+  const groundRelativeVelocityKmS = atmosphereRelativeVelocityKmS(relPos, relVel, earthPole);
+  const airRelativeVelocityKmS = atmosphereRelativeVelocityKmS(
+    relPos,
+    relVel,
+    earthPole,
+    windVectorKmS || null,
+  );
+  const groundRelativeSpeedKmS = length(groundRelativeVelocityKmS);
+  const airRelativeSpeedKmS = length(airRelativeVelocityKmS);
 
   const dynamicPressurePa =
     Number.isFinite(Number(dynamicPressurePaOverride))
       ? Number(dynamicPressurePaOverride)
-      : dynamicPressurePaFromAtmosphere(atmosphereSample, relPos, relVel, earthPole);
+      : dynamicPressurePaFromAtmosphere(
+        atmosphereSample,
+        relPos,
+        relVel,
+        earthPole,
+        windVectorKmS || null,
+      );
   const surfaceSample = runtime.lastSurfaceSample || null;
   const centerAltitudeAboveTerrainKm = Number(surfaceSample?.altitudeAboveTerrainKm);
   const vehicleAltitudeAboveTerrainKm = Number.isFinite(centerAltitudeAboveTerrainKm)
@@ -708,6 +726,10 @@ function telemetryFromState({
     massKg: rocketState.massKg,
     altitudeKm: reportedAltitudeKm,
     speedKmS: orbital.speedKmS,
+    earthRelativeSpeedKmS: orbital.speedKmS,
+    groundRelativeSpeedKmS,
+    airRelativeSpeedKmS,
+    inertialSpeedKmS,
     radialSpeedKmS: orbital.radialSpeedKmS,
     tangentialSpeedKmS: orbital.tangentialSpeedKmS,
     circularSpeedKmS: orbital.circularSpeedKmS,
@@ -793,6 +815,7 @@ function boosterTelemetryFromState({
   boosterState,
   atmosphereSample,
   earthPole,
+  windVectorKmS,
   dynamicPressurePaOverride,
   runtime,
 }) {
@@ -806,10 +829,26 @@ function boosterTelemetryFromState({
   );
   const mu = gravitationalConstantKm3PerKgS2 * earthMassKg;
   const orbital = orbitalStateFromRelative(mu, earthRadiusKm, relPos, relVel);
+  const inertialSpeedKmS = length(boosterState.velocity || { x: 0, y: 0, z: 0 });
+  const groundRelativeVelocityKmS = atmosphereRelativeVelocityKmS(relPos, relVel, earthPole);
+  const airRelativeVelocityKmS = atmosphereRelativeVelocityKmS(
+    relPos,
+    relVel,
+    earthPole,
+    windVectorKmS || null,
+  );
+  const groundRelativeSpeedKmS = length(groundRelativeVelocityKmS);
+  const airRelativeSpeedKmS = length(airRelativeVelocityKmS);
   const dynamicPressurePa =
     Number.isFinite(Number(dynamicPressurePaOverride))
       ? Number(dynamicPressurePaOverride)
-      : dynamicPressurePaFromAtmosphere(atmosphereSample, relPos, relVel, earthPole);
+      : dynamicPressurePaFromAtmosphere(
+        atmosphereSample,
+        relPos,
+        relVel,
+        earthPole,
+        windVectorKmS || null,
+      );
   const pressurePa = Math.max(0, Number(atmosphereSample?.pressurePa) || 0);
   const densityKgM3 = Math.max(0, Number(atmosphereSample?.densityKgM3) || 0);
   const surfaceSample = runtime.booster.lastSurfaceSample || null;
@@ -831,6 +870,10 @@ function boosterTelemetryFromState({
       : null,
     altitudeKm: reportedAltitudeKm,
     speedKmS: orbital.speedKmS,
+    earthRelativeSpeedKmS: orbital.speedKmS,
+    groundRelativeSpeedKmS,
+    airRelativeSpeedKmS,
+    inertialSpeedKmS,
     radialSpeedKmS: orbital.radialSpeedKmS,
     tangentialSpeedKmS: orbital.tangentialSpeedKmS,
     pressurePa,
@@ -1651,6 +1694,11 @@ export function createLaunchController(options) {
       MIN_ROCKET_MASS_KG,
       Number(rocketState?.massKg) || MIN_ROCKET_MASS_KG,
     );
+    const stagePropellantKg = Math.max(0, Number(runtime.stagePropellantKg) || 0);
+    const stageDryMassKg = Math.max(
+      1,
+      Number(activeStage?.dryMassKg) || Math.max(1, stageMassKg - stagePropellantKg),
+    );
     const engineAccelAtThrottle1KmS2 = (
       Number(activeStage?.thrustVacuumN) > 0
       && stageMassKg > 0
@@ -1677,6 +1725,18 @@ export function createLaunchController(options) {
         moonCircularSpeedKmS,
         moonProjectedMissDistanceKm,
         stageMassKg,
+        stagePropellantKg,
+        stageDryMassKg,
+        stageThrustVacuumN: Math.max(0, Number(activeStage?.thrustVacuumN) || 0),
+        stageThrustSeaLevelN: Math.max(
+          0,
+          Number(activeStage?.thrustSeaLevelN) || Number(activeStage?.thrustVacuumN) || 0,
+        ),
+        stageIspVacuumS: Math.max(0, Number(activeStage?.ispVacuumS) || 0),
+        stageIspSeaLevelS: Math.max(
+          0,
+          Number(activeStage?.ispSeaLevelS) || Number(activeStage?.ispVacuumS) || 0,
+        ),
         engineAccelAtThrottle1KmS2,
         bodyId: String(rocketState?.id || "primary_launch_vehicle"),
         refuelFillFraction,
@@ -2386,6 +2446,9 @@ export function createLaunchController(options) {
       0,
       Number(stage2?.thrustVacuumN) || Number(stage2?.thrustSeaLevelN) || 0,
     );
+    const stage2ThrustSeaLevelN = Math.max(0, Number(stage2?.thrustSeaLevelN) || stage2ThrustVacuumN);
+    const stage2IspVacuumS = Math.max(1, Number(stage2?.ispVacuumS) || 360);
+    const stage2IspSeaLevelS = Math.max(1, Number(stage2?.ispSeaLevelS) || stage2IspVacuumS);
     const spacecraftMassKg = stage2DryMassKg + orbitInjectStagePropellantKg;
     const engineAccelAtThrottle1KmS2 = (
       stage2ThrustVacuumN > 0
@@ -2424,6 +2487,19 @@ export function createLaunchController(options) {
       earthMuKm3S2,
       engineAccelAtThrottle1KmS2,
       spacecraftMassKg,
+      spacecraft: {
+        bodyId: "moon_orbit_inject_launch_stage2",
+        massKg: spacecraftMassKg,
+        dryMassKg: stage2DryMassKg,
+        propellantMassKg: orbitInjectStagePropellantKg,
+        thrustVacuumN: stage2ThrustVacuumN,
+        thrustSeaLevelN: stage2ThrustSeaLevelN,
+        ispVacuumS: stage2IspVacuumS,
+        ispSeaLevelS: stage2IspSeaLevelS,
+        ambientPressurePa: 0,
+        radiusKm: 0.0045,
+        reflectivityCoeff: 1.45,
+      },
       nodeSamples,
       searchProfile,
     };
@@ -2450,6 +2526,12 @@ export function createLaunchController(options) {
       quantizeSolveValue(payload.earthMuKm3S2, 1e-6),
       quantizeSolveValue(payload.engineAccelAtThrottle1KmS2, 1e6),
       quantizeSolveValue(payload.spacecraftMassKg, 1e-2),
+      quantizeSolveValue(payload.spacecraft?.dryMassKg, 1e-2),
+      quantizeSolveValue(payload.spacecraft?.propellantMassKg, 1e-2),
+      quantizeSolveValue(payload.spacecraft?.thrustVacuumN, 1e-4),
+      quantizeSolveValue(payload.spacecraft?.thrustSeaLevelN, 1e-4),
+      quantizeSolveValue(payload.spacecraft?.ispVacuumS, 1e2),
+      quantizeSolveValue(payload.spacecraft?.ispSeaLevelS, 1e2),
       String(payload.searchProfile || ""),
       quantizeSolveValue(payload.nodeSamples, 1),
       quantizeSolveValue(earthState?.position?.x, 1e-3),
@@ -3308,11 +3390,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
     const environmentSample = launchEnvironmentSample(relPos, currentEarthAxes, earthRadiusKm, nowMs);
     const atmosphereSample = environmentSample.atmosphereSample;
+    const windSample = environmentSample.windSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPos,
       relVel,
       currentEarthAxes.pole,
+      windSample?.vectorKmS || null,
     );
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
@@ -3322,6 +3406,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rocketState,
       atmosphereSample,
       earthPole: currentEarthAxes.pole,
+      windVectorKmS: windSample?.vectorKmS || null,
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
@@ -3402,11 +3487,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       nowMs,
     );
     const atmosphereSample = environmentSample.atmosphereSample;
+    const windSample = environmentSample.windSample;
     const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
       atmosphereSample,
       relPos,
       relVel,
       currentEarthAxes.pole,
+      windSample?.vectorKmS || null,
     );
     runtime.lastTelemetry = telemetryFromState({
       gravitationalConstantKm3PerKgS2,
@@ -3416,6 +3503,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rocketState,
       atmosphereSample,
       earthPole: currentEarthAxes.pole,
+      windVectorKmS: windSample?.vectorKmS || null,
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
@@ -3863,6 +3951,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterState,
       atmosphereSample,
       earthPole: currentEarthAxes.pole,
+      windVectorKmS: windSample.vectorKmS,
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
@@ -3936,6 +4025,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
     const speedKmS = length(relVelNow);
+    const upNow = normalize(relPosNow, currentEarthAxes.pole);
+    const radialSpeedKmS = dot(relVelNow, upNow);
     const altitudeKm = Math.max(0, length(relPosNow) - earthRadiusKm);
     const terrainAltKm = Number(runtime.booster.lastSurfaceSample?.altitudeAboveTerrainKm);
     const centerAboveTerrainKm = Number.isFinite(terrainAltKm) ? terrainAltKm : altitudeKm;
@@ -3995,6 +4086,24 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       normalize(scale(relVelNow, -1), currentEarthAxes.pole),
     );
     const launchSiteLateralClosingSpeedKmS = dot(scale(relVelocityToPad, -1), launchSiteLateralDirection);
+    const catchFinalized = shouldFinalizeBoosterCatch({
+      guidanceMode: runtime.booster.guidanceMode,
+      launchSiteLateralRangeKm,
+      bodyAboveTerrainKm,
+      speedKmS,
+      radialSpeedKmS,
+    });
+    if (catchFinalized) {
+      if (padState) {
+        boosterState.position = { ...padState.position };
+        boosterState.velocity = { ...padVelocity };
+      }
+      runtime.booster.landed = true;
+      runtime.booster.phase = "caught";
+      runtime.booster.guidanceMode = "booster-caught";
+      runtime.booster.lastStep = zeroBoosterStep("booster-caught");
+      runtime.booster.active = false;
+    }
     runtime.booster.telemetry = boosterTelemetryFromState({
       gravitationalConstantKm3PerKgS2,
       earthMassKg: Number(getEarthMassKg?.()) || 0,
@@ -4003,6 +4112,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterState,
       atmosphereSample,
       earthPole: currentEarthAxes.pole,
+      windVectorKmS: windSample.vectorKmS,
       dynamicPressurePaOverride: dynamicPressurePa,
       runtime,
     });
@@ -4124,6 +4234,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           rocketState,
           atmosphereSample: atmo,
           earthPole: currentEarthAxes.pole,
+          windVectorKmS: windSample.vectorKmS,
           dynamicPressurePaOverride: runtime.lastStep?.dynamicPressurePa ?? dynamicPressurePa,
           runtime,
         });
@@ -4754,6 +4865,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             rocketState,
             atmosphereSample,
             earthPole: currentEarthAxes.pole,
+            windVectorKmS: windSample.vectorKmS,
             dynamicPressurePaOverride: dynamicPressurePa,
             runtime,
           });
@@ -5002,6 +5114,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         rocketState,
         atmosphereSample,
         earthPole: currentEarthAxes.pole,
+        windVectorKmS: windSample.vectorKmS,
         dynamicPressurePaOverride: dynamicPressurePa,
         runtime,
       });
@@ -5148,6 +5261,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           : null,
         boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
         boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
+        boosterEarthRelativeSpeedKmS: Number(runtime.booster.telemetry?.earthRelativeSpeedKmS) || null,
+        boosterGroundRelativeSpeedKmS: Number(runtime.booster.telemetry?.groundRelativeSpeedKmS) || null,
+        boosterAirRelativeSpeedKmS: Number(runtime.booster.telemetry?.airRelativeSpeedKmS) || null,
+        boosterInertialSpeedKmS: Number(runtime.booster.telemetry?.inertialSpeedKmS) || null,
         boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
           ? Number(runtime.booster.telemetry?.altitudeAboveTerrainKm)
           : null,
@@ -5201,6 +5318,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massKg: telemetry.massKg,
       altitudeKm: telemetry.altitudeKm,
       speedKmS: telemetry.speedKmS,
+      earthRelativeSpeedKmS: telemetry.earthRelativeSpeedKmS,
+      groundRelativeSpeedKmS: telemetry.groundRelativeSpeedKmS,
+      airRelativeSpeedKmS: telemetry.airRelativeSpeedKmS,
+      inertialSpeedKmS: telemetry.inertialSpeedKmS,
       apoapsisKm: telemetry.apoapsisKm,
       periapsisKm: telemetry.periapsisKm,
       throttle: telemetry.throttle,
@@ -5323,6 +5444,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterControlAuthorityScale: Number(runtime.booster.telemetry?.controlAuthorityScale) || 0,
       boosterAltitudeKm: Number(runtime.booster.telemetry?.altitudeKm) || null,
       boosterSpeedKmS: Number(runtime.booster.telemetry?.speedKmS) || null,
+      boosterEarthRelativeSpeedKmS: Number(runtime.booster.telemetry?.earthRelativeSpeedKmS) || null,
+      boosterGroundRelativeSpeedKmS: Number(runtime.booster.telemetry?.groundRelativeSpeedKmS) || null,
+      boosterAirRelativeSpeedKmS: Number(runtime.booster.telemetry?.airRelativeSpeedKmS) || null,
+      boosterInertialSpeedKmS: Number(runtime.booster.telemetry?.inertialSpeedKmS) || null,
       boosterAltitudeAboveTerrainKm: Number.isFinite(Number(runtime.booster.telemetry?.altitudeAboveTerrainKm))
         ? Number(runtime.booster.telemetry?.altitudeAboveTerrainKm)
         : null,

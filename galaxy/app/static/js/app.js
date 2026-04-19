@@ -51,12 +51,16 @@ import {
   estimateEarthOrientationParameters,
   setEarthOrientationRuntimeProvider,
 } from "./physics/dynamics/earthOrientationModel.js";
+import { earthConventionalGravityModel } from "./physics/dynamics/earthGravityModel.js";
 import {
   OBLATE_GRAVITY_ENABLED,
   OBLATE_GRAVITY_MODEL,
 } from "./physics/config/oblatenessConfig.js";
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
-import { setLaunchSite as setRuntimeLaunchSite } from "./physics/launch/launchConfig.js";
+import {
+  LAUNCH_SITE as RUNTIME_LAUNCH_SITE,
+  setLaunchSite as setRuntimeLaunchSite,
+} from "./physics/launch/launchConfig.js";
 import {
   applyInlineBoosterFuelVisuals,
   INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM,
@@ -66,13 +70,17 @@ import {
   createInlineStarshipStackVisual,
   inlineStarshipPhysicalRenderRadiusScene,
 } from "./physics/launch/starshipInlineVisual.js";
+import {
+  createLaunchSiteStructureVisual,
+  updateLaunchSiteStructureVisual,
+} from "./physics/launch/launchSiteStructures.js";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
 } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260418a";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419a";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -245,7 +253,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260418a";
+const FRONTEND_MODULE_VERSION = "20260419a";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -1195,6 +1203,7 @@ let legendVehicleViewButtonsByKey = {
   booster: null,
 };
 let legendLaunchMissionSelect = null;
+let stagedLaunchMissionId = "";
 let legendMissionLaunchModeSelect = null;
 let legendTankerLaunchModeSelect = null;
 let legendFleetVehicleSelect = null;
@@ -1213,6 +1222,7 @@ let textureCache = new Map();
 let photorealRetryCount = new Map();
 let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
+let launchSiteStructureVisual = null;
 let illuminationById = new Map();
 let gravityById = new Map();
 let nBodyState = null;
@@ -1777,7 +1787,7 @@ async function init() {
   registerLaunchLogDebugHandles();
   await loadRuntimeConfig();
   setupSpaceWeatherProvider();
-  setupEarthEopProvider();
+  await setupEarthEopProvider();
   if (launchFeatureEnabled) {
     try {
       await loadLaunchFeatureModules();
@@ -1816,20 +1826,21 @@ function setupSpaceWeatherProvider() {
   spaceWeatherProvider.start();
 }
 
-function setupEarthEopProvider() {
+async function setupEarthEopProvider() {
   if (earthEopProvider) {
-    return;
+    return earthEopProvider;
   }
   earthEopProvider = createEarthEopProvider({
     refreshIntervalMs: EARTH_EOP_REFRESH_INTERVAL_MS,
     onError: (error) => {
-      console.warn("[earth-eop] Using fallback orientation model:", error);
+      console.warn("[earth-eop] Refresh failed; using cached or analytic Earth orientation fallback:", error);
     },
   });
   setEarthOrientationRuntimeProvider((timestampMs) => (
     earthEopProvider?.sampleOrientation?.(timestampMs) || null
   ));
-  earthEopProvider.start();
+  await earthEopProvider.refresh();
+  return earthEopProvider;
 }
 
 function currentSpaceWeatherSnapshot() {
@@ -1909,6 +1920,7 @@ function sampleEarthAtmosphereRuntime(altitudeKm, context = {}) {
     latitudeDeg: Number.isFinite(latitudeDeg) ? latitudeDeg : 0,
     longitudeDeg: Number.isFinite(longitudeDeg) ? longitudeDeg : 0,
     f107: Number(snapshot?.f107) || 150,
+    f107a: Number(snapshot?.f107a) || Number(snapshot?.f107) || 150,
     kp: Number(snapshot?.kp) || 3,
     kpHistory: Array.isArray(snapshot?.kpHistory) ? snapshot.kpHistory : [],
   };
@@ -2034,6 +2046,139 @@ async function loadLaunchFeatureModules() {
   if (!createLaunchControllerFn) {
     throw new Error("launchController export missing.");
   }
+}
+
+function initializeLaunchController() {
+  if (!launchFeatureEnabled || !createLaunchControllerFn) {
+    launchController = null;
+    return null;
+  }
+  launchController = createLaunchControllerFn({
+    getEarthRadiusKm: () => bodyRadiusKmById("earth"),
+    getEarthMassKg: () => bodyMassKgById("earth"),
+    getBodyRadiusKm: (bodyId) => bodyRadiusKmById(bodyId),
+    getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
+    getEarthFixedAxesEcliptic: (timestampMs) => {
+      const pole = sourcePoleUnitVectorEclipticForBody("earth", timestampMs);
+      const fixedAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, timestampMs);
+      return {
+        xAxis: fixedAxes?.xAxis || { x: 1, y: 0, z: 0 },
+        yAxis: fixedAxes?.yAxis || { x: 0, y: 1, z: 0 },
+        pole: fixedAxes?.pole || pole || { x: 0, y: 0, z: 1 },
+        earthOrientation: fixedAxes?.earthOrientation || null,
+      };
+    },
+    sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
+    gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+    onEvent: (event) => {
+      appendLaunchLogEntry("info", event);
+    },
+    onError: (event) => {
+      appendLaunchLogEntry("error", event);
+    },
+  });
+  if (stagedLaunchMissionId) {
+    const applied = launchController.setMissionProfile?.(stagedLaunchMissionId);
+    stagedLaunchMissionId = String(applied?.id || stagedLaunchMissionId).trim();
+  }
+  return launchController;
+}
+
+async function synchronizeLaunchRuntimeArtifacts(nowMs = Date.now()) {
+  if (!launchFeatureEnabled || !launchController) {
+    return;
+  }
+
+  if (Array.isArray(bodies) && bodies.length > 0 && typeof launchController.ensureCatalogBodies === "function") {
+    const mergedCatalog = launchController.ensureCatalogBodies(bodies) || bodies;
+    for (const bodyId of [LAUNCH_BODY_ID, LAUNCH_BOOSTER_BODY_ID]) {
+      const bodyMeta = mergedCatalog.find((body) => String(body?.id || "") === String(bodyId || ""));
+      if (!bodyMeta) {
+        continue;
+      }
+      await ensureRuntimeCatalogBody(bodyMeta);
+    }
+  }
+
+  if (positionsById?.size > 0 && !positionsById.has(LAUNCH_BODY_ID)) {
+    const entriesById = new Map(positionsById);
+    launchController.injectStartupEntry?.(entriesById, nowMs);
+    if (entriesById.has(LAUNCH_BODY_ID)) {
+      positionsById = entriesById;
+    }
+  }
+
+  if (nBodyState?.initialized) {
+    launchController.ensureRocketInNBody?.(nBodyState, nowMs);
+    launchController.resetToPad?.(nBodyState, nowMs, { clearFleetVehicles: true });
+    runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
+    applyScenePositions(runtimeCoordsKmById);
+  }
+}
+
+function launchAvailabilityReason() {
+  if (!launchFeatureEnabled) {
+    return "Launch feature disabled by runtime configuration.";
+  }
+  if (launchModuleLoadError) {
+    return `Launch module load error: ${launchModuleLoadError}`;
+  }
+  if (!launchController) {
+    return "Launch controller unavailable.";
+  }
+  if (!nBodyState?.initialized) {
+    return "Launch unavailable until startup seed is ready.";
+  }
+  return "";
+}
+
+async function ensureLaunchRuntimeReady() {
+  if (!launchFeatureEnabled) {
+    return {
+      ready: false,
+      reason: launchAvailabilityReason(),
+    };
+  }
+
+  if (!createLaunchControllerFn || launchModuleLoadError) {
+    try {
+      await loadLaunchFeatureModules();
+      launchModuleLoadError = "";
+    } catch (error) {
+      launchModuleLoadError = error instanceof Error ? error.message : String(error || "Unknown launch module load error");
+      return {
+        ready: false,
+        reason: launchAvailabilityReason(),
+      };
+    }
+  }
+
+  if (!launchController && createLaunchControllerFn) {
+    initializeLaunchController();
+  }
+
+  if (!nBodyState?.initialized) {
+    if (positionsById?.size > 0 && Array.isArray(bodies) && bodies.length > 0) {
+      initializeNBodyFromSnapshot(Date.now());
+    }
+    if (!nBodyState?.initialized) {
+      try {
+        await loadSnapshot();
+      } catch (error) {
+        return {
+          ready: false,
+          reason: `Launch unavailable until startup seed is ready. ${error instanceof Error ? error.message : String(error || "Snapshot load failed.")}`,
+        };
+      }
+    }
+  }
+
+  await synchronizeLaunchRuntimeArtifacts(Date.now());
+  updateLaunchControls();
+  return {
+    ready: Boolean(launchController && nBodyState?.initialized),
+    reason: launchAvailabilityReason(),
+  };
 }
 
 function setupRigidBodyAttitudeModel() {
@@ -2239,34 +2384,7 @@ function setupScene(THREE) {
     },
     sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
   });
-  if (launchFeatureEnabled && createLaunchControllerFn) {
-    launchController = createLaunchControllerFn({
-      getEarthRadiusKm: () => bodyRadiusKmById("earth"),
-      getEarthMassKg: () => bodyMassKgById("earth"),
-      getBodyRadiusKm: (bodyId) => bodyRadiusKmById(bodyId),
-      getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
-      getEarthFixedAxesEcliptic: (timestampMs) => {
-        const pole = sourcePoleUnitVectorEclipticForBody("earth", timestampMs);
-        const fixedAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, timestampMs);
-        return {
-          xAxis: fixedAxes?.xAxis || { x: 1, y: 0, z: 0 },
-          yAxis: fixedAxes?.yAxis || { x: 0, y: 1, z: 0 },
-          pole: fixedAxes?.pole || pole || { x: 0, y: 0, z: 1 },
-          earthOrientation: fixedAxes?.earthOrientation || null,
-        };
-      },
-      sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
-      gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
-      onEvent: (event) => {
-        appendLaunchLogEntry("info", event);
-      },
-      onError: (event) => {
-        appendLaunchLogEntry("error", event);
-      },
-    });
-  } else {
-    launchController = null;
-  }
+  initializeLaunchController();
 
   canvas.addEventListener("pointerdown", onPointerDown);
   canvas.addEventListener("pointermove", onPointerMove);
@@ -2334,6 +2452,10 @@ async function loadSnapshot() {
 
 async function rebuildMeshes() {
   clearEarthAtmosphereVisuals();
+  if (launchSiteStructureVisual?.root?.parent) {
+    launchSiteStructureVisual.root.parent.remove(launchSiteStructureVisual.root);
+  }
+  launchSiteStructureVisual = null;
   for (const visual of bodyVisuals.values()) {
     disposeBodyVisual(visual);
   }
@@ -2632,6 +2754,10 @@ function rebuildBodyLegend() {
     fragment.appendChild(orphanGroup.root);
   }
 
+  if (launchFeatureEnabled) {
+    fragment.appendChild(createLegendVehicleViewPanel());
+  }
+
   const spacecraftBodies = bodies
     .filter((body) => (
       body.body_type === "spacecraft"
@@ -2796,11 +2922,6 @@ function createLegendEntry(body, isMoon, options = {}) {
     const panel = createLegendGravityPanel(body, isMoon);
     entry.appendChild(panel);
     legendGravityPanelsById.set(body.id, panel);
-  }
-
-  if (body.id === LAUNCH_BODY_ID) {
-    const panel = createLegendVehicleViewPanel();
-    entry.appendChild(panel);
   }
 
   if (body.id === "earth" && physicsPanel) {
@@ -3445,7 +3566,9 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
         ? `${formatNumber(snapshot.altitudeAboveTerrainKm, 3)} km`
         : "n/a",
     },
-    { label: "Speed", value: Number.isFinite(Number(snapshot.speedKmS)) ? `${formatNumber(snapshot.speedKmS, 4)} km/s` : "n/a" },
+    { label: "Earth-rel V", value: formatLaunchSpeedValue(snapshot.earthRelativeSpeedKmS ?? snapshot.speedKmS, 4) },
+    { label: "Ground V", value: formatLaunchSpeedValue(snapshot.groundRelativeSpeedKmS, 4) },
+    { label: "Air V", value: formatLaunchSpeedValue(snapshot.airRelativeSpeedKmS, 4) },
     { label: "Mass", value: Number.isFinite(Number(snapshot.massKg)) ? `${formatNumber(snapshot.massKg, 0)} kg` : "n/a" },
   ];
 
@@ -3491,7 +3614,8 @@ function updateLaunchMissionControlPanel(snapshot, launchActive) {
     { label: "Booster Phase", value: snapshot.boosterPhase || "n/a" },
     { label: "Booster Guidance", value: snapshot.boosterGuidanceMode || "n/a" },
     { label: "Booster Alt", value: Number.isFinite(Number(snapshot.boosterAltitudeKm)) ? `${formatNumber(snapshot.boosterAltitudeKm, 3)} km` : "n/a" },
-    { label: "Booster Speed", value: Number.isFinite(Number(snapshot.boosterSpeedKmS)) ? `${formatNumber(snapshot.boosterSpeedKmS, 4)} km/s` : "n/a" },
+    { label: "Booster Earth V", value: formatLaunchSpeedValue(snapshot.boosterEarthRelativeSpeedKmS ?? snapshot.boosterSpeedKmS, 4) },
+    { label: "Booster Ground V", value: formatLaunchSpeedValue(snapshot.boosterGroundRelativeSpeedKmS, 4) },
     { label: "Booster Thrust", value: Number.isFinite(Number(snapshot.boosterThrustN)) ? `${formatNumber(Number(snapshot.boosterThrustN) / 1_000_000, 3)} MN` : "n/a" },
     { label: "Booster Throttle", value: Number.isFinite(Number(snapshot.boosterThrottle)) ? `${formatNumber(Number(snapshot.boosterThrottle) * 100, 1)}%` : "n/a" },
     { label: "Booster Fuel", value: Number.isFinite(Number(snapshot.boosterPropellantKg)) ? `${formatNumber(snapshot.boosterPropellantKg, 0)} kg` : "n/a" },
@@ -3827,7 +3951,7 @@ function updatePhysicsOverlayControls() {
   if (physicsOverlayStatusNode) {
     const tidalStatus = physicsOverlayState.tidal ? "On (Earth/Moon)" : "Off";
     const lagrangeStatus = physicsOverlayState.lagrange ? "On (Sun-Earth + Earth-Moon)" : "Off";
-    const atmosphereStatus = physicsOverlayState.atmosphere ? "On (Earth scattering)" : "Off";
+    const atmosphereStatus = physicsOverlayState.atmosphere ? "On (Earth layers + scattering)" : "Off";
     physicsOverlayStatusNode.textContent = `Tidal: ${tidalStatus} | Lagrange: ${lagrangeStatus} | Atmosphere: ${atmosphereStatus}`;
   }
 }
@@ -3871,6 +3995,10 @@ function activeSelectedMissionId() {
   if (selected) {
     return selected;
   }
+  const staged = String(stagedLaunchMissionId || "").trim();
+  if (staged) {
+    return staged;
+  }
   return String(launchController?.getMissionProfile?.()?.id || "").trim();
 }
 
@@ -3883,8 +4011,22 @@ function applyLaunchMissionSelection(selectedMissionId) {
   const profiles = buildLaunchMissionProfileCatalog();
   const selectedProfile = profiles.find((profile) => profile.id === selected) || null;
   const selectedName = String(selectedProfile?.name || selected || "Mission").trim() || "Mission";
+  stagedLaunchMissionId = selected;
   if (legendLaunchMissionSelect && legendLaunchMissionSelect.value !== selected) {
     legendLaunchMissionSelect.value = selected;
+  }
+  if (!launchController) {
+    updateLaunchStatusPanel(
+      true,
+      `Mission staged: ${selectedName}. Launch controller is still initializing.`,
+    );
+    warmSelectedMissionLaunchSolve();
+    return {
+      accepted: true,
+      staged: true,
+      id: selected,
+      name: selectedName,
+    };
   }
   if (active) {
     appendLaunchLogEntry("info", {
@@ -3908,6 +4050,7 @@ function applyLaunchMissionSelection(selectedMissionId) {
     if (legendLaunchMissionSelect && applied?.id) {
       legendLaunchMissionSelect.value = String(applied.id);
     }
+    stagedLaunchMissionId = String(applied?.id || stagedLaunchMissionId || selected).trim();
     appendLaunchLogEntry("error", {
       name: "mission_selection_rejected",
       selectedMissionId: selected,
@@ -3920,6 +4063,7 @@ function applyLaunchMissionSelection(selectedMissionId) {
       name: String(applied?.name || ""),
     };
   }
+  stagedLaunchMissionId = String(applied.id || selected).trim();
   appendLaunchLogEntry("info", {
     name: "mission_selection_changed",
     selectedMissionId: applied.id,
@@ -3995,7 +4139,12 @@ function setupLaunchMissionPicker() {
   }
   const profiles = buildLaunchMissionProfileCatalog();
   const selectedProfile = launchController?.getMissionProfile?.() || null;
-  const selectedId = selectedProfile?.id || "";
+  const selectedId = String(
+    stagedLaunchMissionId
+      || legendLaunchMissionSelect.value
+      || selectedProfile?.id
+      || "",
+  ).trim();
 
   legendLaunchMissionSelect.innerHTML = "";
   for (const profile of profiles) {
@@ -4010,10 +4159,13 @@ function setupLaunchMissionPicker() {
   } else if (profiles.length > 0) {
     legendLaunchMissionSelect.value = profiles[0].id;
   }
+  stagedLaunchMissionId = String(legendLaunchMissionSelect.value || stagedLaunchMissionId || "").trim();
   legendLaunchMissionSelect.disabled = profiles.length <= 0;
 
   if (legendLaunchMissionSelect.dataset.bound !== "true") {
-    legendLaunchMissionSelect.addEventListener("change", () => {
+    legendLaunchMissionSelect.addEventListener("change", async () => {
+      stagedLaunchMissionId = String(legendLaunchMissionSelect.value || stagedLaunchMissionId || "").trim();
+      await ensureLaunchRuntimeReady();
       applyLaunchMissionSelection(legendLaunchMissionSelect.value);
     });
     legendLaunchMissionSelect.dataset.bound = "true";
@@ -4745,20 +4897,13 @@ function setupLaunchControls() {
   warmSelectedMissionLaunchSolve();
   if (launchControlButton) {
     launchControlButton.addEventListener("click", async () => {
-      if (launchModuleLoadError) {
+      const launchRuntimeReady = await ensureLaunchRuntimeReady();
+      if (!launchRuntimeReady.ready) {
         appendLaunchLogEntry("error", {
           name: "launch_command_rejected",
-          reason: launchModuleLoadError,
+          reason: String(launchRuntimeReady.reason || "launch_runtime_unavailable"),
         });
-        updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
-        return;
-      }
-      if (!launchController || !nBodyState?.initialized) {
-        appendLaunchLogEntry("error", {
-          name: "launch_command_rejected",
-          reason: "startup_seed_not_ready",
-        });
-        updateLaunchStatusPanel(true, "Launch unavailable until startup seed is ready.");
+        updateLaunchStatusPanel(true, launchRuntimeReady.reason || "Launch unavailable.");
         return;
       }
       const selectedMissionId = legendLaunchMissionSelect?.value
@@ -4905,21 +5050,14 @@ function setupLaunchControls() {
     });
   }
   if (launchResetButton) {
-    launchResetButton.addEventListener("click", () => {
-      if (launchModuleLoadError) {
+    launchResetButton.addEventListener("click", async () => {
+      const launchRuntimeReady = await ensureLaunchRuntimeReady();
+      if (!launchRuntimeReady.ready) {
         appendLaunchLogEntry("error", {
           name: "launch_reset_rejected",
-          reason: launchModuleLoadError,
+          reason: String(launchRuntimeReady.reason || "launch_runtime_unavailable"),
         });
-        updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
-        return;
-      }
-      if (!launchController || !nBodyState?.initialized) {
-        appendLaunchLogEntry("error", {
-          name: "launch_reset_rejected",
-          reason: "startup_seed_not_ready",
-        });
-        updateLaunchStatusPanel(true, "Reset unavailable until startup seed is ready.");
+        updateLaunchStatusPanel(true, launchRuntimeReady.reason || "Reset unavailable.");
         return;
       }
       launchController.resetToPad(nBodyState, Date.now(), { clearFleetVehicles: true });
@@ -4938,20 +5076,13 @@ function setupLaunchControls() {
   launchVehicleDeleteController.bindControls();
   if (launchTankerButton && launchTankerButton.dataset.bound !== "true") {
     launchTankerButton.addEventListener("click", async () => {
-      if (launchModuleLoadError) {
+      const launchRuntimeReady = await ensureLaunchRuntimeReady();
+      if (!launchRuntimeReady.ready) {
         appendLaunchLogEntry("error", {
           name: "refuel_tanker_launch_rejected",
-          reason: launchModuleLoadError,
+          reason: String(launchRuntimeReady.reason || "launch_runtime_unavailable"),
         });
-        updateLaunchStatusPanel(true, `Launch module load error: ${launchModuleLoadError}`);
-        return;
-      }
-      if (!launchController || !nBodyState?.initialized) {
-        appendLaunchLogEntry("error", {
-          name: "refuel_tanker_launch_rejected",
-          reason: "startup_seed_not_ready",
-        });
-        updateLaunchStatusPanel(true, "Tanker launch unavailable until startup seed is ready.");
+        updateLaunchStatusPanel(true, launchRuntimeReady.reason || "Tanker launch unavailable.");
         return;
       }
       const tankerLaunchMode = selectedTankerLaunchMode();
@@ -5023,11 +5154,13 @@ function updateLaunchControls() {
     return;
   }
   const initialized = Boolean(launchController && nBodyState?.initialized);
+  const availabilityReason = launchAvailabilityReason();
   const active = Boolean(launchController?.isActive());
   launchControlButton.textContent = active ? "Launch +1 Stack" : "Launch";
-  launchControlButton.disabled = !initialized || Boolean(launchModuleLoadError);
+  launchControlButton.disabled = false;
   launchControlButton.classList.toggle("on", active);
   launchControlButton.setAttribute("aria-pressed", active ? "true" : "false");
+  launchControlButton.title = availabilityReason || "Launch primary vehicle";
   if (launchReturnButton) {
     const launchVisible = Boolean(bodyVisuals.get(LAUNCH_BODY_ID)?.root?.visible);
     const launchSelectable = launchVisible && metaById.has(LAUNCH_BODY_ID);
@@ -5039,31 +5172,31 @@ function updateLaunchControls() {
     launchReturnButton.setAttribute("aria-pressed", isTracking ? "true" : "false");
   }
   if (launchResetButton) {
-    launchResetButton.disabled = !launchController;
+    launchResetButton.disabled = false;
     launchResetButton.classList.toggle("on", !active && initialized);
     launchResetButton.setAttribute("aria-pressed", !active && initialized ? "true" : "false");
+    launchResetButton.title = availabilityReason || "Reset launch stack to pad";
   }
   launchVehicleDeleteController.syncButtonState({ initialized });
   if (launchTankerButton) {
-    const canLaunchTanker = Boolean(
-      launchController
-      && initialized
-      && !launchModuleLoadError,
-    );
-    launchTankerButton.disabled = !canLaunchTanker;
+    const canLaunchTanker = Boolean(launchController && initialized && !launchModuleLoadError);
+    launchTankerButton.disabled = false;
     launchTankerButton.classList.toggle("on", canLaunchTanker);
     launchTankerButton.setAttribute("aria-pressed", canLaunchTanker ? "true" : "false");
+    launchTankerButton.title = availabilityReason || "Launch refuel tanker";
     if (legendTankerLaunchModeSelect) {
-      legendTankerLaunchModeSelect.disabled = !canLaunchTanker;
+      legendTankerLaunchModeSelect.disabled = false;
     }
   }
   missionControlScreenController.syncButtonState();
   if (legendLaunchMissionSelect) {
-    const selectedMissionId = launchController?.getMissionProfile?.()?.id || "";
-    if (!active && selectedMissionId && legendLaunchMissionSelect.value !== selectedMissionId) {
-      legendLaunchMissionSelect.value = selectedMissionId;
+    const selectedMissionId = String(launchController?.getMissionProfile?.()?.id || "").trim();
+    const desiredMissionId = String(stagedLaunchMissionId || selectedMissionId || "").trim();
+    if (!active && desiredMissionId && legendLaunchMissionSelect.value !== desiredMissionId) {
+      legendLaunchMissionSelect.value = desiredMissionId;
     }
-    legendLaunchMissionSelect.disabled = !launchController || legendLaunchMissionSelect.options.length <= 0;
+    legendLaunchMissionSelect.disabled = legendLaunchMissionSelect.options.length <= 0;
+    legendLaunchMissionSelect.title = availabilityReason || "Select launch mission";
   }
   updateLegendVehicleViewButtons();
 }
@@ -5079,6 +5212,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   renderMoonOrbitInjectDebugState();
   const nowMs = Date.now();
   const launchActive = Boolean(launchController?.isActive());
+  const availabilityReason = launchAvailabilityReason();
   const viewState = missionControlVehicleViewState();
   const fleetEntries = missionControlFleetEntries(nowMs);
   const minIntervalMs = launchActive ? 120 : 1000;
@@ -5087,9 +5221,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   }
   lastLaunchStatusRenderMs = nowMs;
   if (!launchController) {
-    launchStatusNode.textContent = fallbackLine || (launchModuleLoadError
-      ? `Launch module load error: ${launchModuleLoadError}`
-      : "Launch controller unavailable.");
+    launchStatusNode.textContent = fallbackLine || availabilityReason || "Launch controller unavailable.";
     updateLaunchMissionControlPanel(null, false);
     missionControlScreenController.render(
       null,
@@ -5127,7 +5259,10 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     );
     return;
   }
-  if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(snapshot.speedKmS)) {
+  const earthRelativeSpeedKmS = Number.isFinite(Number(snapshot.earthRelativeSpeedKmS))
+    ? Number(snapshot.earthRelativeSpeedKmS)
+    : Number(snapshot.speedKmS);
+  if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(earthRelativeSpeedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
     updateLaunchMissionControlPanel(snapshot, launchActive);
     missionControlScreenController.render(
@@ -5197,7 +5332,10 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     ? ` | Event ${lastLaunchEventSummary}${Number.isFinite(eventAgeSeconds) ? ` (${formatNumber(eventAgeSeconds, 1)}s ago)` : ""}`
     : "";
   const trackingLine = snapshot.vehicleName ? ` | Tracking ${snapshot.vehicleName}` : "";
-  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | Speed ${formatNumber(snapshot.speedKmS, 3)} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}%${trackingLine} | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${refuelLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
+  const groundSpeedLine = formatLaunchSpeedNumber(snapshot.groundRelativeSpeedKmS, 3);
+  const airSpeedLine = formatLaunchSpeedNumber(snapshot.airRelativeSpeedKmS, 3);
+  const earthSpeedLine = formatLaunchSpeedNumber(earthRelativeSpeedKmS, 3);
+  launchStatusNode.textContent = `${snapshot.phaseLabel} | ${snapshot.stageName || "n/a"} | MET ${missionElapsed} | Alt ${altitudeLabel} | V ground/air/earth ${groundSpeedLine}/${airSpeedLine}/${earthSpeedLine} km/s | T ${formatNumber(thrustMN, 3)} MN @ ${formatNumber(throttlePct, 0)}%${trackingLine} | ${guidanceLine}${orbitTarget}${targetLine}${rcsLine}${boosterLine}${missionLine}${refuelLine}${eventLine} | ${snapshot.launchSiteName || "Launch Site"}`;
   updateLaunchMissionControlPanel(snapshot, launchActive);
   missionControlScreenController.render(
     snapshot,
@@ -5557,6 +5695,63 @@ function hideRefuelTransferVisual() {
 
 function updateRefuelTransferVisual() {
   refuelTransferVisualController.updateRefuelTransferVisual();
+}
+
+function ensureLaunchSiteStructureVisual() {
+  if (!launchFeatureEnabled || !THREE_NS) {
+    return null;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  if (!earthVisual?.spinGroup) {
+    return null;
+  }
+  if (!launchSiteStructureVisual?.root) {
+    launchSiteStructureVisual = createLaunchSiteStructureVisual(THREE_NS, DISTANCE_SCALE);
+  }
+  if (launchSiteStructureVisual?.root?.parent !== earthVisual.spinGroup) {
+    earthVisual.spinGroup.add(launchSiteStructureVisual.root);
+  }
+  return launchSiteStructureVisual;
+}
+
+function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
+  if (!launchFeatureEnabled || !THREE_NS) {
+    return;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  if (!earthVisual?.spinGroup) {
+    if (launchSiteStructureVisual?.root) {
+      launchSiteStructureVisual.root.visible = false;
+    }
+    return;
+  }
+  const structure = ensureLaunchSiteStructureVisual();
+  if (!structure) {
+    return;
+  }
+  const snapshot = launchController?.statusSnapshot?.() || null;
+  const altitudeKm = Number(snapshot?.altitudeKm);
+  const stageIndex = Number(snapshot?.stageIndex);
+  const stackPresent = (
+    !snapshot
+    || String(snapshot?.phase || "").trim().toLowerCase() === "idle"
+    || (
+      (!Number.isFinite(altitudeKm) || altitudeKm < 0.6)
+      && (!Number.isFinite(stageIndex) || stageIndex <= 0)
+    )
+  );
+  updateLaunchSiteStructureVisual(structure, {
+    THREE: THREE_NS,
+    earthVisual,
+    distanceScale: DISTANCE_SCALE,
+    dtSeconds: deltaSeconds,
+    launchSite: RUNTIME_LAUNCH_SITE,
+    stackPresent,
+    launchPhase: snapshot?.phase,
+    altitudeKm,
+    boosterPhase: snapshot?.boosterPhase,
+    boosterLanded: snapshot?.boosterLanded,
+  });
 }
 
 function updateLaunchVehicleVisuals() {
@@ -8381,11 +8576,15 @@ function applyNBodyDeltaVelocityKmS(bodyId, deltaVelocityKmS) {
   target.velocity.z += dvz;
 }
 
-function oblateModelForBody(bodyId) {
+function oblateModelForBody(bodyId, timestampMs = Date.now(), earthOrientation = null) {
   if (!OBLATE_GRAVITY_ENABLED) {
     return null;
   }
-  const model = OBLATE_GRAVITY_MODEL?.[bodyId] || null;
+  const staticModel = OBLATE_GRAVITY_MODEL?.[bodyId] || null;
+  const earthDynamicModel = bodyId === "earth"
+    ? earthConventionalGravityModel(timestampMs, earthOrientation)
+    : null;
+  const model = earthDynamicModel || staticModel;
   const fallbackRadius = Number(metaById.get(bodyId)?.radius_km);
   const equatorialRadiusKm = Number(model?.equatorialRadiusKm);
   const referenceRadiusKm =
@@ -8397,10 +8596,16 @@ function oblateModelForBody(bodyId) {
   }
 
   const j2 = Number(model?.j2);
+  const j3 = Number(model?.j3);
   const j4 = Number(model?.j4);
+  const j5 = Number(model?.j5);
   const j6 = Number(model?.j6);
+  const c21 = Number(model?.c21);
+  const s21 = Number(model?.s21);
   const c22 = Number(model?.c22);
   const s22 = Number(model?.s22);
+  const effectiveC21 = Number.isFinite(c21) ? c21 : 0;
+  const effectiveS21 = Number.isFinite(s21) ? s21 : 0;
   let effectiveC22 = Number.isFinite(c22) ? c22 : 0;
   let effectiveS22 = Number.isFinite(s22) ? s22 : 0;
 
@@ -8429,12 +8634,18 @@ function oblateModelForBody(bodyId) {
   }
 
   const effectiveJ2 = Number.isFinite(j2) ? j2 : 0;
+  const effectiveJ3 = Number.isFinite(j3) ? j3 : 0;
   const effectiveJ4 = Number.isFinite(j4) ? j4 : 0;
+  const effectiveJ5 = Number.isFinite(j5) ? j5 : 0;
   const effectiveJ6 = Number.isFinite(j6) ? j6 : 0;
   const hasNonZeroHarmonic =
     Math.abs(effectiveJ2) > 1e-20 ||
+    Math.abs(effectiveJ3) > 1e-20 ||
     Math.abs(effectiveJ4) > 1e-20 ||
+    Math.abs(effectiveJ5) > 1e-20 ||
     Math.abs(effectiveJ6) > 1e-20 ||
+    Math.abs(effectiveC21) > 1e-20 ||
+    Math.abs(effectiveS21) > 1e-20 ||
     Math.abs(effectiveC22) > 1e-20 ||
     Math.abs(effectiveS22) > 1e-20;
   if (!hasNonZeroHarmonic) {
@@ -8442,11 +8653,19 @@ function oblateModelForBody(bodyId) {
   }
 
   return {
+    source: String(model?.source || ""),
     j2: effectiveJ2,
+    j3: effectiveJ3,
     j4: effectiveJ4,
+    j5: effectiveJ5,
     j6: effectiveJ6,
+    c21: effectiveC21,
+    s21: effectiveS21,
     c22: effectiveC22,
     s22: effectiveS22,
+    harmonics: Array.isArray(model?.harmonics)
+      ? model.harmonics.map((term) => ({ ...term }))
+      : null,
     referenceRadiusKm,
   };
 }
@@ -8587,24 +8806,30 @@ function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now())
       continue;
     }
     const useLunarMasconAxes = LUNAR_MASCON_MODEL_ENABLED && sourceId === "moon";
-    const model = oblateModelForBody(sourceId);
-    if (!model && !useLunarMasconAxes) {
-      continue;
-    }
     const pole = sourcePoleUnitVectorEclipticForBody(sourceId, timestampMs);
     if (!pole) {
       continue;
     }
     const fixedAxes = sourceBodyFixedAxesEclipticForBody(sourceId, pole, timestampMs);
+    const model = oblateModelForBody(sourceId, timestampMs, fixedAxes?.earthOrientation || null);
+    if (!model && !useLunarMasconAxes) {
+      continue;
+    }
     const fallbackRadiusKm = Number(metaById.get(sourceId)?.radius_km) || 0;
     const effectivePole = fixedAxes?.pole || pole;
     contextById.set(sourceId, {
       j2: Number(model?.j2) || 0,
+      j3: Number(model?.j3) || 0,
       j4: Number(model?.j4) || 0,
+      j5: Number(model?.j5) || 0,
       j6: Number(model?.j6) || 0,
+      c21: Number(model?.c21) || 0,
+      s21: Number(model?.s21) || 0,
       c22: Number(model?.c22) || 0,
       s22: Number(model?.s22) || 0,
+      harmonics: Array.isArray(model?.harmonics) ? model.harmonics.map((term) => ({ ...term })) : null,
       referenceRadiusKm: Number(model?.referenceRadiusKm) || fallbackRadiusKm || 1737.4,
+      gravityModelSource: String(model?.source || ""),
       pole: effectivePole,
       xAxis: fixedAxes?.xAxis || null,
       yAxis: fixedAxes?.yAxis || null,
@@ -8665,10 +8890,15 @@ function computeGravityAccelerationFromSource(
       xAxis: oblate.xAxis,
       yAxis: oblate.yAxis,
       j2: Number(oblate.j2) || 0,
+      j3: Number(oblate.j3) || 0,
       j4: Number(oblate.j4) || 0,
+      j5: Number(oblate.j5) || 0,
       j6: Number(oblate.j6) || 0,
+      c21: Number(oblate.c21) || 0,
+      s21: Number(oblate.s21) || 0,
       c22: Number(oblate.c22) || 0,
       s22: Number(oblate.s22) || 0,
+      harmonicTerms: Array.isArray(oblate.harmonics) ? oblate.harmonics : null,
     });
     ax += Number(oblatePerturbation.x) || 0;
     ay += Number(oblatePerturbation.y) || 0;
@@ -11079,6 +11309,9 @@ function animate(timestampMs = 0) {
       updatePrimeMeridianSpins(nowMs, deltaSeconds);
     });
     if (launchFeatureEnabled) {
+      runFrameTaskSafely("launch-site-structure", () => {
+        updateLaunchSiteStructureVisuals(deltaSeconds);
+      });
       runFrameTaskSafely("launch-vehicle-visuals", () => {
         updateLaunchVehicleVisuals();
       });
@@ -11370,7 +11603,8 @@ function updateInfoOverlay() {
         ? `Environment Forcing: ${forcing.scenario || "n/a"} (${forcing.mode || "n/a"})`
         : "Environment Forcing: n/a";
       atmospherePhysicsLine = `
-        <p class="line">Atmosphere Model: Rayleigh/Mie/Ozone scattering + US1976 layers</p>
+        <p class="line">Atmosphere Model: Rayleigh/Mie/Ozone scattering + US1976 lower atmosphere + species upper atmosphere</p>
+        <p class="line">Visual Overlay: scattering envelope to 100 km + boundary shells at 11, 47, 86, 120, 700, and 1000 km</p>
         <p class="line">Sea Level: ρ ${formatNumber(seaLevel.densityKgM3, 4)} kg/m³ | P ${formatNumber(seaLevel.pressurePa, 2)} Pa | g ${formatNumber(seaLevel.gravityMs2, 4)} m/s²</p>
         <p class="line">${spaceWeatherLine}</p>
         <p class="line">${earthEopLine}</p>
@@ -11395,8 +11629,14 @@ function updateInfoOverlay() {
         const upperModelLine = sample?.upperAtmosphereModel
           ? ` | Upper Model: ${sample.upperAtmosphereModel}${Number.isFinite(Number(sample?.exosphericTemperatureK)) ? ` | Tex ${formatNumber(sample.exosphericTemperatureK, 1)} K` : ""}`
           : "";
+        const layerLine = sample?.layerName
+          ? ` | Layer ${String(sample.layerName)}${sample?.atmosphericRegion ? ` (${String(sample.atmosphericRegion)})` : ""}`
+          : "";
+        const transportLine = Number.isFinite(Number(sample?.pressureScaleHeightKm))
+          ? ` | H ${formatNumber(sample.pressureScaleHeightKm, 3)} km${Number.isFinite(Number(sample?.meanFreePathM)) ? ` | λ ${formatNumber(sample.meanFreePathM, 6)} m` : ""}`
+          : "";
         atmospherePhysicsLine = `
-          <p class="line">Earth Atmosphere @ ${formatNumber(altitudeKm, 2)} km: ρ ${formatNumber(sample.densityKgM3, 8)} kg/m³ | P ${formatNumber(sample.pressurePa, 4)} Pa | g ${formatNumber(sample.gravityMs2, 4)} m/s²${upperModelLine}</p>
+          <p class="line">Earth Atmosphere @ ${formatNumber(altitudeKm, 2)} km: ρ ${formatNumber(sample.densityKgM3, 8)} kg/m³ | P ${formatNumber(sample.pressurePa, 4)} Pa | g ${formatNumber(sample.gravityMs2, 4)} m/s²${layerLine}${transportLine}${upperModelLine}</p>
         `;
       }
     }
@@ -11450,7 +11690,7 @@ function updateInfoOverlay() {
   const earthEopSnapshot = currentEarthEopSnapshot();
   const dynamicsDetailParts = [];
   if (OBLATE_GRAVITY_ENABLED) {
-    dynamicsDetailParts.push("J2/J4/J6 zonal terms + C22/S22");
+    dynamicsDetailParts.push("IERS secular J2/J3/J4 + EGM2008 J5/J6 + degree-2..6 tesseral/sectorial");
     dynamicsDetailParts.push(
       (
         earthEopSnapshot
@@ -11514,9 +11754,7 @@ function updateInfoOverlay() {
     const starshipAltitudeLine = Number.isFinite(launchSnapshot?.altitudeKm)
       ? `${formatNumber(launchSnapshot.altitudeKm)} km`
       : "n/a";
-    const starshipSpeedLine = Number.isFinite(launchSnapshot?.speedKmS)
-      ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s`
-      : "n/a";
+    const starshipSpeedLine = formatLaunchSpeedFrameSummary(launchSnapshot, { includeInertial: true, digits: 4 });
     const starshipDistanceLine = Number.isFinite(launchSnapshot?.starshipDistanceKm)
       ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km`
       : "n/a";
@@ -11689,9 +11927,12 @@ function updateInfoOverlay() {
     const boosterAltitudeLine = Number.isFinite(launchSnapshot?.boosterAltitudeKm)
       ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km`
       : "n/a";
-    const boosterSpeedLine = Number.isFinite(launchSnapshot?.boosterSpeedKmS)
-      ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s`
-      : "n/a";
+    const boosterSpeedLine = formatLaunchSpeedFrameSummary({
+      earthRelativeSpeedKmS: launchSnapshot?.boosterEarthRelativeSpeedKmS ?? launchSnapshot?.boosterSpeedKmS,
+      groundRelativeSpeedKmS: launchSnapshot?.boosterGroundRelativeSpeedKmS,
+      airRelativeSpeedKmS: launchSnapshot?.boosterAirRelativeSpeedKmS,
+      inertialSpeedKmS: launchSnapshot?.boosterInertialSpeedKmS,
+    }, { includeInertial: true, digits: 4 });
     const boosterPropellantLine = Number.isFinite(launchSnapshot?.boosterPropellantKg)
       ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg`
       : "n/a";
@@ -11723,7 +11964,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">Phase: ${launchSnapshot?.boosterPhase || "n/a"}</p>
         <p class="line launch-line">Guidance: ${boosterGuidanceMode}</p>
         <p class="line launch-line">Altitude: ${boosterAltitudeLine}</p>
-        <p class="line launch-line">Speed: ${boosterSpeedLine}</p>
+        <p class="line launch-line">Speed Frames: ${boosterSpeedLine}</p>
         <p class="line launch-line">Thrust: ${boosterThrustLine}</p>
         <p class="line launch-line">RCS: ${boosterRcsLine} | Jets: ${Array.isArray(launchSnapshot?.boosterRcsJets) && launchSnapshot.boosterRcsJets.length > 0 ? launchSnapshot.boosterRcsJets.join(", ") : "n/a"}</p>
         <p class="line launch-line">Propellant: ${boosterPropellantLine} (${boosterFuelFractionLine} remaining)</p>
@@ -11736,7 +11977,8 @@ function updateInfoOverlay() {
     } else if (isTankerSelected) {
       selectedVehicleLines = `
         <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
-        <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
+        <p class="line launch-line">Altitude: ${starshipAltitudeLine}</p>
+        <p class="line launch-line">Speed Frames: ${starshipSpeedLine}</p>
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">RCS Orbit Correction: ${tankerRcsOrbitCorrectionLine} | Accel: ${tankerRcsOrbitAccelLine}</p>
@@ -11767,7 +12009,8 @@ function updateInfoOverlay() {
     } else {
       selectedVehicleLines = `
         <p class="line launch-line">Phase/Stage: ${launchSnapshot?.phaseLabel || launchSnapshot?.phase || "n/a"} | ${launchSnapshot?.stageName || "n/a"}</p>
-        <p class="line launch-line">Altitude: ${starshipAltitudeLine} | Speed: ${starshipSpeedLine}</p>
+        <p class="line launch-line">Altitude: ${starshipAltitudeLine}</p>
+        <p class="line launch-line">Speed Frames: ${starshipSpeedLine}</p>
         <p class="line launch-line">Guidance: ${launchGuidanceMode}</p>
         <p class="line launch-line">Thrust: ${starshipThrustLine}</p>
         <p class="line launch-line">Target: ${targetBodyLabel} | Distance: ${targetDistanceLine} | ${targetRateLabel}: ${targetClosingLine} | ${targetEtaLabel}: ${targetEtaLine}</p>
@@ -11832,10 +12075,10 @@ function updateInfoOverlay() {
        <p class="line launch-line">Launch Altitude: ${Number.isFinite(launchSnapshot.altitudeKm) ? `${formatNumber(launchSnapshot.altitudeKm)} km` : "n/a"}</p>
        <p class="line launch-line">Altitude Above Terrain: ${shouldShowTerrainRelativeAltitude(launchSnapshot) && Number.isFinite(launchSnapshot.altitudeAboveTerrainKm) ? `${formatNumber(launchSnapshot.altitudeAboveTerrainKm, 3)} km` : "n/a"}</p>
        <p class="line launch-line">Local Terrain Elevation: ${Number.isFinite(launchSnapshot.terrainElevationKm) ? `${formatNumber(launchSnapshot.terrainElevationKm, 3)} km` : "n/a"} | Lat/Lon: ${Number.isFinite(launchSnapshot.latitudeDeg) && Number.isFinite(launchSnapshot.longitudeDeg) ? `${formatNumber(launchSnapshot.latitudeDeg, 4)}°, ${formatNumber(launchSnapshot.longitudeDeg, 4)}°` : "n/a"}</p>
-       <p class="line launch-line">Launch Speed: ${Number.isFinite(launchSnapshot.speedKmS) ? `${formatNumber(launchSnapshot.speedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Launch Speed Frames: ${formatLaunchSpeedFrameSummary(launchSnapshot, { includeInertial: true, digits: 4 })}</p>
        <p class="line launch-line">Target Body: ${launchTargetLabel(launchSnapshot.targetBodyName, launchSnapshot.targetBodyId)} | Distance: ${Number.isFinite(targetTelemetry.targetDistanceKm) ? `${formatNumber(targetTelemetry.targetDistanceKm, 1)} km` : "n/a"} | ${targetRateLabel}: ${Number.isFinite(targetTelemetry.targetClosingSpeedKmS) ? `${formatNumber(targetTelemetry.targetClosingSpeedKmS, 4)} km/s` : "n/a"}${Number.isFinite(targetEtaSeconds) ? ` | ${targetEtaLabel}: ${formatDurationSeconds(targetEtaSeconds)}` : ""}</p>
        <p class="line launch-line">Booster Phase: ${launchSnapshot.boosterPhase || "n/a"} | Guidance: ${launchSnapshot.boosterGuidanceMode || "n/a"} | Landed: ${launchSnapshot.boosterLanded ? "yes" : "no"}</p>
-       <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed: ${Number.isFinite(launchSnapshot.boosterSpeedKmS) ? `${formatNumber(launchSnapshot.boosterSpeedKmS, 4)} km/s` : "n/a"}</p>
+       <p class="line launch-line">Booster Altitude: ${Number.isFinite(launchSnapshot.boosterAltitudeKm) ? `${formatNumber(launchSnapshot.boosterAltitudeKm, 4)} km` : "n/a"} | Booster Speed Frames: ${formatLaunchSpeedFrameSummary({ earthRelativeSpeedKmS: launchSnapshot.boosterEarthRelativeSpeedKmS ?? launchSnapshot.boosterSpeedKmS, groundRelativeSpeedKmS: launchSnapshot.boosterGroundRelativeSpeedKmS, airRelativeSpeedKmS: launchSnapshot.boosterAirRelativeSpeedKmS, inertialSpeedKmS: launchSnapshot.boosterInertialSpeedKmS }, { includeInertial: true, digits: 4 })}</p>
        <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}${Number.isFinite(launchSnapshot.boosterFuelFraction) ? ` (${formatNumber(launchSnapshot.boosterFuelFraction * 100, 1)}% remaining)` : ""}</p>
        <p class="line launch-line">Booster Thrust: ${Number.isFinite(launchSnapshot.boosterThrustN) ? `${formatNumber(launchSnapshot.boosterThrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.boosterThrottle) ? `${formatNumber(launchSnapshot.boosterThrottle * 100, 1)}%` : "n/a"}</p>
        <p class="line launch-line">Booster RCS: ${launchSnapshot.boosterRcsActive ? `active (${formatNumber((Number(launchSnapshot.boosterRcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot.boosterRcsJets) && launchSnapshot.boosterRcsJets.length > 0 ? launchSnapshot.boosterRcsJets.join(", ") : "n/a"}</p>
@@ -12196,6 +12439,42 @@ function formatNumber(value, maxFractionDigits = 2) {
   return numeric.toLocaleString(undefined, {
     maximumFractionDigits: maxFractionDigits,
   });
+}
+
+function formatLaunchSpeedNumber(value, digits = 4) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? formatNumber(numeric, digits) : "n/a";
+}
+
+function formatLaunchSpeedValue(value, digits = 4) {
+  const speedNumber = formatLaunchSpeedNumber(value, digits);
+  return speedNumber === "n/a" ? "n/a" : `${speedNumber} km/s`;
+}
+
+function formatLaunchSpeedFrameSummary(snapshot, { includeInertial = true, digits = 4 } = {}) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return "n/a";
+  }
+  const earthRelativeSpeedKmS = Number.isFinite(Number(snapshot.earthRelativeSpeedKmS))
+    ? Number(snapshot.earthRelativeSpeedKmS)
+    : (Number.isFinite(Number(snapshot.speedKmS)) ? Number(snapshot.speedKmS) : Number.NaN);
+  const groundRelativeSpeedKmS = Number(snapshot.groundRelativeSpeedKmS);
+  const airRelativeSpeedKmS = Number(snapshot.airRelativeSpeedKmS);
+  const inertialSpeedKmS = Number(snapshot.inertialSpeedKmS);
+  const parts = [];
+  if (includeInertial && Number.isFinite(inertialSpeedKmS)) {
+    parts.push(`Inertial ${formatLaunchSpeedValue(inertialSpeedKmS, digits)}`);
+  }
+  if (Number.isFinite(earthRelativeSpeedKmS)) {
+    parts.push(`Earth ${formatLaunchSpeedValue(earthRelativeSpeedKmS, digits)}`);
+  }
+  if (Number.isFinite(groundRelativeSpeedKmS)) {
+    parts.push(`Ground ${formatLaunchSpeedValue(groundRelativeSpeedKmS, digits)}`);
+  }
+  if (Number.isFinite(airRelativeSpeedKmS)) {
+    parts.push(`Air ${formatLaunchSpeedValue(airRelativeSpeedKmS, digits)}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "n/a";
 }
 
 function formatAcceleration(value) {
