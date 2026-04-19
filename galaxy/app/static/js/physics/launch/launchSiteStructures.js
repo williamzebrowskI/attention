@@ -1,8 +1,6 @@
 import {
   LAUNCH_SITE,
-  STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STARSHIP_STACK_DIMENSIONS_KM,
-  STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
@@ -160,8 +158,6 @@ function resolveQuickDisconnectTarget(input = {}) {
 
 export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   const ds = Math.max(Number(distanceScale) || 0, 1e-9);
-  const totalHeight = STARSHIP_STACK_TOTAL_HEIGHT_KM * ds;
-  const baseY = -0.5 * totalHeight;
   const radius = STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5 * ds;
   const profile = Object.fromEntries(
     Object.entries(LAUNCH_STRUCTURE_PROFILE_KM).map(([key, value]) => (
@@ -195,7 +191,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     new THREE.CylinderGeometry(profile.mountRadiusKm, profile.mountRadiusKm, profile.mountHeightKm, 24, 1, false),
     darkSteel,
   );
-  mountDeck.position.y = baseY + (0.5 * profile.mountHeightKm);
+  mountDeck.position.y = 0.5 * profile.mountHeightKm;
   structureGroup.add(mountDeck);
 
   const clampCount = 4;
@@ -207,7 +203,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     );
     clampMesh.position.set(
       Math.cos(angle) * profile.holdClampOffsetKm,
-      baseY + profile.mountHeightKm + (0.5 * profile.holdClampHeightKm),
+      profile.mountHeightKm + (0.5 * profile.holdClampHeightKm),
       Math.sin(angle) * profile.holdClampOffsetKm,
     );
     clampMesh.rotation.y = angle;
@@ -217,7 +213,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   const towerGroup = new THREE.Group();
   towerGroup.position.set(
     radius + profile.towerOffsetKm + (0.5 * profile.towerWidthKm),
-    baseY + (0.5 * profile.towerHeightKm),
+    0.5 * profile.towerHeightKm,
     0,
   );
   structureGroup.add(towerGroup);
@@ -251,7 +247,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   }
 
   const chopstickPivotX = towerGroup.position.x - (0.5 * profile.towerWidthKm);
-  const chopstickY = baseY + profile.chopstickCatchHeightKm;
+  const chopstickY = profile.chopstickCatchHeightKm;
   const chopstickArmDepth = profile.chopstickArmThicknessKm * 2.6;
   const armZOffsets = [
     -0.5 * profile.chopstickArmSpacingKm,
@@ -280,7 +276,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   );
   qdBeam.position.set(
     chopstickPivotX + (profile.towerWidthKm * 0.18),
-    baseY + profile.quickDisconnectHeightKm,
+    profile.quickDisconnectHeightKm,
     0,
   );
   structureGroup.add(qdBeam);
@@ -340,9 +336,9 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
     z: Number(upWorld.z) || 0,
   };
   const rootWorldKm = {
-    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * (altitudeKm + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM)),
-    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * (altitudeKm + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM)),
-    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * (altitudeKm + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM)),
+    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * altitudeKm),
+    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * altitudeKm),
+    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * altitudeKm),
   };
   const distanceScale = Number(options?.distanceScale) || 1;
   root.position.copy(sceneVectorFromKm(THREE, rootWorldKm).multiplyScalar(distanceScale));
