@@ -6,6 +6,8 @@ import {
 import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js";
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
+const LAUNCH_STRUCTURE_SURFACE_CLEARANCE_KM = 0.00012;
+
 const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   slabRadiusKm: 0.028,
   slabHeightKm: 0.0022,
@@ -236,18 +238,18 @@ export function resolveLaunchSiteAnchorWorldKm(options = {}) {
   const rocketPositionKm = options?.rocketPositionKm;
   const stackPresent = Boolean(options?.stackPresent);
 
-  if (stackPresent && finiteVectorKm(rocketPositionKm) && finiteVectorKm(earthPositionKm)) {
-    const upWorldKm = normalizeVectorKm(
+  if (!finiteVectorKm(earthPositionKm) || !earthAxes) {
+    return null;
+  }
+
+  if (stackPresent && finiteVectorKm(rocketPositionKm)) {
+    const rocketUpWorldKm = normalizeVectorKm(
       subtractVectorKm(rocketPositionKm, earthPositionKm),
     );
     return addVectorKm(
       rocketPositionKm,
-      scaleVectorKm(upWorldKm, -STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM),
+      scaleVectorKm(rocketUpWorldKm, -STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM),
     );
-  }
-
-  if (!finiteVectorKm(earthPositionKm) || !earthAxes) {
-    return null;
   }
 
   const up = bodyFixedUpUnitVector(latitudeDeg, longitudeDeg);
@@ -266,14 +268,15 @@ export function resolveLaunchSiteAnchorWorldKm(options = {}) {
     latitudeDeg,
     longitudeDeg,
     earthAxes,
-    { includeTerrain: false },
+    { includeTerrain: true },
   );
   const padRelativeKm = padSurface?.pointRelativeKm || upWorld;
   const padNormalKm = padSurface?.surfaceNormal || upWorld;
+  const surfaceOffsetKm = altitudeKm + LAUNCH_STRUCTURE_SURFACE_CLEARANCE_KM;
   return {
-    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * altitudeKm),
-    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * altitudeKm),
-    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * altitudeKm),
+    x: (Number(earthPositionKm.x) || 0) + (Number(padRelativeKm.x) || 0) + ((Number(padNormalKm.x) || 0) * surfaceOffsetKm),
+    y: (Number(earthPositionKm.y) || 0) + (Number(padRelativeKm.y) || 0) + ((Number(padNormalKm.y) || 0) * surfaceOffsetKm),
+    z: (Number(earthPositionKm.z) || 0) + (Number(padRelativeKm.z) || 0) + ((Number(padNormalKm.z) || 0) * surfaceOffsetKm),
   };
 }
 
@@ -700,26 +703,41 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     color: new THREE.Color(0x686b70),
     roughness: 0.92,
     metalness: 0.02,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   const darkSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x2b3239),
     roughness: 0.72,
     metalness: 0.42,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   const towerSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x8e949c),
     roughness: 0.58,
     metalness: 0.64,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   const carriageSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0xb8bfc8),
     roughness: 0.5,
     metalness: 0.68,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   const darkPaint = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x171b20),
     roughness: 0.78,
     metalness: 0.18,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
 
   const slab = new THREE.Mesh(
@@ -1237,7 +1255,6 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const scene = options?.scene;
   const earthPositionKm = options?.earthPositionKm;
   const earthAxes = options?.earthAxes;
-  const rocketPositionKm = options?.rocketPositionKm;
   if (!root || !state || !THREE || !scene || !earthPositionKm || !earthAxes) {
     if (root) {
       root.visible = false;
@@ -1263,7 +1280,7 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
     launchSite,
     earthPositionKm,
     earthAxes,
-    rocketPositionKm,
+    rocketPositionKm: options?.rocketPositionKm,
     stackPresent: options?.stackPresent,
   });
   if (!finiteVectorKm(rootWorldKm)) {
