@@ -585,6 +585,11 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   structureGroup.add(quickDisconnectHead);
 
   root.userData.launchStructureSource = "spacex_style_launch_tower_chopsticks";
+  root.traverse((node) => {
+    if (node?.isMesh) {
+      node.frustumCulled = false;
+    }
+  });
 
   return {
     root,
@@ -623,13 +628,22 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const altitudeKm = Math.max(0, Number(launchSite?.altitudeKm) || 0);
   const dtSeconds = Math.max(0, Number(options?.dtSeconds) || 0);
   const distanceScale = Number(options?.distanceScale) || 1;
-  const localSurfaceRadiusKm = surfaceRadiusKmAtLatLon(latitudeDeg, longitudeDeg, { includeTerrain: false }) + altitudeKm;
+  const altitudeScene = altitudeKm * distanceScale;
+  const visualSurfaceRadiusScene = Number(earthVisual?.renderRadius);
+  const fallbackSurfaceRadiusScene = (
+    surfaceRadiusKmAtLatLon(latitudeDeg, longitudeDeg, { includeTerrain: false }) * distanceScale
+  );
+  const localSurfaceRadiusScene = (
+    Number.isFinite(visualSurfaceRadiusScene) && visualSurfaceRadiusScene > 0
+      ? visualSurfaceRadiusScene
+      : fallbackSurfaceRadiusScene
+  ) + altitudeScene;
   root.position.copy(
     latLonToEarthLocalVector(
       THREE,
       latitudeDeg,
       longitudeDeg,
-      localSurfaceRadiusKm * distanceScale,
+      localSurfaceRadiusScene,
     ),
   );
 
