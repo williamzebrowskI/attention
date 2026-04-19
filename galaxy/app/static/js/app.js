@@ -255,7 +255,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419n";
+const FRONTEND_MODULE_VERSION = "20260419o";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -5900,6 +5900,14 @@ function updateLaunchVehicleVisuals() {
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
   const launchActive = Boolean(launchController?.isActive());
   const guidanceMode = String(snapshot?.guidanceMode || "").toLowerCase();
+  const altitudeAboveTerrainKm = Number.isFinite(Number(snapshot?.altitudeAboveTerrainKm))
+    ? Number(snapshot.altitudeAboveTerrainKm)
+    : Number(snapshot?.altitudeKm) || 0;
+  const earlyTowerClearVisual = Number(snapshot?.stageIndex) <= 0 && (
+    guidanceMode.includes("pad-release")
+    || guidanceMode.includes("tower-clear")
+    || altitudeAboveTerrainKm < 0.18
+  );
   const refuelDockingVisual = Boolean(
     snapshot?.refuelTransferActive
     || snapshot?.refuelUndockActive
@@ -5910,6 +5918,7 @@ function updateLaunchVehicleVisuals() {
   const forceVerticalVisual =
     !launchActive
     || guidanceMode.includes("vertical")
+    || earlyTowerClearVisual
     || refuelDockingVisual
     || Boolean(dockingLock);
   let targetDirection = upScene || prograde || defaultAxis;
@@ -5934,25 +5943,36 @@ function updateLaunchVehicleVisuals() {
   } else if (forceVerticalVisual && upScene) {
     targetDirection = upScene;
   }
+  targetDirection = blendEarlyAscentVisualDirection(
+    targetDirection,
+    upScene,
+    altitudeAboveTerrainKm,
+    snapshot?.stageIndex,
+  );
 
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
     if (dockingLock?.hardLock) {
       visual.tiltGroup.quaternion.copy(targetQuaternion);
     } else {
-      visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
+      visual.tiltGroup.quaternion.slerp(targetQuaternion, earlyTowerClearVisual ? 0.58 : 0.25);
     }
   }
   const effectWorldPosition = new THREE_NS.Vector3();
   visual.root.getWorldPosition(effectWorldPosition);
   let bodyAtmosphereVelocityScene = null;
   if (earthAtmosphereContext?.earthWorldPosition && earthAtmosphereContext?.earthAngularVelocityScene) {
+    const effectRelativeVelocityScene = new THREE_NS.Vector3(
+      Number(relVelocityKmS.x) || 0,
+      Number(relVelocityKmS.z) || 0,
+      Number(relVelocityKmS.y) || 0,
+    ).multiplyScalar(DISTANCE_SCALE);
     const relPositionScene = effectWorldPosition.clone().sub(earthAtmosphereContext.earthWorldPosition);
     const localCoRotationScene = new THREE_NS.Vector3().crossVectors(
       earthAtmosphereContext.earthAngularVelocityScene,
       relPositionScene,
     );
-    bodyAtmosphereVelocityScene = velocityScene.clone().sub(localCoRotationScene);
+    bodyAtmosphereVelocityScene = effectRelativeVelocityScene.sub(localCoRotationScene);
   }
   applyStarshipAtmosphereEffectsFn?.(visual.launchStackState, snapshot, {
     sceneParent: effectSceneParent,
@@ -6013,6 +6033,29 @@ function earthAtmosphereEffectSceneContext(nowMs = Date.now()) {
     earthWorldPosition,
     earthAngularVelocityScene: poleScene.multiplyScalar(angularRateRadS),
   };
+}
+
+function blendEarlyAscentVisualDirection(targetDirection, upScene, altitudeAboveTerrainKm, stageIndex) {
+  if (
+    !targetDirection
+    || !upScene
+    || Number(stageIndex) > 0
+  ) {
+    return targetDirection;
+  }
+  const altitudeKm = Math.max(0, Number(altitudeAboveTerrainKm) || 0);
+  if (!(altitudeKm < 12)) {
+    return targetDirection;
+  }
+  const target = targetDirection.clone();
+  const blend = clamp((altitudeKm - 0.12) / 11.88, 0, 1);
+  return safeNormalizeSceneDirection(
+    upScene
+      .clone()
+      .multiplyScalar(1 - blend)
+      .add(target.multiplyScalar(blend)),
+    upScene,
+  );
 }
 
 function updateBoosterVehicleVisuals() {
@@ -6130,6 +6173,12 @@ function updateBoosterVehicleVisuals() {
       upScene,
     );
   }
+  targetDirection = blendEarlyAscentVisualDirection(
+    targetDirection,
+    upScene,
+    snapshot?.boosterAltitudeAboveTerrainKm,
+    0,
+  );
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
     const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
@@ -6141,12 +6190,17 @@ function updateBoosterVehicleVisuals() {
   visual.root.getWorldPosition(effectWorldPosition);
   let bodyAtmosphereVelocityScene = null;
   if (earthAtmosphereContext?.earthWorldPosition && earthAtmosphereContext?.earthAngularVelocityScene) {
+    const effectRelativeVelocityScene = new THREE_NS.Vector3(
+      Number(relVelocityKmS.x) || 0,
+      Number(relVelocityKmS.z) || 0,
+      Number(relVelocityKmS.y) || 0,
+    ).multiplyScalar(DISTANCE_SCALE);
     const relPositionScene = effectWorldPosition.clone().sub(earthAtmosphereContext.earthWorldPosition);
     const localCoRotationScene = new THREE_NS.Vector3().crossVectors(
       earthAtmosphereContext.earthAngularVelocityScene,
       relPositionScene,
     );
-    bodyAtmosphereVelocityScene = velocityScene.clone().sub(localCoRotationScene);
+    bodyAtmosphereVelocityScene = effectRelativeVelocityScene.sub(localCoRotationScene);
   }
   applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
     sceneParent: effectSceneParent,
@@ -6308,6 +6362,9 @@ function updateFleetSpacecraftVisuals() {
     const missionPhase = String(snapshot?.missionPhaseDisplay || snapshot?.missionPhase || "").toLowerCase();
     const stageName = String(snapshot?.stageName || "").toLowerCase();
     const launchMode = String(snapshot?.launchMode || "").toLowerCase();
+    const altitudeAboveTerrainKm = Number.isFinite(Number(snapshot?.altitudeAboveTerrainKm))
+      ? Number(snapshot.altitudeAboveTerrainKm)
+      : Number(snapshot?.altitudeKm) || 0;
     const isTanker = String(snapshot?.vehicleKind || "").toLowerCase() === "tanker"
       || stageName.includes("tanker")
       || String(bodyId).startsWith("earth_refuel_tanker_");
@@ -6340,9 +6397,15 @@ function updateFleetSpacecraftVisuals() {
       || guidanceMode.includes("rcs-undock")
       || guidanceMode.includes("rcs-dock")
     );
+    const earlyTowerClearVisual = Number(snapshot?.stageIndex) <= 0 && (
+      guidanceMode.includes("pad-release")
+      || guidanceMode.includes("tower-clear")
+      || altitudeAboveTerrainKm < 0.18
+    );
     const forceVerticalVisual = Boolean(
       dockingLock
       || guidanceMode.includes("vertical")
+      || earlyTowerClearVisual
       || tankerDockingVerticalVisual
     );
 
@@ -6376,6 +6439,12 @@ function updateFleetSpacecraftVisuals() {
         upScene,
       );
     }
+    targetDirection = blendEarlyAscentVisualDirection(
+      targetDirection,
+      upScene,
+      altitudeAboveTerrainKm,
+      snapshot?.stageIndex,
+    );
 
     const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
     if (targetQuaternion) {
@@ -6384,7 +6453,7 @@ function updateFleetSpacecraftVisuals() {
       } else {
         const alignAlpha = forceHorizontalVisual
           ? 0.46
-          : (forceVerticalVisual ? 0.3 : 0.18);
+          : (earlyTowerClearVisual ? 0.58 : (forceVerticalVisual ? 0.3 : 0.18));
         visual.tiltGroup.quaternion.slerp(targetQuaternion, alignAlpha);
       }
     }

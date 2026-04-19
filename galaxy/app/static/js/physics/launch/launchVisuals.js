@@ -9,7 +9,7 @@ import {
 import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
-} from "./launchAtmosphereEffects.js";
+} from "./launchAtmosphereEffects.js?v=20260419o";
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
