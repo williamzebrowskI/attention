@@ -80,7 +80,7 @@ import {
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
 } from "./physics/launch/lunar/constants.js";
-import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419a";
+import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419b";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
   isLaunchTelemetryVehicleId as isLaunchTelemetryVehicleIdView,
@@ -253,7 +253,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419a";
+const FRONTEND_MODULE_VERSION = "20260419b";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
@@ -5701,15 +5701,11 @@ function ensureLaunchSiteStructureVisual() {
   if (!launchFeatureEnabled || !THREE_NS) {
     return null;
   }
-  const earthVisual = bodyVisuals.get("earth");
-  if (!earthVisual?.spinGroup) {
-    return null;
-  }
   if (!launchSiteStructureVisual?.root) {
     launchSiteStructureVisual = createLaunchSiteStructureVisual(THREE_NS, DISTANCE_SCALE);
   }
-  if (launchSiteStructureVisual?.root?.parent !== earthVisual.spinGroup) {
-    earthVisual.spinGroup.add(launchSiteStructureVisual.root);
+  if (launchSiteStructureVisual?.root?.parent !== scene) {
+    scene.add(launchSiteStructureVisual.root);
   }
   return launchSiteStructureVisual;
 }
@@ -5718,8 +5714,16 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
   if (!launchFeatureEnabled || !THREE_NS) {
     return;
   }
-  const earthVisual = bodyVisuals.get("earth");
-  if (!earthVisual?.spinGroup) {
+  const earthCoordsKm = runtimeCoordsOrLiveById("earth");
+  if (!finiteVectorKm(earthCoordsKm)) {
+    if (launchSiteStructureVisual?.root) {
+      launchSiteStructureVisual.root.visible = false;
+    }
+    return;
+  }
+  const pole = sourcePoleUnitVectorEclipticForBody("earth", Date.now());
+  const earthAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, Date.now());
+  if (!earthAxes?.xAxis || !earthAxes?.yAxis || !earthAxes?.pole) {
     if (launchSiteStructureVisual?.root) {
       launchSiteStructureVisual.root.visible = false;
     }
@@ -5742,7 +5746,9 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
   );
   updateLaunchSiteStructureVisual(structure, {
     THREE: THREE_NS,
-    earthVisual,
+    scene,
+    earthPositionKm: earthCoordsKm,
+    earthAxes,
     distanceScale: DISTANCE_SCALE,
     dtSeconds: deltaSeconds,
     launchSite: RUNTIME_LAUNCH_SITE,
