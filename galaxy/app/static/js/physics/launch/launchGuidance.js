@@ -628,24 +628,24 @@ export function computeAutopilotCommand({
       ? clamp(1 - (timeToApoapsisSec / 18), 0.1, 1)
       : 1;
     if (highOrbitPeriRaiseActive) {
-      const apoOvershootRatio = clamp(
-        (apoapsisKm - targetAltitudeKm) / Math.max(targetAltitudeSafe * 0.1, 20),
+      const apoCenteringBias = clamp(
+        -radialSpeedKmS * 8,
+        -0.035,
+        0.035,
+      );
+      direction = normalize(
+        add(scale(tangent, 1), scale(up, apoCenteringBias)),
+        tangent,
+      );
+      const periRaiseThrottleFactor = clamp(
+        positivePeriErrorKm / Math.max(targetAltitudeSafe * 0.6, 200),
         0,
         1,
       );
-      const inwardBias = clamp(
-        0.02 + (apoOvershootRatio * 0.10),
-        0.02,
-        0.12,
-      );
-      direction = normalize(
-        add(scale(tangent, 1), scale(up, -inwardBias)),
-        tangent,
-      );
       const throttle = clamp(
-        0.10 + (closeInFactor * 0.14),
-        0.10,
-        0.24,
+        0.08 + (periRaiseThrottleFactor * 0.12),
+        0.08,
+        0.20,
       );
       return {
         phase: "powered",
@@ -718,15 +718,16 @@ export function computeAutopilotCommand({
     const apoDeficitKm = apoDefined ? targetAltitudeKm - apoapsisKm : targetAltitudeKm;
     const highOrbitTargetActive = targetAltitudeSafe > 350 && Number(runtime.stageIndex) >= 1;
     const positivePeriapsisKm = periDefined ? Math.max(0, periapsisKm) : 0;
+    const highOrbitApoGuideMarginKm = Math.max(targetAltitudeSafe * 0.05, 25);
     const highOrbitInsertionAltitudeKm = Math.max(
       config.circularizationMinAltitudeKm,
       targetAltitudeSafe * 0.55,
     );
-    const highOrbitPeriGuideKm = targetAltitudeSafe * 0.35;
+    const highOrbitPeriGuideKm = targetAltitudeSafe * 0.52;
     const highOrbitDirectInsertionActive = highOrbitTargetActive
       && (
         !apoDefined
-        || apoapsisKm < targetAltitudeKm
+        || apoapsisKm < (targetAltitudeKm + highOrbitApoGuideMarginKm)
       )
       && (
         orbital.altitudeKm < highOrbitInsertionAltitudeKm
@@ -850,12 +851,12 @@ export function computeAutopilotCommand({
     targetAltitudeSafe > 350
     && (
       !apoDefined
-      || apoapsisKm < targetAltitudeKm
+      || apoapsisKm < (targetAltitudeKm + Math.max(targetAltitudeSafe * 0.05, 25))
     )
     && (
       orbital.altitudeKm < Math.max(config.circularizationMinAltitudeKm, targetAltitudeSafe * 0.55)
       || !periDefined
-      || periapsisKm < (targetAltitudeKm * 0.35)
+      || periapsisKm < (targetAltitudeKm * 0.52)
     );
   const shouldCoastToApoapsis =
     !highOrbitDirectInsertionIncomplete

@@ -5,7 +5,7 @@ function finiteNumber(value, fallback = Number.NaN) {
 
 export const MOON_PARKING_ORBIT_GATE_TOLERANCE_KM = Object.freeze({
   apoapsisKm: 5,
-  periapsisKm: 40,
+  periapsisKm: 15,
 });
 
 export function moonParkingOrbitReady(
