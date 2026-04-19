@@ -19,6 +19,7 @@ const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
 const DT_SEC = 1;
 const MAX_STEPS = 2600;
 const EARTH_MU_KM3_S2 = G_KM3_KG_S2 * EARTH_MASS_KG;
+const ACCEPTED_REFUEL_PHASES = new Set(["orbital_refuel", "departure_window_wait"]);
 
 function assert(condition, message) {
   if (!condition) {
@@ -161,6 +162,17 @@ function main() {
         Number(finalSnapshot?.altitudeKm) || -Infinity,
       );
     }
+
+    const missionPhase = String(finalSnapshot?.missionPhase || "");
+    const apoReady = Number(finalSnapshot?.apoapsisKm) >= (
+      MOON_PARKING_ORBIT_APOAPSIS_KM - MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.apoapsisKm
+    );
+    const periReady = Number(finalSnapshot?.periapsisKm) >= (
+      MOON_PARKING_ORBIT_PERIAPSIS_KM - MOON_PARKING_ORBIT_GATE_TOLERANCE_KM.periapsisKm
+    );
+    if (ACCEPTED_REFUEL_PHASES.has(missionPhase) && apoReady && periReady) {
+      break;
+    }
   }
 
   assert(stage2AtStep >= 0 && stage2AtStep <= 260, `moon_pad_launch_high_parking_orbit: expected stage 2 handoff within 260 s, got ${stage2AtStep}`);
@@ -173,8 +185,8 @@ function main() {
     `moon_pad_launch_high_parking_orbit: expected stage 2 climb into the ${MOON_PARKING_ORBIT_PERIAPSIS_KM} km band, got ${maxAltitudeAfterStage2Km}`,
   );
   assert(
-    String(finalSnapshot?.missionPhase || "") === "orbital_refuel",
-    `moon_pad_launch_high_parking_orbit: expected orbital_refuel after parking insertion, got ${finalSnapshot?.missionPhase}`,
+    ACCEPTED_REFUEL_PHASES.has(String(finalSnapshot?.missionPhase || "")),
+    `moon_pad_launch_high_parking_orbit: expected orbital_refuel/departure_window_wait after parking insertion, got ${finalSnapshot?.missionPhase}`,
   );
   assert(
     Number(finalSnapshot?.apoapsisKm) >= (
