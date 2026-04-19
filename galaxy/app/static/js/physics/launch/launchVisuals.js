@@ -6,6 +6,10 @@ import {
   BOOSTER_THRUSTER_LAYOUT,
   STARSHIP_THRUSTER_LAYOUT,
 } from "./thrusterLayout.js";
+import {
+  applyLaunchAtmosphereEffects,
+  createLaunchAtmosphereEffects,
+} from "./launchAtmosphereEffects.js";
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
@@ -1396,6 +1400,10 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
         booster: boosterMainEnginePlume,
         ship: shipMainEnginePlume,
       },
+      atmosphereEffects: createLaunchAtmosphereEffects(THREE, {
+        stage0BodyHeightScene: totalHeight,
+        stage2BodyHeightScene: shipHeight,
+      }),
     },
     physical: {
       radiusScene: starshipPhysicalRenderRadiusScene(distanceScale),
@@ -1584,4 +1592,8 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
   updateMainEnginePlumes(stageState, stageIndex, snapshot);
   updateRcsJetVisuals(stageState, snapshot);
   updateNavigationBeaconVisual(stageState);
+}
+
+export function applyStarshipAtmosphereEffects(stageState, snapshot = null, options = {}) {
+  applyLaunchAtmosphereEffects(stageState?.atmosphereEffects, snapshot, options);
 }

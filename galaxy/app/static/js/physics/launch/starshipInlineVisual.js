@@ -3,6 +3,10 @@ import {
   BOOSTER_THRUSTER_LAYOUT,
   STARSHIP_THRUSTER_LAYOUT,
 } from "./thrusterLayout.js";
+import {
+  applyLaunchAtmosphereEffects,
+  createLaunchAtmosphereEffects,
+} from "./launchAtmosphereEffects.js";
 
 /**
  * Inline dimensions (km) — your values kept as-is.
@@ -1014,6 +1018,10 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
       mainEnginePlume,
       rcsJets,
       boosterFuelVisual,
+      atmosphereEffects: createLaunchAtmosphereEffects(THREE, {
+        stage0BodyHeightScene: boosterHeight,
+        stage2BodyHeightScene: boosterHeight,
+      }),
     },
     physical: {
       radiusScene: Math.max(radius, boosterHeight * 0.5),
@@ -1315,6 +1323,10 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
       shipMainEnginePlumes,
       shipRcsJets,
       navigationBeacon,
+      atmosphereEffects: createLaunchAtmosphereEffects(THREE, {
+        stage0BodyHeightScene: totalHeight,
+        stage2BodyHeightScene: shipHeight,
+      }),
     },
     physical: {
       radiusScene: inlineStarshipPhysicalRenderRadiusScene(distanceScale),
@@ -1373,6 +1385,10 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
     );
   }
   updateInlineNavigationBeaconVisual(stageState);
+}
+
+export function applyInlineStarshipAtmosphereEffects(stageState, snapshot = null, options = {}) {
+  applyLaunchAtmosphereEffects(stageState?.atmosphereEffects, snapshot, options);
 }
 
 /**

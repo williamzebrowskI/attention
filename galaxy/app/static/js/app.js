@@ -58,11 +58,13 @@ import {
 } from "./physics/config/oblatenessConfig.js";
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
 import {
+  EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_SITE as RUNTIME_LAUNCH_SITE,
   setLaunchSite as setRuntimeLaunchSite,
 } from "./physics/launch/launchConfig.js";
 import {
   applyInlineBoosterFuelVisuals,
+  applyInlineStarshipAtmosphereEffects,
   INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM,
   applyInlineBoosterManeuverVisuals,
   applyInlineStarshipVisualStage,
@@ -319,6 +321,7 @@ let LAUNCH_BOOSTER_BODY_ID = "earth_launch_booster";
 let launchFeatureEnabled = true;
 let createLaunchControllerFn = null;
 let applyStarshipVisualStageFn = null;
+let applyStarshipAtmosphereEffectsFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
@@ -2037,6 +2040,7 @@ async function loadLaunchFeatureModules() {
   }
   createLaunchControllerFn = controllerModule?.createLaunchController || null;
   applyStarshipVisualStageFn = visualsModule?.applyStarshipVisualStage || null;
+  applyStarshipAtmosphereEffectsFn = visualsModule?.applyStarshipAtmosphereEffects || null;
   createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
   starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
   if (!createStarshipStackVisualFn) {
@@ -2046,6 +2050,9 @@ async function loadLaunchFeatureModules() {
   }
   if (!applyStarshipVisualStageFn) {
     applyStarshipVisualStageFn = applyInlineStarshipVisualStage;
+  }
+  if (!applyStarshipAtmosphereEffectsFn) {
+    applyStarshipAtmosphereEffectsFn = applyInlineStarshipAtmosphereEffects;
   }
   if (!starshipPhysicalRenderRadiusSceneFn) {
     starshipPhysicalRenderRadiusSceneFn = inlineStarshipPhysicalRenderRadiusScene;
@@ -5782,7 +5789,18 @@ function updateLaunchVehicleVisuals() {
   if (!visual) {
     return;
   }
+  const effectNowMs = Date.now();
+  const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
+  const effectSceneParent = visual.root?.parent || null;
   if (!visual.root?.visible || !visual.launchStackState || !visual.tiltGroup?.quaternion) {
+    applyStarshipAtmosphereEffectsFn?.(visual.launchStackState, null, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
     applyReentryHeatToVisual(visual, 0, true);
     return;
   }
@@ -5800,6 +5818,14 @@ function updateLaunchVehicleVisuals() {
   const rocketCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BODY_ID);
   const earthCoordsKm = runtimeCoordsOrLiveById("earth");
   if (!finiteVectorKm(velocityKmS)) {
+    applyStarshipAtmosphereEffectsFn?.(visual.launchStackState, snapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
     applyReentryHeatToVisual(visual, 0);
     return;
   }
@@ -5818,6 +5844,14 @@ function updateLaunchVehicleVisuals() {
     Number(relVelocityKmS.y) || 0,
   );
   if (!vector3Finite(velocityScene)) {
+    applyStarshipAtmosphereEffectsFn?.(visual.launchStackState, snapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
     applyReentryHeatToVisual(visual, 0);
     return;
   }
@@ -5909,6 +5943,28 @@ function updateLaunchVehicleVisuals() {
       visual.tiltGroup.quaternion.slerp(targetQuaternion, 0.25);
     }
   }
+  const effectWorldPosition = new THREE_NS.Vector3();
+  visual.root.getWorldPosition(effectWorldPosition);
+  let bodyAtmosphereVelocityScene = null;
+  if (earthAtmosphereContext?.earthWorldPosition && earthAtmosphereContext?.earthAngularVelocityScene) {
+    const relPositionScene = effectWorldPosition.clone().sub(earthAtmosphereContext.earthWorldPosition);
+    const localCoRotationScene = new THREE_NS.Vector3().crossVectors(
+      earthAtmosphereContext.earthAngularVelocityScene,
+      relPositionScene,
+    );
+    bodyAtmosphereVelocityScene = velocityScene.clone().sub(localCoRotationScene);
+  }
+  applyStarshipAtmosphereEffectsFn?.(visual.launchStackState, snapshot, {
+    sceneParent: effectSceneParent,
+    nowMs: effectNowMs,
+    bodyVisible: true,
+    bodyWorldPosition: effectWorldPosition,
+    bodyAtmosphereVelocityScene,
+    earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+    earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+    upDirectionScene: upScene || targetDirection || defaultAxis,
+    renderRadiusScene: visual.renderRadius,
+  });
   const heatEligible = reentryHeatEligibleForLaunchState(LAUNCH_BODY_ID, snapshot);
   if (!heatEligible) {
     applyReentryHeatToVisual(visual, 0, true);
@@ -5916,6 +5972,47 @@ function updateLaunchVehicleVisuals() {
     const reentryHeatTarget = computeReentryHeatTargetForBody(LAUNCH_BODY_ID, snapshot);
     applyReentryHeatToVisual(visual, reentryHeatTarget);
   }
+}
+
+function earthAtmosphereEffectSceneContext(nowMs = Date.now()) {
+  if (!THREE_NS) {
+    return null;
+  }
+  const earthCoordsKm = runtimeCoordsOrLiveById("earth");
+  if (!finiteVectorKm(earthCoordsKm)) {
+    return null;
+  }
+  const earthWorldPosition = new THREE_NS.Vector3(
+    (Number(earthCoordsKm.x) || 0) * DISTANCE_SCALE,
+    (Number(earthCoordsKm.z) || 0) * DISTANCE_SCALE,
+    (Number(earthCoordsKm.y) || 0) * DISTANCE_SCALE,
+  );
+  const pole = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
+  const earthAxes = pole
+    ? sourceBodyFixedAxesEclipticForBody("earth", pole, nowMs)
+    : null;
+  const poleVector = finiteVectorKm(earthAxes?.pole)
+    ? earthAxes.pole
+    : (finiteVectorKm(pole) ? pole : null);
+  if (!poleVector) {
+    return { earthWorldPosition, earthAngularVelocityScene: null };
+  }
+  const poleScene = new THREE_NS.Vector3(
+    Number(poleVector.x) || 0,
+    Number(poleVector.z) || 0,
+    Number(poleVector.y) || 0,
+  );
+  if (!(poleScene.lengthSq() > 1e-18)) {
+    return { earthWorldPosition, earthAngularVelocityScene: null };
+  }
+  poleScene.normalize();
+  const lodSec = Number(earthAxes?.earthOrientation?.lodSec);
+  const angularRateRadS = EARTH_SIDEREAL_ANGULAR_RATE_RAD_S
+    * (1 - ((Number.isFinite(lodSec) ? lodSec : 0) / 86400));
+  return {
+    earthWorldPosition,
+    earthAngularVelocityScene: poleScene.multiplyScalar(angularRateRadS),
+  };
 }
 
 function updateBoosterVehicleVisuals() {
@@ -5927,6 +6024,19 @@ function updateBoosterVehicleVisuals() {
     return;
   }
   const snapshot = launchController?.statusSnapshot() || null;
+  const boosterAtmosphereSnapshot = snapshot
+    ? {
+        phase: snapshot.boosterPhase,
+        thrustN: snapshot.boosterThrustN,
+        throttle: snapshot.boosterThrottle,
+        stageIndex: 0,
+        altitudeKm: snapshot.boosterAltitudeKm,
+        altitudeAboveTerrainKm: snapshot.boosterAltitudeAboveTerrainKm,
+      }
+    : null;
+  const effectNowMs = Date.now();
+  const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
+  const effectSceneParent = visual.root?.parent || null;
   applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
   applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
     enabled: boosterFuelViewEnabled,
@@ -5938,6 +6048,14 @@ function updateBoosterVehicleVisuals() {
       enabled: false,
       fuelFraction: 0,
     });
+    applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
     applyReentryHeatToVisual(visual, 0, true);
     return;
   }
@@ -5946,6 +6064,14 @@ function updateBoosterVehicleVisuals() {
   const boosterCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BOOSTER_BODY_ID);
   const earthCoordsKm = runtimeCoordsOrLiveById("earth");
   if (!finiteVectorKm(velocityKmS)) {
+    applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
     applyReentryHeatToVisual(visual, 0);
     return;
   }
@@ -5964,6 +6090,14 @@ function updateBoosterVehicleVisuals() {
     Number(relVelocityKmS.y) || 0,
   );
   if (!vector3Finite(velocityScene)) {
+    applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
     applyReentryHeatToVisual(visual, 0);
     return;
   }
@@ -6003,6 +6137,28 @@ function updateBoosterVehicleVisuals() {
     const slerpAlpha = separationLike ? 0.09 : 0.2;
     visual.tiltGroup.quaternion.slerp(targetQuaternion, slerpAlpha);
   }
+  const effectWorldPosition = new THREE_NS.Vector3();
+  visual.root.getWorldPosition(effectWorldPosition);
+  let bodyAtmosphereVelocityScene = null;
+  if (earthAtmosphereContext?.earthWorldPosition && earthAtmosphereContext?.earthAngularVelocityScene) {
+    const relPositionScene = effectWorldPosition.clone().sub(earthAtmosphereContext.earthWorldPosition);
+    const localCoRotationScene = new THREE_NS.Vector3().crossVectors(
+      earthAtmosphereContext.earthAngularVelocityScene,
+      relPositionScene,
+    );
+    bodyAtmosphereVelocityScene = velocityScene.clone().sub(localCoRotationScene);
+  }
+  applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+    sceneParent: effectSceneParent,
+    nowMs: effectNowMs,
+    bodyVisible: true,
+    bodyWorldPosition: effectWorldPosition,
+    bodyAtmosphereVelocityScene,
+    earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+    earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+    upDirectionScene: upScene || targetDirection || defaultAxis,
+    renderRadiusScene: visual.renderRadius,
+  });
   const heatEligible = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
   if (!heatEligible) {
     applyReentryHeatToVisual(visual, 0, true);
