@@ -752,120 +752,55 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetUnits: 1,
   });
 
+  // Keep the launch table as a few solid masses instead of stacked thin plates.
+  const slabBaseHeightKm = profile.slabHeightKm + profile.slabApronHeightKm;
   const slab = new THREE.Mesh(
-    new THREE.CylinderGeometry(profile.slabRadiusKm, profile.slabRadiusKm, profile.slabHeightKm, 36),
+    new THREE.CylinderGeometry(
+      profile.slabApronRadiusKm,
+      profile.slabApronRadiusKm * 0.985,
+      slabBaseHeightKm,
+      40,
+    ),
     concrete,
   );
-  slab.position.y = 0.5 * profile.slabHeightKm;
+  slab.position.y = 0.5 * slabBaseHeightKm;
   structureGroup.add(slab);
-
-  const apron = new THREE.Mesh(
-    new THREE.CylinderGeometry(profile.slabApronRadiusKm, profile.slabApronRadiusKm, profile.slabApronHeightKm, 44),
-    concrete,
-  );
-  apron.position.y = 0.5 * profile.slabApronHeightKm;
-  structureGroup.add(apron);
 
   const pedestal = new THREE.Mesh(
     new THREE.CylinderGeometry(
-      profile.mountPedestalRadiusKm,
-      profile.mountPedestalRadiusKm * 1.08,
-      profile.mountPedestalHeightKm,
-      24,
+      profile.mountSkirtRadiusKm,
+      profile.mountSkirtRadiusKm * 1.06,
+      profile.mountDeckHeightKm - slabBaseHeightKm,
+      28,
     ),
     darkSteel,
   );
-  pedestal.position.y = profile.slabHeightKm + (0.5 * profile.mountPedestalHeightKm);
+  pedestal.position.y = slabBaseHeightKm + (0.5 * (profile.mountDeckHeightKm - slabBaseHeightKm));
   structureGroup.add(pedestal);
 
-  const mountSkirt = new THREE.Mesh(
-    new THREE.CylinderGeometry(
-      profile.mountSkirtRadiusKm,
-      profile.mountSkirtRadiusKm * 0.96,
-      profile.mountSkirtHeightKm,
-      28,
-      1,
-      true,
-    ),
-    darkSteel,
-  );
-  mountSkirt.position.y = profile.mountDeckHeightKm - (0.5 * profile.mountSkirtHeightKm);
-  structureGroup.add(mountSkirt);
-
-  const waterPlate = new THREE.Mesh(
-    new THREE.CylinderGeometry(profile.flamePlateRadiusKm, profile.flamePlateRadiusKm, profile.flamePlateHeightKm, 28),
-    darkPaint,
-  );
-  waterPlate.position.y = profile.slabHeightKm + (0.5 * profile.flamePlateHeightKm);
-  structureGroup.add(waterPlate);
-
-  const flameBucket = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      profile.flameBucketWidthKm,
-      profile.flameBucketHeightKm,
-      profile.flameBucketDepthKm,
-    ),
-    darkPaint,
-  );
-  flameBucket.position.y =
-    profile.slabHeightKm
-    + profile.flamePlateHeightKm
-    + (0.5 * profile.flameBucketHeightKm);
-  structureGroup.add(flameBucket);
-
   const mountDeckBaseY = profile.mountDeckHeightKm - profile.mountDeckThicknessKm;
-  const mountRing = new THREE.Mesh(
-    new THREE.TorusGeometry(profile.mountDeckRadiusKm, profile.mountRingTubeKm, 10, 48),
-    darkSteel,
-  );
-  mountRing.rotation.x = Math.PI * 0.5;
-  mountRing.position.y = mountDeckBaseY + (0.5 * profile.mountDeckThicknessKm);
-  structureGroup.add(mountRing);
-
-  const mountPlate = new THREE.Mesh(
+  const mountTable = new THREE.Mesh(
     new THREE.CylinderGeometry(
-      profile.mountDeckRadiusKm * 0.98,
-      profile.mountDeckRadiusKm * 0.98,
+      profile.mountDeckRadiusKm,
+      profile.mountDeckRadiusKm,
       profile.mountDeckThicknessKm,
       28,
     ),
-    darkSteel,
-  );
-  mountPlate.position.y = mountDeckBaseY + (0.5 * profile.mountDeckThicknessKm);
-  structureGroup.add(mountPlate);
-
-  const tableLip = new THREE.Mesh(
-    new THREE.CylinderGeometry(
-      profile.mountDeckRadiusKm * 1.02,
-      profile.mountDeckRadiusKm * 1.02,
-      profile.mountRingTubeKm * 1.4,
-      28,
-      1,
-      true,
-    ),
     carriageSteel,
   );
-  tableLip.position.y = mountDeckBaseY + profile.mountDeckThicknessKm;
-  structureGroup.add(tableLip);
+  mountTable.position.y = mountDeckBaseY + (0.5 * profile.mountDeckThicknessKm);
+  structureGroup.add(mountTable);
 
-  for (let i = 0; i < profile.mountLegCount; i += 1) {
-    const angle = (i / profile.mountLegCount) * Math.PI * 2;
-    const girder = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        profile.mountLegFootRadiusKm - profile.mountPedestalRadiusKm,
-        profile.mountLegThicknessKm * 1.1,
-        profile.mountLegThicknessKm * 1.8,
-      ),
-      darkSteel,
-    );
-    girder.position.set(
-      Math.cos(angle) * ((profile.mountLegFootRadiusKm + profile.mountPedestalRadiusKm) * 0.5),
-      mountDeckBaseY - (profile.mountLegThicknessKm * 0.4),
-      Math.sin(angle) * ((profile.mountLegFootRadiusKm + profile.mountPedestalRadiusKm) * 0.5),
-    );
-    girder.rotation.y = -angle;
-    structureGroup.add(girder);
-  }
+  const flameTrench = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.flameBucketWidthKm * 1.25,
+      profile.flameBucketHeightKm * 1.15,
+      profile.flameBucketDepthKm * 1.25,
+    ),
+    darkPaint,
+  );
+  flameTrench.position.y = slabBaseHeightKm + (0.42 * profile.flameBucketHeightKm);
+  structureGroup.add(flameTrench);
 
   for (let i = 0; i < profile.mountLegCount; i += 1) {
     const angle = (i / profile.mountLegCount) * Math.PI * 2;
@@ -930,17 +865,32 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   );
   towerGroup.add(towerBase);
 
+  const towerCore = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.towerWidthKm,
+      profile.towerHeightKm - profile.towerBaseHeightKm,
+      profile.towerDepthKm,
+    ),
+    towerSteel,
+  );
+  towerCore.position.set(
+    0,
+    0.5 * profile.towerBaseHeightKm,
+    0,
+  );
+  towerGroup.add(towerCore);
+
   const serviceSpine = new THREE.Mesh(
     new THREE.BoxGeometry(
       profile.towerServiceSpineWidthKm,
-      profile.towerHeightKm * 0.95,
+      profile.towerHeightKm * 0.9,
       profile.towerServiceSpineDepthKm,
     ),
     darkPaint,
   );
   serviceSpine.position.set(
-    (0.5 * profile.towerWidthKm) + (0.5 * profile.towerServiceSpineWidthKm),
-    0,
+    (0.5 * profile.towerWidthKm) + (0.45 * profile.towerServiceSpineWidthKm),
+    0.02 * profile.towerHeightKm,
     0,
   );
   towerGroup.add(serviceSpine);
@@ -958,11 +908,10 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     towerRail.position.set(
       towerRailX,
       0,
-      zSign * (0.32 * profile.carriageDepthKm),
+      zSign * (0.28 * profile.carriageDepthKm),
     );
     towerGroup.add(towerRail);
   }
-  createTowerLattice(THREE, towerGroup, profile, darkSteel, towerSteel);
 
   const towerTopCap = new THREE.Mesh(
     new THREE.BoxGeometry(
@@ -1005,90 +954,31 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   );
   towerGroup.add(carriageGroup);
 
-  const carriagePosts = [
-    [-0.5, -0.5],
-    [0.5, -0.5],
-    [-0.5, 0.5],
-    [0.5, 0.5],
-  ];
-  for (const [xSign, zSign] of carriagePosts) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        profile.carriageBeamThicknessKm,
-        profile.carriageHeightKm,
-        profile.carriageBeamThicknessKm,
-      ),
-      carriageSteel,
-    );
-    post.position.set(
-      xSign * (0.5 * profile.carriageWidthKm),
-      0,
-      zSign * (0.5 * profile.carriageDepthKm),
-    );
-    carriageGroup.add(post);
-  }
+  const carriageBlock = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.carriageWidthKm * 0.9,
+      profile.carriageHeightKm,
+      profile.carriageDepthKm * 0.92,
+    ),
+    carriageSteel,
+  );
+  carriageBlock.position.set(-0.06 * profile.carriageWidthKm, 0, 0);
+  carriageGroup.add(carriageBlock);
 
   const carriageBackplate = new THREE.Mesh(
     new THREE.BoxGeometry(
-      profile.carriageBackplateThicknessKm,
-      profile.carriageHeightKm * 0.92,
-      profile.carriageDepthKm * 1.08,
+      profile.carriageBackplateThicknessKm * 1.6,
+      profile.carriageHeightKm * 0.95,
+      profile.carriageDepthKm * 1.04,
     ),
     darkSteel,
   );
   carriageBackplate.position.set(
-    0.5 * profile.carriageWidthKm,
+    0.38 * profile.carriageWidthKm,
     0,
     0,
   );
   carriageGroup.add(carriageBackplate);
-
-  for (const zSign of [-1, 1]) {
-    const sidePlate = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        profile.carriageWidthKm * 0.85,
-        profile.carriageHeightKm * 0.86,
-        profile.carriageSidePlateThicknessKm,
-      ),
-      darkSteel,
-    );
-    sidePlate.position.set(
-      0.04 * profile.carriageWidthKm,
-      0,
-      zSign * (0.5 * profile.carriageDepthKm),
-    );
-    carriageGroup.add(sidePlate);
-  }
-
-  const carriageCap = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      profile.carriageWidthKm * 0.92,
-      profile.carriageCapThicknessKm,
-      profile.carriageDepthKm * 1.02,
-    ),
-    carriageSteel,
-  );
-  carriageCap.position.set(0, 0.5 * profile.carriageHeightKm, 0);
-  carriageGroup.add(carriageCap);
-
-  const carriageRails = [
-    [0, 0.5 * profile.carriageHeightKm, -0.5 * profile.carriageDepthKm],
-    [0, -0.5 * profile.carriageHeightKm, -0.5 * profile.carriageDepthKm],
-    [0, 0.5 * profile.carriageHeightKm, 0.5 * profile.carriageDepthKm],
-    [0, -0.5 * profile.carriageHeightKm, 0.5 * profile.carriageDepthKm],
-  ];
-  for (const [x, y, z] of carriageRails) {
-    const beam = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        profile.carriageWidthKm,
-        profile.carriageBeamThicknessKm,
-        profile.carriageBeamThicknessKm,
-      ),
-      carriageSteel,
-    );
-    beam.position.set(x, y, z);
-    carriageGroup.add(beam);
-  }
 
   for (const zSign of [-1, 1]) {
     for (const ySign of [-1, 1]) {
