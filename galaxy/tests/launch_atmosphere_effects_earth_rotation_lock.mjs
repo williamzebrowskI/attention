@@ -17,18 +17,6 @@ const effects = createLaunchAtmosphereEffects(THREE, {
 const sceneParent = new THREE.Group();
 sceneParent.add(effects.root);
 
-const particle = effects.trailParticles[0];
-particle.active = true;
-particle.mesh.visible = true;
-particle.mesh.position.set(10, 0, 0);
-particle.velocity.set(0, 0, 0);
-particle.ageSec = 0;
-particle.lifeSec = 10;
-particle.startScale = 1;
-particle.endScale = 1;
-particle.material.opacity = 0.5;
-effects.lastUpdateMs = 0;
-
 applyLaunchAtmosphereEffects(effects, null, {
   sceneParent,
   nowMs: 1000,
@@ -38,8 +26,12 @@ applyLaunchAtmosphereEffects(effects, null, {
 });
 
 assert(
-  particle.mesh.position.z < -1.5,
-  `launch-atmosphere-effects-earth-rotation-lock: expected particle to corotate, got z=${particle.mesh.position.z}`,
+  effects.root.visible === false,
+  "launch-atmosphere-effects-earth-rotation-lock: smoke trail root should stay hidden",
+);
+assert(
+  Array.isArray(effects.trailParticles) && effects.trailParticles.length === 0,
+  "launch-atmosphere-effects-earth-rotation-lock: trail particle pool should be empty",
 );
 
 console.log("launch-atmosphere-effects-earth-rotation-lock: ok");

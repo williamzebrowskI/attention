@@ -45,11 +45,13 @@ applyLaunchAtmosphereEffects(effects, snapshot, {
   renderRadiusScene: 0.5,
 });
 
-const particle = effects.trailParticles.find((entry) => entry?.active);
-assert(particle, "launch-atmosphere-effects-liftoff-plume-lock: expected an active trail particle");
 assert(
-  particle.velocity.y < -Math.abs(particle.velocity.x),
-  `launch-atmosphere-effects-liftoff-plume-lock: expected exhaust-down plume, got velocity ${particle.velocity.x}, ${particle.velocity.y}, ${particle.velocity.z}`,
+  effects.root.visible === false,
+  "launch-atmosphere-effects-liftoff-plume-lock: smoke trail root should remain hidden during liftoff",
+);
+assert(
+  Array.isArray(effects.trailParticles) && effects.trailParticles.length === 0,
+  "launch-atmosphere-effects-liftoff-plume-lock: trail particle pool should be empty",
 );
 
 console.log("launch-atmosphere-effects-liftoff-plume-lock: ok");

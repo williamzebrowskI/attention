@@ -6,7 +6,7 @@ import {
 import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
-} from "./launchAtmosphereEffects.js?v=20260419o";
+} from "./launchAtmosphereEffects.js?v=20260419p";
 
 /**
  * Inline dimensions (km) — your values kept as-is.

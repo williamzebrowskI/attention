@@ -54,11 +54,9 @@ function captureTrailLifeAndScale(altitudeAboveTerrainKm) {
   } finally {
     Math.random = originalRandom;
   }
-  const particle = effects.trailParticles.find((entry) => entry?.active);
-  assert(particle, `launch-atmosphere-effects-low-altitude-trail-lock: expected active particle at altitude ${altitudeAboveTerrainKm}`);
   return {
-    lifeSec: particle.lifeSec,
-    endScale: particle.endScale,
+    rootVisible: effects.root.visible,
+    trailParticleCount: effects.trailParticles.length,
   };
 }
 
@@ -66,12 +64,12 @@ const lowAltitude = captureTrailLifeAndScale(0.5);
 const higherAltitude = captureTrailLifeAndScale(8.0);
 
 assert(
-  lowAltitude.lifeSec < higherAltitude.lifeSec,
-  `launch-atmosphere-effects-low-altitude-trail-lock: expected shorter low-alt trail life, got ${lowAltitude.lifeSec} vs ${higherAltitude.lifeSec}`,
+  lowAltitude.rootVisible === false && higherAltitude.rootVisible === false,
+  "launch-atmosphere-effects-low-altitude-trail-lock: smoke trail root should remain hidden at all altitudes",
 );
 assert(
-  lowAltitude.endScale < higherAltitude.endScale,
-  `launch-atmosphere-effects-low-altitude-trail-lock: expected tighter low-alt trail scale, got ${lowAltitude.endScale} vs ${higherAltitude.endScale}`,
+  lowAltitude.trailParticleCount === 0 && higherAltitude.trailParticleCount === 0,
+  "launch-atmosphere-effects-low-altitude-trail-lock: smoke trail particle pool should stay empty",
 );
 
 console.log("launch-atmosphere-effects-low-altitude-trail-lock: ok");
