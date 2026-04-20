@@ -3,7 +3,6 @@ import {
 } from "../app/static/js/physics/launch/launchSiteStructures.js";
 import {
   LAUNCH_SITE,
-  STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
 } from "../app/static/js/physics/launch/launchConfig.js";
 
 function assert(condition, message) {
@@ -20,9 +19,9 @@ function main() {
     pole: { x: 0, y: 0, z: 1 },
   };
   const rocketPositionKm = {
-    x: earthPositionKm.x + 6371.0084 + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
-    y: earthPositionKm.y,
-    z: earthPositionKm.z,
+    x: earthPositionKm.x + 9999,
+    y: earthPositionKm.y - 7777,
+    z: earthPositionKm.z + 5555,
   };
 
   const anchored = resolveLaunchSiteAnchorWorldKm({
@@ -32,20 +31,6 @@ function main() {
     rocketPositionKm,
     stackPresent: true,
   });
-  assert(anchored, "expected anchored launch site position");
-  assert(
-    Math.abs(anchored.x - (rocketPositionKm.x - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM)) < 1e-9,
-    `expected anchored X to derive from rocket position, got ${anchored.x}`,
-  );
-  assert(
-    Math.abs(anchored.y - rocketPositionKm.y) < 1e-9,
-    `expected anchored Y to stay aligned with rocket, got ${anchored.y}`,
-  );
-  assert(
-    Math.abs(anchored.z - rocketPositionKm.z) < 1e-9,
-    `expected anchored Z to stay aligned with rocket, got ${anchored.z}`,
-  );
-
   const fallback = resolveLaunchSiteAnchorWorldKm({
     launchSite: LAUNCH_SITE,
     earthPositionKm,
@@ -53,12 +38,13 @@ function main() {
     rocketPositionKm: null,
     stackPresent: false,
   });
+  assert(anchored, "expected anchored launch site position");
   assert(fallback, "expected fallback launch site position");
   assert(
-    Math.abs(fallback.x - anchored.x) > 1e-6
-      || Math.abs(fallback.y - anchored.y) > 1e-6
-      || Math.abs(fallback.z - anchored.z) > 1e-6,
-    "expected fallback site solve to differ from rocket-anchored solution in test geometry",
+    Math.abs(fallback.x - anchored.x) <= 1e-9
+      && Math.abs(fallback.y - anchored.y) <= 1e-9
+      && Math.abs(fallback.z - anchored.z) <= 1e-9,
+    "expected anchor solve to ignore rocket-position input and remain Earth-fixed",
   );
 
   console.log("PASS launch-site-anchor-lock");

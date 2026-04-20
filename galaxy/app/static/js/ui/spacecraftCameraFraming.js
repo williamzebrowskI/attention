@@ -173,3 +173,47 @@ export function spacecraftEarthRelativeOrbitAngles({
     outwardAlignment: dot(elevated, outward),
   };
 }
+
+export function spacecraftSurfaceRelativeOrbitFrame({
+  targetScene,
+  earthScene,
+  earthPoleScene,
+  azimuth = 0,
+  polar = Math.PI * 0.5,
+  radius = 1,
+} = {}) {
+  if (!finiteVector(targetScene) || !finiteVector(earthScene)) {
+    return null;
+  }
+  const up = normalize(subtract(targetScene, earthScene), { x: 0, y: 1, z: 0 });
+  let pole = finiteVector(earthPoleScene)
+    ? normalize(earthPoleScene, { x: 0, y: 1, z: 0 })
+    : { x: 0, y: 1, z: 0 };
+  if (Math.abs(dot(up, pole)) > 0.985) {
+    pole = { x: 0, y: 0, z: 1 };
+  }
+  let east = normalize(cross(pole, up), { x: 1, y: 0, z: 0 });
+  if (length(east) <= 1e-12) {
+    east = { x: 1, y: 0, z: 0 };
+  }
+  const north = normalize(cross(up, east), { x: 0, y: 0, z: 1 });
+  const heading = normalize(
+    add(
+      scale(east, Math.sin(Number(azimuth) || 0)),
+      scale(north, Math.cos(Number(azimuth) || 0)),
+    ),
+    east,
+  );
+  const safePolar = clamp(Number(polar) || 0, 0.001, Math.PI - 0.001);
+  const safeRadius = Math.max(0, finiteNumber(radius, 0));
+  const offset = add(
+    scale(heading, safeRadius * Math.sin(safePolar)),
+    scale(up, safeRadius * Math.cos(safePolar)),
+  );
+  return {
+    up,
+    east,
+    north,
+    offset,
+  };
+}

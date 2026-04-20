@@ -235,21 +235,9 @@ export function resolveLaunchSiteAnchorWorldKm(options = {}) {
   const altitudeKm = Math.max(0, Number(launchSite?.altitudeKm) || 0);
   const earthPositionKm = options?.earthPositionKm;
   const earthAxes = options?.earthAxes;
-  const rocketPositionKm = options?.rocketPositionKm;
-  const stackPresent = Boolean(options?.stackPresent);
 
   if (!finiteVectorKm(earthPositionKm) || !earthAxes) {
     return null;
-  }
-
-  if (stackPresent && finiteVectorKm(rocketPositionKm)) {
-    const rocketUpWorldKm = normalizeVectorKm(
-      subtractVectorKm(rocketPositionKm, earthPositionKm),
-    );
-    return addVectorKm(
-      rocketPositionKm,
-      scaleVectorKm(rocketUpWorldKm, -STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM),
-    );
   }
 
   const up = bodyFixedUpUnitVector(latitudeDeg, longitudeDeg);

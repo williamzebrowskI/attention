@@ -177,6 +177,7 @@ function spawnTrailPuffs(state, {
     .multiplyScalar(-0.84)
     .addScaledVector(wakeDirection, 0.16)
     .normalize();
+  const lowAltitudeTrailBlend = clamp((altitudeKm - 0.8) / 5.2, 0, 1);
   const densityFade = clamp(1 - (altitudeKm / 18), 0, 1);
   const emissionRate = (8 + (throttle * 16)) * densityFade;
   state.trailAccumulator += emissionRate * dtSec;
@@ -195,17 +196,20 @@ function spawnTrailPuffs(state, {
       renderRadiusScene * (16 + (throttle * 14)),
       vehicleAtmosphereSpeed * 1.35,
     );
-    const carrySpeedScene = vehicleAtmosphereSpeed * 0.18;
+    const carrySpeedScene = vehicleAtmosphereSpeed * (0.02 + (0.16 * lowAltitudeTrailBlend));
     const velocity = exhaustDirection.clone().multiplyScalar(exhaustSpeedScene)
       .addScaledVector(wakeDirection, carrySpeedScene)
-      .addScaledVector(lateralA, activeHeightScene * (Math.random() - 0.5) * 1.2)
-      .addScaledVector(lateralB, activeHeightScene * (Math.random() - 0.5) * 1.2);
+      .addScaledVector(lateralA, activeHeightScene * (Math.random() - 0.5) * (0.22 + (0.98 * lowAltitudeTrailBlend)))
+      .addScaledVector(lateralB, activeHeightScene * (Math.random() - 0.5) * (0.22 + (0.98 * lowAltitudeTrailBlend)));
     const startScale = Math.max(renderRadiusScene * 1.1, activeHeightScene * 0.9);
-    const endScale = startScale * (3.2 + (Math.random() * 1.8));
+    const endScale = startScale * (
+      (1.45 + (Math.random() * 0.55))
+      + (lowAltitudeTrailBlend * (1.75 + (Math.random() * 1.25)))
+    );
     spawnParticle(state.trailParticles, {
       position: spawnPos,
       velocity,
-      lifeSec: 3.8 + (densityFade * 2.8) + (Math.random() * 0.8),
+      lifeSec: (0.45 + (Math.random() * 0.2)) + (lowAltitudeTrailBlend * (3.3 + (densityFade * 2.2))),
       startScale,
       endScale,
       opacity: 0.18 + (throttle * 0.14),

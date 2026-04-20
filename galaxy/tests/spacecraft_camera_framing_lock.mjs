@@ -3,6 +3,7 @@ import {
   spacecraftMinOrbitDistanceScene,
   spacecraftOrbitOffsetFromAngles,
   spacecraftPreferredCameraDistanceScene,
+  spacecraftSurfaceRelativeOrbitFrame,
 } from "../app/static/js/ui/spacecraftCameraFraming.js";
 import { STARSHIP_STACK_TOTAL_HEIGHT_KM, STARSHIP_STACK_DIMENSIONS_KM } from "../app/static/js/physics/launch/launchConfig.js";
 
@@ -105,6 +106,25 @@ function main() {
   assert(
     dot(orbitCameraOffset, orbitOutward) > 0,
     "expected orbit-inject framing camera to bias away from Earth rather than through it",
+  );
+
+  const localFrame = spacecraftSurfaceRelativeOrbitFrame({
+    targetScene: padTargetScene,
+    earthScene,
+    earthPoleScene: { x: 0, y: 1, z: 0 },
+    azimuth: Math.PI * 0.35,
+    polar: Math.PI * 0.34,
+    radius: preferredDistance,
+  });
+  assert(localFrame, "expected local surface orbit frame for low-altitude launch vehicle");
+  const localUp = subtract(padTargetScene, earthScene);
+  assert(
+    dot(localFrame.up, localUp) / Math.max(length(localUp), 1e-12) > 0.99,
+    "expected local surface frame up vector to align with Earth-local up",
+  );
+  assert(
+    dot(localFrame.offset, localFrame.up) > 0,
+    "expected launch surface framing to keep the camera above the local horizon",
   );
 
   console.log("PASS spacecraft-camera-framing-lock");

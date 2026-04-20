@@ -96,6 +96,7 @@ import { resolveMissionLaunchAction } from "./ui/launchCommandRouting.js";
 import {
   spacecraftMinOrbitDistanceScene,
   spacecraftEarthRelativeOrbitAngles,
+  spacecraftSurfaceRelativeOrbitFrame,
   spacecraftPreferredCameraDistanceScene,
 } from "./ui/spacecraftCameraFraming.js";
 import {
@@ -525,6 +526,7 @@ const MOON_SURFACE_CAMERA_CLEARANCE_KM = 4.0;
 const EARTH_SURFACE_CAMERA_CLEARANCE_KM = 1.5;
 const EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM = 0.005;
 const BODY_LOCK_EARTH_SURFACE_ASSIST_MAX_RADIUS_FACTOR = 1.14;
+const LAUNCH_BODY_LOCK_SURFACE_ASSIST_MAX_ALTITUDE_KM = 24;
 const TIDAL_TARGET_CONFIG = Object.freeze([
   Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
   Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
@@ -10526,6 +10528,43 @@ function earthBodyLockSurfaceAssistEnabled() {
   );
 }
 
+function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+    return null;
+  }
+  if (selectedId !== LAUNCH_BODY_ID && selectedId !== LAUNCH_BOOSTER_BODY_ID) {
+    return null;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  const vehicleVisual = bodyVisuals.get(selectedId);
+  if (!earthVisual?.root?.visible || !vehicleVisual?.root?.visible) {
+    return null;
+  }
+  const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, selectedId, nowMs) || null;
+  const altitudeAboveTerrainKm = selectedId === LAUNCH_BOOSTER_BODY_ID
+    ? Number(snapshot?.boosterAltitudeAboveTerrainKm)
+    : Number(snapshot?.altitudeAboveTerrainKm);
+  if (!Number.isFinite(altitudeAboveTerrainKm) || altitudeAboveTerrainKm > LAUNCH_BODY_LOCK_SURFACE_ASSIST_MAX_ALTITUDE_KM) {
+    return null;
+  }
+  const target = resolveBodyLockTargetPosition(selectedId) || vehicleVisual.root.position.clone();
+  const earthScene = earthVisual.root.position.clone();
+  const earthPoleKm = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
+  const earthPoleScene = finiteVectorKm(earthPoleKm)
+    ? {
+        x: Number(earthPoleKm.x) || 0,
+        y: Number(earthPoleKm.z) || 0,
+        z: Number(earthPoleKm.y) || 0,
+      }
+    : null;
+  return {
+    target,
+    earthScene,
+    earthPoleScene,
+    altitudeAboveTerrainKm,
+  };
+}
+
 function resolveSurfaceAnchorOnBody({
   bodyId,
   latitudeDeg = 0,
@@ -10688,8 +10727,12 @@ function setSelected(bodyId, moveCamera) {
   if (moveCamera && canReframe) {
     if (liveCoords) {
       orbit.radius = preferredCameraDistanceForSelection(visual);
+      const launchSurfaceAssist = launchBodyLockSurfaceAssistState();
       const bodyType = String(visual?.body?.body_type || "").toLowerCase();
-      if (bodyType === "spacecraft") {
+      if (launchSurfaceAssist) {
+        orbit.azimuth = rad(52);
+        orbit.polar = clamp(rad(62), orbit.minPolar, orbit.maxPolar);
+      } else if (bodyType === "spacecraft") {
         const targetForView = resolveBodyLockTargetPosition(bodyId) || visual.root.position;
         const earthScene = bodyVisuals.get("earth")?.root?.position || null;
         const orbitAngles = spacecraftEarthRelativeOrbitAngles({
@@ -10843,6 +10886,53 @@ function updateCameraFromOrbit() {
   } else if (bodyLockSurfaceAssist.active) {
     clearBodyLockSurfaceAssist();
     syncOrbitFromCurrentCamera();
+  }
+
+  const launchSurfaceAssist = launchBodyLockSurfaceAssistState(Date.now());
+  if (launchSurfaceAssist) {
+    const frame = spacecraftSurfaceRelativeOrbitFrame({
+      targetScene: {
+        x: launchSurfaceAssist.target.x,
+        y: launchSurfaceAssist.target.y,
+        z: launchSurfaceAssist.target.z,
+      },
+      earthScene: {
+        x: launchSurfaceAssist.earthScene.x,
+        y: launchSurfaceAssist.earthScene.y,
+        z: launchSurfaceAssist.earthScene.z,
+      },
+      earthPoleScene: launchSurfaceAssist.earthPoleScene,
+      azimuth: orbit.azimuth,
+      polar: orbit.polar,
+      radius: orbit.radius,
+    });
+    if (frame) {
+      const cameraPosition = new THREE_NS.Vector3(
+        launchSurfaceAssist.target.x + frame.offset.x,
+        launchSurfaceAssist.target.y + frame.offset.y,
+        launchSurfaceAssist.target.z + frame.offset.z,
+      );
+      clampCameraOutsideBody(cameraPosition, bodyVisuals.get("earth"));
+      clampCameraOutsideBody(cameraPosition, bodyVisuals.get("moon"));
+      const lookDistance = Math.max(cameraPosition.distanceTo(launchSurfaceAssist.target), 1e-6);
+      const desiredNear = clamp(lookDistance * 0.0012, 0.0000000005, 0.05);
+      if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
+        camera.near = desiredNear;
+        camera.updateProjectionMatrix();
+      }
+      camera.up.set(frame.up.x, frame.up.y, frame.up.z);
+      camera.position.copy(cameraPosition);
+      camera.lookAt(launchSurfaceAssist.target);
+      updateObservationStatus({
+        label: `${metaById.get(selectedId)?.name || selectedId} (launch surface assist)`,
+        bodyId: selectedId,
+        altitudeKm: launchSurfaceAssist.altitudeAboveTerrainKm,
+        position: camera.position,
+        target: launchSurfaceAssist.target,
+        up: camera.up,
+      });
+      return;
+    }
   }
 
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
