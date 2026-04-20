@@ -1,4 +1,5 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
+import { LAUNCH_REFUEL_TANKER_BODY_IDS } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -365,40 +366,56 @@ function testPublicLaunchControllerAllowsMultipleTankers() {
   const state = makeState();
   const controller = createHarness();
 
-  const firstPadLaunch = controller.launchRefuelTanker(state, NOW_MS, { mode: "pad_launch" });
-  assert(firstPadLaunch?.accepted, `public multi-tanker: first pad launch rejected (${firstPadLaunch?.reason || "unknown"})`);
-  assert(firstPadLaunch?.pending === true, "public multi-tanker: first pad launch should remain pending");
+  const totalRequestedTankers = LAUNCH_REFUEL_TANKER_BODY_IDS.length + 2;
+  const launchResults = [];
 
-  const secondLaunch = controller.launchRefuelTanker(state, NOW_MS + 1_000, { mode: "pad_launch" });
-  assert(secondLaunch?.accepted, `public multi-tanker: second tanker launch rejected (${secondLaunch?.reason || "unknown"})`);
+  for (let i = 0; i < totalRequestedTankers; i += 1) {
+    const mode = i === 0
+      ? "pad_launch"
+      : (i % 3 === 0 ? "orbit_inject" : "pad_launch");
+    const launch = controller.launchRefuelTanker(state, NOW_MS + (i * 1_000), { mode });
+    assert(launch?.accepted, `public multi-tanker: launch ${i + 1} rejected (${launch?.reason || "unknown"})`);
+    launchResults.push(launch);
+  }
+
+  const [firstPadLaunch, secondLaunch] = launchResults;
+  assert(firstPadLaunch?.pending === true, "public multi-tanker: first pad launch should remain pending");
   assert(secondLaunch?.pending === false, "public multi-tanker: second tanker should route through additive fleet launch");
   assert(
-    String(secondLaunch?.tankerId || "") !== String(firstPadLaunch?.tankerId || ""),
-    "public multi-tanker: second tanker reused the first tanker identity",
+    launchResults.some((launch) => launch?.mode === "orbit_inject"),
+    "public multi-tanker: expected at least one orbit-inject tanker in the mixed launch batch",
   );
 
-  const thirdLaunch = controller.launchRefuelTanker(state, NOW_MS + 2_000, { mode: "orbit_inject" });
-  assert(thirdLaunch?.accepted, `public multi-tanker: third orbit-inject tanker rejected (${thirdLaunch?.reason || "unknown"})`);
-  assert(
-    String(thirdLaunch?.tankerId || "") !== String(firstPadLaunch?.tankerId || "")
-    && String(thirdLaunch?.tankerId || "") !== String(secondLaunch?.tankerId || ""),
-    "public multi-tanker: third tanker identity should be unique",
-  );
-
-  const launchedTankers = [
-    String(firstPadLaunch?.tankerId || "").trim(),
-    String(secondLaunch?.tankerId || "").trim(),
-    String(thirdLaunch?.tankerId || "").trim(),
-  ].filter(Boolean);
+  const launchedTankers = launchResults
+    .map((launch) => String(launch?.tankerId || "").trim())
+    .filter(Boolean);
   const dynamicTankers = [...state.dynamicBodies.keys()].filter((id) => String(id || "").startsWith("earth_refuel_tanker_"));
   assert(
-    dynamicTankers.length >= 2,
-    `public multi-tanker: expected multiple tanker bodies in dynamics, got ${dynamicTankers.length}`,
+    dynamicTankers.length >= totalRequestedTankers - 1,
+    `public multi-tanker: expected ${totalRequestedTankers - 1}+ tanker bodies in dynamics, got ${dynamicTankers.length}`,
   );
   assert(
-    new Set(launchedTankers).size === launchedTankers.length,
+    new Set(launchedTankers).size === totalRequestedTankers,
     `public multi-tanker: tanker ids were not unique (${launchedTankers.join(", ")})`,
   );
+  assert(
+    launchedTankers.some((id) => Number(id.match(/_(\d+)$/)?.[1]) > LAUNCH_REFUEL_TANKER_BODY_IDS.length),
+    `public multi-tanker: expected a tanker id beyond the static pool of ${LAUNCH_REFUEL_TANKER_BODY_IDS.length}`,
+  );
+
+  assert(
+    typeof controller.ensureCatalogBodies === "function",
+    "public multi-tanker: launch controller is missing ensureCatalogBodies",
+  );
+  const mergedCatalog = controller.ensureCatalogBodies([]);
+  const mergedCatalogIds = new Set((Array.isArray(mergedCatalog) ? mergedCatalog : []).map((body) => String(body?.id || "")));
+  for (let i = 0; i < launchedTankers.length; i += 1) {
+    const tankerId = launchedTankers[i];
+    assert(
+      mergedCatalogIds.has(tankerId),
+      `public multi-tanker: merged catalog missing tanker ${tankerId}`,
+    );
+  }
 }
 
 function main() {

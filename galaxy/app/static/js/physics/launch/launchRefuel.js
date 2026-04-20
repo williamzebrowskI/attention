@@ -86,6 +86,7 @@ export function refuelDefaults({
     nextGeneratedId: 1,
     flights: [],
     consumedTankerIds: [],
+    catalogTankerIds: [],
     transferActive: false,
     transferTankerId: "",
     transferProgress: 0,

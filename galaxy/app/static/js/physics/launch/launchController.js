@@ -2916,6 +2916,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     if (!removedAny) {
       return { accepted: false, reason: "vehicle_not_found" };
     }
+    unregisterCatalogTankerId(id);
 
     const vehicleRole = fleetRemoval.removed
       ? String(fleetRemoval.vehicleRole || "mission")
@@ -2961,6 +2962,32 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       sequenceNumber += 1;
     }
     return null;
+  }
+
+  function registerCatalogTankerId(tankerId) {
+    const id = String(tankerId || "").trim();
+    if (!id.startsWith("earth_refuel_tanker_")) {
+      return;
+    }
+    const existing = Array.isArray(runtime.refuel?.catalogTankerIds)
+      ? runtime.refuel.catalogTankerIds
+      : [];
+    if (existing.includes(id)) {
+      runtime.refuel.catalogTankerIds = existing;
+      return;
+    }
+    runtime.refuel.catalogTankerIds = [...existing, id];
+  }
+
+  function unregisterCatalogTankerId(tankerId) {
+    const id = String(tankerId || "").trim();
+    if (!id) {
+      return;
+    }
+    const existing = Array.isArray(runtime.refuel?.catalogTankerIds)
+      ? runtime.refuel.catalogTankerIds
+      : [];
+    runtime.refuel.catalogTankerIds = existing.filter((entry) => String(entry || "").trim() !== id);
   }
 
   function tankerDeploymentOrbitReady(orbital) {
@@ -3048,6 +3075,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         mode: "orbit_inject",
         orbitAltitudeKm: Number(orbitInject.orbitAltitudeKm),
       });
+      registerCatalogTankerId(orbitInject.tankerId);
       return {
         ...orbitInject,
         mode: "orbit_inject",
@@ -3085,6 +3113,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         sequenceNumber: identity.sequenceNumber,
         mode: pendingPadTankerLaunchActive ? "pad_fleet_launch_while_pad_pending" : "pad_fleet_launch",
       });
+      registerCatalogTankerId(identity.id);
       return {
         accepted: true,
         tankerId: identity.id,
@@ -3137,6 +3166,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         : null,
       missionId: LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD,
     };
+    registerCatalogTankerId(identity.id);
     runtime.refuel.nextGeneratedId = Math.max(
       Number(runtime.refuel.nextGeneratedId) || 1,
       identity.sequenceNumber + 1,
@@ -3255,6 +3285,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   function ensureCatalogBodies(catalogBodies) {
     const next = Array.isArray(catalogBodies) ? [...catalogBodies] : [];
     const mergeOrInsert = (meta) => {
+      if (!meta?.id) {
+        return;
+      }
       const index = next.findIndex((body) => body.id === meta.id);
       if (index >= 0) {
         next[index] = {
@@ -3270,6 +3303,58 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     mergeOrInsert(LAUNCH_BOOSTER_META);
     for (let i = 0; i < LAUNCH_REFUEL_TANKER_METAS.length; i += 1) {
       mergeOrInsert(LAUNCH_REFUEL_TANKER_METAS[i]);
+    }
+    const catalogTankerIds = Array.isArray(runtime.refuel?.catalogTankerIds)
+      ? runtime.refuel.catalogTankerIds
+      : [];
+    for (let i = 0; i < catalogTankerIds.length; i += 1) {
+      const tankerId = String(catalogTankerIds[i] || "").trim();
+      if (!tankerId.startsWith("earth_refuel_tanker_")) {
+        continue;
+      }
+      const sequenceNumber = Number(tankerId.match(/_(\d+)$/)?.[1]) || 1;
+      mergeOrInsert(tankerMetaForId(
+        tankerId,
+        sequenceNumber,
+        null,
+        LAUNCH_REFUEL_TANKER_METAS[0] || null,
+      ));
+    }
+    const fleetVehicles = runtime.fleet?.vehicles instanceof Map
+      ? [...runtime.fleet.vehicles.entries()]
+      : [];
+    for (let i = 0; i < fleetVehicles.length; i += 1) {
+      const [bodyId, vehicle] = fleetVehicles[i];
+      const meta = managedCatalogMetaForBody(bodyId, {
+        massKg: finiteNumber(vehicle?.massKg, vehicle?.dryMassKg),
+      });
+      mergeOrInsert(meta);
+    }
+    const refuelFlights = Array.isArray(runtime.refuel?.flights)
+      ? runtime.refuel.flights
+      : [];
+    for (let i = 0; i < refuelFlights.length; i += 1) {
+      const tankerId = String(refuelFlights[i]?.id || "").trim();
+      if (!tankerId.startsWith("earth_refuel_tanker_")) {
+        continue;
+      }
+      const sequenceNumber = Number(tankerId.match(/_(\d+)$/)?.[1]) || 1;
+      mergeOrInsert(tankerMetaForId(
+        tankerId,
+        sequenceNumber,
+        null,
+        LAUNCH_REFUEL_TANKER_METAS[0] || null,
+      ));
+    }
+    const pendingTankerId = String(runtime.pendingPadTankerLaunch?.tankerId || "").trim();
+    if (pendingTankerId.startsWith("earth_refuel_tanker_")) {
+      const sequenceNumber = Number(pendingTankerId.match(/_(\d+)$/)?.[1]) || 1;
+      mergeOrInsert(tankerMetaForId(
+        pendingTankerId,
+        sequenceNumber,
+        null,
+        LAUNCH_REFUEL_TANKER_METAS[0] || null,
+      ));
     }
     return next;
   }
@@ -6026,6 +6111,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         (Array.isArray(incomingRefuel.consumedTankerIds) ? incomingRefuel.consumedTankerIds : [])
           .map((id) => String(id || "").trim())
           .filter(Boolean),
+      ),
+    );
+    runtime.refuel.catalogTankerIds = Array.from(
+      new Set(
+        (Array.isArray(incomingRefuel.catalogTankerIds) ? incomingRefuel.catalogTankerIds : [])
+          .map((id) => String(id || "").trim())
+          .filter((id) => id.startsWith("earth_refuel_tanker_")),
       ),
     );
     runtime.refuel.nextGeneratedId = Math.max(
