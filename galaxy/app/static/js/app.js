@@ -258,7 +258,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420i";
+const FRONTEND_MODULE_VERSION = "20260420j";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -6656,25 +6656,17 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
     }
     const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
     const separationLike = boosterPhase.includes("separation");
-    if (separationLike && boosterVisibleAgeSec < 2.5) {
-      applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
-        sceneParent: effectSceneParent,
-        nowMs: effectNowMs,
-        bodyVisible: true,
-        bodyWorldPosition: visual.root.getWorldPosition(new THREE_NS.Vector3()),
-        earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
-        earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
-        renderRadiusScene: visual.renderRadius,
-      });
-      const heatEligibleHold = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
-      if (!heatEligibleHold) {
-        applyReentryHeatToVisual(visual, 0, true);
-      }
-      return;
-    }
     const slerpAlpha = bodyAxisScene
-      ? (separationLike ? (boosterVisibleAgeSec < 8 ? 0.03 : 0.08) : 0.28)
-      : (separationLike ? (boosterVisibleAgeSec < 8 ? 0.024 : 0.06) : 0.2);
+      ? (
+        separationLike
+          ? (boosterVisibleAgeSec < 2.5 ? 0.016 : boosterVisibleAgeSec < 8 ? 0.04 : 0.08)
+          : 0.28
+      )
+      : (
+        separationLike
+          ? (boosterVisibleAgeSec < 2.5 ? 0.014 : boosterVisibleAgeSec < 8 ? 0.032 : 0.06)
+          : 0.2
+      );
     visual.tiltGroup.quaternion.slerp(targetQuaternion, slerpAlpha);
   }
   const effectWorldPosition = new THREE_NS.Vector3();

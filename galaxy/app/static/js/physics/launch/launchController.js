@@ -4547,6 +4547,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       }
     }
     const pressurePa = Number(atmosphereSample?.pressurePa) || 0;
+    const separationRetargetBlend = clamp(Number(command.separationRetargetBlend) || 0, 0, 1);
+    if (separationRetargetBlend > 1e-6) {
+      const retrogradeDirection = normalize(scale(relVel, -1), currentBoosterAxis);
+      direction = normalize(
+        mixVectors(currentBoosterAxis, retrogradeDirection, separationRetargetBlend),
+        retrogradeDirection,
+      );
+    }
     const landingPhase = command.phase === "landing-burn" || command.phase === "landed";
     const protectedReserveKg = landingPhase
       ? 0

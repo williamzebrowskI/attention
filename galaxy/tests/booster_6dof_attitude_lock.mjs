@@ -198,7 +198,7 @@ function main() {
 
   assert(maxStepAngleDeg < 18, `expected continuous 6-DOF attitude motion, got max step angle ${maxStepAngleDeg} deg`);
   assert(maxEarlyStepAngleDeg < 8, `expected gentle early post-hotstage settling, got max early step angle ${maxEarlyStepAngleDeg} deg`);
-  assert(totalTurnDeg > 3.0, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
+  assert(totalTurnDeg > 5.0, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
   assert(maxOmega > 0.01, `expected nontrivial angular-rate build-up, got ${maxOmega} rad/s`);
   assert(maxRcsAccel > 1e-7, `expected booster RCS to contribute translational acceleration, got ${maxRcsAccel} km/s^2`);
 
