@@ -320,6 +320,7 @@ export function applyActuatorModel(actuatorState, {
   massModel,
   angularAccelerationRadS2 = null,
   angularDampingPerS = null,
+  maxBodyRateRadS = null,
 }) {
   const state = actuatorState || createActuatorState(requestedDirection);
   const cfg = config || LAUNCH_REALISM_CONFIG.actuator.stage;
@@ -361,6 +362,7 @@ export function applyActuatorModel(actuatorState, {
   const aeroAngularAcceleration = Number(angularAccelerationRadS2);
   if (Number.isFinite(aeroAngularAcceleration) && aeroAngularAcceleration > 1e-9) {
     const dampingPerS = Math.max(0, Number(angularDampingPerS) || 0);
+    const maxRateRadS = Number(maxBodyRateRadS);
     const stoppingRateRadS = Math.sqrt(Math.max(0, 2 * aeroAngularAcceleration * errorRad));
     const rateStepRadS = aeroAngularAcceleration * dt;
     let angularRateRadS = Math.max(0, Number(state.angularRateRadS) || 0);
@@ -370,9 +372,15 @@ export function applyActuatorModel(actuatorState, {
       angularRateRadS = Math.max(stoppingRateRadS, angularRateRadS - rateStepRadS);
     }
     angularRateRadS *= Math.max(0, 1 - (dampingPerS * dt));
+    if (Number.isFinite(maxRateRadS) && maxRateRadS > 1e-9) {
+      angularRateRadS = Math.min(angularRateRadS, maxRateRadS);
+    }
     state.angularRateRadS = angularRateRadS;
     maxStepRad = Math.min(errorRad, angularRateRadS * dt);
   } else {
+    if (Number.isFinite(Number(maxBodyRateRadS)) && Number(maxBodyRateRadS) > 1e-9) {
+      maxStepRad = Math.min(maxStepRad, Number(maxBodyRateRadS) * dt);
+    }
     state.angularRateRadS = dt > 1e-9 ? Math.max(0, maxStepRad / dt) : 0;
   }
   const blend = errorRad > 1e-12 ? clamp(maxStepRad / errorRad, 0, 1) : 1;

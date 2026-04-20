@@ -57,6 +57,7 @@ import {
   unitOrNull,
 } from "./launchMath.js";
 import {
+  augmentAttitudeCommand as augmentAttitudeCommandModel,
   circularOrbitSpeedKmS as circularOrbitSpeedKmSModel,
   computeAutopilotCommand as computeAutopilotCommandModel,
   computeLaunchPlaneNormal as computeLaunchPlaneNormalModel,
@@ -445,12 +446,30 @@ function guidanceDirection({
   earthState,
   earthAxes,
   elapsedSeconds,
+  stageIndex = 0,
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
 }) {
   return guidanceDirectionModel({
     rocketState,
     earthState,
     earthAxes,
     elapsedSeconds,
+    stageIndex,
+    altitudeKm,
+    dynamicPressurePa,
+  });
+}
+
+function augmentAttitudeCommand(command, {
+  runtime,
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
+}) {
+  return augmentAttitudeCommandModel(command, {
+    stageIndex: Number(runtime?.stageIndex) || 0,
+    altitudeKm,
+    dynamicPressurePa,
   });
 }
 
@@ -1105,7 +1124,7 @@ function computeAutopilotCommand({
   muKm3S2,
   earthRadiusKm,
 }) {
-  return computeAutopilotCommandModel({
+  return augmentAttitudeCommand(computeAutopilotCommandModel({
     runtime,
     orbital,
     relPos,
@@ -1115,6 +1134,10 @@ function computeAutopilotCommand({
     earthPole,
     muKm3S2,
     earthRadiusKm,
+  }), {
+    runtime,
+    altitudeKm: Number(orbital?.altitudeKm) || 0,
+    dynamicPressurePa,
   });
 }
 
@@ -3805,6 +3828,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     };
   }
 
+  function localPadUpDirection(rocketState, earthState, earthFrameAxes) {
+    if (!rocketState?.position || !earthState?.position) {
+      return normalize({ x: 0, y: 0, z: 1 });
+    }
+    const relPos = subtract(rocketState.position, earthState.position);
+    const surfaceNormal = runtime.lastSurfaceSample?.surfaceNormal;
+    return normalize(
+      finiteVector(surfaceNormal) ? surfaceNormal : relPos,
+      earthFrameAxes?.pole || { x: 0, y: 0, z: 1 },
+    );
+  }
+
   function updateRuntimeSurfaceSample(rocketState, earthState, earthFrameAxes, earthRadiusKm) {
     if (!rocketState?.position || !earthState?.position) {
       runtime.lastSurfaceSample = null;
@@ -4114,6 +4149,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       currentEarthAxes,
       earthRadiusKm,
     );
+    runtime.stageActuator = createActuatorState(
+      localPadUpDirection(rocketState, earthState, currentEarthAxes),
+    );
     const relPos = subtract(rocketState.position, earthState.position);
     const relVel = subtract(
       rocketState.velocity || { x: 0, y: 0, z: 0 },
@@ -4206,6 +4244,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthState,
       currentEarthAxes,
       Number(getEarthRadiusKm?.()) || 6371.0084,
+    );
+    runtime.stageActuator = createActuatorState(
+      localPadUpDirection(rocketState, earthState, currentEarthAxes),
     );
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(currentEarthAxes);
     runtime.phase = "idle";
@@ -5310,6 +5351,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         desiredDirection,
         requestedThrottle = 0,
         guidanceMode = "coast",
+        angularAccelerationRadS2 = null,
+        angularDampingPerS = null,
+        maxBodyRateDegS = null,
       }) => {
         let effectiveGuidanceMode = String(guidanceMode || "coast");
         let directionRequested = normalize(
@@ -5384,6 +5428,30 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             : earlyLaunchMode;
           runtime.autopilotMode = earlyLaunchMode;
         }
+        const controlCommand = augmentAttitudeCommand({
+          phase: (Number(requestedThrottle) || 0) > 1e-3
+            ? "powered"
+            : (runtime.phase === "orbit" ? "orbit" : "coast"),
+          throttle: requestedThrottle,
+          direction: directionRequested,
+          mode: effectiveGuidanceMode,
+          angularAccelerationRadS2,
+          angularDampingPerS,
+          maxBodyRateDegS,
+        }, {
+          runtime,
+          altitudeKm: launchClearanceAltitudeKm,
+          dynamicPressurePa,
+        });
+        let commandedAngularAccelerationRadS2 = Number.isFinite(Number(controlCommand.angularAccelerationRadS2))
+          ? Number(controlCommand.angularAccelerationRadS2)
+          : null;
+        let commandedAngularDampingPerS = Number.isFinite(Number(controlCommand.angularDampingPerS))
+          ? Number(controlCommand.angularDampingPerS)
+          : null;
+        let commandedMaxBodyRateDegS = Number.isFinite(Number(controlCommand.maxBodyRateDegS))
+          ? Number(controlCommand.maxBodyRateDegS)
+          : null;
         const lowAltitudeQAlphaBypass =
           runtime.stageIndex === 0
           && (
@@ -5410,6 +5478,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             bodyKind,
           });
         let steeringDirection = qAlphaSteering.direction;
+        if (qAlphaSteering.limited) {
+          if (Number.isFinite(commandedAngularAccelerationRadS2)) {
+            commandedAngularAccelerationRadS2 *= 0.82;
+          }
+          if (Number.isFinite(commandedAngularDampingPerS)) {
+            commandedAngularDampingPerS = Math.max(commandedAngularDampingPerS, 0.82);
+          }
+          if (Number.isFinite(commandedMaxBodyRateDegS)) {
+            commandedMaxBodyRateDegS *= 0.84;
+          }
+        }
         const pressurePa = Number(atmo?.pressurePa) || 0;
         let throttleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
         let canThrust = Boolean(stageForStep);
@@ -5459,6 +5538,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         if (moonAttitudeGate.throttleSuppressed && canThrust) {
           throttleCommand = 0;
         }
+        if (moonAttitudeGate.gateActive) {
+          if (Number.isFinite(commandedAngularDampingPerS)) {
+            commandedAngularDampingPerS = Math.max(commandedAngularDampingPerS, 0.92);
+          }
+          if (Number.isFinite(commandedMaxBodyRateDegS)) {
+            commandedMaxBodyRateDegS = Math.min(commandedMaxBodyRateDegS, 3.6);
+          }
+        }
         runtime.moonBurnAttitudeGateActive = moonAttitudeGate.gateActive;
         runtime.moonBurnAttitudeGateDirection = moonAttitudeGate.latchedDirection;
         runtime.moonBurnAttitudeGateAlignSec = moonAttitudeGate.alignStableSec;
@@ -5469,6 +5556,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           dtSeconds,
           config: LAUNCH_REALISM_CONFIG.actuator.stage,
           massModel: runtime.stageMassModel,
+          angularAccelerationRadS2: commandedAngularAccelerationRadS2,
+          angularDampingPerS: commandedAngularDampingPerS,
+          maxBodyRateRadS: Number.isFinite(commandedMaxBodyRateDegS)
+            ? rad(commandedMaxBodyRateDegS)
+            : null,
         });
         const throttleActual = canThrust
           ? clamp(Number(runtime.stageActuator.throttleActual) || 0, 0, 1)
@@ -5579,6 +5671,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           inertiaNormalized: runtime.stageMassModel.inertiaNormalized,
           controlAuthorityScale: runtime.stageMassModel.controlAuthorityScale,
           maxAllowedAoADeg: qAlphaSteering.maxAllowedAoADeg,
+          angularAccelerationCommandRadS2: commandedAngularAccelerationRadS2,
+          angularDampingCommandPerS: commandedAngularDampingPerS,
+          maxBodyRateCommandDegS: commandedMaxBodyRateDegS,
         };
         if (runtime.phase === "powered" && !burnActive) {
           runtime.phase = "coast";
@@ -5718,6 +5813,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         earthState,
         earthAxes: currentEarthAxes,
         elapsedSeconds: runtime.elapsedSeconds,
+        stageIndex: runtime.stageIndex,
+        altitudeKm: launchClearanceAltitudeKm,
+        dynamicPressurePa,
       });
 
       if (runtime.autopilotEnabled) {
@@ -5763,7 +5861,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           activeRefuelTarget,
         });
         if (missionCommand) {
-          autopilotCommand = missionCommand;
+          autopilotCommand = augmentAttitudeCommand(missionCommand, {
+            runtime,
+            altitudeKm: launchClearanceAltitudeKm,
+            dynamicPressurePa,
+          });
         }
         if (autopilotCommand.phase === "coast") {
           runtime.phase = "coast";
@@ -5790,6 +5892,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         guidance = {
           direction: autopilotCommand.direction || guidance.direction,
           mode: autopilotCommand.mode || guidance.mode,
+          angularAccelerationRadS2: autopilotCommand.angularAccelerationRadS2 ?? guidance.angularAccelerationRadS2,
+          angularDampingPerS: autopilotCommand.angularDampingPerS ?? guidance.angularDampingPerS,
+          maxBodyRateDegS: autopilotCommand.maxBodyRateDegS ?? guidance.maxBodyRateDegS,
         };
       }
 
@@ -5811,6 +5916,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           : "autopilot-tower-clear";
         runtime.autopilotMode = earlyLaunchMode;
         guidance = {
+          ...guidance,
           direction: guidance.direction,
           mode: guidance.mode.includes("vertical-hold")
             ? `${earlyLaunchMode}+vertical-hold`
@@ -5834,6 +5940,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         const upBias = 0.30 * (1 - rampBlend);
         if (upBias > 1e-6) {
           guidance = {
+            ...guidance,
             direction: normalize(
               add(scale(guidance.direction, 1), scale(orbital.up, upBias)),
               guidance.direction,
@@ -5842,6 +5949,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           };
         } else {
           guidance = {
+            ...guidance,
             direction: guidance.direction,
             mode: `${guidance.mode}+hotstage-ramp`,
           };
@@ -5852,6 +5960,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         desiredDirection: guidance.direction,
         requestedThrottle: throttle,
         guidanceMode: guidance.mode,
+        angularAccelerationRadS2: guidance.angularAccelerationRadS2,
+        angularDampingPerS: guidance.angularDampingPerS,
+        maxBodyRateDegS: guidance.maxBodyRateDegS,
       });
     } finally {
       emitRuntimeTransitionEvents("prepare_step");

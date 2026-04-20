@@ -42,16 +42,24 @@ export function guidanceDirection({
   earthState,
   earthAxes,
   elapsedSeconds,
+  stageIndex = 0,
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
 }) {
   const up = normalize(
     subtract(rocketState.position, earthState.position),
     earthAxes.pole,
   );
   if (LAUNCH_VEHICLE_CONFIG.guidance?.enforceVerticalAscent) {
-    return {
+    return augmentAttitudeCommand({
       direction: up,
       mode: "vertical-ascent",
-    };
+      phase: "powered",
+    }, {
+      stageIndex,
+      altitudeKm,
+      dynamicPressurePa,
+    });
   }
   const east = normalize(
     cross(earthAxes.pole, up),
@@ -85,10 +93,15 @@ export function guidanceDirection({
   );
   command = normalize(mixVectors(command, prograde, progradeBlend), command);
 
-  return {
+  return augmentAttitudeCommand({
     direction: command,
     mode: progradeBlend > 0.05 ? "gravity-turn-prograde" : "pitch-program",
-  };
+    phase: "powered",
+  }, {
+    stageIndex,
+    altitudeKm,
+    dynamicPressurePa,
+  });
 }
 
 export function circularOrbitSpeedKmS(muKm3S2, radiusKm) {
@@ -336,6 +349,131 @@ function limitDirectionAngle({
   };
 }
 
+function attitudeResponseProfile({
+  phase = "powered",
+  mode = "",
+  stageIndex = 0,
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
+}) {
+  const modeText = String(mode || "").toLowerCase();
+  const altitudeSafeKm = Math.max(0, Number(altitudeKm) || 0);
+  const qTargetPa = Math.max(
+    1,
+    Number(LAUNCH_VEHICLE_CONFIG.guidance?.maxQTargetPa) || 28_000,
+  );
+  const qRatio = clamp((Number(dynamicPressurePa) || 0) / qTargetPa, 0, 2.5);
+  const qSuppression = smoothStep01((qRatio - 0.55) / 0.55);
+  const ascentReferenceAltitudeKm = Number(stageIndex) >= 1
+    ? Math.max(Number(LAUNCH_AUTOPILOT_CONFIG.circularizationMinAltitudeKm) || 120, 80)
+    : Math.max(Number(LAUNCH_AUTOPILOT_CONFIG.gravityTurnEndAltitudeKm) || 40, 24);
+  const altitudeProgress = smoothStep01(
+    altitudeSafeKm / Math.max(ascentReferenceAltitudeKm, 1),
+  );
+
+  let angularAccelerationRadS2 = Number(stageIndex) >= 1 ? 0.26 : 0.40;
+  let angularDampingPerS = Number(stageIndex) >= 1 ? 0.78 : 0.62;
+  let maxBodyRateDegS = Number(stageIndex) >= 1 ? 5.4 : 7.2;
+
+  if (phase === "orbit" || modeText.includes("orbital-hold") || modeText.includes("orbit-hold")) {
+    angularAccelerationRadS2 = 0.08;
+    angularDampingPerS = 1.18;
+    maxBodyRateDegS = 1.2;
+  } else if (phase === "coast" || /coast|ballistic/.test(modeText)) {
+    angularAccelerationRadS2 = Number(stageIndex) >= 1 ? 0.10 : 0.14;
+    angularDampingPerS = Number(stageIndex) >= 1 ? 1.06 : 0.94;
+    maxBodyRateDegS = Number(stageIndex) >= 1 ? 1.8 : 2.6;
+  }
+
+  if (modeText.includes("pad-release")) {
+    angularAccelerationRadS2 = 0.14;
+    angularDampingPerS = 1.45;
+    maxBodyRateDegS = 2.2;
+  } else if (modeText.includes("tower-clear")) {
+    angularAccelerationRadS2 = 0.18;
+    angularDampingPerS = 1.20;
+    maxBodyRateDegS = 3.3;
+  } else if (modeText.includes("pitch-program")) {
+    angularAccelerationRadS2 = 0.22 + (0.10 * altitudeProgress);
+    angularDampingPerS = 0.92 + (0.18 * qSuppression);
+    maxBodyRateDegS = 3.8 + (2.0 * altitudeProgress);
+  } else if (modeText.includes("gravity-turn")) {
+    angularAccelerationRadS2 = 0.34 + (0.16 * (1 - qSuppression)) + (0.06 * altitudeProgress);
+    angularDampingPerS = 0.58 + (0.20 * qSuppression);
+    maxBodyRateDegS = 5.4 + (2.2 * (1 - qSuppression));
+  } else if (modeText.includes("apoapsis-raise")) {
+    angularAccelerationRadS2 = Number(stageIndex) >= 1 ? 0.30 : 0.42;
+    angularDampingPerS = Number(stageIndex) >= 1 ? 0.72 : 0.60;
+    maxBodyRateDegS = Number(stageIndex) >= 1 ? 4.6 : 6.4;
+  } else if (modeText.includes("circularization")) {
+    angularAccelerationRadS2 = 0.20;
+    angularDampingPerS = 0.86;
+    maxBodyRateDegS = 3.4;
+  } else if (modeText.includes("high-orbit-insertion")) {
+    angularAccelerationRadS2 = 0.18;
+    angularDampingPerS = 0.88;
+    maxBodyRateDegS = 3.0;
+  } else if (modeText.includes("periapsis-raise")) {
+    angularAccelerationRadS2 = 0.16;
+    angularDampingPerS = 0.92;
+    maxBodyRateDegS = 2.8;
+  }
+
+  if (modeText.includes("hotstage-ramp")) {
+    angularAccelerationRadS2 = Math.min(angularAccelerationRadS2, 0.16);
+    angularDampingPerS = Math.max(angularDampingPerS, 1.02);
+    maxBodyRateDegS = Math.min(maxBodyRateDegS, 3.4);
+  }
+  if (modeText.includes("climb-guard")) {
+    angularAccelerationRadS2 = Math.max(angularAccelerationRadS2, 0.48);
+    angularDampingPerS = Math.min(angularDampingPerS, 0.58);
+    maxBodyRateDegS = Math.max(maxBodyRateDegS, 7.4);
+  }
+  if (modeText.includes("vertical-hold")) {
+    angularAccelerationRadS2 *= 0.86;
+    angularDampingPerS = Math.max(angularDampingPerS, 1.04);
+    maxBodyRateDegS = Math.min(maxBodyRateDegS, 3.2);
+  }
+  if (modeText.includes("qalpha-limit")) {
+    angularAccelerationRadS2 *= 0.82;
+    angularDampingPerS += 0.18;
+    maxBodyRateDegS *= 0.84;
+  }
+
+  return {
+    angularAccelerationRadS2: clamp(angularAccelerationRadS2, 0.06, 0.9),
+    angularDampingPerS: clamp(angularDampingPerS, 0.24, 1.6),
+    maxBodyRateDegS: clamp(maxBodyRateDegS, 1.0, 12.0),
+  };
+}
+
+export function augmentAttitudeCommand(command, {
+  stageIndex = 0,
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
+} = {}) {
+  const base = command || {};
+  const profile = attitudeResponseProfile({
+    phase: base.phase,
+    mode: base.mode,
+    stageIndex,
+    altitudeKm,
+    dynamicPressurePa,
+  });
+  return {
+    ...base,
+    angularAccelerationRadS2: Number.isFinite(Number(base.angularAccelerationRadS2))
+      ? Number(base.angularAccelerationRadS2)
+      : profile.angularAccelerationRadS2,
+    angularDampingPerS: Number.isFinite(Number(base.angularDampingPerS))
+      ? Number(base.angularDampingPerS)
+      : profile.angularDampingPerS,
+    maxBodyRateDegS: Number.isFinite(Number(base.maxBodyRateDegS))
+      ? Number(base.maxBodyRateDegS)
+      : profile.maxBodyRateDegS,
+  };
+}
+
 function stateDrivenAscentProfile({
   orbital,
   relPos,
@@ -478,6 +616,35 @@ function stateDrivenAscentProfile({
     towerClearLimited = towerClearLimitedDirection.limited;
     }
   }
+  const earlyAscentPitchLimitEndAltitudeKm = Math.max(
+    verticalAscentMaxAltitudeKm,
+    Number(config.earlyAscentPitchLimitEndAltitudeKm) || 0,
+  );
+  let earlyAscentPitchLimited = false;
+  if (earlyAscentPitchLimitEndAltitudeKm > towerClearAltitudeKm && altitudeKm < earlyAscentPitchLimitEndAltitudeKm) {
+    const earlyAscentStartKm = Math.max(
+      towerClearAltitudeKm,
+      Math.min(verticalAscentMaxAltitudeKm * 0.2, earlyAscentPitchLimitEndAltitudeKm * 0.25),
+    );
+    const earlyAscentPitchProgress = smoothStep01(
+      (altitudeKm - earlyAscentStartKm)
+        / Math.max(earlyAscentPitchLimitEndAltitudeKm - earlyAscentStartKm, 1e-6),
+    );
+    const earlyAscentMaxPitchDeg = clamp(
+      Number(config.earlyAscentMaxPitchDeg) || 6.5,
+      1,
+      15,
+    );
+    const earlyAscentPitchDeg = 0.8 + (earlyAscentPitchProgress * (earlyAscentMaxPitchDeg - 0.8));
+    const earlyAscentLimitedDirection = limitDirectionAngle({
+      desiredDirection: direction,
+      referenceDirection: up,
+      maxAngleRad: rad(earlyAscentPitchDeg),
+      fallback: up,
+    });
+    direction = earlyAscentLimitedDirection.direction;
+    earlyAscentPitchLimited = earlyAscentLimitedDirection.limited;
+  }
   return {
     direction,
     climbWeight: dot(direction, up),
@@ -489,6 +656,7 @@ function stateDrivenAscentProfile({
     aoaLimited: aoaLimited.limited,
     towerClearActive,
     towerClearLimited,
+    earlyAscentPitchLimited,
   };
 }
 
@@ -503,6 +671,11 @@ export function computeAutopilotCommand({
   muKm3S2,
   earthRadiusKm,
 }) {
+  const finalizeCommand = (command) => augmentAttitudeCommand(command, {
+    stageIndex: Number(runtime?.stageIndex) || 0,
+    altitudeKm: Number(orbital?.altitudeKm) || 0,
+    dynamicPressurePa,
+  });
   const config = LAUNCH_AUTOPILOT_CONFIG;
   const targetAltitudeKm = Number(runtime?.targetOrbitAltitudeKm) || config.targetOrbitAltitudeKm;
   const targetAltitudeSafe = Math.max(targetAltitudeKm, 1);
@@ -536,19 +709,19 @@ export function computeAutopilotCommand({
   if (runtime.autopilotMode === "autopilot-orbital-hold") {
     if (!stableTargetOrbit) {
       runtime.autopilotMode = "autopilot-coast-to-circularize";
-      return {
+      return finalizeCommand({
         phase: "coast",
         throttle: 0,
         direction: tangent,
         mode: "autopilot-reacquire-orbit",
-      };
+      });
     }
-    return {
+    return finalizeCommand({
       phase: "orbit",
       throttle: 0,
       direction: tangent,
       mode: "autopilot-orbital-hold",
-    };
+    });
   }
 
   if (runtime.autopilotMode === "autopilot-coast-to-circularize") {
@@ -564,12 +737,12 @@ export function computeAutopilotCommand({
         add(scale(tangent, 1), scale(up, 0.5)),
         up,
       );
-      return {
+      return finalizeCommand({
         phase: "powered",
         throttle: clamp(config.ascentClimbThrottleFloor ?? 0.92, 0.3, 1),
         direction: recoveryDirection,
         mode: "autopilot-climb-recovery",
-      };
+      });
     }
     const tta = Number(orbital.timeToApoapsisSec);
     const highOrbitEarlyCircularization =
@@ -587,12 +760,12 @@ export function computeAutopilotCommand({
       || (!Number.isFinite(tta) && orbital.altitudeKm >= config.circularizationMinAltitudeKm)
       || highOrbitEarlyCircularization;
     if (!readyForCircularization) {
-      return {
+      return finalizeCommand({
         phase: "coast",
         throttle: 0,
         direction: tangent,
         mode: "autopilot-coast-to-apoapsis",
-      };
+      });
     }
     runtime.autopilotMode = "autopilot-circularization";
   }
@@ -628,21 +801,21 @@ export function computeAutopilotCommand({
     const doneCircularizing = stableTargetOrbit && tangentialSpeedErrorKmS <= 0.02;
     if (doneCircularizing) {
       runtime.autopilotMode = "autopilot-orbital-hold";
-      return {
+      return finalizeCommand({
         phase: "orbit",
         throttle: 0,
         direction: tangent,
         mode: "autopilot-orbital-hold",
-      };
+      });
     }
     if (aboveCircularSpeed && !canFineTrimCircularization && !highOrbitPeriRaiseActive) {
       runtime.autopilotMode = "autopilot-coast-to-circularize";
-      return {
+      return finalizeCommand({
         phase: "coast",
         throttle: 0,
         direction: tangent,
         mode: "autopilot-coast-for-recapture",
-      };
+      });
     }
     const radialDamping = clamp(-radialSpeedKmS * 0.55, -0.22, 0.22);
     let direction = normalize(
@@ -682,12 +855,12 @@ export function computeAutopilotCommand({
         0.22,
         0.40,
       );
-      return {
+      return finalizeCommand({
         phase: "powered",
         throttle,
         direction,
         mode: "autopilot-high-orbit-periapsis-raise",
-      };
+      });
     }
     const finalPeriTrimActive =
       targetAltitudeSafe > 350
@@ -721,12 +894,12 @@ export function computeAutopilotCommand({
       minimumCircularizationThrottle,
       0.72,
     );
-    return {
+    return finalizeCommand({
       phase: "powered",
       throttle,
       direction,
       mode: "autopilot-circularization",
-    };
+    });
   }
 
   const ascentProfile = stateDrivenAscentProfile({
@@ -861,12 +1034,12 @@ export function computeAutopilotCommand({
         0.36,
         0.88,
       );
-      return {
+      return finalizeCommand({
         phase: "powered",
         throttle: highOrbitInsertionThrottle,
         direction,
         mode: "autopilot-high-orbit-insertion",
-      };
+      });
     }
     mode = "autopilot-apoapsis-raise";
   } else {
@@ -1011,12 +1184,12 @@ export function computeAutopilotCommand({
     );
   if (shouldCoastToApoapsis) {
     runtime.autopilotMode = "autopilot-coast-to-circularize";
-    return {
+    return finalizeCommand({
       phase: "coast",
       throttle: 0,
       direction,
       mode: "autopilot-meco-coast",
-    };
+    });
   }
 
   const hold = applyVerticalHoldSteering({
@@ -1033,10 +1206,10 @@ export function computeAutopilotCommand({
     }
   }
 
-  return {
+  return finalizeCommand({
     phase: "powered",
     throttle,
     direction,
     mode,
-  };
+  });
 }
