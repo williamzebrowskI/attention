@@ -578,6 +578,7 @@ function computeBoosterRcsAssist({
   }
   if (!(authority > 0.01)) {
     return {
+      accelerationKmS2: { x: 0, y: 0, z: 0 },
       active: false,
       errorDeg,
       authority: 0,
@@ -592,6 +593,7 @@ function computeBoosterRcsAssist({
   }
   if (!correctionDir) {
     return {
+      accelerationKmS2: { x: 0, y: 0, z: 0 },
       active: false,
       errorDeg,
       authority: 0,
@@ -601,8 +603,18 @@ function computeBoosterRcsAssist({
   const jets = Array.from(
     new Set(rcsJetSelection(correctionDir, forward, safeUp)),
   );
+  const linearAuthority = clamp(
+    Math.max(errorAuthority, phaseAuthorityFloor * 0.35)
+      * clamp(Number(controlAuthorityScale) || 1, 0.35, 1.4)
+      * throttleBlend
+      * Math.max(0.08, aeroSuppression),
+    0,
+    1,
+  );
+  const accelerationMagnitudeKmS2 = (LAUNCH_RCS_CONFIG.maxAccelerationKmS2 || 0) * linearAuthority;
   return {
     active: jets.length > 0 && authority > 0.02,
+    accelerationKmS2: scale(correctionDir, accelerationMagnitudeKmS2),
     errorDeg,
     authority,
     jets,
@@ -1412,6 +1424,8 @@ function boosterTelemetryFromState({
     rcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
     rcsAuthority: Number(runtime.booster.lastStep?.rcsAuthority) || 0,
+    rcsAccelerationKmS2: cloneLaunchVector(runtime.booster.lastStep?.rcsAccelerationKmS2),
+    rcsAccelerationMagKmS2: Number(runtime.booster.lastStep?.rcsAccelerationMagKmS2) || 0,
     rcsJets: Array.isArray(runtime.booster.lastStep?.rcsJets) ? [...runtime.booster.lastStep.rcsJets] : [],
     angleOfAttackDeg: Number(runtime.booster.lastStep?.angleOfAttackDeg) || 0,
     qAlphaPaRad: Number(runtime.booster.lastStep?.qAlphaPaRad) || 0,
@@ -1483,6 +1497,8 @@ function zeroBoosterStep(guidanceMode = "booster-idle") {
     rcsActive: false,
     rcsErrorDeg: 0,
     rcsAuthority: 0,
+    rcsAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    rcsAccelerationMagKmS2: 0,
     rcsJets: [],
   };
 }
@@ -4484,12 +4500,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
 
     const up = orbital.up;
     let direction = composeBoosterDirection(up, relVel, orbital.tangentialVector, command.directionMix);
-    const siteTargetState = command.captureLike && catchFrame
-      ? {
-        position: catchFrame.centerPosition,
-        velocity: catchFrame.centerVelocity,
-      }
-      : padState;
+    const siteTargetingEnabled = command.siteTargetingEnabled !== false;
+    const siteTargetState = siteTargetingEnabled
+      ? (
+        command.captureLike && catchFrame
+          ? {
+            position: catchFrame.centerPosition,
+            velocity: catchFrame.centerVelocity,
+          }
+          : padState
+      )
+      : null;
     if (siteTargetState) {
       const lateralToSiteDirection = lateralDirectionTowardTarget(
         boosterState.position,
@@ -4736,11 +4757,16 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     if (!(rcsBurnKg > 1e-12)) {
       boosterRcs.active = false;
       boosterRcs.authority = 0;
+      boosterRcs.accelerationKmS2 = { x: 0, y: 0, z: 0 };
       boosterRcs.jets = [];
       rcsBurnRateKgS = 0;
     }
+    const boosterRcsAccelerationKmS2 = cloneVector(boosterRcs.accelerationKmS2 || { x: 0, y: 0, z: 0 });
     runtime.booster.lastStep = {
-      accelerationKmS2: add(scale(directionActual, accelerationMagKmS2), aero.accelerationKmS2),
+      accelerationKmS2: add(
+        add(scale(directionActual, accelerationMagKmS2), aero.accelerationKmS2),
+        boosterRcsAccelerationKmS2,
+      ),
       throttle: throttleActual,
       throttleCommand: requestedThrottle,
       thrustN,
@@ -4758,6 +4784,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rcsActive: boosterRcs.active,
       rcsErrorDeg: boosterRcs.errorDeg,
       rcsAuthority: boosterRcs.authority,
+      rcsAccelerationKmS2: boosterRcsAccelerationKmS2,
+      rcsAccelerationMagKmS2: length(boosterRcsAccelerationKmS2),
       rcsJets: boosterRcs.jets,
       angleOfAttackDeg: aero.angleOfAttackDeg,
       qAlphaPaRad: aero.qAlphaPaRad,
@@ -6243,6 +6271,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         boosterRcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
         boosterRcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
         boosterRcsAuthority: Number(runtime.booster.lastStep?.rcsAuthority) || 0,
+        boosterRcsAccelerationKmS2: cloneLaunchVectorOrNull(runtime.booster.lastStep?.rcsAccelerationKmS2),
+        boosterRcsAccelerationMagKmS2: Number(runtime.booster.lastStep?.rcsAccelerationMagKmS2) || 0,
         boosterRcsJets: Array.isArray(runtime.booster.lastStep?.rcsJets)
           ? [...runtime.booster.lastStep.rcsJets]
           : [],
@@ -6429,6 +6459,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterRcsActive: Boolean(runtime.booster.telemetry?.rcsActive ?? runtime.booster.lastStep?.rcsActive),
       boosterRcsErrorDeg: Number(runtime.booster.telemetry?.rcsErrorDeg) || Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
       boosterRcsAuthority: Number(runtime.booster.telemetry?.rcsAuthority) || Number(runtime.booster.lastStep?.rcsAuthority) || 0,
+      boosterRcsAccelerationKmS2: cloneLaunchVectorOrNull(runtime.booster.telemetry?.rcsAccelerationKmS2)
+        || cloneLaunchVectorOrNull(runtime.booster.lastStep?.rcsAccelerationKmS2),
+      boosterRcsAccelerationMagKmS2: Number(runtime.booster.telemetry?.rcsAccelerationMagKmS2)
+        || Number(runtime.booster.lastStep?.rcsAccelerationMagKmS2)
+        || 0,
       boosterRcsJets: Array.isArray(runtime.booster.telemetry?.rcsJets)
         ? [...runtime.booster.telemetry.rcsJets]
         : (Array.isArray(runtime.booster.lastStep?.rcsJets) ? [...runtime.booster.lastStep.rcsJets] : []),

@@ -161,6 +161,7 @@ function main() {
           axis: normalize(snapshot.boosterBodyAxisDirectionKm),
           up: normalize(subtract(liveBooster.position, earthState.position)),
           omega: length(snapshot.boosterBodyAngularRateRadS || { x: 0, y: 0, z: 0 }),
+          rcsAccel: Number(snapshot.boosterRcsAccelerationMagKmS2) || 0,
         });
       }
       if (samples.length >= 24) {
@@ -183,6 +184,7 @@ function main() {
   let maxEarlyStepAngleDeg = 0;
   let totalTurnDeg = 0;
   let maxOmega = 0;
+  let maxRcsAccel = 0;
   for (let index = 1; index < samples.length; index += 1) {
     const stepAngle = angleDeg(samples[index - 1].axis, samples[index].axis);
     maxStepAngleDeg = Math.max(maxStepAngleDeg, stepAngle);
@@ -191,12 +193,14 @@ function main() {
     }
     totalTurnDeg += stepAngle;
     maxOmega = Math.max(maxOmega, Number(samples[index].omega) || 0);
+    maxRcsAccel = Math.max(maxRcsAccel, Number(samples[index].rcsAccel) || 0);
   }
 
   assert(maxStepAngleDeg < 18, `expected continuous 6-DOF attitude motion, got max step angle ${maxStepAngleDeg} deg`);
   assert(maxEarlyStepAngleDeg < 8, `expected gentle early post-hotstage settling, got max early step angle ${maxEarlyStepAngleDeg} deg`);
-  assert(totalTurnDeg > 6.5, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
+  assert(totalTurnDeg > 5.5, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
   assert(maxOmega > 0.01, `expected nontrivial angular-rate build-up, got ${maxOmega} rad/s`);
+  assert(maxRcsAccel > 1e-7, `expected booster RCS to contribute translational acceleration, got ${maxRcsAccel} km/s^2`);
 
   console.log("PASS booster-6dof-attitude-lock");
 }

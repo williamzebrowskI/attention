@@ -23,6 +23,9 @@ function main() {
     bodyUpAlignment: 0.64,
   });
   assert(separationFlip.phase === "separation-flip", `expected separation-flip, got ${separationFlip.phase}`);
+  assert(separationFlip.siteTargetingEnabled === false, "expected separation-flip to suppress pad-target steering");
+  assert(separationFlip.siteVectorWeight === 0, `expected no separation-flip site vector weight, got ${separationFlip.siteVectorWeight}`);
+  assert(separationFlip.siteVelocityWeight === 0, `expected no separation-flip site velocity weight, got ${separationFlip.siteVelocityWeight}`);
 
   const separationCoast = computeBoosterRecoveryCommand({
     altitudeKm: 70,
@@ -40,6 +43,9 @@ function main() {
     bodyUpAlignment: -0.08,
   });
   assert(separationCoast.phase === "separation-coast", `expected separation-coast, got ${separationCoast.phase}`);
+  assert(separationCoast.siteTargetingEnabled === false, "expected separation-coast to suppress pad-target steering");
+  assert(separationCoast.siteVectorWeight === 0, `expected no separation-coast site vector weight, got ${separationCoast.siteVectorWeight}`);
+  assert(separationCoast.siteVelocityWeight === 0, `expected no separation-coast site velocity weight, got ${separationCoast.siteVelocityWeight}`);
 
   const boostback = computeBoosterRecoveryCommand({
     altitudeKm: 68,

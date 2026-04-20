@@ -76,8 +76,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
   );
 
   const separationFlipMinSec = 0.55;
-  const separationFlipMaxSec = 4.6;
-  const separationCoastMaxSec = 7.0;
+  const separationFlipMaxSec = 5.4;
+  const separationCoastMaxSec = 8.4;
   const entryBurnUpperKm = 74;
   const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
@@ -127,16 +127,17 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
-      attitudeResponseScale: 0.10 + (0.42 * flipPhaseProgress),
-      attitudeTargetBlend: 0.08 + (0.46 * flipPhaseProgress),
+      attitudeResponseScale: 0.08 + (0.34 * flipPhaseProgress),
+      attitudeTargetBlend: 0.05 + (0.34 * flipPhaseProgress),
+      siteTargetingEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.84 - (0.42 * flipPhaseProgress),
-        retrograde: 0.18 + (0.36 * flipPhaseProgress),
-        antiTangent: 0.10 + (0.22 * flipPhaseProgress),
+        up: 0.92 - (0.30 * flipPhaseProgress),
+        retrograde: 0.08 + (0.24 * flipPhaseProgress),
+        antiTangent: 0.04 + (0.16 * flipPhaseProgress),
       },
-      siteVectorWeight: 0.06 + (0.12 * flipPhaseProgress),
-      siteVelocityWeight: 0.08 + (0.12 * flipPhaseProgress),
+      siteVectorWeight: 0,
+      siteVelocityWeight: 0,
       touchdownReady: false,
     };
   }
@@ -149,16 +150,17 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
-      attitudeResponseScale: 0.48 + (0.18 * coastPhaseProgress),
-      attitudeTargetBlend: 0.58 + (0.16 * coastPhaseProgress),
+      attitudeResponseScale: 0.28 + (0.24 * coastPhaseProgress),
+      attitudeTargetBlend: 0.22 + (0.28 * coastPhaseProgress),
+      siteTargetingEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.42 - (0.12 * coastPhaseProgress),
-        retrograde: 0.34 + (0.10 * coastPhaseProgress),
-        antiTangent: 0.22 + (0.08 * coastPhaseProgress),
+        up: 0.58 - (0.18 * coastPhaseProgress),
+        retrograde: 0.18 + (0.16 * coastPhaseProgress),
+        antiTangent: 0.12 + (0.10 * coastPhaseProgress),
       },
-      siteVectorWeight: 0.18 + (0.06 * coastPhaseProgress),
-      siteVelocityWeight: 0.20 + (0.08 * coastPhaseProgress),
+      siteVectorWeight: 0,
+      siteVelocityWeight: 0,
       touchdownReady: false,
     };
   }

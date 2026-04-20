@@ -257,7 +257,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420b";
+const FRONTEND_MODULE_VERSION = "20260420e";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -6472,6 +6472,8 @@ function updateBoosterVehicleVisuals() {
     fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
   });
   if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
+    visual.userData = visual.userData || {};
+    visual.userData.boosterWasVisible = false;
     applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
     applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
       enabled: false,
@@ -6488,6 +6490,9 @@ function updateBoosterVehicleVisuals() {
     applyReentryHeatToVisual(visual, 0, true);
     return;
   }
+  visual.userData = visual.userData || {};
+  const boosterBecameVisible = !Boolean(visual.userData.boosterWasVisible);
+  visual.userData.boosterWasVisible = true;
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BOOSTER_BODY_ID);
   const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
   const boosterCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BOOSTER_BODY_ID);
@@ -6579,11 +6584,33 @@ function updateBoosterVehicleVisuals() {
   }
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
+    if (boosterBecameVisible) {
+      const stackedLaunchVisual = bodyVisuals.get(LAUNCH_BODY_ID);
+      if (stackedLaunchVisual?.tiltGroup?.quaternion) {
+        visual.tiltGroup.quaternion.copy(stackedLaunchVisual.tiltGroup.quaternion);
+      } else {
+        visual.tiltGroup.quaternion.copy(targetQuaternion);
+      }
+      applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+        sceneParent: effectSceneParent,
+        nowMs: effectNowMs,
+        bodyVisible: true,
+        bodyWorldPosition: visual.root.getWorldPosition(new THREE_NS.Vector3()),
+        earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+        earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+        renderRadiusScene: visual.renderRadius,
+      });
+      const heatEligibleImmediate = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
+      if (!heatEligibleImmediate) {
+        applyReentryHeatToVisual(visual, 0, true);
+      }
+      return;
+    }
     const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
     const separationLike = boosterPhase.includes("separation");
     const slerpAlpha = bodyAxisScene
-      ? (separationLike ? 0.14 : 0.28)
-      : (separationLike ? 0.09 : 0.2);
+      ? (separationLike ? 0.08 : 0.28)
+      : (separationLike ? 0.06 : 0.2);
     visual.tiltGroup.quaternion.slerp(targetQuaternion, slerpAlpha);
   }
   const effectWorldPosition = new THREE_NS.Vector3();
@@ -10892,15 +10919,37 @@ function resolveBodyLockTargetPosition(bodyId) {
     return null;
   }
   const target = visual.root.position.clone();
-  if (bodyId !== LAUNCH_BODY_ID || !THREE_NS) {
+  if ((bodyId !== LAUNCH_BODY_ID && bodyId !== LAUNCH_BOOSTER_BODY_ID) || !THREE_NS) {
     return target;
   }
   if (missionControlScreenController?.isVisible?.()) {
     return target;
   }
-  const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
-  if (boosterDetachedAvailable) {
+  const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, bodyId, Date.now()) || null;
+  const guidanceMode = String(
+    bodyId === LAUNCH_BOOSTER_BODY_ID
+      ? (snapshot?.boosterGuidanceMode || snapshot?.guidanceMode || "")
+      : (snapshot?.guidanceMode || snapshot?.autopilotMode || ""),
+  ).toLowerCase();
+  const altitudeAboveTerrainKm = bodyId === LAUNCH_BOOSTER_BODY_ID
+    ? Number(snapshot?.boosterAltitudeAboveTerrainKm)
+    : Number(snapshot?.altitudeAboveTerrainKm);
+  const earlyAscentCenterLock = (
+    !Number.isFinite(altitudeAboveTerrainKm)
+    || altitudeAboveTerrainKm < 2.5
+    || guidanceMode.includes("pad-release")
+    || guidanceMode.includes("tower-clear")
+    || guidanceMode.includes("vertical")
+    || guidanceMode.includes("separation")
+  );
+  if (earlyAscentCenterLock) {
     return target;
+  }
+  if (bodyId === LAUNCH_BODY_ID) {
+    const boosterDetachedAvailable = hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID);
+    if (boosterDetachedAvailable) {
+      return target;
+    }
   }
   const spinGroup = visual.spinGroup;
   if (!spinGroup) {
@@ -10911,7 +10960,7 @@ function resolveBodyLockTargetPosition(bodyId) {
   const stackAxis = new THREE_NS.Vector3(0, 1, 0).applyQuaternion(worldQuat).normalize();
   const stackHalfHeightScene = (INLINE_STARSHIP_STACK_TOTAL_HEIGHT_KM * DISTANCE_SCALE) * 0.5;
   const offsetMagnitude = Math.max(visual.renderRadius * 0.52, stackHalfHeightScene * 0.9);
-  if (launchVehicleViewPreference === "booster") {
+  if (bodyId === LAUNCH_BODY_ID && launchVehicleViewPreference === "booster") {
     target.addScaledVector(stackAxis, -offsetMagnitude);
   } else {
     target.addScaledVector(stackAxis, offsetMagnitude * 0.38);
