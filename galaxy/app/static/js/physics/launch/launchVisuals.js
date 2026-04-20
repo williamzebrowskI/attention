@@ -1162,6 +1162,9 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     emissiveIntensity: 0.04,
   });
   enforceSolidOpaqueMaterial(THREE, tileBlack);
+  tileBlack.polygonOffset = true;
+  tileBlack.polygonOffsetFactor = -2;
+  tileBlack.polygonOffsetUnits = -2;
   const materials = [stainless, darkSteel, tileBlack];
 
   const stackRoot = new THREE.Group();
@@ -1249,22 +1252,41 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     noseTip.position.y + (radius * 0.12),
   );
 
-  const heatShieldShell = new THREE.Mesh(
-    new THREE.LatheGeometry(shipHullProfile, 96),
+  // Use a real windward-side shell instead of a second nearly-coplanar hull.
+  // The old overlapping shell caused persistent z-fighting that read as
+  // transparency/flicker at true scale.
+  const heatShieldBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius * 1.008,
+      radius * 0.998,
+      shipCylinderHeight * 0.95,
+      64,
+      1,
+      true,
+      -Math.PI * 0.5,
+      Math.PI,
+    ),
     tileBlack,
   );
-  heatShieldShell.scale.set(1.002, 1.002, 0.56);
-  heatShieldShell.rotation.y = Math.PI * 0.5;
-  shipHullGroup.add(heatShieldShell);
+  heatShieldBody.position.y = shipBodyBottomY + (0.5 * shipCylinderHeight);
+  heatShieldBody.rotation.y = Math.PI * 0.5;
+  shipHullGroup.add(heatShieldBody);
 
-  const heatShieldTip = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 0.038, 24, 16),
+  const heatShieldNose = new THREE.Mesh(
+    new THREE.ConeGeometry(
+      radius * 0.94,
+      shipNoseHeight * 1.02,
+      48,
+      1,
+      true,
+      -Math.PI * 0.5,
+      Math.PI,
+    ),
     tileBlack,
   );
-  heatShieldTip.position.copy(noseTip.position);
-  heatShieldTip.scale.set(1, 1, 0.56);
-  heatShieldTip.rotation.y = Math.PI * 0.5;
-  shipHullGroup.add(heatShieldTip);
+  heatShieldNose.position.y = shipBodyTopY + (0.5 * shipNoseHeight);
+  heatShieldNose.rotation.y = Math.PI * 0.5;
+  shipHullGroup.add(heatShieldNose);
 
   const chines = new THREE.Group();
   const chineHeight = clamp(shipNoseHeight * 1.08, shipNoseHeight * 0.78, shipNoseHeight * 1.25);

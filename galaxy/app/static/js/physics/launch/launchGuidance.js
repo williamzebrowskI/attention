@@ -678,9 +678,9 @@ export function computeAutopilotCommand({
         1,
       );
       const throttle = clamp(
-        0.08 + (periRaiseThrottleFactor * 0.12),
-        0.08,
-        0.20,
+        0.22 + (periRaiseThrottleFactor * 0.18),
+        0.22,
+        0.40,
       );
       return {
         phase: "powered",
@@ -710,8 +710,8 @@ export function computeAutopilotCommand({
       ? Math.max(apoWindowThrottleFactor, 0.9)
       : apoWindowThrottleFactor;
     const minimumCircularizationThrottle = finalPeriTrimActive
-      ? 0.14
-      : (targetAltitudeSafe > 350 ? 0.14 : 0.16);
+      ? 0.22
+      : (targetAltitudeSafe > 350 ? 0.22 : 0.16);
     const throttle = clamp(
       (
         (config.circularizationThrottle * (0.35 + (0.65 * closeInFactor)))
@@ -901,6 +901,37 @@ export function computeAutopilotCommand({
         maxAngleRad: Math.acos(clamp(minClimbWeight, -1, 1)),
         fallback: up,
       }).direction;
+    }
+  }
+
+  const stage1DenseAirClimbBandActive =
+    Number(runtime.stageIndex) === 0
+    && Number(orbital.altitudeKm) >= 8
+    && Number(orbital.altitudeKm) <= 30;
+  if (stage1DenseAirClimbBandActive) {
+    const bandProgress = clamp((Number(orbital.altitudeKm) - 8) / 22, 0, 1);
+    const minimumRadialSpeedKmS = 0.11 + (bandProgress * 0.08);
+    const belowClimbMarginKmS = minimumRadialSpeedKmS - radialSpeedKmS;
+    if (belowClimbMarginKmS > 0) {
+      const recoverySeverity = clamp(
+        belowClimbMarginKmS / Math.max(minimumRadialSpeedKmS, 0.08),
+        0,
+        1,
+      );
+      const denseAirUpWeight = clamp(
+        0.18 + (recoverySeverity * 0.26),
+        0.18,
+        0.44,
+      );
+      direction = normalize(
+        add(scale(direction, 1), scale(up, denseAirUpWeight)),
+        up,
+      );
+      throttle = Math.max(
+        throttle,
+        clamp(0.82 + (recoverySeverity * 0.16), 0.82, 0.98),
+      );
+      mode = "autopilot-climb-guard";
     }
   }
 

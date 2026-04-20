@@ -1,3 +1,4 @@
+import { STANDARD_GRAVITY_M_S2, LAUNCH_BOOSTER_CONFIG } from "./launchConfig.js";
 import { resolveBoosterCatchCommand } from "./boosterCatchGuidance.js";
 
 function clamp(value, min, max) {
@@ -15,12 +16,47 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const propellantKg = Math.max(0, Number(input.remainingPropellantKg) || 0);
   const dynamicPressurePa = Math.max(0, Number(input.dynamicPressurePa) || 0);
   const reserveLandingKg = Math.max(0, Number(input.reserveLandingPropellantKg) || 0);
+  const downwardSpeedKmS = Math.max(0, -radialSpeedKmS);
+  const dryMassKg = Math.max(1, Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 1);
+  const totalMassKg = Math.max(dryMassKg + propellantKg, dryMassKg + 1);
+  const maxThrustN = Math.max(
+    0,
+    Number(LAUNCH_BOOSTER_CONFIG.thrustSeaLevelN)
+      || Number(LAUNCH_BOOSTER_CONFIG.thrustVacuumN)
+      || 0,
+  );
+  const gravityKmS2 = STANDARD_GRAVITY_M_S2 / 1000;
+  const maxAccelerationKmS2 = maxThrustN > 0
+    ? (maxThrustN / totalMassKg) / 1000
+    : 0;
+  const landingNetDecelKmS2 = Math.max(0.008, maxAccelerationKmS2 - (gravityKmS2 * 0.72));
+  const timeToGroundSec = altitudeKm / Math.max(downwardSpeedKmS, 0.02);
+  const desiredLateralClosingKmS = clamp(
+    launchSiteLateralRangeKm / Math.max(timeToGroundSec, 18),
+    0,
+    0.42,
+  );
+  const lateralClosingNeedNorm = clamp(
+    (desiredLateralClosingKmS - launchSiteLateralClosingSpeedKmS) / Math.max(desiredLateralClosingKmS, 0.10),
+    0,
+    1,
+  );
+  const landingBurnTriggerAltitudeKm = clamp(
+    (
+      (downwardSpeedKmS * downwardSpeedKmS) / Math.max(2 * landingNetDecelKmS2, 1e-6)
+    )
+      + (0.32 * downwardSpeedKmS)
+      + (0.95 * tangentialSpeedKmS)
+      + (0.08 * Math.min(launchSiteLateralRangeKm, 6))
+      + 0.08,
+    0.45,
+    15.5,
+  );
 
   const separationFlipSec = 1.6;
   const separationCoastSec = 4.2;
-  const entryBurnUpperKm = 72;
-  const entryBurnLowerKm = 26;
-  const landingBurnStartKm = 16.0;
+  const entryBurnUpperKm = 74;
+  const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
   const rtlsLateralWindowKm = 130;
   const significantSiteErrorKm = 18;
@@ -72,16 +108,22 @@ export function computeBoosterRecoveryCommand(input = {}) {
     launchSiteLateralRangeKm > significantSiteErrorKm
     || launchSiteRangeKm > (rtlsLateralWindowKm * 1.1);
   const hasBoostbackBudget = propellantKg > (reserveLandingKg * 1.12);
+  const returnEnergyNorm = Math.max(
+    lateralErrorNorm,
+    clamp((tangentialSpeedKmS - 0.95) / 2.6, 0, 1),
+    lateralClosingNeedNorm,
+  );
   if (
-    altitudeKm > entryBurnUpperKm
+    altitudeKm > 46
     && hasBoostbackBudget
     && (
       tangentialSpeedKmS > 1.05
       || farFromLaunchSite
+      || returnEnergyNorm > 0.2
     )
   ) {
     const tangentialScale = clamp((tangentialSpeedKmS - 1.05) / 2.8, 0, 1);
-    const rtlsDemand = Math.max(lateralErrorNorm, closingDeficitNorm);
+    const rtlsDemand = Math.max(returnEnergyNorm, closingDeficitNorm);
     return {
       phase: "boostback",
       guidanceMode: "booster-boostback",
@@ -100,37 +142,41 @@ export function computeBoosterRecoveryCommand(input = {}) {
   }
 
   if (altitudeKm <= entryBurnUpperKm && altitudeKm >= entryBurnLowerKm) {
-    if (radialSpeedKmS < -0.08 || dynamicPressurePa > 9_500) {
-      const descentFactor = clamp((-radialSpeedKmS - 0.08) / 0.32, 0, 1);
+    const entryInterfaceNorm = Math.max(
+      clamp((dynamicPressurePa - 8_000) / 18_000, 0, 1),
+      clamp((downwardSpeedKmS - 0.12) / 0.42, 0, 1),
+      clamp((launchSiteLateralRangeKm - 4) / 18, 0, 1),
+    );
+    if (entryInterfaceNorm > 0.08) {
       return {
         phase: "entry-burn",
         guidanceMode: "booster-entry-burn",
-        throttle: clamp(0.28 + (0.42 * descentFactor), 0.24, 0.8),
-        directionMix: { up: 0.74, retrograde: 0.42, antiTangent: 0.74 },
-        siteVectorWeight: clamp(0.42 + (0.22 * lateralErrorNorm), 0.3, 0.68),
-        siteVelocityWeight: clamp(0.26 + (0.16 * closingDeficitNorm), 0.2, 0.52),
+        throttle: clamp(0.30 + (0.44 * entryInterfaceNorm), 0.28, 0.82),
+        directionMix: { up: 0.82, retrograde: 0.34, antiTangent: 0.66 },
+        siteVectorWeight: clamp(0.36 + (0.20 * lateralErrorNorm), 0.28, 0.64),
+        siteVelocityWeight: clamp(0.24 + (0.18 * lateralClosingNeedNorm), 0.18, 0.54),
         touchdownReady: false,
       };
     }
     return {
       phase: "ballistic-descent",
-      guidanceMode: "booster-ballistic",
+      guidanceMode: "booster-entry-guidance",
       throttle: 0,
-      directionMix: { up: 0.2, retrograde: 0.24, antiTangent: 0.42 },
-      siteVectorWeight: clamp(0.34 + (0.24 * lateralErrorNorm), 0.24, 0.58),
-      siteVelocityWeight: clamp(0.2 + (0.14 * closingDeficitNorm), 0.16, 0.42),
+      directionMix: { up: 0.22, retrograde: 0.18, antiTangent: 0.48 },
+      siteVectorWeight: clamp(0.38 + (0.20 * lateralErrorNorm), 0.26, 0.58),
+      siteVelocityWeight: clamp(0.22 + (0.16 * lateralClosingNeedNorm), 0.18, 0.44),
       touchdownReady: false,
     };
   }
 
-  if (altitudeKm > landingBurnStartKm) {
+  if (altitudeKm > landingBurnTriggerAltitudeKm) {
     return {
       phase: "descent-coast",
       guidanceMode: "booster-descent-coast",
       throttle: 0,
-      directionMix: { up: 0.18, retrograde: 0.22, antiTangent: 0.54 },
-      siteVectorWeight: clamp(0.34 + (0.34 * lateralErrorNorm), 0.22, 0.72),
-      siteVelocityWeight: clamp(0.24 + (0.18 * closingDeficitNorm), 0.16, 0.5),
+      directionMix: { up: 0.18, retrograde: 0.16, antiTangent: 0.56 },
+      siteVectorWeight: clamp(0.38 + (0.30 * lateralErrorNorm), 0.24, 0.76),
+      siteVelocityWeight: clamp(0.26 + (0.22 * lateralClosingNeedNorm), 0.18, 0.54),
       touchdownReady: false,
     };
   }
@@ -155,8 +201,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const targetRadialSpeedKmS = -targetDescentRateKmS;
   const radialErrorKmS = targetRadialSpeedKmS - radialSpeedKmS;
   let throttle = clamp(
-    0.24 + (radialErrorKmS * 4.1) + (tangentialSpeedKmS * 0.22),
-    0.2,
+    0.28 + (radialErrorKmS * 4.6) + (tangentialSpeedKmS * 0.24) + (lateralClosingNeedNorm * 0.10),
+    0.24,
     1.0,
   );
   if (altitudeKm < 2.0 && radialSpeedKmS < -0.04) {
@@ -172,9 +218,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
     phase: "landing-burn",
     guidanceMode: "booster-landing-burn",
     throttle,
-    directionMix: { up: 1.0, retrograde: 0.18, antiTangent: 0.95 },
-    siteVectorWeight: clamp(0.08 + (0.22 * terminalRangeNorm), 0.04, 0.32),
-    siteVelocityWeight: clamp(0.06 + (0.18 * terminalRangeNorm), 0.04, 0.28),
+    directionMix: { up: 1.0, retrograde: 0.20, antiTangent: 0.92 },
+    siteVectorWeight: clamp(0.10 + (0.26 * terminalRangeNorm), 0.06, 0.36),
+    siteVelocityWeight: clamp(0.08 + (0.20 * terminalRangeNorm), 0.05, 0.30),
     touchdownReady: altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.03,
   };
 }

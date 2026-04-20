@@ -113,9 +113,9 @@ export function spacecraftMinOrbitDistanceScene({
     ? Number(bodyRadiusKm) * finiteNumber(distanceScale, 0)
     : Math.max(finiteNumber(renderRadius, 0) * 0.5, 0);
   return Math.max(
-    0.00000012,
-    spanScene * 1.1,
-    bodyRadiusScene * 3.25,
+    0.00000004,
+    spanScene * 0.38,
+    bodyRadiusScene * 2.0,
   );
 }
 
@@ -141,9 +141,9 @@ export function spacecraftPreferredCameraDistanceScene({
   const requestedNearSurface = finiteNumber(nearSurface, minDistance);
   return Math.max(
     minDistance,
-    requestedNearSurface * 1.35,
-    spanScene * 9.5,
-    0.00000125,
+    requestedNearSurface * 1.22,
+    spanScene * 3.2,
+    0.00000035,
   );
 }
 

@@ -1197,6 +1197,14 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
     metalness: 0.54,
   });
   enforceSolidOpaqueMaterial(THREE, nozzleMat);
+  const heatShieldMat = darkSteel.clone();
+  heatShieldMat.color = new THREE.Color(0x151a22);
+  heatShieldMat.roughness = 0.8;
+  heatShieldMat.metalness = 0.16;
+  heatShieldMat.polygonOffset = true;
+  heatShieldMat.polygonOffsetFactor = -2;
+  heatShieldMat.polygonOffsetUnits = -2;
+  enforceSolidOpaqueMaterial(THREE, heatShieldMat);
 
   const root = new THREE.Group();
 
@@ -1259,14 +1267,38 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
   );
 
   // Simple “tile band”
-  const tileBand = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 1.003, radius * 1.003, shipBodyHeight * 0.95, 28, 1, false),
-    darkSteel,
+  const heatShieldBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      radius * 1.008,
+      radius * 1.002,
+      shipBodyHeight * 0.95,
+      28,
+      1,
+      true,
+      -Math.PI * 0.5,
+      Math.PI,
+    ),
+    heatShieldMat,
   );
-  tileBand.position.y = shipBody.position.y;
-  tileBand.scale.set(1.001, 1, 0.56);
-  tileBand.rotation.y = Math.PI * 0.5;
-  shipGroup.add(tileBand);
+  heatShieldBody.position.y = shipBody.position.y;
+  heatShieldBody.rotation.y = Math.PI * 0.5;
+  shipGroup.add(heatShieldBody);
+
+  const heatShieldNose = new THREE.Mesh(
+    new THREE.ConeGeometry(
+      radius * 0.94,
+      noseHeight * 1.02,
+      28,
+      1,
+      true,
+      -Math.PI * 0.5,
+      Math.PI,
+    ),
+    heatShieldMat,
+  );
+  heatShieldNose.position.y = shipNose.position.y;
+  heatShieldNose.rotation.y = Math.PI * 0.5;
+  shipGroup.add(heatShieldNose);
 
   // Ship engines (returns exact exit planes + offsets)
   const shipEngines = addInlineStarshipEngines(THREE, shipGroup, darkSteel, radius, shipHeight);
@@ -1307,7 +1339,7 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
 
   return {
     root,
-    materials: [stainless, darkSteel, nozzleMat],
+    materials: [stainless, darkSteel, nozzleMat, heatShieldMat],
     state: {
       boosterGroup,
       shipGroup,

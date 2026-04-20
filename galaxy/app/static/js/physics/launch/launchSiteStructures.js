@@ -102,6 +102,20 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function enforceSolidOpaqueMaterial(THREE, material) {
+  if (!THREE || !material) {
+    return material;
+  }
+  material.transparent = false;
+  material.opacity = 1;
+  material.alphaTest = 0;
+  material.depthWrite = true;
+  material.depthTest = true;
+  material.side = THREE.FrontSide;
+  material.needsUpdate = true;
+  return material;
+}
+
 function rad(value) {
   return (Number(value) || 0) * (Math.PI / 180);
 }
@@ -707,6 +721,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  enforceSolidOpaqueMaterial(THREE, concrete);
   const darkSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x2b3239),
     roughness: 0.72,
@@ -715,6 +730,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  enforceSolidOpaqueMaterial(THREE, darkSteel);
   const towerSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x8e949c),
     roughness: 0.58,
@@ -723,6 +739,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  enforceSolidOpaqueMaterial(THREE, towerSteel);
   const carriageSteel = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0xb8bfc8),
     roughness: 0.5,
@@ -731,6 +748,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  enforceSolidOpaqueMaterial(THREE, carriageSteel);
   const darkPaint = new THREE.MeshStandardMaterial({
     color: new THREE.Color(0x171b20),
     roughness: 0.78,
@@ -739,6 +757,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  enforceSolidOpaqueMaterial(THREE, darkPaint);
 
   // Keep the launch table as a few solid masses instead of stacked thin plates.
   const slabBaseHeightKm = profile.slabHeightKm + profile.slabApronHeightKm;
@@ -1143,6 +1162,7 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const state = launchStructureVisual?.state;
   const THREE = options?.THREE;
   const scene = options?.scene;
+  const sceneOriginKm = options?.sceneOriginKm;
   const earthPositionKm = options?.earthPositionKm;
   const earthAxes = options?.earthAxes;
   if (!root || !state || !THREE || !scene || !earthPositionKm || !earthAxes) {
@@ -1162,9 +1182,8 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
   const altitudeKm = Math.max(0, Number(launchSite?.altitudeKm) || 0);
   const dtSeconds = Math.max(0, Number(options?.dtSeconds) || 0);
   const distanceScale = Number(options?.distanceScale) || 1;
-  const { east, north, up } = eastNorthUpBasisBodyFixed(THREE, latitudeDeg, longitudeDeg);
+  const { east, up } = eastNorthUpBasisBodyFixed(THREE, latitudeDeg, longitudeDeg);
   const eastWorld = transformBodyFixedVectorToWorld(THREE, east, earthAxes);
-  const northWorld = transformBodyFixedVectorToWorld(THREE, north, earthAxes);
   const upWorld = transformBodyFixedVectorToWorld(THREE, up, earthAxes);
   const rootWorldKm = resolveLaunchSiteAnchorWorldKm({
     launchSite,
@@ -1177,13 +1196,26 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
     root.visible = false;
     return;
   }
-  root.position.copy(sceneVectorFromKm(THREE, rootWorldKm).multiplyScalar(distanceScale));
+  const originKm = finiteVectorKm(sceneOriginKm)
+    ? sceneOriginKm
+    : { x: 0, y: 0, z: 0 };
+  root.position.copy(sceneVectorFromKm(THREE, {
+    x: (Number(rootWorldKm.x) || 0) - (Number(originKm.x) || 0),
+    y: (Number(rootWorldKm.y) || 0) - (Number(originKm.y) || 0),
+    z: (Number(rootWorldKm.z) || 0) - (Number(originKm.z) || 0),
+  }).multiplyScalar(distanceScale));
 
   const eastScene = sceneVectorFromKm(THREE, eastWorld).normalize();
-  const northScene = sceneVectorFromKm(THREE, northWorld).normalize();
   const upScene = sceneVectorFromKm(THREE, upWorld).normalize();
+  // Build a right-handed local frame. `east, up, north` is left-handed and
+  // can make front-face culling look like transparency/flicker.
+  const forwardScene = new THREE.Vector3().crossVectors(eastScene, upScene).normalize();
+  if (!(forwardScene.lengthSq() > 1e-12)) {
+    root.visible = false;
+    return;
+  }
   const basis = new THREE.Matrix4();
-  basis.makeBasis(eastScene, upScene, northScene);
+  basis.makeBasis(eastScene, upScene, forwardScene);
   root.quaternion.setFromRotationMatrix(basis);
   root.visible = true;
 

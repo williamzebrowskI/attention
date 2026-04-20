@@ -58,10 +58,10 @@ function main() {
     nearSurface: minDistance,
   });
 
-  assert(minDistance >= 0.00000012, `expected practical spacecraft min distance, got ${minDistance}`);
-  assert(minDistance < 0.0000003, `expected closer spacecraft zoom to remain possible, got ${minDistance}`);
-  assert(preferredDistance >= 0.00000125, `expected practical spacecraft focus distance, got ${preferredDistance}`);
-  assert(preferredDistance < 0.0000025, `expected spacecraft focus distance to remain reasonably close, got ${preferredDistance}`);
+  assert(minDistance >= 0.00000004, `expected practical spacecraft min distance, got ${minDistance}`);
+  assert(minDistance < 0.00000012, `expected near-hull spacecraft zoom to remain possible, got ${minDistance}`);
+  assert(preferredDistance >= 0.00000035, `expected practical spacecraft focus distance, got ${preferredDistance}`);
+  assert(preferredDistance < 0.0000009, `expected spacecraft focus distance to remain reasonably close, got ${preferredDistance}`);
   assert(preferredDistance > minDistance, "preferred spacecraft camera distance should exceed min distance");
 
   const earthScene = { x: 0, y: 0, z: 0 };

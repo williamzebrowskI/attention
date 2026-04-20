@@ -99,7 +99,7 @@ import {
   spacecraftEarthRelativeOrbitAngles,
   spacecraftSurfaceRelativeOrbitFrame,
   spacecraftPreferredCameraDistanceScene,
-} from "./ui/spacecraftCameraFraming.js";
+} from "./ui/spacecraftCameraFraming.js?v=20260419t";
 import {
   resolveSnapshotControlTelemetry,
   resolveSnapshotTargetTelemetry,
@@ -257,7 +257,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419q";
+const FRONTEND_MODULE_VERSION = "20260419t";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -569,6 +569,39 @@ function finiteVectorKm(v) {
     && Number.isFinite(Number(v.x))
     && Number.isFinite(Number(v.y))
     && Number.isFinite(Number(v.z)),
+  );
+}
+
+function cloneFiniteVectorKm(v) {
+  if (!finiteVectorKm(v)) {
+    return null;
+  }
+  return {
+    x: Number(v.x) || 0,
+    y: Number(v.y) || 0,
+    z: Number(v.z) || 0,
+  };
+}
+
+function resolveSceneOriginKm(runtimeCoordsKm = runtimeCoordsKmById) {
+  const earthCoords = runtimeCoordsKm?.get("earth") || positionsById.get("earth")?.coordinates_km;
+  return cloneFiniteVectorKm(earthCoords) || { x: 0, y: 0, z: 0 };
+}
+
+function scenePositionFromCoordsKm(coordsKm, originKm = lastSceneOriginKm) {
+  const origin = finiteVectorKm(originKm) ? originKm : { x: 0, y: 0, z: 0 };
+  return {
+    x: ((Number(coordsKm?.x) || 0) - (Number(origin.x) || 0)) * DISTANCE_SCALE,
+    y: ((Number(coordsKm?.z) || 0) - (Number(origin.z) || 0)) * DISTANCE_SCALE,
+    z: ((Number(coordsKm?.y) || 0) - (Number(origin.y) || 0)) * DISTANCE_SCALE,
+  };
+}
+
+function sceneOffsetFromKm(deltaKm) {
+  return new THREE_NS.Vector3(
+    (Number(deltaKm?.x) || 0) * DISTANCE_SCALE,
+    (Number(deltaKm?.z) || 0) * DISTANCE_SCALE,
+    (Number(deltaKm?.y) || 0) * DISTANCE_SCALE,
   );
 }
 
@@ -1231,6 +1264,7 @@ let textureCache = new Map();
 let photorealRetryCount = new Map();
 let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
+let lastSceneOriginKm = null;
 let launchSiteStructureVisual = null;
 let illuminationById = new Map();
 let gravityById = new Map();
@@ -5823,10 +5857,11 @@ function updateLaunchTrajectoryPath(snapshot) {
   if (!finiteVectorKm(coordsKm)) {
     return;
   }
+  const scenePoint = scenePositionFromCoordsKm(coordsKm, resolveSceneOriginKm(runtimeCoordsKmById));
   controller.appendPoint({
-    x: (Number(coordsKm.x) || 0) * DISTANCE_SCALE,
-    y: (Number(coordsKm.z) || 0) * DISTANCE_SCALE,
-    z: (Number(coordsKm.y) || 0) * DISTANCE_SCALE,
+    x: scenePoint.x,
+    y: scenePoint.y,
+    z: scenePoint.z,
   });
 }
 
@@ -5893,6 +5928,7 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
   updateLaunchSiteStructureVisual(structure, {
     THREE: THREE_NS,
     scene,
+    sceneOriginKm: resolveSceneOriginKm(runtimeCoordsKmById),
     earthPositionKm: earthCoordsKm,
     earthAxes,
     rocketPositionKm,
@@ -6133,10 +6169,11 @@ function earthAtmosphereEffectSceneContext(nowMs = Date.now()) {
   if (!finiteVectorKm(earthCoordsKm)) {
     return null;
   }
+  const earthScene = scenePositionFromCoordsKm(earthCoordsKm, resolveSceneOriginKm(runtimeCoordsKmById));
   const earthWorldPosition = new THREE_NS.Vector3(
-    (Number(earthCoordsKm.x) || 0) * DISTANCE_SCALE,
-    (Number(earthCoordsKm.z) || 0) * DISTANCE_SCALE,
-    (Number(earthCoordsKm.y) || 0) * DISTANCE_SCALE,
+    earthScene.x,
+    earthScene.y,
+    earthScene.z,
   );
   const pole = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
   const earthAxes = pole
@@ -10043,14 +10080,26 @@ function propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
 }
 
 function applyScenePositions(runtimeCoordsKm) {
+  const sceneOriginKm = resolveSceneOriginKm(runtimeCoordsKm);
+  if (orbit.target) {
+    const previousOriginKm = cloneFiniteVectorKm(lastSceneOriginKm);
+    if (previousOriginKm) {
+      const originDeltaScene = sceneOffsetFromKm({
+        x: (Number(previousOriginKm.x) || 0) - (Number(sceneOriginKm.x) || 0),
+        y: (Number(previousOriginKm.y) || 0) - (Number(sceneOriginKm.y) || 0),
+        z: (Number(previousOriginKm.z) || 0) - (Number(sceneOriginKm.z) || 0),
+      });
+      if (originDeltaScene.lengthSq() > 0) {
+        orbit.target.add(originDeltaScene);
+      }
+    }
+  }
+  lastSceneOriginKm = { ...sceneOriginKm };
+
   const deferredMoons = [];
   const sunCoords = runtimeCoordsKm.get("sun");
   const sunScenePos = finiteVectorKm(sunCoords)
-    ? {
-        x: sunCoords.x * DISTANCE_SCALE,
-        y: sunCoords.z * DISTANCE_SCALE,
-        z: sunCoords.y * DISTANCE_SCALE,
-      }
+    ? scenePositionFromCoordsKm(sunCoords, sceneOriginKm)
     : null;
   const sunRenderRadius = bodyVisuals.get("sun")?.renderRadius ?? 0;
 
@@ -10071,9 +10120,10 @@ function applyScenePositions(runtimeCoordsKm) {
       continue;
     }
 
-    let sceneX = coordsKm.x * DISTANCE_SCALE;
-    let sceneY = coordsKm.z * DISTANCE_SCALE;
-    let sceneZ = coordsKm.y * DISTANCE_SCALE;
+    const sceneCoords = scenePositionFromCoordsKm(coordsKm, sceneOriginKm);
+    let sceneX = sceneCoords.x;
+    let sceneY = sceneCoords.y;
+    let sceneZ = sceneCoords.z;
     if (!Number.isFinite(sceneX) || !Number.isFinite(sceneY) || !Number.isFinite(sceneZ)) {
       visual.root.visible = false;
       continue;
@@ -10148,9 +10198,10 @@ function applyScenePositions(runtimeCoordsKm) {
         parentVisual.root.position.z + relSceneZ,
       );
     } else {
-      const moonSceneX = moonCoords.x * DISTANCE_SCALE;
-      const moonSceneY = moonCoords.z * DISTANCE_SCALE;
-      const moonSceneZ = moonCoords.y * DISTANCE_SCALE;
+      const moonScene = scenePositionFromCoordsKm(moonCoords, sceneOriginKm);
+      const moonSceneX = moonScene.x;
+      const moonSceneY = moonScene.y;
+      const moonSceneZ = moonScene.z;
       if (!Number.isFinite(moonSceneX) || !Number.isFinite(moonSceneY) || !Number.isFinite(moonSceneZ)) {
         visual.root.visible = false;
         continue;
