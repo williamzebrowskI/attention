@@ -4516,6 +4516,35 @@ function missionShipLaunchOptions(missionId, launchMode, launchOptions = {}) {
   };
 }
 
+function hasTrackedManagedTelemetryVehicle() {
+  const trackedBodyId = String(selectedId || "").trim();
+  return Boolean(
+    trackedBodyId
+    && isLaunchTelemetryVehicleId(trackedBodyId)
+    && hasVisibleBodyState(trackedBodyId)
+  );
+}
+
+function focusNewManagedLaunchBody(bodyId, moveCamera = true, options = {}) {
+  const targetId = String(bodyId || "").trim();
+  if (!targetId || !metaById.has(targetId)) {
+    return false;
+  }
+  const preserveExistingManagedSelection = options?.preserveExistingManagedSelection !== false;
+  if (
+    preserveExistingManagedSelection
+    && hasTrackedManagedTelemetryVehicle()
+    && String(selectedId || "").trim() !== targetId
+  ) {
+    return false;
+  }
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+    setObservationMode(OBSERVATION_MODES.BODY_LOCK);
+  }
+  setSelected(targetId, moveCamera);
+  return true;
+}
+
 async function finalizeAcceptedMissionShipLaunch(launchResult, selectedMissionId, missionLaunchMode) {
   if (String(launchResult?.vehicleRole || "").toLowerCase() === "tanker") {
     appendLaunchLogEntry("error", {
@@ -4567,12 +4596,12 @@ async function finalizeAcceptedMissionShipLaunch(launchResult, selectedMissionId
       }
     }
   }
+  let autoTrackedNewShip = false;
   if (launchResult?.shipId) {
     syncRuntimeScenePositionsNow(Date.now());
-    if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
-      setObservationMode(OBSERVATION_MODES.BODY_LOCK);
-    }
-    setSelected(launchResult.shipId, true);
+    autoTrackedNewShip = focusNewManagedLaunchBody(launchResult.shipId, true, {
+      preserveExistingManagedSelection: true,
+    });
   }
   if (isMoonOrbitInjectMissionSelection(selectedMissionId, missionLaunchMode)) {
     const shipId = String(launchResult?.shipId || "").trim();
@@ -4581,7 +4610,9 @@ async function finalizeAcceptedMissionShipLaunch(launchResult, selectedMissionId
       missionId: selectedMissionId,
       launchMode: missionLaunchMode,
       phase: "launch-accepted",
-      detail: "ship created and selection updated",
+      detail: autoTrackedNewShip
+        ? "ship created and tracking switched to new vehicle"
+        : "ship created; existing tracked vehicle preserved",
       reason: "",
       key: "",
       shipId,
@@ -4972,9 +5003,6 @@ function setupLaunchControls() {
         return;
       }
       if (missionLaunchAction === "mission_orbit_inject") {
-        if (selectedMissionId) {
-          launchController.setMissionProfile?.(selectedMissionId);
-        }
         let launchResult = await requestMissionShipLaunch(
           nBodyState,
           selectedMissionId,
@@ -5122,10 +5150,14 @@ function setupLaunchControls() {
       }
       if (launchResult?.pending) {
         syncRuntimeScenePositionsNow(Date.now());
-        setSelected(LAUNCH_BODY_ID, true);
+        focusNewManagedLaunchBody(LAUNCH_BODY_ID, true, {
+          preserveExistingManagedSelection: true,
+        });
       } else if (launchResult?.tankerId) {
         syncRuntimeScenePositionsNow(Date.now());
-        setSelected(launchResult.tankerId, true);
+        focusNewManagedLaunchBody(launchResult.tankerId, true, {
+          preserveExistingManagedSelection: true,
+        });
       }
       appendLaunchLogEntry("info", {
         name: "refuel_tanker_launch_requested",
