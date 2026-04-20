@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.services.launch_site import LaunchSiteService
+from app.services.launch_weather import LaunchWeatherService
 from app.services.physics_lock import PhysicsLockError, validate_catalog_lock
 from app.services.earth_eop import EarthEopService
 from app.services.environment_forcing import (
@@ -77,6 +78,10 @@ except PhysicsLockError as exc:
 service: SolarSystemService = create_default_service()
 launch_site_service = LaunchSiteService()
 environment_forcing_service = EnvironmentForcingService()
+launch_weather_service = LaunchWeatherService(
+    launch_site_provider=launch_site_service.current_site,
+    forcing_context_provider=environment_forcing_service.current_context,
+)
 space_weather_service = SpaceWeatherService(
     forcing_context_provider=environment_forcing_service.current_context,
 )
@@ -101,6 +106,7 @@ async def healthz() -> dict[str, str]:
 @app.on_event("startup")
 async def startup_refresh_launch_site() -> None:
     await launch_site_service.refresh_on_startup()
+    await launch_weather_service.refresh_on_startup()
     await space_weather_service.refresh_on_startup()
     await earth_eop_service.refresh_on_startup()
 
@@ -118,6 +124,7 @@ async def runtime_config() -> dict[str, object]:
         },
         "environment_forcing": {
             "mode": forcing_mode,
+            "launch_weather_mode": str(os.getenv("LAUNCH_WEATHER_MODE") or "hybrid").strip().lower() or "hybrid",
             "space_weather_mode": str(os.getenv("SPACE_WEATHER_MODE") or forcing_mode).strip().lower() or forcing_mode,
             "earth_eop_mode": earth_eop_mode,
             "scenario": forcing_snapshot.get("scenario"),
@@ -160,6 +167,22 @@ async def runtime_space_weather(
     force_refresh: bool = Query(default=False, description="Force a live refresh of cached space-weather inputs."),
 ) -> dict[str, object]:
     snapshot = await space_weather_service.get_snapshot(force_refresh=force_refresh)
+    return snapshot.to_dict()
+
+
+@app.get("/api/launch-weather")
+async def runtime_launch_weather(
+    force_refresh: bool = Query(default=False, description="Force a live refresh of cached launch-site weather inputs."),
+    latitude_deg: float | None = Query(default=None, description="Optional launch-site latitude override in degrees."),
+    longitude_deg: float | None = Query(default=None, description="Optional launch-site longitude override in degrees."),
+    site_name: str | None = Query(default=None, description="Optional launch-site label override."),
+) -> dict[str, object]:
+    snapshot = await launch_weather_service.get_snapshot(
+        latitude_deg=latitude_deg,
+        longitude_deg=longitude_deg,
+        site_name=site_name,
+        force_refresh=force_refresh,
+    )
     return snapshot.to_dict()
 
 

@@ -1237,6 +1237,7 @@ export function createLaunchFleetController({
   getBodyRadiusKm,
   getBodyMassKg,
   sampleEarthAtmosphere,
+  sampleLaunchWeather,
   earthAxes,
   gravitationalConstantKm3PerKgS2,
   emitLaunchEvent,
@@ -1305,6 +1306,15 @@ export function createLaunchFleetController({
       earthAxes: currentEarthAxes,
       earthPole: currentEarthAxes?.pole,
     };
+    const launchWeatherSample = sampleLaunchWeather?.({
+      timestampMs: nowMs,
+      altitudeKm,
+      latitudeDeg,
+      longitudeDeg,
+      relativePositionKm: relPos,
+      earthAxes: currentEarthAxes,
+      earthPole: currentEarthAxes?.pole,
+    }) || null;
     return {
       altitudeKm,
       surfaceSample,
@@ -1317,6 +1327,8 @@ export function createLaunchFleetController({
         timestampMs: nowMs,
         elapsedSeconds,
         seed: windSeed,
+        surfaceWindEastMS: launchWeatherSample?.windEastMS ?? null,
+        surfaceWindNorthMS: launchWeatherSample?.windNorthMS ?? null,
       }),
     };
   }

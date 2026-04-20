@@ -31,6 +31,7 @@ import {
 } from "./physics/atmosphere/atmosphereDynamics.js";
 import { createSpaceWeatherProvider } from "./physics/space_weather/spaceWeatherProvider.js";
 import { createEarthEopProvider } from "./physics/dynamics/earthEopProvider.js";
+import { createLaunchWeatherProvider } from "./physics/launch/launchWeatherProvider.js";
 import {
   LUNAR_MASCON_MODEL_ENABLED,
   computeLunarMasconAccelerationKmS2,
@@ -256,9 +257,10 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419p";
+const FRONTEND_MODULE_VERSION = "20260419q";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const REQUIRED_LAUNCH_MISSION_PROFILES = Object.freeze([
   Object.freeze({
     id: "earth_orbit_hold",
@@ -328,6 +330,7 @@ let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
 let spaceWeatherProvider = null;
 let earthEopProvider = null;
+let launchWeatherProvider = null;
 let environmentForcingSnapshot = null;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
@@ -1780,6 +1783,7 @@ window.addEventListener("resize", onResize);
 window.addEventListener("beforeunload", () => {
   spaceWeatherProvider?.stop?.();
   earthEopProvider?.stop?.();
+  launchWeatherProvider?.stop?.();
   setEarthOrientationRuntimeProvider(null);
   persistLaunchRuntimeState(Date.now(), { force: true });
   stopLiveLocationTracking(false);
@@ -1800,6 +1804,7 @@ async function init() {
   await loadRuntimeConfig();
   setupSpaceWeatherProvider();
   await setupEarthEopProvider();
+  setupLaunchWeatherProvider();
   if (launchFeatureEnabled) {
     try {
       await loadLaunchFeatureModules();
@@ -1855,12 +1860,45 @@ async function setupEarthEopProvider() {
   return earthEopProvider;
 }
 
+function setupLaunchWeatherProvider() {
+  if (launchWeatherProvider) {
+    return;
+  }
+  launchWeatherProvider = createLaunchWeatherProvider({
+    refreshIntervalMs: LAUNCH_WEATHER_REFRESH_INTERVAL_MS,
+    locationProvider: () => ({
+      latitudeDeg: Number(RUNTIME_LAUNCH_SITE?.latitudeDeg),
+      longitudeDeg: Number(RUNTIME_LAUNCH_SITE?.longitudeDeg),
+      siteName: String(RUNTIME_LAUNCH_SITE?.name || "").trim(),
+    }),
+    onError: (error) => {
+      console.warn("[launch-weather] Refresh failed; using cached/default launch-site weather:", error);
+    },
+  });
+  launchWeatherProvider.start();
+}
+
 function currentSpaceWeatherSnapshot() {
   return spaceWeatherProvider?.snapshot?.() || null;
 }
 
 function currentEarthEopSnapshot() {
   return earthEopProvider?.snapshot?.() || null;
+}
+
+function currentLaunchWeatherSnapshot() {
+  return launchWeatherProvider?.snapshot?.() || null;
+}
+
+function longitudeDifferenceDeg(a, b) {
+  if (!Number.isFinite(Number(a)) || !Number.isFinite(Number(b))) {
+    return Number.POSITIVE_INFINITY;
+  }
+  let delta = Math.abs(Number(a) - Number(b)) % 360;
+  if (delta > 180) {
+    delta = 360 - delta;
+  }
+  return delta;
 }
 
 function earthLatLonFromRelativePositionKm(relativePositionKm, earthAxes) {
@@ -1903,8 +1941,59 @@ function earthLatLonFromRelativePositionKm(relativePositionKm, earthAxes) {
   };
 }
 
+function sampleLaunchWeatherRuntime(context = {}) {
+  const snapshot = currentLaunchWeatherSnapshot();
+  if (!snapshot) {
+    return null;
+  }
+  let latitudeDeg = Number(context?.latitudeDeg);
+  let longitudeDeg = Number(context?.longitudeDeg);
+  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
+    const relPositionKm = context?.relativePositionKm;
+    if (finiteVectorKm(relPositionKm)) {
+      const earthAxes = context?.earthAxes || (
+        finiteVectorKm(context?.earthPole)
+          ? { pole: context.earthPole }
+          : null
+      );
+      const latLon = earthLatLonFromRelativePositionKm(relPositionKm, earthAxes);
+      if (latLon) {
+        latitudeDeg = latLon.latitudeDeg;
+        longitudeDeg = latLon.longitudeDeg;
+      }
+    }
+  }
+  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
+    return null;
+  }
+  const siteLatitudeDeg = Number(snapshot.latitudeDeg);
+  const siteLongitudeDeg = Number(snapshot.longitudeDeg);
+  if (
+    !Number.isFinite(siteLatitudeDeg)
+    || !Number.isFinite(siteLongitudeDeg)
+    || Math.abs(latitudeDeg - siteLatitudeDeg) > 2.5
+    || longitudeDifferenceDeg(longitudeDeg, siteLongitudeDeg) > 2.5
+  ) {
+    return null;
+  }
+  const surfaceWind = launchWeatherProvider?.surfaceWindComponentsMS?.() || null;
+  return {
+    source: snapshot.source,
+    temperatureC: Number.isFinite(Number(snapshot.temperatureC)) ? Number(snapshot.temperatureC) : null,
+    relativeHumidity: Number.isFinite(Number(snapshot.relativeHumidity)) ? Number(snapshot.relativeHumidity) : null,
+    windSpeedMS: Number.isFinite(Number(snapshot.windSpeedMS)) ? Number(snapshot.windSpeedMS) : null,
+    windDirectionDeg: Number.isFinite(Number(snapshot.windDirectionDeg)) ? Number(snapshot.windDirectionDeg) : null,
+    windEastMS: Number.isFinite(Number(surfaceWind?.eastMS)) ? Number(surfaceWind.eastMS) : null,
+    windNorthMS: Number.isFinite(Number(surfaceWind?.northMS)) ? Number(surfaceWind.northMS) : null,
+  };
+}
+
 function sampleEarthAtmosphereRuntime(altitudeKm, context = {}) {
   const snapshot = currentSpaceWeatherSnapshot();
+  const launchWeather = sampleLaunchWeatherRuntime({
+    ...context,
+    altitudeKm,
+  });
   const timestampMs = Number(context?.timestampMs) || Date.now();
   let latitudeDeg = Number(context?.latitudeDeg);
   let longitudeDeg = Number(context?.longitudeDeg);
@@ -1936,6 +2025,12 @@ function sampleEarthAtmosphereRuntime(altitudeKm, context = {}) {
     kp: Number(snapshot?.kp) || 3,
     kpHistory: Array.isArray(snapshot?.kpHistory) ? snapshot.kpHistory : [],
   };
+  if (
+    Number(altitudeKm) <= 20
+    && Number.isFinite(Number(launchWeather?.relativeHumidity))
+  ) {
+    atmosphereOptions.relativeHumidity = Number(launchWeather.relativeHumidity);
+  }
   return earthAtmosphereSampleUS1976(altitudeKm, atmosphereOptions);
 }
 
@@ -2085,6 +2180,7 @@ function initializeLaunchController() {
       };
     },
     sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
+    sampleLaunchWeather: (sampleOptions = {}) => sampleLaunchWeatherRuntime(sampleOptions),
     gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
     onEvent: (event) => {
       appendLaunchLogEntry("info", event);
@@ -2399,6 +2495,7 @@ function setupScene(THREE) {
       };
     },
     sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => sampleEarthAtmosphereRuntime(altitudeKm, sampleOptions),
+    sampleLaunchWeather: (sampleOptions = {}) => sampleLaunchWeatherRuntime(sampleOptions),
   });
   initializeLaunchController();
 

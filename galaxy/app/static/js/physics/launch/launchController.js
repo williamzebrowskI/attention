@@ -1085,6 +1085,7 @@ export function createLaunchController(options) {
     getBodyMassKg,
     getEarthFixedAxesEcliptic,
     sampleEarthAtmosphere,
+    sampleLaunchWeather,
     gravitationalConstantKm3PerKgS2,
     windSeed,
     onEvent,
@@ -1492,6 +1493,7 @@ export function createLaunchController(options) {
     getBodyRadiusKm,
     getBodyMassKg,
     sampleEarthAtmosphere,
+    sampleLaunchWeather,
     earthAxes,
     gravitationalConstantKm3PerKgS2,
     emitLaunchEvent,
@@ -2127,6 +2129,15 @@ export function createLaunchController(options) {
       earthAxes: currentEarthAxes,
       earthPole: currentEarthAxes?.pole,
     };
+    const launchWeatherSample = sampleLaunchWeather?.({
+      timestampMs: nowMs,
+      altitudeKm,
+      latitudeDeg,
+      longitudeDeg,
+      relativePositionKm: relPos,
+      earthAxes: currentEarthAxes,
+      earthPole: currentEarthAxes?.pole,
+    }) || null;
     return {
       altitudeKm,
       surfaceSample,
@@ -2139,6 +2150,8 @@ export function createLaunchController(options) {
         timestampMs: nowMs,
         elapsedSeconds: runtime.elapsedSeconds,
         seed: windSeed,
+        surfaceWindEastMS: launchWeatherSample?.windEastMS ?? null,
+        surfaceWindNorthMS: launchWeatherSample?.windNorthMS ?? null,
       }),
     };
   }

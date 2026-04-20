@@ -162,6 +162,8 @@ export function sampleWindVectorKmS({
   timestampMs = Date.now(),
   elapsedSeconds,
   seed = 0,
+  surfaceWindEastMS = null,
+  surfaceWindNorthMS = null,
 }) {
   const altitudeSafeKm = Math.max(0, Number(altitudeKm) || 0);
   const up = normalize(relPos || earthPole || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
@@ -270,8 +272,24 @@ export function sampleWindVectorKmS({
     + (0.12 * Math.sin((t * 1.48) + (seedPhase * 0.67) + 2.1))
   );
 
-  const eastMS = steadyEastMS + gustEastMS;
-  const northMS = steadyNorthMS + gustNorthMS;
+  const hasSurfaceWindAnchor = (
+    surfaceWindEastMS !== null
+    && surfaceWindEastMS !== undefined
+    && surfaceWindNorthMS !== null
+    && surfaceWindNorthMS !== undefined
+    && Number.isFinite(Number(surfaceWindEastMS))
+    && Number.isFinite(Number(surfaceWindNorthMS))
+  );
+  const surfaceBlend = hasSurfaceWindAnchor ? Math.exp(-altitudeSafeKm / 2.2) : 0;
+  const anchoredSteadyEastMS = surfaceBlend > 0
+    ? linearInterpolate(steadyEastMS, Number(surfaceWindEastMS), surfaceBlend)
+    : steadyEastMS;
+  const anchoredSteadyNorthMS = surfaceBlend > 0
+    ? linearInterpolate(steadyNorthMS, Number(surfaceWindNorthMS), surfaceBlend)
+    : steadyNorthMS;
+  const gustDamping = linearInterpolate(1, 0.35, surfaceBlend);
+  const eastMS = anchoredSteadyEastMS + (gustEastMS * gustDamping);
+  const northMS = anchoredSteadyNorthMS + (gustNorthMS * gustDamping);
   const vectorKmS = add(
     scale(east, eastMS / 1000),
     scale(north, northMS / 1000),
