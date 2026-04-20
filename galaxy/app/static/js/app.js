@@ -10547,7 +10547,7 @@ function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
   if (!Number.isFinite(altitudeAboveTerrainKm) || altitudeAboveTerrainKm > LAUNCH_BODY_LOCK_SURFACE_ASSIST_MAX_ALTITUDE_KM) {
     return null;
   }
-  const target = resolveBodyLockTargetPosition(selectedId) || vehicleVisual.root.position.clone();
+  const shipTarget = resolveBodyLockTargetPosition(selectedId) || vehicleVisual.root.position.clone();
   const earthScene = earthVisual.root.position.clone();
   const earthPoleKm = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
   const earthPoleScene = finiteVectorKm(earthPoleKm)
@@ -10557,8 +10557,22 @@ function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
         z: Number(earthPoleKm.y) || 0,
       }
     : null;
+  const padScene = launchSiteStructureVisual?.root?.visible
+    ? launchSiteStructureVisual.root.position.clone()
+    : null;
+  const lookBlend = clamp(0.18 + (0.82 * clamp(altitudeAboveTerrainKm / 4, 0, 1)), 0, 1);
+  const anchorBlend = clamp((altitudeAboveTerrainKm - 0.08) / 6, 0, 1);
+  const viewTarget = padScene
+    ? padScene.clone().lerp(shipTarget, lookBlend)
+    : shipTarget.clone();
+  const viewAnchor = padScene
+    ? padScene.clone().lerp(shipTarget, anchorBlend)
+    : shipTarget.clone();
   return {
-    target,
+    target: viewTarget,
+    anchor: viewAnchor,
+    shipTarget,
+    padScene,
     earthScene,
     earthPoleScene,
     altitudeAboveTerrainKm,
@@ -10892,9 +10906,9 @@ function updateCameraFromOrbit() {
   if (launchSurfaceAssist) {
     const frame = spacecraftSurfaceRelativeOrbitFrame({
       targetScene: {
-        x: launchSurfaceAssist.target.x,
-        y: launchSurfaceAssist.target.y,
-        z: launchSurfaceAssist.target.z,
+        x: launchSurfaceAssist.anchor.x,
+        y: launchSurfaceAssist.anchor.y,
+        z: launchSurfaceAssist.anchor.z,
       },
       earthScene: {
         x: launchSurfaceAssist.earthScene.x,
@@ -10905,21 +10919,21 @@ function updateCameraFromOrbit() {
       azimuth: orbit.azimuth,
       polar: orbit.polar,
       radius: orbit.radius,
-    });
-    if (frame) {
-      const cameraPosition = new THREE_NS.Vector3(
-        launchSurfaceAssist.target.x + frame.offset.x,
-        launchSurfaceAssist.target.y + frame.offset.y,
-        launchSurfaceAssist.target.z + frame.offset.z,
-      );
-      clampCameraOutsideBody(cameraPosition, bodyVisuals.get("earth"));
-      clampCameraOutsideBody(cameraPosition, bodyVisuals.get("moon"));
-      const lookDistance = Math.max(cameraPosition.distanceTo(launchSurfaceAssist.target), 1e-6);
-      const desiredNear = clamp(lookDistance * 0.0012, 0.0000000005, 0.05);
-      if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
-        camera.near = desiredNear;
-        camera.updateProjectionMatrix();
-      }
+      });
+      if (frame) {
+        const cameraPosition = new THREE_NS.Vector3(
+          launchSurfaceAssist.anchor.x + frame.offset.x,
+          launchSurfaceAssist.anchor.y + frame.offset.y,
+          launchSurfaceAssist.anchor.z + frame.offset.z,
+        );
+        clampCameraOutsideBody(cameraPosition, bodyVisuals.get("earth"));
+        clampCameraOutsideBody(cameraPosition, bodyVisuals.get("moon"));
+        const lookDistance = Math.max(cameraPosition.distanceTo(launchSurfaceAssist.target), 1e-6);
+        const desiredNear = clamp(lookDistance * 0.0012, 0.0000000005, 0.05);
+        if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
+          camera.near = desiredNear;
+          camera.updateProjectionMatrix();
+        }
       camera.up.set(frame.up.x, frame.up.y, frame.up.z);
       camera.position.copy(cameraPosition);
       camera.lookAt(launchSurfaceAssist.target);
