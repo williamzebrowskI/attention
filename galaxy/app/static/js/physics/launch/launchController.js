@@ -1062,6 +1062,19 @@ function phaseLabel(phase) {
   return "Idle";
 }
 
+function reportedLaunchPhase(runtimePhase, telemetry = null, fallbackStep = null) {
+  const phase = String(runtimePhase || "idle");
+  if (phase !== "powered") {
+    return phase;
+  }
+  const source = telemetry && typeof telemetry === "object"
+    ? telemetry
+    : (fallbackStep && typeof fallbackStep === "object" ? fallbackStep : null);
+  const thrustN = Number(source?.thrustN) || 0;
+  const throttle = Number(source?.throttle) || 0;
+  return (thrustN > 1 || throttle > 1e-3) ? phase : "coast";
+}
+
 export { LAUNCH_BODY_ID, LAUNCH_BODY_META, LAUNCH_BOOSTER_BODY_ID, LAUNCH_BOOSTER_META };
 
 export function createLaunchController(options) {
@@ -4681,6 +4694,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         if (runtime.moonBurnAttitudeGateActive && !guidanceModeLabel.includes("attitude-align")) {
           guidanceModeLabel = `${guidanceModeLabel}+attitude-align`;
         }
+        const burnActive = throttleActual > 1e-3 || thrustN > 1;
+        if (runtime.phase === "powered" && !burnActive && !guidanceModeLabel.includes("coast-fallback")) {
+          guidanceModeLabel = `${guidanceModeLabel}+coast-fallback`;
+        }
         runtime.lastStep = {
           accelerationKmS2: add(add(thrustAccelerationKmS2, aero.accelerationKmS2), rcs.accelerationKmS2),
           throttle: throttleActual,
@@ -4711,6 +4728,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           controlAuthorityScale: runtime.stageMassModel.controlAuthorityScale,
           maxAllowedAoADeg: qAlphaSteering.maxAllowedAoADeg,
         };
+        if (runtime.phase === "powered" && !burnActive) {
+          runtime.phase = "coast";
+        }
         updateTelemetry();
       };
 
@@ -5438,10 +5458,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ? "available"
       : (refuelOnlineTankers > 0 ? "online" : "offline");
     if (!telemetry) {
+      const launchPhase = reportedLaunchPhase(runtime.phase, null, runtime.lastStep);
       return {
         bodyId: LAUNCH_BODY_ID,
-        phase: runtime.phase,
-        phaseLabel: phaseLabel(runtime.phase),
+        phase: launchPhase,
+        phaseLabel: phaseLabel(launchPhase),
         stageIndex: runtime.stageIndex,
         autopilotMode: runtime.autopilotMode || "manual",
         targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
@@ -5556,6 +5577,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         statusLine: `Launch vehicle initialized at ${LAUNCH_SITE.name || "launch site"}.`,
       };
     }
+    const launchPhase = reportedLaunchPhase(runtime.phase, telemetry, runtime.lastStep);
     const telemetryGuidanceMode = refuelShipRcsMode
       ? `${telemetry.guidanceMode}:${refuelShipRcsMode}`
       : telemetry.guidanceMode;
@@ -5575,8 +5597,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       : (Array.isArray(telemetry.rcsJets) ? telemetry.rcsJets : []);
     return {
       bodyId: LAUNCH_BODY_ID,
-      phase: runtime.phase,
-      phaseLabel: phaseLabel(runtime.phase),
+      phase: launchPhase,
+      phaseLabel: phaseLabel(launchPhase),
       stageName: telemetry.stageName,
       stageIndex: telemetry.stageIndex,
       launchSiteName: LAUNCH_SITE.name || "Launch Site",
