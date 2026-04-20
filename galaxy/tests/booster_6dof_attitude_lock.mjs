@@ -157,9 +157,23 @@ function main() {
         boosterActivationStep = step;
       }
       if (snapshot.boosterBodyAxisDirectionKm) {
+        const up = normalize(subtract(liveBooster.position, earthState.position));
+        const retrograde = normalize(
+          scale(subtract(liveBooster.velocity, earthState.velocity || { x: 0, y: 0, z: 0 }), -1),
+          up,
+        );
         samples.push({
           axis: normalize(snapshot.boosterBodyAxisDirectionKm),
-          up: normalize(subtract(liveBooster.position, earthState.position)),
+          up,
+          req: snapshot.boosterRequestedDirectionKm
+            ? normalize(snapshot.boosterRequestedDirectionKm, retrograde)
+            : null,
+          reqRetro: snapshot.boosterRequestedDirectionKm
+            ? dot(normalize(snapshot.boosterRequestedDirectionKm, retrograde), retrograde)
+            : null,
+          cmdOffRetro: Number.isFinite(Number(snapshot.boosterRequestedOffRetrogradeDeg))
+            ? Number(snapshot.boosterRequestedOffRetrogradeDeg)
+            : null,
           omega: length(snapshot.boosterBodyAngularRateRadS || { x: 0, y: 0, z: 0 }),
           rcsAccel: Number(snapshot.boosterRcsAccelerationMagKmS2) || 0,
         });
@@ -185,6 +199,8 @@ function main() {
   let totalTurnDeg = 0;
   let maxOmega = 0;
   let maxRcsAccel = 0;
+  let maxRequestedRetrograde = -1;
+  let minCommandOffRetroDeg = Number.POSITIVE_INFINITY;
   for (let index = 1; index < samples.length; index += 1) {
     const stepAngle = angleDeg(samples[index - 1].axis, samples[index].axis);
     maxStepAngleDeg = Math.max(maxStepAngleDeg, stepAngle);
@@ -194,11 +210,19 @@ function main() {
     totalTurnDeg += stepAngle;
     maxOmega = Math.max(maxOmega, Number(samples[index].omega) || 0);
     maxRcsAccel = Math.max(maxRcsAccel, Number(samples[index].rcsAccel) || 0);
+    if (Number.isFinite(samples[index].reqRetro)) {
+      maxRequestedRetrograde = Math.max(maxRequestedRetrograde, Number(samples[index].reqRetro));
+    }
+    if (Number.isFinite(samples[index].cmdOffRetro)) {
+      minCommandOffRetroDeg = Math.min(minCommandOffRetroDeg, Number(samples[index].cmdOffRetro));
+    }
   }
 
   assert(maxStepAngleDeg < 18, `expected continuous 6-DOF attitude motion, got max step angle ${maxStepAngleDeg} deg`);
   assert(maxEarlyStepAngleDeg < 8, `expected gentle early post-hotstage settling, got max early step angle ${maxEarlyStepAngleDeg} deg`);
   assert(totalTurnDeg > 5.0, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
+  assert(maxRequestedRetrograde > 0.9, `expected the early flip target to command retrograde, got max requested retrograde alignment ${maxRequestedRetrograde}`);
+  assert(minCommandOffRetroDeg < 15, `expected the early flip command to get within 15 deg of retrograde, got ${minCommandOffRetroDeg} deg`);
   assert(maxOmega > 0.01, `expected nontrivial angular-rate build-up, got ${maxOmega} rad/s`);
   assert(maxRcsAccel > 1e-7, `expected booster RCS to contribute translational acceleration, got ${maxRcsAccel} km/s^2`);
 

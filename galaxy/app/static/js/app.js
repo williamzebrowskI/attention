@@ -258,7 +258,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420j";
+const FRONTEND_MODULE_VERSION = "20260420l";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -13021,6 +13021,22 @@ function updateInfoOverlay() {
     const boosterLaunchSiteClosingLine = Number.isFinite(launchSnapshot?.boosterLaunchSiteLateralClosingSpeedKmS)
       ? `${formatNumber(launchSnapshot.boosterLaunchSiteLateralClosingSpeedKmS, 4)} km/s`
       : "n/a";
+    const boosterRequestedOffRetrogradeLine = Number.isFinite(launchSnapshot?.boosterRequestedOffRetrogradeDeg)
+      ? `${formatNumber(launchSnapshot.boosterRequestedOffRetrogradeDeg, 2)}°`
+      : "n/a";
+    const boosterBodyOffRetrogradeLine = Number.isFinite(launchSnapshot?.boosterBodyOffRetrogradeDeg)
+      ? `${formatNumber(launchSnapshot.boosterBodyOffRetrogradeDeg, 2)}°`
+      : "n/a";
+    const boosterBodyRateDegSLine = finiteVectorKm(launchSnapshot?.boosterBodyAngularRateRadS)
+      ? `${formatNumber(
+        Math.sqrt(
+          ((Number(launchSnapshot.boosterBodyAngularRateRadS.x) || 0) ** 2)
+          + ((Number(launchSnapshot.boosterBodyAngularRateRadS.y) || 0) ** 2)
+          + ((Number(launchSnapshot.boosterBodyAngularRateRadS.z) || 0) ** 2),
+        ) * (180 / Math.PI),
+        2,
+      )} deg/s`
+      : "n/a";
     const coordsLine = hasCoords ? `${formatNumber(coords.x)}, ${formatNumber(coords.y)}, ${formatNumber(coords.z)}` : "n/a";
     let selectedVehicleLines = "";
     if (isBoosterSelected) {
@@ -13033,6 +13049,7 @@ function updateInfoOverlay() {
         <p class="line launch-line">RCS: ${boosterRcsLine} | Jets: ${Array.isArray(launchSnapshot?.boosterRcsJets) && launchSnapshot.boosterRcsJets.length > 0 ? launchSnapshot.boosterRcsJets.join(", ") : "n/a"}</p>
         <p class="line launch-line">Propellant: ${boosterPropellantLine} (${boosterFuelFractionLine} remaining)</p>
         <p class="line launch-line">Distance Traveled: ${boosterDistanceLine}</p>
+        <p class="line launch-line">Flip Cmd Off-Retro: ${boosterRequestedOffRetrogradeLine} | Body Off-Retro: ${boosterBodyOffRetrogradeLine} | Body Rate: ${boosterBodyRateDegSLine}</p>
         <p class="line launch-line">Range to Launch Site: ${boosterLaunchSiteRangeLine}</p>
         <p class="line launch-line">Lateral Range to Site: ${boosterLaunchSiteLateralRangeLine}</p>
         <p class="line launch-line">Lateral Closing Speed: ${boosterLaunchSiteClosingLine}</p>
@@ -13146,6 +13163,7 @@ function updateInfoOverlay() {
        <p class="line launch-line">Booster Propellant: ${Number.isFinite(launchSnapshot.boosterPropellantKg) ? `${formatNumber(launchSnapshot.boosterPropellantKg, 1)} kg` : "n/a"}${Number.isFinite(launchSnapshot.boosterFuelFraction) ? ` (${formatNumber(launchSnapshot.boosterFuelFraction * 100, 1)}% remaining)` : ""}</p>
        <p class="line launch-line">Booster Thrust: ${Number.isFinite(launchSnapshot.boosterThrustN) ? `${formatNumber(launchSnapshot.boosterThrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.boosterThrottle) ? `${formatNumber(launchSnapshot.boosterThrottle * 100, 1)}%` : "n/a"}</p>
        <p class="line launch-line">Booster RCS: ${launchSnapshot.boosterRcsActive ? `active (${formatNumber((Number(launchSnapshot.boosterRcsAuthority) || 0) * 100, 1)}%)` : "off"} | Jets: ${Array.isArray(launchSnapshot.boosterRcsJets) && launchSnapshot.boosterRcsJets.length > 0 ? launchSnapshot.boosterRcsJets.join(", ") : "n/a"}</p>
+       <p class="line launch-line">Booster Flip Cmd Off-Retro: ${boosterRequestedOffRetrogradeLine} | Body Off-Retro: ${boosterBodyOffRetrogradeLine} | Body Rate: ${boosterBodyRateDegSLine}</p>
        <p class="line launch-line">Booster Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.boosterDistanceKm) ? `${formatNumber(launchSnapshot.boosterDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Starship Distance Traveled (Earth-relative): ${Number.isFinite(launchSnapshot.starshipDistanceKm) ? `${formatNumber(launchSnapshot.starshipDistanceKm, 4)} km` : "n/a"}</p>
        <p class="line launch-line">Thrust: ${Number.isFinite(launchSnapshot.thrustN) ? `${formatNumber(launchSnapshot.thrustN / 1_000_000, 4)} MN` : "n/a"} @ ${Number.isFinite(launchSnapshot.throttle) ? `${formatNumber(launchSnapshot.throttle * 100, 1)}%` : "n/a"}</p>

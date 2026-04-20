@@ -79,6 +79,26 @@ function main() {
   assert(boostback.phase === "boostback", `expected boostback, got ${boostback.phase}`);
   assert(boostback.throttle >= 0.34, `expected meaningful boostback throttle, got ${boostback.throttle}`);
 
+  const entryAlign = computeBoosterRecoveryCommand({
+    altitudeKm: 86,
+    radialSpeedKmS: -0.10,
+    tangentialSpeedKmS: 0.42,
+    launchSiteRangeKm: 12,
+    launchSiteLateralRangeKm: 8,
+    launchSiteLateralClosingSpeedKmS: 0.03,
+    timeSinceSeparationSec: 118,
+    remainingPropellantKg: 275_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 900,
+    bodyRetrogradeAlignment: 0.62,
+    bodyAntiTangentAlignment: 0.34,
+    bodyUpAlignment: -0.18,
+  });
+  assert(entryAlign.phase === "entry-align", `expected entry-align, got ${entryAlign.phase}`);
+  assert(entryAlign.throttle === 0, `expected entry-align throttle 0, got ${entryAlign.throttle}`);
+  assert(entryAlign.siteVectorWeight === 0, `expected no site vector weight during entry align, got ${entryAlign.siteVectorWeight}`);
+  assert(entryAlign.siteVelocityWeight === 0, `expected no site velocity weight during entry align, got ${entryAlign.siteVelocityWeight}`);
+
   const entryBurn = computeBoosterRecoveryCommand({
     altitudeKm: 42,
     radialSpeedKmS: -0.26,

@@ -75,9 +75,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
     15.5,
   );
 
-  const separationFlipMinSec = 0.55;
-  const separationFlipMaxSec = 5.8;
-  const separationCoastMaxSec = 14.0;
+  const separationFlipMinSec = 0.9;
+  const separationFlipMaxSec = 9.5;
+  const separationCoastMaxSec = 18.0;
   const entryBurnUpperKm = 74;
   const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
@@ -127,15 +127,15 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
-      attitudeResponseScale: 0.36 + (0.20 * flipPhaseProgress),
+      attitudeResponseScale: 0.14 + (0.10 * flipPhaseProgress),
       attitudeTargetBlend: 1,
-      separationRetargetBlend: 0.42 + (0.42 * flipPhaseProgress),
       siteTargetingEnabled: false,
+      qAlphaSteeringEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.42 - (0.22 * flipPhaseProgress),
-        retrograde: 0.58 + (0.30 * flipPhaseProgress),
-        antiTangent: 0.28 + (0.18 * flipPhaseProgress),
+        up: 0.24 - (0.12 * flipPhaseProgress),
+        retrograde: 1.0,
+        antiTangent: 0.01 + (0.02 * flipPhaseProgress),
       },
       siteVectorWeight: 0,
       siteVelocityWeight: 0,
@@ -154,15 +154,15 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
-      attitudeResponseScale: 0.48 + (0.18 * coastPhaseProgress),
+      attitudeResponseScale: 0.24 + (0.12 * coastPhaseProgress),
       attitudeTargetBlend: 1,
-      separationRetargetBlend: 0.78 + (0.16 * coastPhaseProgress),
       siteTargetingEnabled: false,
+      qAlphaSteeringEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.20 - (0.08 * coastPhaseProgress),
-        retrograde: 0.82 + (0.18 * coastPhaseProgress),
-        antiTangent: 0.34 + (0.18 * coastPhaseProgress),
+        up: 0.12 - (0.06 * coastPhaseProgress),
+        retrograde: 1.0,
+        antiTangent: 0.04 + (0.06 * coastPhaseProgress),
       },
       siteVectorWeight: 0,
       siteVelocityWeight: 0,
@@ -213,6 +213,35 @@ export function computeBoosterRecoveryCommand(input = {}) {
       siteVelocityWeight: clamp(0.28 + (0.28 * rtlsDemand), 0.18, 0.62),
       touchdownReady: false,
     };
+  }
+
+  if (
+    altitudeKm > entryBurnUpperKm
+    && altitudeKm <= 108
+    && radialSpeedKmS < -0.03
+  ) {
+    const entryAlignNeedNorm = clamp(
+      Math.max(
+        (0.95 - bodyRetrogradeAlignment) / 0.30,
+        (0.10 + tangentialSpeedKmS) / 1.4,
+      ),
+      0,
+      1,
+    );
+    if (entryAlignNeedNorm > 0.04) {
+      return {
+        phase: "entry-align",
+        guidanceMode: "booster-entry-align",
+        attitudeControlMode: dynamicPressurePa > 1_800 ? "grid-fins+rcs" : "rcs",
+        aeroAuthority: clamp(gridFinAuthority, 0, 0.4),
+        attitudeResponseScale: 0.52 + (0.16 * entryAlignNeedNorm),
+        throttle: 0,
+        directionMix: { up: 0.06, retrograde: 1.0, antiTangent: 0.18 },
+        siteVectorWeight: 0,
+        siteVelocityWeight: 0,
+        touchdownReady: false,
+      };
+    }
   }
 
   if (altitudeKm <= entryBurnUpperKm && altitudeKm >= entryBurnLowerKm) {

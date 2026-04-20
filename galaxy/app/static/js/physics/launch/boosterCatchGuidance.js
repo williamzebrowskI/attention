@@ -128,7 +128,10 @@ export function shouldFinalizeBoosterCatch(input = {}) {
     return false;
   }
   const launchSiteLateralRangeKm = Math.max(0, finiteNumber(input.launchSiteLateralRangeKm, 0));
-  const catchPinHeightErrorKm = Math.abs(finiteNumber(input.catchPinHeightErrorKm, Number.NaN));
+  const catchPinHeightErrorKm = Math.abs(finiteNumber(
+    input.catchPinHeightErrorKm,
+    input.catchVerticalErrorKm,
+  ));
   const speedKmS = Math.max(0, finiteNumber(input.speedKmS, 0));
   const radialSpeedKmS = Math.abs(finiteNumber(input.radialSpeedKmS, 0));
   const catchHoldSec = Math.max(0, finiteNumber(input.catchHoldSec, 0));

@@ -83,6 +83,16 @@ function main() {
   });
   assert(!noFinalizeShortHold, "expected short catch hold to avoid early catch finalization");
 
+  const finalizeCatchFromVerticalError = shouldFinalizeBoosterCatch({
+    guidanceMode: "booster-catch-burn",
+    launchSiteLateralRangeKm: 0.012,
+    catchVerticalErrorKm: 0.0015,
+    speedKmS: 0.018,
+    radialSpeedKmS: -0.009,
+    catchHoldSec: 0.7,
+  });
+  assert(finalizeCatchFromVerticalError, "expected tower-relative vertical error fallback to finalize catch");
+
   console.log("PASS booster-catch-guidance-lock");
 }
 
