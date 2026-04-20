@@ -77,7 +77,7 @@ import {
   createLaunchSiteStructureVisual,
   updateLaunchSiteStructureVisual,
 } from "./physics/launch/launchSiteStructures.js?v=20260419n";
-import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js";
+import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js?v=20260419u";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
@@ -257,7 +257,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419t";
+const FRONTEND_MODULE_VERSION = "20260419y";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -663,6 +663,77 @@ function safeQuaternionFromUpAxis(defaultAxis, targetDirection) {
     quaternion.identity();
   }
   return quaternion;
+}
+
+function applyOrientationQuaternionToTiltSpinVisual(visual, orientation) {
+  if (!THREE_NS || !visual?.tiltGroup || !visual?.spinGroup || !orientation?.isQuaternion) {
+    return false;
+  }
+  const yAxis = new THREE_NS.Vector3(0, 1, 0);
+  const xAxis = new THREE_NS.Vector3(1, 0, 0);
+  const axisWorld = yAxis.clone().applyQuaternion(orientation).normalize();
+  if (!(axisWorld.lengthSq() > 1e-18)) {
+    return false;
+  }
+  const tilt = new THREE_NS.Quaternion().setFromUnitVectors(yAxis, axisWorld);
+  const spinOnly = tilt.clone().invert().multiply(orientation).normalize();
+  const rotatedXAxis = xAxis.clone().applyQuaternion(spinOnly);
+  const spinRadians = normalizeAngle(Math.atan2(-rotatedXAxis.z, rotatedXAxis.x));
+  visual.tiltGroup.quaternion.copy(tilt);
+  visual.spinGroup.rotation.set(0, spinRadians, 0);
+  return true;
+}
+
+function orientationQuaternionFromBodyFixedAxes(axes) {
+  if (!THREE_NS || !finiteVectorKm(axes?.xAxis) || !finiteVectorKm(axes?.pole)) {
+    return null;
+  }
+  const xScene = safeNormalizeSceneDirection(
+    new THREE_NS.Vector3(
+      Number(axes.xAxis.x) || 0,
+      Number(axes.xAxis.z) || 0,
+      Number(axes.xAxis.y) || 0,
+    ),
+    new THREE_NS.Vector3(1, 0, 0),
+  );
+  const yScene = safeNormalizeSceneDirection(
+    new THREE_NS.Vector3(
+      Number(axes.pole.x) || 0,
+      Number(axes.pole.z) || 0,
+      Number(axes.pole.y) || 0,
+    ),
+    new THREE_NS.Vector3(0, 1, 0),
+  );
+  const zScene = new THREE_NS.Vector3().crossVectors(xScene, yScene);
+  if (!(zScene.lengthSq() > 1e-18)) {
+    return null;
+  }
+  zScene.normalize();
+  const xOrtho = new THREE_NS.Vector3().crossVectors(yScene, zScene).normalize();
+  if (!(xOrtho.lengthSq() > 1e-18)) {
+    return null;
+  }
+  const basis = new THREE_NS.Matrix4().makeBasis(xOrtho, yScene, zScene);
+  return new THREE_NS.Quaternion().setFromRotationMatrix(basis).normalize();
+}
+
+function syncEarthVisualToBodyFixedAxes(nowMs = Date.now()) {
+  if (!THREE_NS) {
+    return false;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  if (!earthVisual?.tiltGroup || !earthVisual?.spinGroup) {
+    return false;
+  }
+  const pole = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
+  const fixedAxes = pole
+    ? sourceBodyFixedAxesEclipticForBody("earth", pole, nowMs)
+    : null;
+  const orientation = orientationQuaternionFromBodyFixedAxes(fixedAxes);
+  if (!orientation) {
+    return false;
+  }
+  return applyOrientationQuaternionToTiltSpinVisual(earthVisual, orientation);
 }
 
 function refuelDockingVisualLockForBody(bodyId, snapshot = null) {
@@ -1278,6 +1349,7 @@ let earthAtmosphereController = null;
 let atmosphereDynamicsController = null;
 let launchController = null;
 let launchTrajectoryPathController = null;
+const runtimeCatalogBodyCreationPromisesById = new Map();
 let lastTrajectorySnapshotElapsedSeconds = null;
 let primeMeridianSpinOffsetRadById = new Map();
 let rigidBodyAttitudeController = null;
@@ -1584,6 +1656,7 @@ function registerLaunchLogDebugHandles() {
   window.getEnvironmentForcing = () => currentEnvironmentForcingSnapshot();
   window.__moonOrbitInjectDebug = currentMoonOrbitInjectDebugSnapshot();
   window.getMoonOrbitInjectDebug = () => currentMoonOrbitInjectDebugSnapshot();
+  window.getLaunchRenderSourceState = (bodyId = LAUNCH_BODY_ID) => currentLaunchRenderSourceState(bodyId);
   window.setEnvironmentForcingScenario = async (scenario = "moderate", forceRefresh = true) => (
     setEnvironmentForcingScenario(scenario, forceRefresh)
   );
@@ -2616,8 +2689,10 @@ async function rebuildMeshes() {
     if (!visual) {
       continue;
     }
-    scene.add(visual.root);
-    bodyVisuals.set(visual.id, visual);
+    const taggedVisual = tagBodyVisualRoot(visual);
+    scene.add(taggedVisual.root);
+    purgeDuplicateBodyVisualRoots(taggedVisual.id, taggedVisual.root);
+    bodyVisuals.set(taggedVisual.id, taggedVisual);
   }
   if (RIGID_BODY_ATTITUDE_ENABLED && rigidBodyAttitudeController) {
     setupRigidBodyAttitudeModel();
@@ -4508,10 +4583,139 @@ function updateLegendFleetManager() {
   }
 }
 
+function countSceneBodyVisualRoots(bodyId) {
+  const id = String(bodyId || "").trim();
+  if (!scene || !id) {
+    return 0;
+  }
+  let count = 0;
+  for (const child of scene.children) {
+    if (String(child?.userData?.bodyVisualId || "") === id) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function countSceneObjectsByName(name) {
+  const target = String(name || "").trim();
+  if (!scene || !target) {
+    return 0;
+  }
+  let count = 0;
+  for (const child of scene.children) {
+    if (String(child?.name || "") === target) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function tagBodyVisualRoot(visual) {
+  if (!visual?.root) {
+    return visual;
+  }
+  visual.root.name = `body_visual:${visual.id}`;
+  visual.root.userData = {
+    ...(visual.root.userData || {}),
+    bodyVisualId: visual.id,
+    bodyVisualKind: String(visual?.body?.body_type || ""),
+  };
+  return visual;
+}
+
+function disposeVisualRootObject(root) {
+  if (!root) {
+    return;
+  }
+  root.parent?.remove?.(root);
+  root.traverse((node) => {
+    if (!node.isMesh && !node.isSprite && !node.isLine) {
+      return;
+    }
+    if (node.geometry) {
+      node.geometry.dispose();
+    }
+    if (Array.isArray(node.material)) {
+      node.material.forEach((m) => {
+        const eclipseState = m?.userData?.bodyEclipseShaderState;
+        if (eclipseState) {
+          bodyEclipseMaterialStates.delete(eclipseState);
+        }
+        m?.dispose?.();
+      });
+    } else if (node.material) {
+      const eclipseState = node.material?.userData?.bodyEclipseShaderState;
+      if (eclipseState) {
+        bodyEclipseMaterialStates.delete(eclipseState);
+      }
+      node.material.dispose();
+    }
+  });
+}
+
+function purgeDuplicateBodyVisualRoots(bodyId, keepRoot = null) {
+  const id = String(bodyId || "").trim();
+  if (!scene || !id) {
+    return 0;
+  }
+  let removed = 0;
+  const sceneChildren = Array.isArray(scene.children) ? [...scene.children] : [];
+  for (const child of sceneChildren) {
+    if (!child || child === keepRoot) {
+      continue;
+    }
+    if (String(child?.userData?.bodyVisualId || "") !== id) {
+      continue;
+    }
+    disposeVisualRootObject(child);
+    removed += 1;
+  }
+  return removed;
+}
+
+function purgeDuplicateSceneObjectsByName(name, keepObject = null) {
+  const target = String(name || "").trim();
+  if (!scene || !target) {
+    return 0;
+  }
+  let removed = 0;
+  const sceneChildren = Array.isArray(scene.children) ? [...scene.children] : [];
+  for (const child of sceneChildren) {
+    if (!child || child === keepObject) {
+      continue;
+    }
+    if (String(child?.name || "") !== target) {
+      continue;
+    }
+    disposeVisualRootObject(child);
+    removed += 1;
+  }
+  return removed;
+}
+
 async function ensureRuntimeCatalogBody(bodyMeta) {
-  return ensureRuntimeCatalogBodyView({
+  const id = String(bodyMeta?.id || "").trim();
+  if (!id) {
+    return false;
+  }
+  const pending = runtimeCatalogBodyCreationPromisesById.get(id);
+  if (pending) {
+    return pending;
+  }
+
+  let createPromise = null;
+  createPromise = ensureRuntimeCatalogBodyView({
     bodyMeta,
-    hasBody: (id) => metaById.has(id) && bodyVisuals.has(id),
+    hasBody: (candidateId) => {
+      const candidate = String(candidateId || "").trim();
+      const visual = bodyVisuals.get(candidate) || null;
+      const present = metaById.has(candidate) && Boolean(visual?.root);
+      if (present) {
+        purgeDuplicateBodyVisualRoots(candidate, visual.root);
+      }
+      return present;
+    },
     registerBody: (normalized) => {
       const existingIndex = bodies.findIndex((body) => body?.id === normalized.id);
       if (existingIndex >= 0) {
@@ -4521,16 +4725,28 @@ async function ensureRuntimeCatalogBody(bodyMeta) {
       }
       metaById.set(normalized.id, normalized);
     },
-    createBodyVisual,
+    createBodyVisual: async (normalized) => tagBodyVisualRoot(await createBodyVisual(normalized)),
     mountBodyVisual: (visual) => {
-      scene.add(visual.root);
-      bodyVisuals.set(visual.id, visual);
+      const taggedVisual = tagBodyVisualRoot(visual);
+      const existingVisual = bodyVisuals.get(taggedVisual.id);
+      if (existingVisual && existingVisual !== taggedVisual) {
+        disposeBodyVisual(existingVisual);
+      }
+      scene.add(taggedVisual.root);
+      purgeDuplicateBodyVisualRoots(taggedVisual.id, taggedVisual.root);
+      bodyVisuals.set(taggedVisual.id, taggedVisual);
     },
     rebuildBodyLegend,
     onError: (error, id) => {
       console.warn(`[launch] Failed to create visual for runtime body ${id}.`, error);
     },
+  }).finally(() => {
+    if (runtimeCatalogBodyCreationPromisesById.get(id) === createPromise) {
+      runtimeCatalogBodyCreationPromisesById.delete(id);
+    }
   });
+  runtimeCatalogBodyCreationPromisesById.set(id, createPromise);
+  return createPromise;
 }
 
 function selectedTankerLaunchMode() {
@@ -5806,6 +6022,7 @@ function boosterFuelFractionFromSnapshot(snapshot) {
 
 function ensureLaunchTrajectoryPath() {
   if (launchTrajectoryPathController) {
+    purgeDuplicateSceneObjectsByName("launch_trajectory_path", launchTrajectoryPathController.line);
     return launchTrajectoryPathController;
   }
   if (!THREE_NS || !scene) {
@@ -5817,6 +6034,7 @@ function ensureLaunchTrajectoryPath() {
     colorHex: 0x3bc6ff,
     opacity: 0.92,
   });
+  purgeDuplicateSceneObjectsByName("launch_trajectory_path", launchTrajectoryPathController?.line || null);
   launchTrajectoryPathController?.setEnabled(trajectoryPathViewEnabled);
   return launchTrajectoryPathController;
 }
@@ -6314,6 +6532,16 @@ function updateBoosterVehicleVisuals() {
   }
   const speed = velocityScene.length();
   const prograde = speed > 1e-12 ? velocityScene.clone().multiplyScalar(1 / speed) : null;
+  const bodyAxisScene = finiteVectorKm(snapshot?.boosterBodyAxisDirectionKm)
+    ? safeNormalizeSceneDirection(
+      new THREE_NS.Vector3(
+        Number(snapshot.boosterBodyAxisDirectionKm.x) || 0,
+        Number(snapshot.boosterBodyAxisDirectionKm.z) || 0,
+        Number(snapshot.boosterBodyAxisDirectionKm.y) || 0,
+      ),
+      null,
+    )
+    : null;
 
   let upScene = null;
   if (finiteVectorKm(boosterCoordsKm) && finiteVectorKm(earthCoordsKm)) {
@@ -6329,8 +6557,8 @@ function updateBoosterVehicleVisuals() {
   }
 
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
-  let targetDirection = upScene || prograde || defaultAxis;
-  if (upScene && prograde) {
+  let targetDirection = bodyAxisScene || upScene || prograde || defaultAxis;
+  if (!bodyAxisScene && upScene && prograde) {
     const altitudeKm = Number(snapshot?.boosterAltitudeKm) || 0;
     const blend = clamp((altitudeKm - 3) / 80, 0, 1) * clamp((speed - 0.02) / 0.35, 0, 1);
     targetDirection = safeNormalizeSceneDirection(
@@ -6341,17 +6569,21 @@ function updateBoosterVehicleVisuals() {
       upScene,
     );
   }
-  targetDirection = blendEarlyAscentVisualDirection(
-    targetDirection,
-    upScene,
-    snapshot?.boosterAltitudeAboveTerrainKm,
-    0,
-  );
+  if (!bodyAxisScene) {
+    targetDirection = blendEarlyAscentVisualDirection(
+      targetDirection,
+      upScene,
+      snapshot?.boosterAltitudeAboveTerrainKm,
+      0,
+    );
+  }
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
     const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
     const separationLike = boosterPhase.includes("separation");
-    const slerpAlpha = separationLike ? 0.09 : 0.2;
+    const slerpAlpha = bodyAxisScene
+      ? (separationLike ? 0.14 : 0.28)
+      : (separationLike ? 0.09 : 0.2);
     visual.tiltGroup.quaternion.slerp(targetQuaternion, slerpAlpha);
   }
   const effectWorldPosition = new THREE_NS.Vector3();
@@ -8663,30 +8895,7 @@ function getCircularGlowTexture() {
 }
 
 function disposeBodyVisual(visual) {
-  scene.remove(visual.root);
-  visual.root.traverse((node) => {
-    if (!node.isMesh && !node.isSprite && !node.isLine) {
-      return;
-    }
-    if (node.geometry) {
-      node.geometry.dispose();
-    }
-    if (Array.isArray(node.material)) {
-      node.material.forEach((m) => {
-        const eclipseState = m?.userData?.bodyEclipseShaderState;
-        if (eclipseState) {
-          bodyEclipseMaterialStates.delete(eclipseState);
-        }
-        m.dispose();
-      });
-    } else if (node.material) {
-      const eclipseState = node.material?.userData?.bodyEclipseShaderState;
-      if (eclipseState) {
-        bodyEclipseMaterialStates.delete(eclipseState);
-      }
-      node.material.dispose();
-    }
-  });
+  disposeVisualRootObject(visual?.root);
 }
 
 function disposeOrbitVisual(orbitVisual) {
@@ -9870,6 +10079,10 @@ function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
     resolving.delete(bodyId);
     return nBodyCoords;
   }
+  if (launchPersistenceManagedBodyId(bodyId)) {
+    resolving.delete(bodyId);
+    return null;
+  }
   if (SCIENTIFIC_ACCURACY_MODE) {
     if (finiteVectorKm(live)) {
       const propagatedLive = propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs);
@@ -10091,6 +10304,11 @@ function applyScenePositions(runtimeCoordsKm) {
       });
       if (originDeltaScene.lengthSq() > 0) {
         orbit.target.add(originDeltaScene);
+        launchTrajectoryPathController?.translateAll?.({
+          x: originDeltaScene.x,
+          y: originDeltaScene.y,
+          z: originDeltaScene.z,
+        });
       }
     }
   }
@@ -10109,7 +10327,8 @@ function applyScenePositions(runtimeCoordsKm) {
     if (!visual) {
       continue;
     }
-    const coordsKm = runtimeCoordsKm.get(bodyId) || positionsById.get(bodyId)?.coordinates_km;
+    const coordsKm = runtimeCoordsKm.get(bodyId)
+      || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_km);
     if (!finiteVectorKm(coordsKm)) {
       visual.root.visible = false;
       continue;
@@ -10157,7 +10376,8 @@ function applyScenePositions(runtimeCoordsKm) {
   for (const [bodyId, parentId, moonCoords] of deferredMoons) {
     const visual = bodyVisuals.get(bodyId);
     const parentVisual = bodyVisuals.get(parentId);
-    const parentCoords = runtimeCoordsKm.get(parentId) || positionsById.get(parentId)?.coordinates_km;
+    const parentCoords = runtimeCoordsKm.get(parentId)
+      || (launchPersistenceManagedBodyId(parentId) ? null : positionsById.get(parentId)?.coordinates_km);
     if (!visual) {
       continue;
     }
@@ -10740,14 +10960,12 @@ function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
   const padScene = launchSiteStructureVisual?.root?.visible
     ? launchSiteStructureVisual.root.position.clone()
     : null;
-  const lookBlend = clamp(0.18 + (0.82 * clamp(altitudeAboveTerrainKm / 4, 0, 1)), 0, 1);
-  const anchorBlend = clamp((altitudeAboveTerrainKm - 0.08) / 6, 0, 1);
-  const viewTarget = padScene
-    ? padScene.clone().lerp(shipTarget, lookBlend)
-    : shipTarget.clone();
-  const viewAnchor = padScene
-    ? padScene.clone().lerp(shipTarget, anchorBlend)
-    : shipTarget.clone();
+  // Keep low-altitude body-lock centered on the actual vehicle. Blending the
+  // anchor/target back toward the pad makes a vertical ascent read like an
+  // immediate sideways veer because the camera keeps looking at stale ground
+  // references while the ship rises.
+  const viewTarget = shipTarget.clone();
+  const viewAnchor = shipTarget.clone();
   return {
     target: viewTarget,
     anchor: viewAnchor,
@@ -11346,22 +11564,46 @@ function shouldApplyOcclusionPair(targetBody, occluderBody) {
 function runtimeCoordsOrLiveById(bodyId) {
   const coords = runtimeCoordsKmById.get(bodyId)
     || nBodyCoordinatesKmById(bodyId)
-    || positionsById.get(bodyId)?.coordinates_km
+    || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_km)
     || null;
   return finiteVectorKm(coords) ? coords : null;
 }
 
 function runtimeVelocityKmSOrLiveById(bodyId) {
-  const velocity = nBodyVelocityKmSById(bodyId) || positionsById.get(bodyId)?.coordinates_velocity_km_s || null;
+  const velocity = nBodyVelocityKmSById(bodyId)
+    || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_velocity_km_s)
+    || null;
   return finiteVectorKm(velocity) ? velocity : null;
 }
 
 function lightCoordsById(bodyId) {
   const coords = runtimeCoordsKmById.get(bodyId)
     || nBodyCoordinatesKmById(bodyId)
-    || positionsById.get(bodyId)?.coordinates_km
+    || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_km)
     || null;
   return finiteVectorKm(coords) ? coords : null;
+}
+
+function currentLaunchRenderSourceState(bodyId = LAUNCH_BODY_ID) {
+  const id = String(bodyId || "").trim();
+  if (!id) {
+    return null;
+  }
+  const runtimeCoords = runtimeCoordsKmById.get(id) || null;
+  const nBodyCoords = nBodyCoordinatesKmById(id) || null;
+  const liveCoords = positionsById.get(id)?.coordinates_km || null;
+  const visual = bodyVisuals.get(id) || null;
+  return {
+    bodyId: id,
+    strictRuntime: launchPersistenceManagedBodyId(id),
+    hasRuntimeCoords: finiteVectorKm(runtimeCoords),
+    hasNBodyCoords: finiteVectorKm(nBodyCoords),
+    hasLiveSnapshotCoords: finiteVectorKm(liveCoords),
+    sceneRootCount: countSceneBodyVisualRoots(id),
+    trajectoryPathLineCount: countSceneObjectsByName("launch_trajectory_path"),
+    textureMode: visual?.textureMode || null,
+    mapSource: visual?.mapSource || null,
+  };
 }
 
 function bodyRadiusKmById(bodyId) {
@@ -11839,6 +12081,9 @@ function updatePrimeMeridianSpins(nowMs, deltaSeconds) {
   for (const visual of bodyVisuals.values()) {
     const bodyId = visual.body.id;
     if (rigidBodyAttitudeController?.isManagedBody(bodyId)) {
+      if (bodyId === "earth") {
+        syncEarthVisualToBodyFixedAxes(nowMs);
+      }
       primeMeridianSpinOffsetRadById.delete(bodyId);
       continue;
     }
@@ -12045,7 +12290,7 @@ function animate(timestampMs = 0) {
 
 function findFocusBodyForDetails() {
   if (selectedId) {
-    const selectedLive = runtimeCoordsKmById.get(selectedId) || positionsById.get(selectedId)?.coordinates_km;
+    const selectedLive = runtimeCoordsOrLiveById(selectedId);
     if (selectedLive) {
       return selectedId;
     }

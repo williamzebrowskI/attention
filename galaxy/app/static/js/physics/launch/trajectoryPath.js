@@ -90,6 +90,34 @@ export function createLaunchTrajectoryPathController(THREE, scene, options = {})
     return true;
   }
 
+  function translateAll(offset) {
+    if (!finitePoint(offset) || pointCount <= 0) {
+      return false;
+    }
+    const dx = Number(offset.x) || 0;
+    const dy = Number(offset.y) || 0;
+    const dz = Number(offset.z) || 0;
+    if (!(Math.abs(dx) > 0 || Math.abs(dy) > 0 || Math.abs(dz) > 0)) {
+      return false;
+    }
+    for (let i = 0; i < pointCount; i += 1) {
+      const base = i * 3;
+      positions[base] += dx;
+      positions[base + 1] += dy;
+      positions[base + 2] += dz;
+    }
+    if (lastPoint) {
+      lastPoint = {
+        x: lastPoint.x + dx,
+        y: lastPoint.y + dy,
+        z: lastPoint.z + dz,
+      };
+    }
+    attribute.needsUpdate = true;
+    geometry.computeBoundingSphere();
+    return true;
+  }
+
   function dispose() {
     try {
       scene.remove(line);
@@ -105,6 +133,7 @@ export function createLaunchTrajectoryPathController(THREE, scene, options = {})
     setEnabled,
     reset,
     appendPoint,
+    translateAll,
     dispose,
     pointCount: () => pointCount,
   };

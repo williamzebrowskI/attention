@@ -145,6 +145,13 @@ function stageAeroProfile(kind) {
   return LAUNCH_REALISM_CONFIG.aero.stage1;
 }
 
+function gridFinProfile(kind) {
+  if (kind === "booster") {
+    return LAUNCH_REALISM_CONFIG.gridFins?.booster || null;
+  }
+  return null;
+}
+
 function finiteVectorLike(v) {
   return Boolean(
     v
@@ -152,6 +159,88 @@ function finiteVectorLike(v) {
     && Number.isFinite(Number(v.y))
     && Number.isFinite(Number(v.z)),
   );
+}
+
+function finiteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+  const fallbackNumeric = Number(fallback);
+  return Number.isFinite(fallbackNumeric) ? fallbackNumeric : 0;
+}
+
+function bodyAxesFromForward(forwardWorld, referenceUpWorld = null) {
+  const forward = normalize(forwardWorld || { x: 0, y: 1, z: 0 }, { x: 0, y: 1, z: 0 });
+  const upHint = normalize(referenceUpWorld || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  const right = normalize(
+    cross(upHint, forward),
+    normalize(cross({ x: 0, y: 0, z: 1 }, forward), { x: 1, y: 0, z: 0 }),
+  );
+  const top = normalize(cross(forward, right), upHint);
+  return { right, forward, top };
+}
+
+function worldVectorToBody(vectorWorld, bodyAxesWorld) {
+  return {
+    x: dot(vectorWorld || { x: 0, y: 0, z: 0 }, bodyAxesWorld?.right || { x: 1, y: 0, z: 0 }),
+    y: dot(vectorWorld || { x: 0, y: 0, z: 0 }, bodyAxesWorld?.forward || { x: 0, y: 1, z: 0 }),
+    z: dot(vectorWorld || { x: 0, y: 0, z: 0 }, bodyAxesWorld?.top || { x: 0, y: 0, z: 1 }),
+  };
+}
+
+function bodyVectorToWorld(vectorBody, bodyAxesWorld) {
+  const x = finiteNumber(vectorBody?.x, 0);
+  const y = finiteNumber(vectorBody?.y, 0);
+  const z = finiteNumber(vectorBody?.z, 0);
+  return add(
+    scale(bodyAxesWorld?.right || { x: 1, y: 0, z: 0 }, x),
+    add(
+      scale(bodyAxesWorld?.forward || { x: 0, y: 1, z: 0 }, y),
+      scale(bodyAxesWorld?.top || { x: 0, y: 0, z: 1 }, z),
+    ),
+  );
+}
+
+function signedAngleAroundAxis(fromVector, toVector, axisVector) {
+  const axis = unitOrNull(axisVector);
+  const from = unitOrNull(fromVector);
+  const to = unitOrNull(toVector);
+  if (!axis || !from || !to) {
+    return 0;
+  }
+  return Math.atan2(dot(axis, cross(from, to)), clamp(dot(from, to), -1, 1));
+}
+
+function controlErrorsBodyFromDirections(desiredDirection, bodyAxisDirection, bodyAxesWorld) {
+  const desiredWorld = normalize(desiredDirection, { x: 0, y: 0, z: 1 });
+  const desiredBody = normalize(
+    worldVectorToBody(desiredWorld, bodyAxesWorld),
+    { x: 0, y: 1, z: 0 },
+  );
+  let alignAxisBody = cross({ x: 0, y: 1, z: 0 }, desiredBody);
+  const alignAngleRad = angleBetweenRadians({ x: 0, y: 1, z: 0 }, desiredBody);
+  if (!(length(alignAxisBody) > 1e-9) && dot({ x: 0, y: 1, z: 0 }, desiredBody) < 0) {
+    alignAxisBody = { x: 1, y: 0, z: 0 };
+  }
+  const alignAxisUnitBody = normalize(alignAxisBody, { x: 1, y: 0, z: 0 });
+  const currentTopProjected = normalize(
+    subtract(bodyAxesWorld.top, scale(bodyAxesWorld.forward, dot(bodyAxesWorld.top, bodyAxesWorld.forward))),
+    bodyAxesWorld.top,
+  );
+  const referenceUpWorld = { x: 0, y: 0, z: 1 };
+  const desiredTopWorldRaw = subtract(referenceUpWorld, scale(desiredWorld, dot(referenceUpWorld, desiredWorld)));
+  const desiredTopWorld = normalize(desiredTopWorldRaw, bodyAxesWorld.top);
+  const desiredTopProjected = normalize(
+    subtract(desiredTopWorld, scale(bodyAxesWorld.forward, dot(desiredTopWorld, bodyAxesWorld.forward))),
+    desiredTopWorld,
+  );
+  const rollAlignWeight = clamp((dot(normalize(bodyAxisDirection || desiredWorld, desiredWorld), desiredWorld) + 0.15) / 0.85, 0, 1);
+  return {
+    pitchErrorRad: alignAxisUnitBody.x * alignAngleRad,
+    yawErrorRad: alignAxisUnitBody.z * alignAngleRad,
+    rollErrorRad: signedAngleAroundAxis(currentTopProjected, desiredTopProjected, bodyAxesWorld.forward) * rollAlignWeight,
+  };
 }
 
 export function sampleWindVectorKmS({
@@ -459,6 +548,218 @@ export function computeAerodynamicResponse({
     staticMarginNormalized,
     relAirVelocityKmS,
     relAirSpeedKmS,
+  };
+}
+
+export function computeGridFinControlState({
+  bodyKind = "booster",
+  atmosphereSample,
+  relPos,
+  relVel,
+  earthPole,
+  windVectorKmS,
+  desiredDirection,
+  bodyAxisDirection,
+  bodyAxesWorld = null,
+  controlErrorsBody = null,
+  omegaBodyRadS = null,
+  massKg,
+  massModel = null,
+}) {
+  const profile = gridFinProfile(bodyKind);
+  if (!profile || !relPos || !relVel) {
+    return {
+      active: false,
+      authority: 0,
+      relAirSpeedKmS: 0,
+      dynamicPressurePa: 0,
+      deflectionDeg: 0,
+      maxDeflectionDeg: 0,
+      momentNm: 0,
+      bodyTorqueNm: { x: 0, y: 0, z: 0 },
+      finStates: [],
+      angularAccelerationRadS2: 0,
+      dampingPerS: 0,
+    };
+  }
+
+  const relAirVelocityKmS = atmosphereRelativeVelocityKmS(
+    relPos,
+    relVel,
+    earthPole,
+    windVectorKmS,
+  );
+  const relAirSpeedKmS = length(relAirVelocityKmS);
+  const qPa = dynamicPressurePaFromAtmosphere(
+    atmosphereSample,
+    relPos,
+    relVel,
+    earthPole,
+    windVectorKmS,
+  );
+  const maxDeflectionDeg = Math.max(0, Number(profile.maxDeflectionDeg) || 0);
+  if (!(relAirSpeedKmS > 1e-6) || !(qPa > Math.max(1, Number(profile.qMinPa) || 1_000))) {
+    return {
+      active: false,
+      authority: 0,
+      relAirSpeedKmS,
+      dynamicPressurePa: qPa,
+      deflectionDeg: 0,
+      maxDeflectionDeg,
+      momentNm: 0,
+      bodyTorqueNm: { x: 0, y: 0, z: 0 },
+      finStates: [],
+      angularAccelerationRadS2: 0,
+      dampingPerS: 0,
+    };
+  }
+
+  const desired = normalize(desiredDirection, { x: 0, y: 0, z: 1 });
+  const bodyAxis = normalize(bodyAxisDirection || desired, desired);
+  const bodyAxes = bodyAxesWorld || bodyAxesFromForward(bodyAxis, earthPole);
+  const controls = controlErrorsBody || controlErrorsBodyFromDirections(desired, bodyAxis, bodyAxes);
+  const errorRad = Math.hypot(
+    finiteNumber(controls?.pitchErrorRad, 0),
+    finiteNumber(controls?.yawErrorRad, 0),
+    finiteNumber(controls?.rollErrorRad, 0),
+  );
+  if (!(errorRad > 1e-6)) {
+    return {
+      active: false,
+      authority: 0,
+      relAirSpeedKmS,
+      dynamicPressurePa: qPa,
+      deflectionDeg: 0,
+      maxDeflectionDeg,
+      momentNm: 0,
+      bodyTorqueNm: { x: 0, y: 0, z: 0 },
+      finStates: [],
+      angularAccelerationRadS2: 0,
+      dampingPerS: 0,
+    };
+  }
+
+  const qMinPa = Math.max(1, Number(profile.qMinPa) || 1_000);
+  const qPeakPa = Math.max(qMinPa, Number(profile.qPeakPa) || 18_000);
+  const qFadePa = Math.max(qPeakPa, Number(profile.qFadePa) || 70_000);
+  const qBuild = clamp((qPa - qMinPa) / Math.max(qPeakPa - qMinPa, EPSILON), 0, 1);
+  const qFade = 1 - (0.45 * clamp((qPa - qPeakPa) / Math.max(qFadePa - qPeakPa, EPSILON), 0, 1));
+  const flowEffectiveness = clamp(qBuild * qFade, 0, 1);
+  if (!(flowEffectiveness > 1e-4)) {
+    return {
+      active: false,
+      authority: 0,
+      relAirSpeedKmS,
+      dynamicPressurePa: qPa,
+      deflectionDeg: 0,
+      maxDeflectionDeg,
+      momentNm: 0,
+      bodyTorqueNm: { x: 0, y: 0, z: 0 },
+      finStates: [],
+      angularAccelerationRadS2: 0,
+      dampingPerS: 0,
+    };
+  }
+
+  const maxDeflectionRad = rad(maxDeflectionDeg);
+  const fins = Array.isArray(profile.fins) && profile.fins.length > 0
+    ? profile.fins
+    : [{
+      name: "aggregate",
+      areaM2: Math.max(0, Number(profile.totalAreaM2) || 0),
+      positionBodyM: { x: 0, y: Math.max(0.1, Number(profile.leverArmM) || 0.1), z: 0 },
+      forceAxisBody: { x: 0, y: 0, z: 1 },
+      controlMix: { pitch: 1, yaw: 0, roll: 0 },
+    }];
+  const relAirBodyKmS = worldVectorToBody(relAirVelocityKmS, bodyAxes);
+  const omegaBody = {
+    x: finiteNumber(omegaBodyRadS?.x, 0),
+    y: finiteNumber(omegaBodyRadS?.y, 0),
+    z: finiteNumber(omegaBodyRadS?.z, 0),
+  };
+  const pitchCommand = finiteNumber(controls?.pitchErrorRad, 0);
+  const yawCommand = finiteNumber(controls?.yawErrorRad, 0);
+  const rollCommand = finiteNumber(controls?.rollErrorRad, 0);
+  const totalBodyTorqueNm = fins.reduce((sum, fin) => {
+    const positionBodyM = {
+      x: finiteNumber(fin?.positionBodyM?.x, 0),
+      y: finiteNumber(fin?.positionBodyM?.y, 0),
+      z: finiteNumber(fin?.positionBodyM?.z, 0),
+    };
+    const localRotationalVelocityMS = cross(omegaBody, positionBodyM);
+    const localRelAirMS = {
+      x: (relAirBodyKmS.x * 1000) + localRotationalVelocityMS.x,
+      y: (relAirBodyKmS.y * 1000) + localRotationalVelocityMS.y,
+      z: (relAirBodyKmS.z * 1000) + localRotationalVelocityMS.z,
+    };
+    const localSpeedMS = length(localRelAirMS);
+    const localQPa = 0.5 * Math.max(MIN_AIR_DENSITY_KG_M3, Number(atmosphereSample?.dragEffectiveDensityKgM3) || Number(atmosphereSample?.densityKgM3) || 0) * localSpeedMS * localSpeedMS;
+    const localQBuild = clamp((localQPa - qMinPa) / Math.max(qPeakPa - qMinPa, EPSILON), 0, 1);
+    const localQFade = 1 - (0.45 * clamp((localQPa - qPeakPa) / Math.max(qFadePa - qPeakPa, EPSILON), 0, 1));
+    const localEffectiveness = clamp(localQBuild * localQFade, 0, 1);
+    const controlMix = fin?.controlMix || {};
+    const normalizedCommand = clamp(
+      (pitchCommand * finiteNumber(controlMix.pitch, 0))
+      + (yawCommand * finiteNumber(controlMix.yaw, 0))
+      + (rollCommand * finiteNumber(controlMix.roll, 0)),
+      -1,
+      1,
+    );
+    const commandedDeflectionRad = normalizedCommand * maxDeflectionRad;
+    const effectiveDeflectionRad = commandedDeflectionRad * localEffectiveness;
+    const finLiftCoefficient = Math.max(0, Number(profile.liftSlopePerRad) || 0) * effectiveDeflectionRad;
+    const forceAxisBody = normalize(fin?.forceAxisBody || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+    const controlForceN = localQPa * Math.max(0, finiteNumber(fin?.areaM2, 0)) * finLiftCoefficient;
+    const forceBodyN = scale(forceAxisBody, controlForceN);
+    const torqueBodyNm = cross(positionBodyM, forceBodyN);
+    sum.torque = add(sum.torque, torqueBodyNm);
+    sum.deflections.push(Math.abs(degrees(commandedDeflectionRad)));
+    sum.finStates.push({
+      name: String(fin?.name || "fin"),
+      deflectionDeg: degrees(commandedDeflectionRad),
+      dynamicPressurePa: localQPa,
+      forceBodyN,
+      torqueBodyNm,
+      effectiveness: localEffectiveness,
+    });
+    return sum;
+  }, { torque: { x: 0, y: 0, z: 0 }, deflections: [], finStates: [] });
+  const momentNm = length(totalBodyTorqueNm.torque);
+  const bodyLengthM = Math.max(1, Number(profile.bodyLengthM) || 1);
+  const safeMassKg = Math.max(1, Number(massKg) || 0);
+  const inertiaNormalized = Math.max(0.25, Number(massModel?.inertiaNormalized) || 1);
+  const effectiveInertiaKgM2 = (safeMassKg * bodyLengthM * bodyLengthM / 12) * inertiaNormalized;
+  const angularAccelerationRadS2 = momentNm / Math.max(effectiveInertiaKgM2, 1e-6);
+  const dampingPerS = Math.max(0, Number(profile.baseDampingPerS) || 0.85) * flowEffectiveness;
+  const referenceMomentNm = fins.reduce((sum, fin) => {
+    const positionBodyM = {
+      x: finiteNumber(fin?.positionBodyM?.x, 0),
+      y: finiteNumber(fin?.positionBodyM?.y, 0),
+      z: finiteNumber(fin?.positionBodyM?.z, 0),
+    };
+    const forceAxisBody = normalize(fin?.forceAxisBody || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+    const refForceN =
+      qPeakPa
+      * Math.max(0, finiteNumber(fin?.areaM2, 0))
+      * (Math.max(0, Number(profile.liftSlopePerRad) || 0) * maxDeflectionRad);
+    return sum + length(cross(positionBodyM, scale(forceAxisBody, refForceN)));
+  }, 0);
+  const authority = clamp(momentNm / Math.max(referenceMomentNm, 1e-6), 0, 1);
+
+  return {
+    active: authority > 1e-4,
+    authority,
+    relAirSpeedKmS,
+    dynamicPressurePa: qPa,
+    deflectionDeg: totalBodyTorqueNm.deflections.length > 0
+      ? Math.max(...totalBodyTorqueNm.deflections)
+      : 0,
+    maxDeflectionDeg,
+    momentNm,
+    bodyTorqueNm: totalBodyTorqueNm.torque,
+    finStates: totalBodyTorqueNm.finStates,
+    angularAccelerationRadS2,
+    dampingPerS,
   };
 }
 

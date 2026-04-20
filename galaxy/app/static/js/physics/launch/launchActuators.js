@@ -21,6 +21,7 @@ export function createActuatorState(initialDirection = { x: 0, y: 0, z: 1 }) {
     directionCommand: direction,
     directionActual: direction,
     gimbalErrorDeg: 0,
+    angularRateRadS: 0,
   };
 }
 
@@ -317,6 +318,8 @@ export function applyActuatorModel(actuatorState, {
   dtSeconds = 0,
   config,
   massModel,
+  angularAccelerationRadS2 = null,
+  angularDampingPerS = null,
 }) {
   const state = actuatorState || createActuatorState(requestedDirection);
   const cfg = config || LAUNCH_REALISM_CONFIG.actuator.stage;
@@ -352,9 +355,26 @@ export function applyActuatorModel(actuatorState, {
     0.45,
     1.9,
   );
-  const maxStepRad = rad(gimbalRateDegS) * dt;
   const currentDir = normalize(state.directionActual, requestedDirNorm);
   const errorRad = angleBetweenRadians(currentDir, requestedDirNorm);
+  let maxStepRad = rad(gimbalRateDegS) * dt;
+  const aeroAngularAcceleration = Number(angularAccelerationRadS2);
+  if (Number.isFinite(aeroAngularAcceleration) && aeroAngularAcceleration > 1e-9) {
+    const dampingPerS = Math.max(0, Number(angularDampingPerS) || 0);
+    const stoppingRateRadS = Math.sqrt(Math.max(0, 2 * aeroAngularAcceleration * errorRad));
+    const rateStepRadS = aeroAngularAcceleration * dt;
+    let angularRateRadS = Math.max(0, Number(state.angularRateRadS) || 0);
+    if (angularRateRadS < stoppingRateRadS) {
+      angularRateRadS = Math.min(stoppingRateRadS, angularRateRadS + rateStepRadS);
+    } else {
+      angularRateRadS = Math.max(stoppingRateRadS, angularRateRadS - rateStepRadS);
+    }
+    angularRateRadS *= Math.max(0, 1 - (dampingPerS * dt));
+    state.angularRateRadS = angularRateRadS;
+    maxStepRad = Math.min(errorRad, angularRateRadS * dt);
+  } else {
+    state.angularRateRadS = dt > 1e-9 ? Math.max(0, maxStepRad / dt) : 0;
+  }
   const blend = errorRad > 1e-12 ? clamp(maxStepRad / errorRad, 0, 1) : 1;
   state.directionActual = normalize(mixVectors(currentDir, requestedDirNorm, blend), requestedDirNorm);
   state.gimbalErrorDeg = degrees(angleBetweenRadians(state.directionActual, requestedDirNorm));

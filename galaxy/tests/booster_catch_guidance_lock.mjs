@@ -17,6 +17,12 @@ function main() {
     tangentialSpeedKmS: 0.03,
     launchSiteRangeKm: 0.09,
     launchSiteLateralRangeKm: 0.04,
+    catchTotalRangeKm: 0.08,
+    catchLateralRangeKm: 0.035,
+    catchVerticalErrorKm: 0.012,
+    catchLateralSpeedKmS: 0.022,
+    catchVerticalSpeedKmS: -0.028,
+    catchApproachSpeedKmS: 0.036,
   });
   assert(catchCommand, "expected near-pad terminal guidance to enter catch burn");
   assert(catchCommand.phase === "catch-burn", `expected catch-burn phase, got ${catchCommand?.phase}`);
@@ -32,12 +38,28 @@ function main() {
   });
   assert(!noCatchCommand, "expected high-altitude descent to stay out of catch mode");
 
+  const noCatchLooseCorridor = resolveBoosterCatchCommand({
+    altitudeKm: 0.32,
+    radialSpeedKmS: -0.04,
+    tangentialSpeedKmS: 0.09,
+    launchSiteRangeKm: 0.34,
+    launchSiteLateralRangeKm: 0.26,
+    catchTotalRangeKm: 0.31,
+    catchLateralRangeKm: 0.26,
+    catchVerticalErrorKm: 0.02,
+    catchLateralSpeedKmS: 0.09,
+    catchVerticalSpeedKmS: -0.04,
+    catchApproachSpeedKmS: 0.098,
+  });
+  assert(!noCatchLooseCorridor, "expected loose tower-relative corridor to stay out of catch mode");
+
   const finalizeCatch = shouldFinalizeBoosterCatch({
     guidanceMode: "booster-catch-burn",
     launchSiteLateralRangeKm: 0.02,
     catchPinHeightErrorKm: 0.001,
     speedKmS: 0.02,
     radialSpeedKmS: -0.01,
+    catchHoldSec: 0.6,
   });
   assert(finalizeCatch, "expected aligned low-speed booster to finalize as caught");
 
@@ -47,8 +69,19 @@ function main() {
     catchPinHeightErrorKm: BOOSTER_CATCH_BASE_CLEARANCE_KM,
     speedKmS: 0.02,
     radialSpeedKmS: -0.01,
+    catchHoldSec: 0.6,
   });
   assert(!noFinalizeCatch, "expected non-catch guidance to avoid catch finalization");
+
+  const noFinalizeShortHold = shouldFinalizeBoosterCatch({
+    guidanceMode: "booster-catch-burn",
+    launchSiteLateralRangeKm: 0.01,
+    catchPinHeightErrorKm: 0.001,
+    speedKmS: 0.015,
+    radialSpeedKmS: -0.008,
+    catchHoldSec: 0.1,
+  });
+  assert(!noFinalizeShortHold, "expected short catch hold to avoid early catch finalization");
 
   console.log("PASS booster-catch-guidance-lock");
 }

@@ -1,3 +1,5 @@
+import { STARSHIP_STACK_DIMENSIONS_KM } from "./launchConfig.js";
+
 export const LAUNCH_REALISM_CONFIG = Object.freeze({
   wind: Object.freeze({
     layers: Object.freeze([
@@ -69,6 +71,91 @@ export const LAUNCH_REALISM_CONFIG = Object.freeze({
       qAlphaThrottleGain: 1.18,
     }),
   }),
+  gridFins: Object.freeze({
+    booster: Object.freeze({
+      totalAreaM2: 24.0,
+      liftSlopePerRad: 2.35,
+      maxDeflectionDeg: 28,
+      leverArmM: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.34,
+      bodyLengthM: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000,
+      baseDampingPerS: 0.85,
+      qMinPa: 1_000,
+      qPeakPa: 18_000,
+      qFadePa: 70_000,
+      fins: Object.freeze([
+        Object.freeze({
+          name: "top",
+          areaM2: 6.0,
+          positionBodyM: Object.freeze({
+            x: 0,
+            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
+            z: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
+          }),
+          forceAxisBody: Object.freeze({ x: 0, y: 0, z: 1 }),
+          controlMix: Object.freeze({ pitch: 1.0, yaw: 0.0, roll: 0.45 }),
+        }),
+        Object.freeze({
+          name: "bottom",
+          areaM2: 6.0,
+          positionBodyM: Object.freeze({
+            x: 0,
+            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
+            z: -STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
+          }),
+          forceAxisBody: Object.freeze({ x: 0, y: 0, z: -1 }),
+          controlMix: Object.freeze({ pitch: 1.0, yaw: 0.0, roll: -0.45 }),
+        }),
+        Object.freeze({
+          name: "right",
+          areaM2: 6.0,
+          positionBodyM: Object.freeze({
+            x: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
+            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
+            z: 0,
+          }),
+          forceAxisBody: Object.freeze({ x: 1, y: 0, z: 0 }),
+          controlMix: Object.freeze({ pitch: 0.0, yaw: 1.0, roll: -0.45 }),
+        }),
+        Object.freeze({
+          name: "left",
+          areaM2: 6.0,
+          positionBodyM: Object.freeze({
+            x: -STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
+            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
+            z: 0,
+          }),
+          forceAxisBody: Object.freeze({ x: -1, y: 0, z: 0 }),
+          controlMix: Object.freeze({ pitch: 0.0, yaw: 1.0, roll: 0.45 }),
+        }),
+      ]),
+    }),
+  }),
+  engineCluster: Object.freeze({
+    booster: Object.freeze({
+      engines: Object.freeze([
+        Object.freeze({
+          name: "center",
+          positionBodyM: Object.freeze({ x: 0, y: -STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.46, z: 0 }),
+        }),
+        Object.freeze({
+          name: "port",
+          positionBodyM: Object.freeze({
+            x: -STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.18,
+            y: -STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.46,
+            z: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.11,
+          }),
+        }),
+        Object.freeze({
+          name: "starboard",
+          positionBodyM: Object.freeze({
+            x: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.18,
+            y: -STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.46,
+            z: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.11,
+          }),
+        }),
+      ]),
+    }),
+  }),
   actuator: Object.freeze({
     stage: Object.freeze({
       throttleRiseTauSec: 0.52,
@@ -79,6 +166,7 @@ export const LAUNCH_REALISM_CONFIG = Object.freeze({
       throttleRiseTauSec: 0.42,
       throttleFallTauSec: 0.30,
       gimbalRateDegS: 9.6,
+      maxGimbalDeflectionDeg: 8.0,
     }),
   }),
   massModel: Object.freeze({

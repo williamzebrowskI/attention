@@ -7,6 +7,40 @@ function assert(condition, message) {
 }
 
 function main() {
+  const separationFlip = computeBoosterRecoveryCommand({
+    altitudeKm: 72,
+    radialSpeedKmS: 0.02,
+    tangentialSpeedKmS: 1.45,
+    launchSiteRangeKm: 90,
+    launchSiteLateralRangeKm: 76,
+    launchSiteLateralClosingSpeedKmS: -0.01,
+    timeSinceSeparationSec: 2.4,
+    remainingPropellantKg: 320_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 120,
+    bodyRetrogradeAlignment: 0.28,
+    bodyAntiTangentAlignment: 0.12,
+    bodyUpAlignment: 0.64,
+  });
+  assert(separationFlip.phase === "separation-flip", `expected separation-flip, got ${separationFlip.phase}`);
+
+  const separationCoast = computeBoosterRecoveryCommand({
+    altitudeKm: 70,
+    radialSpeedKmS: -0.01,
+    tangentialSpeedKmS: 1.25,
+    launchSiteRangeKm: 82,
+    launchSiteLateralRangeKm: 66,
+    launchSiteLateralClosingSpeedKmS: 0.01,
+    timeSinceSeparationSec: 2.4,
+    remainingPropellantKg: 320_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 180,
+    bodyRetrogradeAlignment: 0.92,
+    bodyAntiTangentAlignment: 0.81,
+    bodyUpAlignment: -0.08,
+  });
+  assert(separationCoast.phase === "separation-coast", `expected separation-coast, got ${separationCoast.phase}`);
+
   const boostback = computeBoosterRecoveryCommand({
     altitudeKm: 68,
     radialSpeedKmS: 0.04,
@@ -36,6 +70,8 @@ function main() {
   });
   assert(entryBurn.phase === "entry-burn", `expected entry-burn, got ${entryBurn.phase}`);
   assert(entryBurn.throttle >= 0.30, `expected strong entry-burn throttle, got ${entryBurn.throttle}`);
+  assert(entryBurn.attitudeControlMode === "grid-fins+engines", `expected grid-fins+engines control, got ${entryBurn.attitudeControlMode}`);
+  assert(entryBurn.aeroAuthority > 0.45, `expected strong grid-fin authority in entry burn, got ${entryBurn.aeroAuthority}`);
 
   const descentCoast = computeBoosterRecoveryCommand({
     altitudeKm: 14,
@@ -51,6 +87,8 @@ function main() {
   });
   assert(descentCoast.phase === "descent-coast", `expected descent-coast, got ${descentCoast.phase}`);
   assert(descentCoast.throttle === 0, `expected descent coast throttle 0, got ${descentCoast.throttle}`);
+  assert(descentCoast.attitudeControlMode === "grid-fins", `expected grid-fin-only control, got ${descentCoast.attitudeControlMode}`);
+  assert(descentCoast.aeroAuthority > 0.05, `expected nonzero grid-fin authority in descent coast, got ${descentCoast.aeroAuthority}`);
 
   const landingBurn = computeBoosterRecoveryCommand({
     altitudeKm: 3,
@@ -66,6 +104,7 @@ function main() {
   });
   assert(landingBurn.phase === "landing-burn", `expected landing-burn, got ${landingBurn.phase}`);
   assert(landingBurn.throttle > 0.3, `expected positive landing burn throttle, got ${landingBurn.throttle}`);
+  assert(landingBurn.attitudeControlMode === "engines", `expected engine-led landing control, got ${landingBurn.attitudeControlMode}`);
 
   console.log("PASS booster-recovery-profile-lock");
 }

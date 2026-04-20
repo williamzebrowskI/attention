@@ -8,7 +8,11 @@ import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.j
 import {
   add,
   cross,
+  dot,
+  length,
+  normalize,
   scale,
+  subtract,
 } from "./launchMath.js";
 
 function clamp(value, min, max) {
@@ -73,6 +77,11 @@ export function computeLaunchSiteCatchFrame({
   );
   const angularVelocity = scale(earthAxes.pole, angularRateRadS);
   const localRotationalVelocityKmS = cross(angularVelocity, relPositionKm);
+  const eastAxis = normalize(
+    cross(earthAxes.pole, surfaceState.surfaceNormal),
+    normalize(cross({ x: 0, y: 0, z: 1 }, surfaceState.surfaceNormal), { x: 1, y: 0, z: 0 }),
+  );
+  const northAxis = normalize(cross(surfaceState.surfaceNormal, eastAxis), earthAxes.pole);
   return {
     centerPosition: add(earthState.position, relPositionKm),
     centerVelocity: add(
@@ -80,6 +89,8 @@ export function computeLaunchSiteCatchFrame({
       localRotationalVelocityKmS,
     ),
     surfaceNormal: { ...surfaceState.surfaceNormal },
+    eastAxis,
+    northAxis,
     baseClearanceKm: BOOSTER_CATCH_BASE_CLEARANCE_KM,
     pinHeightAboveBaseKm: BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM,
     chopstickCatchHeightAboveBaseKm: BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
@@ -97,4 +108,52 @@ export function computeBoosterCatchPinHeightErrorKm(bodyAboveTerrainKm) {
     + BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM
     - BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM
   );
+}
+
+export function computeBoosterCatchRelativeState({
+  boosterState,
+  catchFrame,
+} = {}) {
+  if (!boosterState?.position || !boosterState?.velocity || !catchFrame?.centerPosition || !catchFrame?.centerVelocity) {
+    return null;
+  }
+  const up = normalize(catchFrame.surfaceNormal || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  const east = normalize(catchFrame.eastAxis || { x: 1, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+  const north = normalize(catchFrame.northAxis || cross(up, east), { x: 0, y: 1, z: 0 });
+  const relativePositionKm = subtract(boosterState.position, catchFrame.centerPosition);
+  const relativeVelocityKmS = subtract(boosterState.velocity, catchFrame.centerVelocity);
+  const verticalErrorKm = dot(relativePositionKm, up);
+  const verticalSpeedKmS = dot(relativeVelocityKmS, up);
+  const lateralPositionKm = subtract(relativePositionKm, scale(up, verticalErrorKm));
+  const lateralVelocityKmS = subtract(relativeVelocityKmS, scale(up, verticalSpeedKmS));
+  const eastErrorKm = dot(relativePositionKm, east);
+  const northErrorKm = dot(relativePositionKm, north);
+  const eastSpeedKmS = dot(relativeVelocityKmS, east);
+  const northSpeedKmS = dot(relativeVelocityKmS, north);
+  const lateralRangeKm = length(lateralPositionKm);
+  const totalRangeKm = length(relativePositionKm);
+  const lateralSpeedKmS = length(lateralVelocityKmS);
+  const totalSpeedKmS = length(relativeVelocityKmS);
+  const lineOfSight = normalize(relativePositionKm, scale(up, -1));
+  const closingSpeedKmS = -dot(relativeVelocityKmS, lineOfSight);
+  return {
+    relativePositionKm,
+    relativeVelocityKmS,
+    verticalErrorKm,
+    verticalSpeedKmS,
+    lateralPositionKm,
+    lateralVelocityKmS,
+    lateralRangeKm,
+    lateralSpeedKmS,
+    totalRangeKm,
+    totalSpeedKmS,
+    eastErrorKm,
+    northErrorKm,
+    eastSpeedKmS,
+    northSpeedKmS,
+    closingSpeedKmS,
+    upAxisKm: up,
+    eastAxisKm: east,
+    northAxisKm: north,
+  };
 }

@@ -5,6 +5,19 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function resolveGridFinAuthority({
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
+  tangentialSpeedKmS = 0,
+  downwardSpeedKmS = 0,
+}) {
+  const qBuild = clamp((dynamicPressurePa - 1_200) / 12_000, 0, 1);
+  const qSaturation = 1 - (0.35 * clamp((dynamicPressurePa - 42_000) / 38_000, 0, 1));
+  const altitudeWindow = clamp((74 - altitudeKm) / 42, 0, 1) * clamp((altitudeKm - 1.4) / 8, 0, 1);
+  const speedWindow = clamp((Math.max(tangentialSpeedKmS, downwardSpeedKmS) - 0.08) / 0.85, 0, 1);
+  return clamp(qBuild * qSaturation * Math.max(altitudeWindow, speedWindow * 0.8), 0, 1);
+}
+
 export function computeBoosterRecoveryCommand(input = {}) {
   const altitudeKm = Math.max(0, Number(input.altitudeKm) || 0);
   const radialSpeedKmS = Number(input.radialSpeedKmS) || 0;
@@ -12,10 +25,19 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const launchSiteRangeKm = Math.max(0, Number(input.launchSiteRangeKm) || 0);
   const launchSiteLateralRangeKm = Math.max(0, Number(input.launchSiteLateralRangeKm) || 0);
   const launchSiteLateralClosingSpeedKmS = Number(input.launchSiteLateralClosingSpeedKmS) || 0;
+  const catchTotalRangeKm = Math.max(0, Number(input.catchTotalRangeKm) || launchSiteRangeKm);
+  const catchLateralRangeKm = Math.max(0, Number(input.catchLateralRangeKm) || launchSiteLateralRangeKm);
+  const catchVerticalErrorKm = Number(input.catchVerticalErrorKm) || 0;
+  const catchLateralSpeedKmS = Math.max(0, Number(input.catchLateralSpeedKmS) || tangentialSpeedKmS);
+  const catchVerticalSpeedKmS = Number(input.catchVerticalSpeedKmS) || radialSpeedKmS;
+  const catchApproachSpeedKmS = Math.max(0, Number(input.catchApproachSpeedKmS) || Math.hypot(catchLateralSpeedKmS, catchVerticalSpeedKmS));
   const elapsedSec = Math.max(0, Number(input.timeSinceSeparationSec) || 0);
   const propellantKg = Math.max(0, Number(input.remainingPropellantKg) || 0);
   const dynamicPressurePa = Math.max(0, Number(input.dynamicPressurePa) || 0);
   const reserveLandingKg = Math.max(0, Number(input.reserveLandingPropellantKg) || 0);
+  const bodyRetrogradeAlignment = clamp(Number(input.bodyRetrogradeAlignment) || 0, -1, 1);
+  const bodyAntiTangentAlignment = clamp(Number(input.bodyAntiTangentAlignment) || 0, -1, 1);
+  const bodyUpAlignment = clamp(Number(input.bodyUpAlignment) || 0, -1, 1);
   const downwardSpeedKmS = Math.max(0, -radialSpeedKmS);
   const dryMassKg = Math.max(1, Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 1);
   const totalMassKg = Math.max(dryMassKg + propellantKg, dryMassKg + 1);
@@ -53,14 +75,21 @@ export function computeBoosterRecoveryCommand(input = {}) {
     15.5,
   );
 
-  const separationFlipSec = 1.6;
-  const separationCoastSec = 4.2;
+  const separationFlipMinSec = 0.55;
+  const separationFlipMaxSec = 4.6;
+  const separationCoastMaxSec = 7.0;
   const entryBurnUpperKm = 74;
   const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
   const rtlsLateralWindowKm = 130;
   const significantSiteErrorKm = 18;
   const landingSiteTightenKm = 3.0;
+  const gridFinAuthority = resolveGridFinAuthority({
+    altitudeKm,
+    dynamicPressurePa,
+    tangentialSpeedKmS,
+    downwardSpeedKmS,
+  });
 
   if (altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.025 && tangentialSpeedKmS < 0.02) {
     return {
@@ -74,7 +103,17 @@ export function computeBoosterRecoveryCommand(input = {}) {
     };
   }
 
-  if (elapsedSec < separationFlipSec) {
+  const flipAlignment = clamp((0.68 * bodyRetrogradeAlignment) + (0.32 * bodyAntiTangentAlignment), -1, 1);
+  const flipComplete = flipAlignment >= 0.82;
+  const attitudeStillMostlyUp = bodyUpAlignment > 0.35;
+
+  if (
+    elapsedSec < separationFlipMinSec
+    || (
+      elapsedSec < separationFlipMaxSec
+      && (!flipComplete || attitudeStillMostlyUp)
+    )
+  ) {
     return {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
@@ -86,7 +125,11 @@ export function computeBoosterRecoveryCommand(input = {}) {
     };
   }
 
-  if (elapsedSec < separationCoastSec) {
+  if (
+    elapsedSec < separationCoastMaxSec
+    && altitudeKm > 52
+    && downwardSpeedKmS < 0.28
+  ) {
     return {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
@@ -127,6 +170,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "boostback",
       guidanceMode: "booster-boostback",
+      attitudeControlMode: "engines+rcs",
+      aeroAuthority: 0,
       throttle: clamp(
         0.34
           + (0.24 * tangentialScale)
@@ -151,20 +196,24 @@ export function computeBoosterRecoveryCommand(input = {}) {
       return {
         phase: "entry-burn",
         guidanceMode: "booster-entry-burn",
+        attitudeControlMode: "grid-fins+engines",
+        aeroAuthority: gridFinAuthority,
         throttle: clamp(0.30 + (0.44 * entryInterfaceNorm), 0.28, 0.82),
         directionMix: { up: 0.82, retrograde: 0.34, antiTangent: 0.66 },
-        siteVectorWeight: clamp(0.36 + (0.20 * lateralErrorNorm), 0.28, 0.64),
-        siteVelocityWeight: clamp(0.24 + (0.18 * lateralClosingNeedNorm), 0.18, 0.54),
+        siteVectorWeight: clamp(0.18 + (0.34 * gridFinAuthority) + (0.14 * lateralErrorNorm), 0.18, 0.68),
+        siteVelocityWeight: clamp(0.14 + (0.26 * gridFinAuthority) + (0.12 * lateralClosingNeedNorm), 0.12, 0.56),
         touchdownReady: false,
       };
     }
     return {
       phase: "ballistic-descent",
       guidanceMode: "booster-entry-guidance",
+      attitudeControlMode: "grid-fins",
+      aeroAuthority: gridFinAuthority,
       throttle: 0,
       directionMix: { up: 0.22, retrograde: 0.18, antiTangent: 0.48 },
-      siteVectorWeight: clamp(0.38 + (0.20 * lateralErrorNorm), 0.26, 0.58),
-      siteVelocityWeight: clamp(0.22 + (0.16 * lateralClosingNeedNorm), 0.18, 0.44),
+      siteVectorWeight: clamp(0.14 + (0.42 * gridFinAuthority) + (0.10 * lateralErrorNorm), 0.12, 0.60),
+      siteVelocityWeight: clamp(0.12 + (0.30 * gridFinAuthority) + (0.10 * lateralClosingNeedNorm), 0.10, 0.46),
       touchdownReady: false,
     };
   }
@@ -173,10 +222,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "descent-coast",
       guidanceMode: "booster-descent-coast",
+      attitudeControlMode: "grid-fins",
+      aeroAuthority: gridFinAuthority,
       throttle: 0,
       directionMix: { up: 0.18, retrograde: 0.16, antiTangent: 0.56 },
-      siteVectorWeight: clamp(0.38 + (0.30 * lateralErrorNorm), 0.24, 0.76),
-      siteVelocityWeight: clamp(0.26 + (0.22 * lateralClosingNeedNorm), 0.18, 0.54),
+      siteVectorWeight: clamp(0.10 + (0.48 * gridFinAuthority) + (0.16 * lateralErrorNorm), 0.10, 0.76),
+      siteVelocityWeight: clamp(0.08 + (0.34 * gridFinAuthority) + (0.14 * lateralClosingNeedNorm), 0.08, 0.54),
       touchdownReady: false,
     };
   }
@@ -187,6 +238,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
     tangentialSpeedKmS,
     launchSiteRangeKm,
     launchSiteLateralRangeKm,
+    catchTotalRangeKm,
+    catchLateralRangeKm,
+    catchVerticalErrorKm,
+    catchLateralSpeedKmS,
+    catchVerticalSpeedKmS,
+    catchApproachSpeedKmS,
   });
   if (catchCommand) {
     return catchCommand;
@@ -217,6 +274,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
   return {
     phase: "landing-burn",
     guidanceMode: "booster-landing-burn",
+    attitudeControlMode: "engines",
+    aeroAuthority: clamp(gridFinAuthority * 0.25, 0, 0.2),
     throttle,
     directionMix: { up: 1.0, retrograde: 0.20, antiTangent: 0.92 },
     siteVectorWeight: clamp(0.10 + (0.26 * terminalRangeNorm), 0.06, 0.36),

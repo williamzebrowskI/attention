@@ -135,6 +135,48 @@ function makeTipAnchoredExhaustCone(THREE, {
   return mesh;
 }
 
+function createInlineHotstageVentPlumes(THREE, shipGroup, radius, anchorY) {
+  if (!THREE || !shipGroup || !(radius > 0) || !Number.isFinite(anchorY)) return null;
+  const plumeCount = 10;
+  const yAxis = new THREE.Vector3(0, 1, 0);
+  const baseLength = clamp(radius * 0.9, radius * 0.4, radius * 1.35);
+  const baseRadius = clamp(radius * 0.07, radius * 0.03, radius * 0.11);
+  const group = new THREE.Group();
+  const plumes = [];
+  for (let i = 0; i < plumeCount; i += 1) {
+    const angle = (i / plumeCount) * Math.PI * 2;
+    const direction = new THREE.Vector3(
+      Math.cos(angle) * 0.62,
+      -0.78,
+      Math.sin(angle) * 0.62,
+    ).normalize();
+    const anchor = new THREE.Vector3(
+      Math.cos(angle) * (radius * 1.02),
+      anchorY,
+      Math.sin(angle) * (radius * 1.02),
+    );
+    const plume = new THREE.Mesh(
+      new THREE.ConeGeometry(baseRadius, baseLength, 10, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0xffc88f),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      }),
+    );
+    plume.quaternion.setFromUnitVectors(yAxis, direction.clone().negate());
+    plume.position.copy(anchor).addScaledVector(direction, baseLength * 0.5);
+    plume.renderOrder = 26;
+    group.add(plume);
+    plumes.push({ mesh: plume, direction, anchor });
+  }
+  group.visible = false;
+  shipGroup.add(group);
+  return { group, plumes, baseLength };
+}
+
 /**
  * BASE-ANCHORED nozzle bell:
  * - ConeGeometry base at -Y, tip at +Y
@@ -963,6 +1005,31 @@ function updateInlineNavigationBeaconVisual(stageState) {
   }
 }
 
+function updateInlineHotstageVentPlumes(stageState, snapshot) {
+  const ventState = stageState?.hotstageVentPlumes;
+  if (!ventState?.group || !Array.isArray(ventState.plumes)) return;
+  const active = Boolean(snapshot?.hotstageActive) && !Boolean(snapshot?.boosterActive);
+  const thrustNorm = clamp(Number(snapshot?.throttle) || 0, 0, 1);
+  const overlapSec = Math.max(0.001, Number(snapshot?.hotstageOverlapSeconds) || 1);
+  const timeSinceIgnitionSec = Math.max(0, Number(snapshot?.hotstageTimeSinceIgnitionSec) || 0);
+  const progress = clamp(timeSinceIgnitionSec / overlapSec, 0, 1);
+  const gapNorm = clamp((Number(snapshot?.hotstageDisplayedGapKm) || 0) / 0.0065, 0, 1);
+  const pulse = 0.88 + (0.12 * Math.sin((Date.now() / 1000) * 34));
+  const intensity = active
+    ? clamp((0.26 + (0.56 * thrustNorm) + (0.18 * progress)) * (0.7 + (0.3 * gapNorm)), 0, 1)
+    : 0;
+  ventState.group.visible = intensity > 0.01;
+  for (const entry of ventState.plumes) {
+    const mesh = entry?.mesh;
+    if (!mesh?.material || Array.isArray(mesh.material)) continue;
+    const lengthScale = 0.7 + (0.95 * intensity);
+    const radiusScale = 0.78 + (0.42 * intensity);
+    mesh.scale.set(radiusScale, lengthScale, radiusScale);
+    mesh.position.copy(entry.anchor).addScaledVector(entry.direction, ventState.baseLength * lengthScale * 0.5);
+    mesh.material.opacity = clamp(0.06 + (0.24 * intensity * pulse), 0, 0.34);
+  }
+}
+
 // -------------------- Public API: Booster visuals --------------------
 export function createInlineBoosterVisual(THREE, distanceScale) {
   const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
@@ -1214,8 +1281,9 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
 
   const fullShipCenterY = baseY + boosterHeight + (0.5 * shipHeight);
   const detachedShipCenterY = 0;
+  const fullBoosterCenterY = baseY + (0.5 * boosterHeight);
 
-  boosterGroup.position.y = baseY + (0.5 * boosterHeight);
+  boosterGroup.position.y = fullBoosterCenterY;
   shipGroup.position.y = fullShipCenterY;
 
   root.add(boosterGroup);
@@ -1341,8 +1409,10 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
     root,
     materials: [stainless, darkSteel, nozzleMat, heatShieldMat],
     state: {
+      distanceScale,
       boosterGroup,
       shipGroup,
+      fullBoosterCenterY,
       fullShipCenterY,
       detachedShipCenterY,
 
@@ -1355,6 +1425,12 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
       shipMainEnginePlumes,
       shipRcsJets,
       navigationBeacon,
+      hotstageVentPlumes: createInlineHotstageVentPlumes(
+        THREE,
+        shipGroup,
+        radius,
+        (-0.5 * shipHeight) - (radius * 0.08),
+      ),
       atmosphereEffects: createLaunchAtmosphereEffects(THREE, {
         stage0BodyHeightScene: totalHeight,
         stage2BodyHeightScene: shipHeight,
@@ -1380,13 +1456,22 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
         ? Boolean(snapshot.boosterActive)
         : stageTwoActive
     );
+  const hotstageActive = Boolean(snapshot?.hotstageActive) && !detached;
+  const distanceScale = Number(stageState?.distanceScale) || 1;
+  const hotstageShipOffsetScene = Math.max(0, Number(snapshot?.hotstageShipOffsetKm) || 0) * distanceScale;
+  const hotstageBoosterOffsetScene = Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0) * distanceScale;
 
-  if (stageState.boosterGroup) stageState.boosterGroup.visible = !detached;
+  if (stageState.boosterGroup) {
+    stageState.boosterGroup.visible = !detached || hotstageActive;
+    if (Number.isFinite(stageState.fullBoosterCenterY)) {
+      stageState.boosterGroup.position.y = Number(stageState.fullBoosterCenterY) - hotstageBoosterOffsetScene;
+    }
+  }
 
   if (Number.isFinite(stageState.detachedShipCenterY) && Number.isFinite(stageState.fullShipCenterY)) {
     stageState.shipGroup.position.y = detached
       ? stageState.detachedShipCenterY
-      : stageState.fullShipCenterY;
+      : Number(stageState.fullShipCenterY) + hotstageShipOffsetScene;
   }
 
   // Ship main engines (used by mission ships/tankers during powered phases).
@@ -1416,6 +1501,8 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
       20,
     );
   }
+
+  updateInlineHotstageVentPlumes(stageState, snapshot);
   updateInlineNavigationBeaconVisual(stageState);
 }
 
