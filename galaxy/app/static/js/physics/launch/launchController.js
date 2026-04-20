@@ -17,7 +17,7 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
 } from "./launchConfig.js";
-import { computeBoosterRecoveryCommand } from "./boosterRecovery.js";
+import { computeBoosterRecoveryCommand } from "./boosterRecovery.js?v=20260420s";
 import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js";
 import {
   computeBoosterCatchPinHeightErrorKm,
@@ -820,6 +820,8 @@ function integrateBoosterAttitudeState(attitudeState, {
   torqueWorldNm = { x: 0, y: 0, z: 0 },
   massKg = 0,
   inertiaNormalized = 1,
+  angularDampingPerS = 0,
+  maxBodyRateRadS = null,
   dtSeconds = 0,
 }) {
   const state = attitudeState || createBoosterAttitudeState({ x: 0, y: 0, z: 1 });
@@ -851,7 +853,8 @@ function integrateBoosterAttitudeState(attitudeState, {
     y: rhs.y * invInertia.y,
     z: rhs.z * invInertia.z,
   };
-  state.omegaBodyRadS = add(omega, scale(alpha, dt));
+  const damp = Math.exp(-Math.max(0, Number(angularDampingPerS) || 0) * dt);
+  state.omegaBodyRadS = scale(add(omega, scale(alpha, dt)), damp);
   const omegaQuat = {
     x: state.omegaBodyRadS.x,
     y: state.omegaBodyRadS.y,
@@ -865,7 +868,11 @@ function integrateBoosterAttitudeState(attitudeState, {
     z: state.orientation.z + (0.5 * qDot.z * dt),
     w: state.orientation.w + (0.5 * qDot.w * dt),
   }, state.orientation);
-  const omegaLimitRadS = rad(45);
+  const omegaLimitRadS = (
+    Number.isFinite(Number(maxBodyRateRadS)) && Number(maxBodyRateRadS) > 0
+      ? Number(maxBodyRateRadS)
+      : rad(45)
+  );
   const omegaMagnitude = length(state.omegaBodyRadS);
   if (omegaMagnitude > omegaLimitRadS) {
     state.omegaBodyRadS = scale(state.omegaBodyRadS, omegaLimitRadS / omegaMagnitude);
@@ -4541,6 +4548,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const launchSiteLateralClosingSpeedKmS = dot(scale(relVelocityToPad, -1), launchSiteLateralDirection);
     const currentBoosterAxis = boosterBodyAxisWorld(runtime.booster.attitude);
     const command = computeBoosterRecoveryCommand({
+      currentPhase: runtime.booster.phase,
       altitudeKm,
       radialSpeedKmS: guidanceOrbital.radialSpeedKmS,
       tangentialSpeedKmS: guidanceOrbital.tangentialSpeedKmS,
@@ -4778,6 +4786,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       torqueWorldNm: totalTorqueWorldNm,
       massKg: Number(boosterState.massKg) || 0,
       inertiaNormalized: runtime.boosterMassModel?.inertiaNormalized,
+      angularDampingPerS: Number(command.angularDampingPerS) || 0,
+      maxBodyRateRadS: Number.isFinite(Number(command.maxBodyRateDegS))
+        ? rad(Number(command.maxBodyRateDegS))
+        : null,
       dtSeconds,
     });
     const directionActual = boosterBodyAxisWorld(runtime.booster.attitude);
@@ -5609,7 +5621,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         setFlightStep({
           desiredDirection: normalize(relVel, orbital.up),
           requestedThrottle: 0,
-          guidanceMode: "stage-separation-coast",
+          guidanceMode: "stage-post-burn-coast",
         });
         return;
       }

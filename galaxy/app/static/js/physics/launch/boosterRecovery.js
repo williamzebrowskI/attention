@@ -19,6 +19,7 @@ function resolveGridFinAuthority({
 }
 
 export function computeBoosterRecoveryCommand(input = {}) {
+  const currentPhase = String(input.currentPhase || "").toLowerCase();
   const altitudeKm = Math.max(0, Number(input.altitudeKm) || 0);
   const radialSpeedKmS = Number(input.radialSpeedKmS) || 0;
   const tangentialSpeedKmS = Math.max(0, Number(input.tangentialSpeedKmS) || 0);
@@ -76,8 +77,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
   );
 
   const separationFlipMinSec = 0.9;
-  const separationFlipMaxSec = 9.5;
-  const separationCoastMaxSec = 18.0;
+  const separationFlipMaxSec = 15.0;
+  const separationCoastMaxSec = 24.0;
   const entryBurnUpperKm = 74;
   const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
@@ -90,6 +91,7 @@ export function computeBoosterRecoveryCommand(input = {}) {
     tangentialSpeedKmS,
     downwardSpeedKmS,
   });
+  const separationPhaseActive = !currentPhase || currentPhase === "separation-flip" || currentPhase === "separation-coast";
 
   if (altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.025 && tangentialSpeedKmS < 0.02) {
     return {
@@ -118,55 +120,66 @@ export function computeBoosterRecoveryCommand(input = {}) {
   );
 
   if (
+    separationPhaseActive
+    && (
     elapsedSec < separationFlipMinSec
     || (
       elapsedSec < separationFlipMaxSec
       && (!flipComplete || attitudeStillMostlyUp)
     )
+    )
   ) {
+    const settleBlend = clamp((elapsedSec - 1.8) / Math.max(separationFlipMaxSec - 1.8, 0.1), 0, 1);
     return {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
-      attitudeResponseScale: 0.14 + (0.10 * flipPhaseProgress),
-      attitudeTargetBlend: 1,
+      attitudeResponseScale: elapsedSec < 1.8
+        ? 0.08
+        : (0.22 + (0.58 * settleBlend)),
+      attitudeTargetBlend: elapsedSec < 1.8
+        ? 0.08
+        : (0.18 + (0.42 * settleBlend)),
+      angularDampingPerS: 0.18 + (0.14 * settleBlend),
+      maxBodyRateDegS: 5.5 + (1.5 * settleBlend),
       siteTargetingEnabled: false,
       qAlphaSteeringEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.24 - (0.12 * flipPhaseProgress),
+        up: 0.30 - (0.22 * flipPhaseProgress),
         retrograde: 1.0,
-        antiTangent: 0.01 + (0.02 * flipPhaseProgress),
+        antiTangent: 0.02 + (0.04 * flipPhaseProgress),
       },
-      siteVectorWeight: 0,
-      siteVelocityWeight: 0,
-      touchdownReady: false,
     };
   }
 
   if (
-    elapsedSec < separationCoastMaxSec
+    separationPhaseActive
+    && (
+    (
+      elapsedSec < separationCoastMaxSec
+    )
     && altitudeKm > 52
     && (
       downwardSpeedKmS < 0.28
       || radialSpeedKmS > -0.04
     )
+    )
   ) {
     return {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
-      attitudeResponseScale: 0.24 + (0.12 * coastPhaseProgress),
-      attitudeTargetBlend: 1,
+      attitudeResponseScale: 0.82 + (0.10 * coastPhaseProgress),
+      attitudeTargetBlend: 0.60 + (0.18 * coastPhaseProgress),
+      angularDampingPerS: 0.26 + (0.12 * coastPhaseProgress),
+      maxBodyRateDegS: 8.0 + (1.0 * coastPhaseProgress),
       siteTargetingEnabled: false,
       qAlphaSteeringEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.12 - (0.06 * coastPhaseProgress),
+        up: 0.10 - (0.05 * coastPhaseProgress),
         retrograde: 1.0,
-        antiTangent: 0.04 + (0.06 * coastPhaseProgress),
+        antiTangent: 0.05 + (0.07 * coastPhaseProgress),
       },
-      siteVectorWeight: 0,
-      siteVelocityWeight: 0,
-      touchdownReady: false,
     };
   }
 
@@ -196,14 +209,16 @@ export function computeBoosterRecoveryCommand(input = {}) {
   ) {
     const tangentialScale = clamp((tangentialSpeedKmS - 1.05) / 2.8, 0, 1);
     const rtlsDemand = Math.max(returnEnergyNorm, closingDeficitNorm);
-    return {
-      phase: "boostback",
-      guidanceMode: "booster-boostback",
-      attitudeControlMode: "engines+rcs",
-      aeroAuthority: 0,
-      throttle: clamp(
-        0.34
-          + (0.24 * tangentialScale)
+      return {
+        phase: "boostback",
+        guidanceMode: "booster-boostback",
+        attitudeControlMode: "engines+rcs",
+        aeroAuthority: 0,
+        angularDampingPerS: 0.42,
+        maxBodyRateDegS: 9.5,
+        throttle: clamp(
+          0.34
+            + (0.24 * tangentialScale)
           + (0.20 * rtlsDemand),
         0.3,
         0.78,
@@ -211,7 +226,6 @@ export function computeBoosterRecoveryCommand(input = {}) {
       directionMix: { up: 0.12, retrograde: 0.92, antiTangent: 0.62 },
       siteVectorWeight: clamp(0.46 + (0.4 * rtlsDemand), 0.36, 0.88),
       siteVelocityWeight: clamp(0.28 + (0.28 * rtlsDemand), 0.18, 0.62),
-      touchdownReady: false,
     };
   }
 
@@ -235,11 +249,11 @@ export function computeBoosterRecoveryCommand(input = {}) {
         attitudeControlMode: dynamicPressurePa > 1_800 ? "grid-fins+rcs" : "rcs",
         aeroAuthority: clamp(gridFinAuthority, 0, 0.4),
         attitudeResponseScale: 0.52 + (0.16 * entryAlignNeedNorm),
+        angularDampingPerS: 0.54 + (0.18 * entryAlignNeedNorm),
+        maxBodyRateDegS: 7.0,
+        siteTargetingEnabled: false,
         throttle: 0,
         directionMix: { up: 0.06, retrograde: 1.0, antiTangent: 0.18 },
-        siteVectorWeight: 0,
-        siteVelocityWeight: 0,
-        touchdownReady: false,
       };
     }
   }
@@ -254,11 +268,11 @@ export function computeBoosterRecoveryCommand(input = {}) {
         aeroAuthority: gridFinAuthority,
         attitudeResponseScale: 0.42,
         attitudeTargetBlend: 0.36,
+        angularDampingPerS: 0.58,
+        maxBodyRateDegS: 6.5,
+        siteTargetingEnabled: false,
         throttle: 0,
         directionMix: { up: 0.44, retrograde: 0.12, antiTangent: 0.26 },
-        siteVectorWeight: 0,
-        siteVelocityWeight: 0,
-        touchdownReady: false,
       };
     }
     const entryInterfaceNorm = Math.max(
@@ -272,11 +286,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
         guidanceMode: "booster-entry-burn",
         attitudeControlMode: "grid-fins+engines",
         aeroAuthority: gridFinAuthority,
+        angularDampingPerS: 0.64,
+        maxBodyRateDegS: 7.5,
         throttle: clamp(0.30 + (0.44 * entryInterfaceNorm), 0.28, 0.82),
         directionMix: { up: 0.82, retrograde: 0.34, antiTangent: 0.66 },
         siteVectorWeight: clamp(0.18 + (0.34 * gridFinAuthority) + (0.14 * lateralErrorNorm), 0.18, 0.68),
         siteVelocityWeight: clamp(0.14 + (0.26 * gridFinAuthority) + (0.12 * lateralClosingNeedNorm), 0.12, 0.56),
-        touchdownReady: false,
       };
     }
     return {
@@ -284,11 +299,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
       guidanceMode: "booster-entry-guidance",
       attitudeControlMode: "grid-fins",
       aeroAuthority: gridFinAuthority,
+      angularDampingPerS: 0.52,
+      maxBodyRateDegS: 7.0,
       throttle: 0,
       directionMix: { up: 0.22, retrograde: 0.18, antiTangent: 0.48 },
       siteVectorWeight: clamp(0.14 + (0.42 * gridFinAuthority) + (0.10 * lateralErrorNorm), 0.12, 0.60),
       siteVelocityWeight: clamp(0.12 + (0.30 * gridFinAuthority) + (0.10 * lateralClosingNeedNorm), 0.10, 0.46),
-      touchdownReady: false,
     };
   }
 
@@ -298,11 +314,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
       guidanceMode: "booster-descent-coast",
       attitudeControlMode: "grid-fins",
       aeroAuthority: gridFinAuthority,
+      angularDampingPerS: 0.48,
+      maxBodyRateDegS: 6.5,
       throttle: 0,
       directionMix: { up: 0.18, retrograde: 0.16, antiTangent: 0.56 },
       siteVectorWeight: clamp(0.10 + (0.48 * gridFinAuthority) + (0.16 * lateralErrorNorm), 0.10, 0.76),
       siteVelocityWeight: clamp(0.08 + (0.34 * gridFinAuthority) + (0.14 * lateralClosingNeedNorm), 0.08, 0.54),
-      touchdownReady: false,
     };
   }
 
@@ -350,6 +367,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
     guidanceMode: "booster-landing-burn",
     attitudeControlMode: "engines",
     aeroAuthority: clamp(gridFinAuthority * 0.25, 0, 0.2),
+    angularDampingPerS: 0.80,
+    maxBodyRateDegS: 5.5,
     throttle,
     directionMix: { up: 1.0, retrograde: 0.20, antiTangent: 0.92 },
     siteVectorWeight: clamp(0.10 + (0.26 * terminalRangeNorm), 0.06, 0.36),

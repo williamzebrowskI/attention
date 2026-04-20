@@ -8,6 +8,7 @@ function assert(condition, message) {
 
 function main() {
   const separationFlip = computeBoosterRecoveryCommand({
+    currentPhase: "separation-flip",
     altitudeKm: 72,
     radialSpeedKmS: 0.02,
     tangentialSpeedKmS: 1.45,
@@ -24,10 +25,10 @@ function main() {
   });
   assert(separationFlip.phase === "separation-flip", `expected separation-flip, got ${separationFlip.phase}`);
   assert(separationFlip.siteTargetingEnabled === false, "expected separation-flip to suppress pad-target steering");
-  assert(separationFlip.siteVectorWeight === 0, `expected no separation-flip site vector weight, got ${separationFlip.siteVectorWeight}`);
-  assert(separationFlip.siteVelocityWeight === 0, `expected no separation-flip site velocity weight, got ${separationFlip.siteVelocityWeight}`);
+  assert(separationFlip.qAlphaSteeringEnabled === false, "expected separation-flip to bypass q-alpha steering");
 
   const separationCoast = computeBoosterRecoveryCommand({
+    currentPhase: "separation-coast",
     altitudeKm: 70,
     radialSpeedKmS: -0.01,
     tangentialSpeedKmS: 1.25,
@@ -44,10 +45,10 @@ function main() {
   });
   assert(separationCoast.phase === "separation-coast", `expected separation-coast, got ${separationCoast.phase}`);
   assert(separationCoast.siteTargetingEnabled === false, "expected separation-coast to suppress pad-target steering");
-  assert(separationCoast.siteVectorWeight === 0, `expected no separation-coast site vector weight, got ${separationCoast.siteVectorWeight}`);
-  assert(separationCoast.siteVelocityWeight === 0, `expected no separation-coast site velocity weight, got ${separationCoast.siteVelocityWeight}`);
+  assert(separationCoast.qAlphaSteeringEnabled === false, "expected separation-coast to bypass q-alpha steering");
 
   const postSeparationSettle = computeBoosterRecoveryCommand({
+    currentPhase: "separation-flip",
     altitudeKm: 73,
     radialSpeedKmS: 0.04,
     tangentialSpeedKmS: 0.92,
@@ -62,9 +63,10 @@ function main() {
     bodyAntiTangentAlignment: 0.62,
     bodyUpAlignment: 0.22,
   });
-  assert(postSeparationSettle.phase === "separation-coast", `expected continued separation-coast while still climbing, got ${postSeparationSettle.phase}`);
+  assert(postSeparationSettle.phase === "separation-flip", `expected continued separation-flip while alignment is still incomplete, got ${postSeparationSettle.phase}`);
 
   const boostback = computeBoosterRecoveryCommand({
+    currentPhase: "boostback",
     altitudeKm: 68,
     radialSpeedKmS: 0.04,
     tangentialSpeedKmS: 1.9,
@@ -80,6 +82,7 @@ function main() {
   assert(boostback.throttle >= 0.34, `expected meaningful boostback throttle, got ${boostback.throttle}`);
 
   const entryAlign = computeBoosterRecoveryCommand({
+    currentPhase: "entry-align",
     altitudeKm: 86,
     radialSpeedKmS: -0.10,
     tangentialSpeedKmS: 0.42,
@@ -96,10 +99,10 @@ function main() {
   });
   assert(entryAlign.phase === "entry-align", `expected entry-align, got ${entryAlign.phase}`);
   assert(entryAlign.throttle === 0, `expected entry-align throttle 0, got ${entryAlign.throttle}`);
-  assert(entryAlign.siteVectorWeight === 0, `expected no site vector weight during entry align, got ${entryAlign.siteVectorWeight}`);
-  assert(entryAlign.siteVelocityWeight === 0, `expected no site velocity weight during entry align, got ${entryAlign.siteVelocityWeight}`);
+  assert(entryAlign.siteTargetingEnabled === false, "expected entry-align to suppress site targeting");
 
   const entryBurn = computeBoosterRecoveryCommand({
+    currentPhase: "entry-align",
     altitudeKm: 42,
     radialSpeedKmS: -0.26,
     tangentialSpeedKmS: 0.84,
@@ -117,6 +120,7 @@ function main() {
   assert(entryBurn.aeroAuthority > 0.45, `expected strong grid-fin authority in entry burn, got ${entryBurn.aeroAuthority}`);
 
   const descentCoast = computeBoosterRecoveryCommand({
+    currentPhase: "entry-burn",
     altitudeKm: 14,
     radialSpeedKmS: -0.08,
     tangentialSpeedKmS: 0.20,
@@ -134,6 +138,7 @@ function main() {
   assert(descentCoast.aeroAuthority > 0.05, `expected nonzero grid-fin authority in descent coast, got ${descentCoast.aeroAuthority}`);
 
   const landingBurn = computeBoosterRecoveryCommand({
+    currentPhase: "descent-coast",
     altitudeKm: 3,
     radialSpeedKmS: -0.52,
     tangentialSpeedKmS: 0.05,

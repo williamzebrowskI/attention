@@ -60,10 +60,13 @@ import {
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
 import {
   LAUNCH_AUTOPILOT_CONFIG,
+  BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_SITE as RUNTIME_LAUNCH_SITE,
+  STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   setLaunchSite as setRuntimeLaunchSite,
 } from "./physics/launch/launchConfig.js";
+import { surfacePointRelativeKmAtLatLon } from "./physics/surface/earthSurfacePhysics.js";
 import {
   applyInlineBoosterFuelVisuals,
   applyInlineStarshipAtmosphereEffects,
@@ -77,7 +80,7 @@ import {
 import {
   createLaunchSiteStructureVisual,
   updateLaunchSiteStructureVisual,
-} from "./physics/launch/launchSiteStructures.js?v=20260419n";
+} from "./physics/launch/launchSiteStructures.js?v=20260420p";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js?v=20260420a";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
@@ -258,7 +261,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420l";
+const FRONTEND_MODULE_VERSION = "20260420t";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -531,6 +534,7 @@ const EARTH_SURFACE_CAMERA_CLEARANCE_KM = 1.5;
 const EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM = 0.005;
 const BODY_LOCK_EARTH_SURFACE_ASSIST_MAX_RADIUS_FACTOR = 1.14;
 const LAUNCH_BODY_LOCK_SURFACE_ASSIST_MAX_ALTITUDE_KM = 24;
+const LAUNCH_CLOSE_VIEW_PAD_ANCHOR_MAX_ALTITUDE_KM = 2.5;
 const TIDAL_TARGET_CONFIG = Object.freeze([
   Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
   Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
@@ -878,7 +882,7 @@ function updateEarthLocationMarkerPosition() {
     return;
   }
 
-  const position = latLonToEarthVector(
+  const position = latLonToPhysicalEarthVector(
     earthLocationState.latitudeDeg,
     earthLocationState.longitudeDeg,
     earthVisual.renderRadius * EARTH_LOCATION_MARKER_HEIGHT_RATIO,
@@ -1658,6 +1662,8 @@ function registerLaunchLogDebugHandles() {
   window.__moonOrbitInjectDebug = currentMoonOrbitInjectDebugSnapshot();
   window.getMoonOrbitInjectDebug = () => currentMoonOrbitInjectDebugSnapshot();
   window.getLaunchRenderSourceState = (bodyId = LAUNCH_BODY_ID) => currentLaunchRenderSourceState(bodyId);
+  window.getLaunchSiteVisualAlignmentState = () => currentLaunchSiteVisualAlignmentState();
+  window.getLaunchAscentDebugState = (bodyId = LAUNCH_BODY_ID) => currentLaunchAscentDebugState(bodyId);
   window.setEnvironmentForcingScenario = async (scenario = "moderate", forceRefresh = true) => (
     setEnvironmentForcingScenario(scenario, forceRefresh)
   );
@@ -7332,6 +7338,9 @@ async function createBodyVisual(body) {
     const remote = await loadTexturePlan(plan);
     textures = { ...remote, textureMode: remote?.proceduralMoon ? "procedural_moon" : "remote" };
   }
+  if (body.id === "earth") {
+    orientEarthTexturesToPhysicalLongitude(textures);
+  }
   if (RINGED_PLANET_IDS.has(body.id) && !textures.ringColor) {
     const ringProcedural = await createProceduralRingTextures(body);
     textures = { ...textures, ...ringProcedural, ringMode: "procedural" };
@@ -8207,6 +8216,30 @@ function createProceduralCloudTexture(bodyId, seed) {
   return clouds;
 }
 
+function flipTextureLongitude(texture) {
+  if (!THREE_NS || !texture) {
+    return texture;
+  }
+  texture.wrapS = THREE_NS.RepeatWrapping;
+  texture.repeat.x = -Math.abs(Number(texture.repeat?.x) || 1);
+  texture.offset.x = 1;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function orientEarthTexturesToPhysicalLongitude(textures) {
+  if (!textures || typeof textures !== "object") {
+    return textures;
+  }
+  flipTextureLongitude(textures.map);
+  flipTextureLongitude(textures.bump);
+  flipTextureLongitude(textures.normal);
+  flipTextureLongitude(textures.specular);
+  flipTextureLongitude(textures.emissive);
+  flipTextureLongitude(textures.clouds);
+  return textures;
+}
+
 function defaultPlanetBumpScale(bodyId, profileType) {
   if (bodyId === "earth") {
     return 0.035;
@@ -8804,7 +8837,7 @@ function createEarthLocationMarker(renderRadius, markerConfig) {
     return null;
   }
 
-  const position = latLonToEarthVector(
+  const position = latLonToPhysicalEarthVector(
     markerConfig.latitudeDeg,
     markerConfig.longitudeDeg,
     renderRadius * EARTH_LOCATION_MARKER_HEIGHT_RATIO,
@@ -11123,6 +11156,143 @@ function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
   };
 }
 
+function currentLaunchSiteSurfaceSceneState(nowMs = Date.now()) {
+  if (!THREE_NS) {
+    return null;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  const earthCoordsKm = runtimeCoordsOrLiveById("earth");
+  if (!earthVisual?.root?.position || !finiteVectorKm(earthCoordsKm)) {
+    return null;
+  }
+  const pole = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
+  const earthAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, nowMs);
+  if (!earthAxes) {
+    return null;
+  }
+  const surface = surfacePointRelativeKmAtLatLon(
+    RUNTIME_LAUNCH_SITE.latitudeDeg,
+    RUNTIME_LAUNCH_SITE.longitudeDeg,
+    earthAxes,
+    { includeTerrain: true },
+  );
+  if (!finiteVectorKm(surface?.pointRelativeKm) || !finiteVectorKm(surface?.surfaceNormal)) {
+    return null;
+  }
+  const originKm = resolveSceneOriginKm(runtimeCoordsKmById);
+  const baseWorldKm = {
+    x: (Number(earthCoordsKm.x) || 0) + (Number(surface.pointRelativeKm.x) || 0),
+    y: (Number(earthCoordsKm.y) || 0) + (Number(surface.pointRelativeKm.y) || 0),
+    z: (Number(earthCoordsKm.z) || 0) + (Number(surface.pointRelativeKm.z) || 0),
+  };
+  const baseCoordsScene = scenePositionFromCoordsKm(baseWorldKm, originKm);
+  const baseScene = new THREE_NS.Vector3(
+    Number(baseCoordsScene.x) || 0,
+    Number(baseCoordsScene.y) || 0,
+    Number(baseCoordsScene.z) || 0,
+  );
+  const normalScene = new THREE_NS.Vector3(
+    Number(surface.surfaceNormal.x) || 0,
+    Number(surface.surfaceNormal.z) || 0,
+    Number(surface.surfaceNormal.y) || 0,
+  );
+  if (!(normalScene.lengthSq() > 1e-18)) {
+    return null;
+  }
+  normalScene.normalize();
+  const earthCenterScene = earthVisual.root.position.clone();
+  const radialScene = baseScene.clone().sub(earthCenterScene).normalize();
+  return {
+    baseScene,
+    normalScene,
+    earthCenterScene,
+    radialScene,
+  };
+}
+
+function launchBodyLockCloseEarthRelativeState(nowMs = Date.now()) {
+  if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
+    return null;
+  }
+  if (selectedId !== LAUNCH_BODY_ID && selectedId !== LAUNCH_BOOSTER_BODY_ID) {
+    return null;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  const vehicleVisual = bodyVisuals.get(selectedId);
+  if (!earthVisual?.root?.visible || !vehicleVisual?.root?.visible) {
+    return null;
+  }
+  if (!launchBodyLockUsesInertialCloseView(vehicleVisual)) {
+    return null;
+  }
+  const target = resolveBodyLockTargetPosition(selectedId, nowMs) || vehicleVisual.root.position.clone();
+  const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, selectedId, nowMs) || null;
+  const altitudeAboveTerrainKm = selectedId === LAUNCH_BOOSTER_BODY_ID
+    ? Number(snapshot?.boosterAltitudeAboveTerrainKm)
+    : Number(snapshot?.altitudeAboveTerrainKm);
+  const guidanceMode = String(
+    selectedId === LAUNCH_BOOSTER_BODY_ID
+      ? (snapshot?.boosterGuidanceMode || snapshot?.guidanceMode || "")
+      : (snapshot?.guidanceMode || snapshot?.autopilotMode || ""),
+  ).toLowerCase();
+  const earthScene = earthVisual.root.position.clone();
+  const earthPoleKm = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
+  const earthPoleScene = finiteVectorKm(earthPoleKm)
+    ? {
+        x: Number(earthPoleKm.x) || 0,
+        y: Number(earthPoleKm.z) || 0,
+        z: Number(earthPoleKm.y) || 0,
+      }
+    : null;
+  let anchor = target.clone();
+  const launchSiteSurfaceScene = currentLaunchSiteSurfaceSceneState(nowMs);
+  if (launchSiteSurfaceScene?.baseScene) {
+    const usePadAnchoredCloseView = (
+      !Number.isFinite(altitudeAboveTerrainKm)
+      || altitudeAboveTerrainKm < LAUNCH_CLOSE_VIEW_PAD_ANCHOR_MAX_ALTITUDE_KM
+      || guidanceMode.includes("idle")
+      || guidanceMode.includes("pad-release")
+      || guidanceMode.includes("tower-clear")
+      || guidanceMode.includes("vertical")
+    );
+    if (usePadAnchoredCloseView) {
+      const anchorBlend = clamp(
+        Math.max(0, Number(altitudeAboveTerrainKm) || 0) / LAUNCH_CLOSE_VIEW_PAD_ANCHOR_MAX_ALTITUDE_KM,
+        0,
+        1,
+      );
+      anchor = launchSiteSurfaceScene.baseScene.clone().lerp(target, anchorBlend);
+    }
+  }
+  const frame = spacecraftSurfaceRelativeOrbitFrame({
+    targetScene: {
+      x: anchor.x,
+      y: anchor.y,
+      z: anchor.z,
+    },
+    earthScene: {
+      x: earthScene.x,
+      y: earthScene.y,
+      z: earthScene.z,
+    },
+    earthPoleScene,
+    azimuth: orbit.azimuth,
+    polar: orbit.polar,
+    radius: orbit.radius,
+  });
+  if (!frame) {
+    return null;
+  }
+  return {
+    target,
+    anchor,
+    earthScene,
+    earthPoleScene,
+    frame,
+    altitudeAboveTerrainKm,
+  };
+}
+
 function resolveSurfaceAnchorOnBody({
   bodyId,
   latitudeDeg = 0,
@@ -11143,18 +11313,8 @@ function resolveSurfaceAnchorOnBody({
   const latRad = rad(clamp(latDeg, -90, 90));
   const lonRad = rad(lonDeg);
 
-  const upLocal = latLonToEarthVector(latDeg, lonDeg, 1).normalize();
+  const { upLocal, eastLocal, northLocal } = surfaceLocalBasisForBody(bodyId, latDeg, lonDeg);
   const positionLocal = upLocal.clone().multiplyScalar(radius);
-  const eastLocal = new THREE_NS.Vector3(
-    -Math.sin(lonRad),
-    0,
-    -Math.cos(lonRad),
-  ).normalize();
-  const northLocal = new THREE_NS.Vector3(
-    -Math.sin(latRad) * Math.cos(lonRad),
-    Math.cos(latRad),
-    Math.sin(latRad) * Math.sin(lonRad),
-  ).normalize();
 
   const worldQuat = new THREE_NS.Quaternion();
   visual.spinGroup.getWorldQuaternion(worldQuat);
@@ -11212,15 +11372,10 @@ function captureEarthBodyLockSurfaceAssistSeed() {
   const inverseQuat = worldQuat.clone().invert();
   const localUnit = relWorld.clone().applyQuaternion(inverseQuat).normalize();
   const latitudeDeg = (Math.asin(clamp(localUnit.y, -1, 1)) * 180) / Math.PI;
-  const longitudeDeg = (Math.atan2(-localUnit.z, localUnit.x) * 180) / Math.PI;
+  const longitudeDeg = (Math.atan2(localUnit.z, localUnit.x) * 180) / Math.PI;
 
-  const upLocal = latLonToEarthVector(latitudeDeg, longitudeDeg, 1).normalize();
-  const eastLocal = new THREE_NS.Vector3(
-    -Math.sin(rad(longitudeDeg)),
-    0,
-    -Math.cos(rad(longitudeDeg)),
-  ).normalize();
-  let northLocal = new THREE_NS.Vector3().crossVectors(upLocal, eastLocal).normalize();
+  const { upLocal, eastLocal, northLocal: baseNorthLocal } = surfaceLocalBasisForBody("earth", latitudeDeg, longitudeDeg);
+  let northLocal = baseNorthLocal.clone();
   if (northLocal.lengthSq() < 1e-10) {
     northLocal = new THREE_NS.Vector3(0, 1, 0);
   }
@@ -11487,6 +11642,34 @@ function updateCameraFromOrbit(nowMs = Date.now()) {
     }
   }
 
+  const launchCloseEarthRelative = launchBodyLockCloseEarthRelativeState(nowMs);
+  if (launchCloseEarthRelative) {
+    const { frame, target, anchor } = launchCloseEarthRelative;
+    const cameraPosition = new THREE_NS.Vector3(
+      anchor.x + frame.offset.x,
+      anchor.y + frame.offset.y,
+      anchor.z + frame.offset.z,
+    );
+    clampCameraOutsideBody(cameraPosition, bodyVisuals.get("earth"));
+    clampCameraOutsideBody(cameraPosition, bodyVisuals.get("moon"));
+    const lookDistance = Math.max(cameraPosition.distanceTo(target), 1e-6);
+    const desiredNear = clamp(lookDistance * 0.0012, 0.0000000005, 0.05);
+    const desiredFar = clamp(Math.max(orbit.radius * 180, desiredNear * 120000, 6), 0.5, 80);
+    applyCameraClipPlanes(desiredNear, desiredFar);
+    camera.up.set(frame.up.x, frame.up.y, frame.up.z);
+    camera.position.copy(cameraPosition);
+    camera.lookAt(target);
+    updateObservationStatus({
+      label: `${metaById.get(selectedId)?.name || selectedId} (launch close view)`,
+      bodyId: selectedId,
+      altitudeKm: launchCloseEarthRelative.altitudeAboveTerrainKm,
+      position: camera.position,
+      target,
+      up: camera.up,
+    });
+    return;
+  }
+
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
     const selectedVisual = bodyVisuals.get(selectedId);
     if (selectedVisual?.renderRadius > 0) {
@@ -11749,6 +11932,163 @@ function currentLaunchRenderSourceState(bodyId = LAUNCH_BODY_ID) {
     trajectoryPathLineCount: countSceneObjectsByName("launch_trajectory_path"),
     textureMode: visual?.textureMode || null,
     mapSource: visual?.mapSource || null,
+  };
+}
+
+function currentLaunchSiteVisualAlignmentState() {
+  if (!THREE_NS) {
+    return null;
+  }
+  const earthVisual = bodyVisuals.get("earth");
+  const padRoot = launchSiteStructureVisual?.root || null;
+  if (!earthVisual?.spinGroup || !earthVisual?.root?.position || !padRoot?.position) {
+    return null;
+  }
+  const surfaceLocal = latLonToPhysicalEarthVector(
+    RUNTIME_LAUNCH_SITE.latitudeDeg,
+    RUNTIME_LAUNCH_SITE.longitudeDeg,
+    earthVisual.renderRadius,
+  );
+  const earthSurfaceWorld = surfaceLocal.clone();
+  earthVisual.spinGroup.localToWorld(earthSurfaceWorld);
+  const earthCenter = earthVisual.root.position.clone();
+  const padDirection = padRoot.position.clone().sub(earthCenter).normalize();
+  const surfaceDirection = earthSurfaceWorld.clone().sub(earthCenter).normalize();
+  const dotValue = clamp(padDirection.dot(surfaceDirection), -1, 1);
+  const angularErrorDeg = Math.acos(dotValue) * (180 / Math.PI);
+  return {
+    angularErrorDeg,
+    padScene: { x: padRoot.position.x, y: padRoot.position.y, z: padRoot.position.z },
+    earthSurfaceScene: { x: earthSurfaceWorld.x, y: earthSurfaceWorld.y, z: earthSurfaceWorld.z },
+    padOffsetScene: {
+      x: padRoot.position.x - earthSurfaceWorld.x,
+      y: padRoot.position.y - earthSurfaceWorld.y,
+      z: padRoot.position.z - earthSurfaceWorld.z,
+    },
+  };
+}
+
+function offsetComponentsAlongSceneUp(offsetScene, upScene) {
+  if (!offsetScene?.isVector3 || !upScene?.isVector3) {
+    return null;
+  }
+  const radialScene = offsetScene.dot(upScene);
+  const lateralVector = offsetScene.clone().sub(upScene.clone().multiplyScalar(radialScene));
+  return {
+    radialKm: radialScene / DISTANCE_SCALE,
+    lateralKm: lateralVector.length() / DISTANCE_SCALE,
+    vectorKm: {
+      x: offsetScene.x / DISTANCE_SCALE,
+      y: offsetScene.y / DISTANCE_SCALE,
+      z: offsetScene.z / DISTANCE_SCALE,
+    },
+    lateralVectorKm: {
+      x: lateralVector.x / DISTANCE_SCALE,
+      y: lateralVector.y / DISTANCE_SCALE,
+      z: lateralVector.z / DISTANCE_SCALE,
+    },
+  };
+}
+
+function localLaunchReferenceOffsetKm(bodyId) {
+  if (String(bodyId) === String(LAUNCH_BODY_ID)) {
+    return Number(STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM) || 0;
+  }
+  if (String(bodyId) === String(LAUNCH_BOOSTER_BODY_ID)) {
+    return Number(BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM) || 0;
+  }
+  return 0;
+}
+
+function currentLaunchAscentDebugState(bodyId = LAUNCH_BODY_ID, nowMs = Date.now()) {
+  if (!THREE_NS) {
+    return null;
+  }
+  const id = String(bodyId || "").trim();
+  if (!id) {
+    return null;
+  }
+  const visual = bodyVisuals.get(id);
+  const earthVisual = bodyVisuals.get("earth");
+  const padRoot = launchSiteStructureVisual?.root || null;
+  if (!visual?.root?.position || !earthVisual?.root?.position || !padRoot?.position) {
+    return null;
+  }
+
+  const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, id, nowMs) || null;
+  const guidanceMode = String(
+    id === LAUNCH_BOOSTER_BODY_ID
+      ? (snapshot?.boosterGuidanceMode || snapshot?.guidanceMode || "")
+      : (snapshot?.guidanceMode || snapshot?.autopilotMode || ""),
+  );
+  const altitudeAboveTerrainKm = id === LAUNCH_BOOSTER_BODY_ID
+    ? Number(snapshot?.boosterAltitudeAboveTerrainKm)
+    : Number(snapshot?.altitudeAboveTerrainKm);
+
+  const earthCenter = earthVisual.root.position.clone();
+  const launchSiteSurfaceScene = currentLaunchSiteSurfaceSceneState(nowMs);
+  const padUpScene = launchSiteSurfaceScene?.normalScene
+    ? launchSiteSurfaceScene.normalScene.clone()
+    : padRoot.position.clone().sub(earthCenter).normalize();
+  const centerOffsetScene = visual.root.position.clone().sub(padRoot.position);
+  const centerOffset = offsetComponentsAlongSceneUp(centerOffsetScene, padUpScene);
+
+  let baseOffset = null;
+  const referenceOffsetKm = localLaunchReferenceOffsetKm(id);
+  if (visual?.tiltGroup && referenceOffsetKm > 0) {
+    const baseWorld = new THREE_NS.Vector3(0, -(referenceOffsetKm * DISTANCE_SCALE), 0);
+    visual.tiltGroup.localToWorld(baseWorld);
+    baseOffset = offsetComponentsAlongSceneUp(baseWorld.sub(padRoot.position), padUpScene);
+  }
+
+  const vehicleVelocityKmS = runtimeVelocityKmSOrLiveById(id);
+  const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
+  let radialVelocityKmS = null;
+  let lateralVelocityKmS = null;
+  if (finiteVectorKm(vehicleVelocityKmS) && finiteVectorKm(earthVelocityKmS)) {
+    const relVelocityScene = new THREE_NS.Vector3(
+      ((Number(vehicleVelocityKmS.x) || 0) - (Number(earthVelocityKmS.x) || 0)) * DISTANCE_SCALE,
+      ((Number(vehicleVelocityKmS.z) || 0) - (Number(earthVelocityKmS.z) || 0)) * DISTANCE_SCALE,
+      ((Number(vehicleVelocityKmS.y) || 0) - (Number(earthVelocityKmS.y) || 0)) * DISTANCE_SCALE,
+    );
+    radialVelocityKmS = relVelocityScene.dot(padUpScene) / DISTANCE_SCALE;
+    lateralVelocityKmS = relVelocityScene
+      .sub(padUpScene.clone().multiplyScalar(relVelocityScene.dot(padUpScene)))
+      .length() / DISTANCE_SCALE;
+  }
+
+  const bodyAxisKm = id === LAUNCH_BOOSTER_BODY_ID
+    ? snapshot?.boosterBodyAxisDirectionKm
+    : snapshot?.bodyAxisDirectionKm;
+  const bodyAxisScene = finiteVectorKm(bodyAxisKm)
+    ? new THREE_NS.Vector3(
+      Number(bodyAxisKm.x) || 0,
+      Number(bodyAxisKm.z) || 0,
+      Number(bodyAxisKm.y) || 0,
+    ).normalize()
+    : null;
+  const bodyAxisTiltDeg = bodyAxisScene
+    ? Math.acos(clamp(bodyAxisScene.dot(padUpScene), -1, 1)) * (180 / Math.PI)
+    : null;
+  const surfaceNormalVsRadialDeg = launchSiteSurfaceScene?.radialScene
+    ? Math.acos(clamp(launchSiteSurfaceScene.radialScene.dot(padUpScene), -1, 1)) * (180 / Math.PI)
+    : null;
+
+  return {
+    bodyId: id,
+    observationMode: observation.mode,
+    selectedId,
+    orbitRadius: orbit.radius,
+    guidanceMode,
+    altitudeAboveTerrainKm: Number.isFinite(altitudeAboveTerrainKm) ? altitudeAboveTerrainKm : null,
+    centerOffsetKm: centerOffset,
+    visualBaseOffsetKm: baseOffset,
+    radialVelocityKmS,
+    lateralVelocityKmS,
+    bodyAxisTiltDeg,
+    surfaceNormalVsRadialDeg,
+    launchSurfaceAssistActive: Boolean(launchBodyLockSurfaceAssistState(nowMs)),
+    launchCloseEarthRelativeActive: Boolean(launchBodyLockCloseEarthRelativeState(nowMs)),
   };
 }
 
@@ -13393,6 +13733,53 @@ function latLonToEarthVector(latitudeDeg, longitudeDeg, radius) {
     radius * Math.sin(latRad),
     -radius * cosLat * Math.sin(lonRad),
   );
+}
+
+function latLonToPhysicalEarthVector(latitudeDeg, longitudeDeg, radius) {
+  const latRad = rad(clamp(Number(latitudeDeg) || 0, -90, 90));
+  const lonRad = rad(Number(longitudeDeg) || 0);
+  const cosLat = Math.cos(latRad);
+  return new THREE_NS.Vector3(
+    radius * cosLat * Math.cos(lonRad),
+    radius * Math.sin(latRad),
+    radius * cosLat * Math.sin(lonRad),
+  );
+}
+
+function surfaceLocalBasisForBody(bodyId, latitudeDeg, longitudeDeg) {
+  const latRad = rad(clamp(Number(latitudeDeg) || 0, -90, 90));
+  const lonRad = rad(Number(longitudeDeg) || 0);
+  const usePhysicalEastPositiveZ = String(bodyId || "") === "earth";
+  const upLocal = usePhysicalEastPositiveZ
+    ? latLonToPhysicalEarthVector(latitudeDeg, longitudeDeg, 1).normalize()
+    : latLonToEarthVector(latitudeDeg, longitudeDeg, 1).normalize();
+  const eastLocal = usePhysicalEastPositiveZ
+    ? new THREE_NS.Vector3(
+      -Math.sin(lonRad),
+      0,
+      Math.cos(lonRad),
+    ).normalize()
+    : new THREE_NS.Vector3(
+      -Math.sin(lonRad),
+      0,
+      -Math.cos(lonRad),
+    ).normalize();
+  const northLocal = usePhysicalEastPositiveZ
+    ? new THREE_NS.Vector3(
+      -Math.sin(latRad) * Math.cos(lonRad),
+      Math.cos(latRad),
+      -Math.sin(latRad) * Math.sin(lonRad),
+    ).normalize()
+    : new THREE_NS.Vector3(
+      -Math.sin(latRad) * Math.cos(lonRad),
+      Math.cos(latRad),
+      Math.sin(latRad) * Math.sin(lonRad),
+    ).normalize();
+  return {
+    upLocal,
+    eastLocal,
+    northLocal,
+  };
 }
 
 function parseTimestampMs(timestamp) {

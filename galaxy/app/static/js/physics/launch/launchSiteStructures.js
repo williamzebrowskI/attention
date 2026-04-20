@@ -603,7 +603,7 @@ function createChopstickArmAssembly(THREE, profile, material) {
   };
 }
 
-function updateChopstickArmAssembly(assembly, profile, armLength) {
+function updateChopstickArmAssembly(THREE, assembly, profile, armLength) {
   if (!assembly) return;
   const extensionRatio = Math.max(
     profile.chopstickArmMinLengthKm / Math.max(profile.chopstickArmMaxLengthKm, 1e-9),
@@ -1230,7 +1230,7 @@ export function updateLaunchSiteStructureVisual(launchStructureVisual, options =
     + ((state.profile.chopstickArmMaxLengthKm - state.profile.chopstickArmMinLengthKm) * (1 - state.armOpen))
   );
   for (const assembly of state.chopstickAssemblies) {
-    updateChopstickArmAssembly(assembly, state.profile, armLength);
+    updateChopstickArmAssembly(THREE, assembly, state.profile, armLength);
   }
 
   const cableStart = new THREE.Vector3().copy(state.topPulley.position);

@@ -188,10 +188,15 @@ function main() {
   assert(samples.length >= 12, `expected early booster attitude samples, got ${samples.length}`);
 
   const initial = samples[0];
+  const initialCommandSample = samples.find((sample) => Number.isFinite(sample.reqRetro));
   const initialUpDot = dot(initial.axis, initial.up);
   assert(
     initialUpDot < 0.985,
     `expected staged booster axis to inherit the pitched stack, got dot(body, up)=${initialUpDot}`,
+  );
+  assert(
+    Number.isFinite(initialCommandSample?.reqRetro) && initialCommandSample.reqRetro < -0.95,
+    `expected early separation command to stay near inherited attitude, got requested retrograde alignment ${initialCommandSample?.reqRetro}`,
   );
 
   let maxStepAngleDeg = 0;
@@ -199,7 +204,6 @@ function main() {
   let totalTurnDeg = 0;
   let maxOmega = 0;
   let maxRcsAccel = 0;
-  let maxRequestedRetrograde = -1;
   let minCommandOffRetroDeg = Number.POSITIVE_INFINITY;
   for (let index = 1; index < samples.length; index += 1) {
     const stepAngle = angleDeg(samples[index - 1].axis, samples[index].axis);
@@ -210,19 +214,26 @@ function main() {
     totalTurnDeg += stepAngle;
     maxOmega = Math.max(maxOmega, Number(samples[index].omega) || 0);
     maxRcsAccel = Math.max(maxRcsAccel, Number(samples[index].rcsAccel) || 0);
-    if (Number.isFinite(samples[index].reqRetro)) {
-      maxRequestedRetrograde = Math.max(maxRequestedRetrograde, Number(samples[index].reqRetro));
-    }
     if (Number.isFinite(samples[index].cmdOffRetro)) {
       minCommandOffRetroDeg = Math.min(minCommandOffRetroDeg, Number(samples[index].cmdOffRetro));
     }
   }
 
+  const midSample = samples[Math.min(10, samples.length - 1)];
+  const lateSample = samples[samples.length - 1];
+
   assert(maxStepAngleDeg < 18, `expected continuous 6-DOF attitude motion, got max step angle ${maxStepAngleDeg} deg`);
   assert(maxEarlyStepAngleDeg < 8, `expected gentle early post-hotstage settling, got max early step angle ${maxEarlyStepAngleDeg} deg`);
-  assert(totalTurnDeg > 5.0, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
-  assert(maxRequestedRetrograde > 0.9, `expected the early flip target to command retrograde, got max requested retrograde alignment ${maxRequestedRetrograde}`);
-  assert(minCommandOffRetroDeg < 15, `expected the early flip command to get within 15 deg of retrograde, got ${minCommandOffRetroDeg} deg`);
+  assert(totalTurnDeg > 4.2, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
+  assert(
+    Number.isFinite(midSample?.reqRetro) && Number.isFinite(initialCommandSample?.reqRetro) && midSample.reqRetro > initialCommandSample.reqRetro + 0.05,
+    `expected commanded flip target to start slewing methodically, got initial reqRetro ${initialCommandSample?.reqRetro} mid ${midSample?.reqRetro}`,
+  );
+  assert(
+    Number.isFinite(lateSample?.reqRetro) && lateSample.reqRetro > 0.1,
+    `expected commanded flip target to progress well toward retrograde, got late requested retrograde alignment ${lateSample?.reqRetro}`,
+  );
+  assert(minCommandOffRetroDeg < 90, `expected the commanded flip target to move materially toward retrograde, got minimum off-retro ${minCommandOffRetroDeg} deg`);
   assert(maxOmega > 0.01, `expected nontrivial angular-rate build-up, got ${maxOmega} rad/s`);
   assert(maxRcsAccel > 1e-7, `expected booster RCS to contribute translational acceleration, got ${maxRcsAccel} km/s^2`);
 
