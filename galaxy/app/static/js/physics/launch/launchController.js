@@ -4334,7 +4334,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const shipImpulseKmS = scale(up, dvShipKmS);
     const separationImpulseKmS = scale(up, -dvBoosterKmS);
     rocketState.velocity = add(baseVelocityKmS, shipImpulseKmS);
-    const stackedBodyAxis = normalize(runtime.stageActuator?.directionActual || up, up);
+    const stackedBodyAxis = normalize(
+      runtime.lastStep?.bodyAxisDirectionKm
+        || runtime.stageActuator?.directionActual
+        || up,
+      up,
+    );
     const boosterState = {
       id: LAUNCH_BOOSTER_BODY_ID,
       massKg: boosterMassKg,
@@ -5966,9 +5971,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           );
           runtime.coastRemainingSec = 0;
           runtime.phase = "powered";
-          runtime.stageActuator = createActuatorState(
-            normalize(subtract(rocketState.position, earthState.position), currentEarthAxes.pole),
-          );
+          runtime.stageActuator = createActuatorState(normalize(
+            runtime.lastStep?.bodyAxisDirectionKm
+              || runtime.stageActuator?.directionActual
+              || subtract(rocketState.position, earthState.position),
+            currentEarthAxes.pole,
+          ));
           runtime.stageMassModel = createMassModelState();
 
           emitLaunchEvent("hotstage_ignition", {

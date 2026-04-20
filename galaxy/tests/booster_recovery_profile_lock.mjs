@@ -47,6 +47,23 @@ function main() {
   assert(separationCoast.siteVectorWeight === 0, `expected no separation-coast site vector weight, got ${separationCoast.siteVectorWeight}`);
   assert(separationCoast.siteVelocityWeight === 0, `expected no separation-coast site velocity weight, got ${separationCoast.siteVelocityWeight}`);
 
+  const postSeparationSettle = computeBoosterRecoveryCommand({
+    altitudeKm: 73,
+    radialSpeedKmS: 0.04,
+    tangentialSpeedKmS: 0.92,
+    launchSiteRangeKm: 64,
+    launchSiteLateralRangeKm: 50,
+    launchSiteLateralClosingSpeedKmS: 0.00,
+    timeSinceSeparationSec: 10.5,
+    remainingPropellantKg: 320_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 800,
+    bodyRetrogradeAlignment: 0.78,
+    bodyAntiTangentAlignment: 0.62,
+    bodyUpAlignment: 0.22,
+  });
+  assert(postSeparationSettle.phase === "separation-coast", `expected continued separation-coast while still climbing, got ${postSeparationSettle.phase}`);
+
   const boostback = computeBoosterRecoveryCommand({
     altitudeKm: 68,
     radialSpeedKmS: 0.04,

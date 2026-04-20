@@ -59,6 +59,7 @@ import {
 } from "./physics/config/oblatenessConfig.js";
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
 import {
+  LAUNCH_AUTOPILOT_CONFIG,
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_SITE as RUNTIME_LAUNCH_SITE,
   setLaunchSite as setRuntimeLaunchSite,
@@ -257,7 +258,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420e";
+const FRONTEND_MODULE_VERSION = "20260420i";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -2331,7 +2332,7 @@ async function synchronizeLaunchRuntimeArtifacts(nowMs = Date.now()) {
     launchController.ensureRocketInNBody?.(nBodyState, nowMs);
     launchController.resetToPad?.(nBodyState, nowMs, { clearFleetVehicles: true });
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
-    applyScenePositions(runtimeCoordsKmById);
+    applyScenePositions(runtimeCoordsKmById, nowMs);
   }
 }
 
@@ -5262,7 +5263,7 @@ function syncRuntimeScenePositionsNow(nowMs = Date.now()) {
     return;
   }
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
-  applyScenePositions(runtimeCoordsKmById);
+  applyScenePositions(runtimeCoordsKmById, nowMs);
 }
 
 function primaryLaunchActive() {
@@ -6108,7 +6109,7 @@ function ensureLaunchSiteStructureVisual() {
   return launchSiteStructureVisual;
 }
 
-function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
+function updateLaunchSiteStructureVisuals(deltaSeconds = 0, nowMs = Date.now()) {
   if (!launchFeatureEnabled || !THREE_NS) {
     return;
   }
@@ -6119,8 +6120,8 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
     }
     return;
   }
-  const pole = sourcePoleUnitVectorEclipticForBody("earth", Date.now());
-  const earthAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, Date.now());
+  const pole = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
+  const earthAxes = sourceBodyFixedAxesEclipticForBody("earth", pole, nowMs);
   if (!earthAxes?.xAxis || !earthAxes?.yAxis || !earthAxes?.pole) {
     if (launchSiteStructureVisual?.root) {
       launchSiteStructureVisual.root.visible = false;
@@ -6163,7 +6164,7 @@ function updateLaunchSiteStructureVisuals(deltaSeconds = 0) {
   });
 }
 
-function updateLaunchVehicleVisuals() {
+function updateLaunchVehicleVisuals(nowMs = Date.now()) {
   if (!launchFeatureEnabled) {
     return;
   }
@@ -6174,7 +6175,7 @@ function updateLaunchVehicleVisuals() {
   if (!visual) {
     return;
   }
-  const effectNowMs = Date.now();
+  const effectNowMs = nowMs;
   const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
   const effectSceneParent = visual.root?.parent || null;
   if (!visual.root?.visible || !visual.launchStackState || !visual.tiltGroup?.quaternion) {
@@ -6293,6 +6294,7 @@ function updateLaunchVehicleVisuals() {
     || guidanceMode.includes("tower-clear")
     || altitudeAboveTerrainKm < 0.18
   );
+  const visualVerticalHold = launchVisualVerticalHoldActive(snapshot, LAUNCH_BODY_ID);
   const refuelDockingVisual = Boolean(
     snapshot?.refuelTransferActive
     || snapshot?.refuelUndockActive
@@ -6304,6 +6306,7 @@ function updateLaunchVehicleVisuals() {
     !launchActive
     || guidanceMode.includes("vertical")
     || earlyTowerClearVisual
+    || visualVerticalHold
     || refuelDockingVisual
     || Boolean(dockingLock);
   let targetDirection = upScene || prograde || defaultAxis;
@@ -6337,7 +6340,7 @@ function updateLaunchVehicleVisuals() {
 
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
-    if (dockingLock?.hardLock) {
+    if (dockingLock?.hardLock || visualVerticalHold) {
       visual.tiltGroup.quaternion.copy(targetQuaternion);
     } else {
       visual.tiltGroup.quaternion.slerp(targetQuaternion, earlyTowerClearVisual ? 0.58 : 0.25);
@@ -6444,7 +6447,39 @@ function blendEarlyAscentVisualDirection(targetDirection, upScene, altitudeAbove
   );
 }
 
-function updateBoosterVehicleVisuals() {
+function launchVisualVerticalHoldActive(snapshot, bodyId = LAUNCH_BODY_ID) {
+  const snapshotBodyId = String(bodyId || "");
+  const guidanceMode = String(
+    snapshotBodyId === LAUNCH_BOOSTER_BODY_ID
+      ? (snapshot?.boosterGuidanceMode || snapshot?.guidanceMode || "")
+      : (snapshot?.guidanceMode || snapshot?.autopilotMode || ""),
+  ).toLowerCase();
+  const altitudeAboveTerrainKm = snapshotBodyId === LAUNCH_BOOSTER_BODY_ID
+    ? Number(snapshot?.boosterAltitudeAboveTerrainKm)
+    : Number(snapshot?.altitudeAboveTerrainKm);
+  const stageIndex = snapshotBodyId === LAUNCH_BOOSTER_BODY_ID
+    ? 0
+    : Number(snapshot?.stageIndex);
+  const configuredVerticalHoldKm = Math.max(
+    Number(LAUNCH_AUTOPILOT_CONFIG?.verticalAscentMaxAltitudeKm) || 0,
+    Number(LAUNCH_AUTOPILOT_CONFIG?.towerClearAltitudeKm) || 0,
+    0.18,
+  );
+  return (
+    stageIndex <= 0
+    && (
+      guidanceMode.includes("pad-release")
+      || guidanceMode.includes("tower-clear")
+      || guidanceMode.includes("vertical")
+      || (
+        Number.isFinite(altitudeAboveTerrainKm)
+        && altitudeAboveTerrainKm < configuredVerticalHoldKm
+      )
+    )
+  );
+}
+
+function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   if (!launchFeatureEnabled || !THREE_NS) {
     return;
   }
@@ -6463,7 +6498,7 @@ function updateBoosterVehicleVisuals() {
         altitudeAboveTerrainKm: snapshot.boosterAltitudeAboveTerrainKm,
       }
     : null;
-  const effectNowMs = Date.now();
+  const effectNowMs = nowMs;
   const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
   const effectSceneParent = visual.root?.parent || null;
   applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
@@ -6474,6 +6509,7 @@ function updateBoosterVehicleVisuals() {
   if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
     visual.userData = visual.userData || {};
     visual.userData.boosterWasVisible = false;
+    visual.userData.boosterVisibleAtMs = null;
     applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
     applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
       enabled: false,
@@ -6493,6 +6529,13 @@ function updateBoosterVehicleVisuals() {
   visual.userData = visual.userData || {};
   const boosterBecameVisible = !Boolean(visual.userData.boosterWasVisible);
   visual.userData.boosterWasVisible = true;
+  if (boosterBecameVisible || !Number.isFinite(Number(visual.userData.boosterVisibleAtMs))) {
+    visual.userData.boosterVisibleAtMs = effectNowMs;
+  }
+  const boosterVisibleAgeSec = Math.max(
+    0,
+    (effectNowMs - (Number(visual.userData.boosterVisibleAtMs) || effectNowMs)) / 1000,
+  );
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BOOSTER_BODY_ID);
   const earthVelocityKmS = runtimeVelocityKmSOrLiveById("earth");
   const boosterCoordsKm = runtimeCoordsOrLiveById(LAUNCH_BOOSTER_BODY_ID);
@@ -6562,8 +6605,11 @@ function updateBoosterVehicleVisuals() {
   }
 
   const defaultAxis = new THREE_NS.Vector3(0, 1, 0);
-  let targetDirection = bodyAxisScene || upScene || prograde || defaultAxis;
-  if (!bodyAxisScene && upScene && prograde) {
+  const visualVerticalHold = launchVisualVerticalHoldActive(snapshot, LAUNCH_BOOSTER_BODY_ID);
+  let targetDirection = visualVerticalHold
+    ? (upScene || prograde || defaultAxis)
+    : (bodyAxisScene || upScene || prograde || defaultAxis);
+  if (!bodyAxisScene && !visualVerticalHold && upScene && prograde) {
     const altitudeKm = Number(snapshot?.boosterAltitudeKm) || 0;
     const blend = clamp((altitudeKm - 3) / 80, 0, 1) * clamp((speed - 0.02) / 0.35, 0, 1);
     targetDirection = safeNormalizeSceneDirection(
@@ -6574,7 +6620,7 @@ function updateBoosterVehicleVisuals() {
       upScene,
     );
   }
-  if (!bodyAxisScene) {
+  if (!bodyAxisScene && !visualVerticalHold) {
     targetDirection = blendEarlyAscentVisualDirection(
       targetDirection,
       upScene,
@@ -6584,7 +6630,9 @@ function updateBoosterVehicleVisuals() {
   }
   const targetQuaternion = safeQuaternionFromUpAxis(defaultAxis, targetDirection);
   if (targetQuaternion) {
-    if (boosterBecameVisible) {
+    if (visualVerticalHold) {
+      visual.tiltGroup.quaternion.copy(targetQuaternion);
+    } else if (boosterBecameVisible) {
       const stackedLaunchVisual = bodyVisuals.get(LAUNCH_BODY_ID);
       if (stackedLaunchVisual?.tiltGroup?.quaternion) {
         visual.tiltGroup.quaternion.copy(stackedLaunchVisual.tiltGroup.quaternion);
@@ -6608,9 +6656,25 @@ function updateBoosterVehicleVisuals() {
     }
     const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
     const separationLike = boosterPhase.includes("separation");
+    if (separationLike && boosterVisibleAgeSec < 2.5) {
+      applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+        sceneParent: effectSceneParent,
+        nowMs: effectNowMs,
+        bodyVisible: true,
+        bodyWorldPosition: visual.root.getWorldPosition(new THREE_NS.Vector3()),
+        earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+        earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+        renderRadiusScene: visual.renderRadius,
+      });
+      const heatEligibleHold = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
+      if (!heatEligibleHold) {
+        applyReentryHeatToVisual(visual, 0, true);
+      }
+      return;
+    }
     const slerpAlpha = bodyAxisScene
-      ? (separationLike ? 0.08 : 0.28)
-      : (separationLike ? 0.06 : 0.2);
+      ? (separationLike ? (boosterVisibleAgeSec < 8 ? 0.03 : 0.08) : 0.28)
+      : (separationLike ? (boosterVisibleAgeSec < 8 ? 0.024 : 0.06) : 0.2);
     visual.tiltGroup.quaternion.slerp(targetQuaternion, slerpAlpha);
   }
   const effectWorldPosition = new THREE_NS.Vector3();
@@ -8960,12 +9024,13 @@ function updatePositions(payload, source = "runtime") {
     gravityArrowsLegendActivated = false;
   }
   nBodyStartupSnapshotLoaded = true;
-  initializeNBodyFromSnapshot(Date.now());
+  const nowMs = Date.now();
+  initializeNBodyFromSnapshot(nowMs);
   updateLegendFallbackIndicators();
   updateLegendGravityArrowIndicators();
   syncOrbitalStateFromSnapshot();
-  runtimeCoordsKmById = computeRuntimeCoordinatesKm(Date.now());
-  applyScenePositions(runtimeCoordsKmById);
+  runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
+  applyScenePositions(runtimeCoordsKmById, nowMs);
   updateGravityVectors();
   updatePhysicsOverlays();
   updateSunlightModel();
@@ -10319,7 +10384,7 @@ function propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
   };
 }
 
-function applyScenePositions(runtimeCoordsKm) {
+function applyScenePositions(runtimeCoordsKm, nowMs = Date.now()) {
   const sceneOriginKm = resolveSceneOriginKm(runtimeCoordsKm);
   if (orbit.target) {
     const previousOriginKm = cloneFiniteVectorKm(lastSceneOriginKm);
@@ -10469,7 +10534,7 @@ function applyScenePositions(runtimeCoordsKm) {
   if (observation.mode === OBSERVATION_MODES.BODY_LOCK && selectedId) {
     const selected = bodyVisuals.get(selectedId);
     if (selected) {
-      const lockTarget = resolveBodyLockTargetPosition(selectedId);
+      const lockTarget = resolveBodyLockTargetPosition(selectedId, nowMs);
       if (lockTarget) {
         orbit.target.copy(lockTarget);
       } else {
@@ -10913,7 +10978,7 @@ function preferredCameraDistanceForSelection(visual) {
   );
 }
 
-function resolveBodyLockTargetPosition(bodyId) {
+function resolveBodyLockTargetPosition(bodyId, nowMs = Date.now()) {
   const visual = bodyVisuals.get(bodyId);
   if (!visual) {
     return null;
@@ -10925,7 +10990,7 @@ function resolveBodyLockTargetPosition(bodyId) {
   if (missionControlScreenController?.isVisible?.()) {
     return target;
   }
-  const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, bodyId, Date.now()) || null;
+  const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, bodyId, nowMs) || null;
   const guidanceMode = String(
     bodyId === LAUNCH_BOOSTER_BODY_ID
       ? (snapshot?.boosterGuidanceMode || snapshot?.guidanceMode || "")
@@ -11001,6 +11066,19 @@ function earthBodyLockSurfaceAssistEnabled() {
   );
 }
 
+function launchBodyLockUsesInertialCloseView(vehicleVisual) {
+  if (!vehicleVisual?.body || !(orbit.radius > 0)) {
+    return false;
+  }
+  const minDistance = minOrbitDistanceForVisual(vehicleVisual);
+  const preferredDistance = preferredCameraDistanceForSelection(vehicleVisual);
+  const disableSurfaceAssistRadius = Math.max(
+    minDistance * 1.35,
+    preferredDistance * 1.85,
+  );
+  return orbit.radius <= disableSurfaceAssistRadius;
+}
+
 function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
   if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
     return null;
@@ -11013,6 +11091,9 @@ function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
   if (!earthVisual?.root?.visible || !vehicleVisual?.root?.visible) {
     return null;
   }
+  if (launchBodyLockUsesInertialCloseView(vehicleVisual)) {
+    return null;
+  }
   const snapshot = launchController?.statusSnapshotForBody?.(nBodyState, selectedId, nowMs) || null;
   const altitudeAboveTerrainKm = selectedId === LAUNCH_BOOSTER_BODY_ID
     ? Number(snapshot?.boosterAltitudeAboveTerrainKm)
@@ -11020,7 +11101,7 @@ function launchBodyLockSurfaceAssistState(nowMs = Date.now()) {
   if (!Number.isFinite(altitudeAboveTerrainKm) || altitudeAboveTerrainKm > LAUNCH_BODY_LOCK_SURFACE_ASSIST_MAX_ALTITUDE_KM) {
     return null;
   }
-  const shipTarget = resolveBodyLockTargetPosition(selectedId) || vehicleVisual.root.position.clone();
+  const shipTarget = resolveBodyLockTargetPosition(selectedId, nowMs) || vehicleVisual.root.position.clone();
   const earthScene = earthVisual.root.position.clone();
   const earthPoleKm = sourcePoleUnitVectorEclipticForBody("earth", nowMs);
   const earthPoleScene = finiteVectorKm(earthPoleKm)
@@ -11316,13 +11397,13 @@ function resolveOrbitalObserverAnchor(preset, nowMs) {
   };
 }
 
-function updateCameraFromOrbit() {
+function updateCameraFromOrbit(nowMs = Date.now()) {
   if (!camera || !orbit.target) {
     return;
   }
 
   if (observation.mode === OBSERVATION_MODES.SURFACE) {
-    const anchor = resolveSurfaceObserverAnchor(Date.now());
+    const anchor = resolveSurfaceObserverAnchor(nowMs);
     if (anchor) {
       const lookDistance = Math.max(anchor.position.distanceTo(anchor.target), 1e-6);
       const desiredNear = clamp(lookDistance * 0.015, 0.00000002, 0.008);
@@ -11369,7 +11450,7 @@ function updateCameraFromOrbit() {
     syncOrbitFromCurrentCamera();
   }
 
-  const launchSurfaceAssist = launchBodyLockSurfaceAssistState(Date.now());
+  const launchSurfaceAssist = launchBodyLockSurfaceAssistState(nowMs);
   if (launchSurfaceAssist) {
     const frame = spacecraftSurfaceRelativeOrbitFrame({
       targetScene: {
@@ -12274,7 +12355,7 @@ function animate(timestampMs = 0) {
     runFrameTaskSafely("scene-positions", () => {
       if (orbitalStateById.size > 0) {
         runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
-        applyScenePositions(runtimeCoordsKmById);
+        applyScenePositions(runtimeCoordsKmById, nowMs);
       }
     });
     if (launchFeatureEnabled) {
@@ -12301,13 +12382,13 @@ function animate(timestampMs = 0) {
     });
     if (launchFeatureEnabled) {
       runFrameTaskSafely("launch-site-structure", () => {
-        updateLaunchSiteStructureVisuals(deltaSeconds);
+        updateLaunchSiteStructureVisuals(deltaSeconds, nowMs);
       });
       runFrameTaskSafely("launch-vehicle-visuals", () => {
-        updateLaunchVehicleVisuals();
+        updateLaunchVehicleVisuals(nowMs);
       });
       runFrameTaskSafely("booster-visuals", () => {
-        updateBoosterVehicleVisuals();
+        updateBoosterVehicleVisuals(nowMs);
       });
       runFrameTaskSafely("fleet-spacecraft-visuals", () => {
         updateFleetSpacecraftVisuals();
@@ -12336,7 +12417,7 @@ function animate(timestampMs = 0) {
     });
 
     runFrameTaskSafely("camera-update", () => {
-      updateCameraFromOrbit();
+      updateCameraFromOrbit(nowMs);
     });
     runFrameTaskSafely("render", () => {
       renderer.render(scene, camera);
