@@ -77,7 +77,7 @@ import {
   createLaunchSiteStructureVisual,
   updateLaunchSiteStructureVisual,
 } from "./physics/launch/launchSiteStructures.js?v=20260419n";
-import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js?v=20260419u";
+import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js?v=20260420a";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
@@ -257,7 +257,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260419y";
+const FRONTEND_MODULE_VERSION = "20260420b";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -10818,6 +10818,30 @@ function nearestSurfaceClearanceAtCamera(cameraPosition) {
   return Number.isFinite(nearestClearance) ? nearestClearance : null;
 }
 
+function applyCameraClipPlanes(desiredNear, desiredFar = 50000) {
+  if (!camera) {
+    return;
+  }
+  const safeNear = clamp(Number(desiredNear) || 0, 0.0000000005, 0.05);
+  const safeFar = clamp(
+    Math.max(Number(desiredFar) || 0, safeNear * 1000),
+    0.2,
+    50000,
+  );
+  let projectionDirty = false;
+  if (Math.abs((camera.near || 0) - safeNear) > Math.max(safeNear * 0.1, 1e-12)) {
+    camera.near = safeNear;
+    projectionDirty = true;
+  }
+  if (Math.abs((camera.far || 0) - safeFar) > Math.max(safeFar * 0.05, 1e-6)) {
+    camera.far = safeFar;
+    projectionDirty = true;
+  }
+  if (projectionDirty) {
+    camera.updateProjectionMatrix();
+  }
+}
+
 function preferredCameraDistanceForSelection(visual) {
   if (!visual?.body) {
     return orbit.radius;
@@ -11253,10 +11277,8 @@ function updateCameraFromOrbit() {
     if (anchor) {
       const lookDistance = Math.max(anchor.position.distanceTo(anchor.target), 1e-6);
       const desiredNear = clamp(lookDistance * 0.015, 0.00000002, 0.008);
-      if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
-        camera.near = desiredNear;
-        camera.updateProjectionMatrix();
-      }
+      const desiredFar = clamp(Math.max(lookDistance * 280, orbit.radius * 80, 2.5), 0.2, 120);
+      applyCameraClipPlanes(desiredNear, desiredFar);
       camera.up.copy(anchor.up);
       camera.position.copy(anchor.position);
       camera.lookAt(anchor.target);
@@ -11284,10 +11306,8 @@ function updateCameraFromOrbit() {
       if (anchor) {
         const lookDistance = Math.max(anchor.position.distanceTo(anchor.target), 1e-6);
         const desiredNear = clamp(lookDistance * 0.015, 0.00000002, 0.008);
-        if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
-          camera.near = desiredNear;
-          camera.updateProjectionMatrix();
-        }
+        const desiredFar = clamp(Math.max(lookDistance * 280, orbit.radius * 90, 2.5), 0.2, 120);
+        applyCameraClipPlanes(desiredNear, desiredFar);
         camera.up.copy(anchor.up);
         camera.position.copy(anchor.position);
         camera.lookAt(anchor.target);
@@ -11328,10 +11348,8 @@ function updateCameraFromOrbit() {
         clampCameraOutsideBody(cameraPosition, bodyVisuals.get("moon"));
         const lookDistance = Math.max(cameraPosition.distanceTo(launchSurfaceAssist.target), 1e-6);
         const desiredNear = clamp(lookDistance * 0.0012, 0.0000000005, 0.05);
-        if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
-          camera.near = desiredNear;
-          camera.updateProjectionMatrix();
-        }
+        const desiredFar = clamp(Math.max(lookDistance * 520, orbit.radius * 180, 6), 0.5, 80);
+        applyCameraClipPlanes(desiredNear, desiredFar);
       camera.up.set(frame.up.x, frame.up.y, frame.up.z);
       camera.position.copy(cameraPosition);
       camera.lookAt(launchSurfaceAssist.target);
@@ -11365,8 +11383,9 @@ function updateCameraFromOrbit() {
   clampCameraOutsideBody(camera.position, bodyVisuals.get("moon"));
 
   let nearFactor = 0.008;
+  let selectedVisual = null;
   if (selectedId) {
-    const selectedVisual = bodyVisuals.get(selectedId);
+    selectedVisual = bodyVisuals.get(selectedId);
     if (selectedVisual?.body?.body_type === "spacecraft") {
       nearFactor = 0.0012;
     } else if ((selectedVisual?.renderRadius > 0) && orbit.radius < selectedVisual.renderRadius * 8) {
@@ -11382,10 +11401,15 @@ function updateCameraFromOrbit() {
     0.0000000005,
     0.05,
   );
-  if (Math.abs((camera.near || 0) - desiredNear) > desiredNear * 0.1) {
-    camera.near = desiredNear;
-    camera.updateProjectionMatrix();
+  let desiredFar = 50000;
+  if (selectedVisual?.body?.body_type === "spacecraft") {
+    desiredFar = clamp(Math.max(orbit.radius * 180, desiredNear * 120000, 6), 0.5, 80);
+  } else if (selectedVisual?.body?.id === "earth" && orbit.radius < 6) {
+    desiredFar = clamp(Math.max(orbit.radius * 140, 4), 0.5, 400);
+  } else if (selectedVisual?.body?.id === "moon" && orbit.radius < 2) {
+    desiredFar = clamp(Math.max(orbit.radius * 140, 1.5), 0.2, 120);
   }
+  applyCameraClipPlanes(desiredNear, desiredFar);
 
   camera.up.set(0, 1, 0);
   camera.lookAt(orbit.target);

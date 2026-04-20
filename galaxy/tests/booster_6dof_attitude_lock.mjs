@@ -180,17 +180,22 @@ function main() {
   );
 
   let maxStepAngleDeg = 0;
+  let maxEarlyStepAngleDeg = 0;
   let totalTurnDeg = 0;
   let maxOmega = 0;
   for (let index = 1; index < samples.length; index += 1) {
     const stepAngle = angleDeg(samples[index - 1].axis, samples[index].axis);
     maxStepAngleDeg = Math.max(maxStepAngleDeg, stepAngle);
+    if (index <= 5) {
+      maxEarlyStepAngleDeg = Math.max(maxEarlyStepAngleDeg, stepAngle);
+    }
     totalTurnDeg += stepAngle;
     maxOmega = Math.max(maxOmega, Number(samples[index].omega) || 0);
   }
 
   assert(maxStepAngleDeg < 18, `expected continuous 6-DOF attitude motion, got max step angle ${maxStepAngleDeg} deg`);
-  assert(totalTurnDeg > 8, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
+  assert(maxEarlyStepAngleDeg < 8, `expected gentle early post-hotstage settling, got max early step angle ${maxEarlyStepAngleDeg} deg`);
+  assert(totalTurnDeg > 6.5, `expected the booster to keep rotating after separation, got total turn ${totalTurnDeg} deg`);
   assert(maxOmega > 0.01, `expected nontrivial angular-rate build-up, got ${maxOmega} rad/s`);
 
   console.log("PASS booster-6dof-attitude-lock");

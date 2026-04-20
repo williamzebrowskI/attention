@@ -30,6 +30,7 @@ export function createLaunchTrajectoryPathController(THREE, scene, options = {})
     color: new THREE.Color(colorHex),
     transparent: true,
     opacity,
+    depthTest: false,
     depthWrite: false,
   });
   const line = new THREE.Line(geometry, material);

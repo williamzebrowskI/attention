@@ -856,6 +856,18 @@ function integrateBoosterAttitudeState(attitudeState, {
   return state;
 }
 
+function scaleAngularControlState(controlState, scaleFactor = 1) {
+  const scaleClamped = clamp(Number(scaleFactor) || 0, 0, 1.5);
+  const base = controlState || {};
+  return {
+    ...base,
+    authority: clamp((Number(base.authority) || 0) * scaleClamped, 0, 1),
+    momentNm: (Number(base.momentNm) || 0) * scaleClamped,
+    bodyTorqueNm: scale(base.bodyTorqueNm || { x: 0, y: 0, z: 0 }, scaleClamped),
+    angularAccelerationRadS2: (Number(base.angularAccelerationRadS2) || 0) * scaleClamped,
+  };
+}
+
 function updateBoosterThrottleState(actuatorState, {
   requestedThrottle = 0,
   dtSeconds = 0,
@@ -4543,6 +4555,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         qAlphaPaRad: 0,
       };
     direction = qAlphaSteering.direction;
+    const attitudeTargetBlend = clamp(Number(command.attitudeTargetBlend) || 1, 0, 1);
+    if (attitudeTargetBlend < 0.999) {
+      direction = normalize(
+        mixVectors(currentBoosterAxis, direction, attitudeTargetBlend),
+        currentBoosterAxis,
+      );
+    }
     let requestedThrottle = canBurn ? clamp(Number(command.throttle) || 0, 0, 1) : 0;
     if (qAlphaActive) {
       requestedThrottle = limitThrottleByQAlpha({
@@ -4590,15 +4609,16 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
     });
-    const engineAngularControl = computeBoosterEngineAngularControlState({
+    const attitudeResponseScale = clamp(Number(command.attitudeResponseScale) || 1, 0.05, 1.2);
+    const engineAngularControl = scaleAngularControlState(computeBoosterEngineAngularControlState({
       controlErrorsBody,
       omegaBodyRadS,
       pressurePa,
       throttle: requestedThrottle,
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
-    });
-    const rcsAngularControl = computeBoosterRcsAngularControlState({
+    }), attitudeResponseScale);
+    const rcsAngularControl = scaleAngularControlState(computeBoosterRcsAngularControlState({
       controlErrorsBody,
       omegaBodyRadS,
       controlAuthorityScale: runtime.boosterMassModel.controlAuthorityScale,
@@ -4606,7 +4626,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       throttle: requestedThrottle,
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
-    });
+    }), attitudeResponseScale);
     runtime.boosterActuator = updateBoosterThrottleState(runtime.boosterActuator, {
       requestedThrottle,
       dtSeconds,
