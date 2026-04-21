@@ -243,6 +243,92 @@ function computeGuidanceElapsedSec(sampleNowMs = 0, runtimeStartMs = 0) {
   return Math.max(0, (finiteNumber(sampleNowMs, runtimeStartMs) - finiteNumber(runtimeStartMs, 0)) / 1000);
 }
 
+function normalizeGuidanceSampleTimesSec(sampleTimesSec = null, durationSec = 0) {
+  if (!Array.isArray(sampleTimesSec) || !sampleTimesSec.length) {
+    return [];
+  }
+  const duration = Math.max(0, finiteNumber(durationSec, 0));
+  const unique = new Set();
+  for (const value of sampleTimesSec) {
+    const numeric = finiteNumber(value, Number.NaN);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > duration) {
+      continue;
+    }
+    unique.add(Math.round(numeric * 1000) / 1000);
+  }
+  return Array.from(unique).sort((a, b) => a - b);
+}
+
+function buildGuidancePropagationSample({
+  requestedElapsedSec = Number.NaN,
+  actualElapsedSec = Number.NaN,
+  bodyState = null,
+  moonSource = null,
+  earthSource = null,
+  earthRadiusKm = DEFAULT_EARTH_RADIUS_KM,
+  moonRadiusKm = DEFAULT_MOON_RADIUS_KM,
+  earthMuKm3S2 = Number.NaN,
+  moonMuKm3S2 = Number.NaN,
+  spacecraft = null,
+} = {}) {
+  if (!bodyState) {
+    return null;
+  }
+  const stateSnapshot = stateVector(
+    bodyState.position,
+    bodyState.velocity,
+    bodyState.massKg,
+    resolveSpacecraftDryMassKg(spacecraft),
+  );
+  const moonSourceState = moonSource
+    ? stateVector(moonSource.positionKm, moonSource.velocityKmS)
+    : null;
+  const earthSourceState = earthSource
+    ? stateVector(earthSource.positionKm, earthSource.velocityKmS)
+    : stateVector({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 });
+  const moonRelativePositionKm = moonSourceState
+    ? subtract(stateSnapshot.positionKm, moonSourceState.positionKm)
+    : null;
+  const moonRelativeVelocityKmS = moonSourceState
+    ? subtract(stateSnapshot.velocityKmS, moonSourceState.velocityKmS)
+    : null;
+  const earthRelativePositionKm = subtract(stateSnapshot.positionKm, earthSourceState.positionKm);
+  const earthRelativeVelocityKmS = subtract(stateSnapshot.velocityKmS, earthSourceState.velocityKmS);
+  const moonDistanceKm = moonRelativePositionKm ? length(moonRelativePositionKm) : Number.POSITIVE_INFINITY;
+  const moonClosingSpeedKmS = (
+    moonRelativePositionKm
+    && moonRelativeVelocityKmS
+    && moonDistanceKm > 1e-9
+  )
+    ? -dot(moonRelativeVelocityKmS, scale(moonRelativePositionKm, 1 / moonDistanceKm))
+    : Number.NaN;
+  return {
+    requestedElapsedSec: finiteNumber(requestedElapsedSec, Number.NaN),
+    actualElapsedSec: finiteNumber(actualElapsedSec, Number.NaN),
+    state: stateSnapshot,
+    moonSourceState,
+    earthSourceState,
+    moonRelativePositionKm,
+    moonRelativeVelocityKmS,
+    earthRelativePositionKm,
+    earthRelativeVelocityKmS,
+    moonDistanceKm,
+    moonRelativeSpeedKmS: moonRelativeVelocityKmS ? length(moonRelativeVelocityKmS) : Number.POSITIVE_INFINITY,
+    moonClosingSpeedKmS,
+    moonOrbit: (
+      moonRelativePositionKm && moonRelativeVelocityKmS
+        ? orbitalStateFromRelative(moonMuKm3S2, moonRadiusKm, moonRelativePositionKm, moonRelativeVelocityKmS)
+        : null
+    ),
+    earthOrbit: orbitalStateFromRelative(
+      earthMuKm3S2,
+      earthRadiusKm,
+      earthRelativePositionKm,
+      earthRelativeVelocityKmS,
+    ),
+  };
+}
+
 function pointMassAccelerationKmS2(targetPosKm, sourcePosKm, sourceMassKg) {
   if (!finiteVector(targetPosKm) || !finiteVector(sourcePosKm)) {
     return { x: 0, y: 0, z: 0 };
@@ -487,6 +573,7 @@ export function propagateMoonGuidanceState({
   sources = null,
   spacecraft = null,
   burnCommand = null,
+  sampleTimesSec = null,
 } = {}) {
   if (!initialState || !finiteVector(initialState.positionKm) || !finiteVector(initialState.velocityKmS)) {
     return null;
@@ -513,6 +600,9 @@ export function propagateMoonGuidanceState({
   });
   const stableSnapshotsById = new Map([[shipBodyId, cloneGuidanceWorldBodySnapshot(shipRecord)]]);
   syncGuidanceStaticSourcesAtTimeSec(guidanceState, sources, 0, sourceCache);
+  const requestedSampleTimesSec = normalizeGuidanceSampleTimesSec(sampleTimesSec, duration);
+  const sampledStates = [];
+  let nextRequestedSampleIndex = 0;
   const guidanceIntegrator = createPhysicsIntegrator({
     computeTotalAccelerationForTarget: (state, targetId, _oblateSourceContextById, sampleNowMs) => {
       const bodyState = state?.dynamicBodies?.get(targetId);
@@ -596,6 +686,28 @@ export function propagateMoonGuidanceState({
     const sampleSources = syncGuidanceStaticSourcesAtTimeSec(guidanceState, sources, elapsedSec, sourceCache);
     const sampleMoon = sampleSources?.moon || null;
     const sampleEarth = sampleSources?.earth || null;
+    while (nextRequestedSampleIndex < requestedSampleTimesSec.length) {
+      const requestedSampleSec = requestedSampleTimesSec[nextRequestedSampleIndex];
+      if (elapsedSec + 1e-9 < requestedSampleSec) {
+        break;
+      }
+      const sampleSnapshot = buildGuidancePropagationSample({
+        requestedElapsedSec: requestedSampleSec,
+        actualElapsedSec: elapsedSec,
+        bodyState,
+        moonSource: sampleMoon,
+        earthSource: sampleEarth,
+        earthRadiusKm,
+        moonRadiusKm,
+        earthMuKm3S2,
+        moonMuKm3S2,
+        spacecraft,
+      });
+      if (sampleSnapshot) {
+        sampledStates.push(sampleSnapshot);
+      }
+      nextRequestedSampleIndex += 1;
+    }
     const moonDistanceKm = sampleMoon
       ? length(subtract(bodyState.position, sampleMoon.positionKm))
       : Number.POSITIVE_INFINITY;
@@ -693,6 +805,7 @@ export function propagateMoonGuidanceState({
     finalEarthRelativeVelocityKmS: finalEarthRelVel,
     finalMoonDistanceKm: finalMoonRelPos ? length(finalMoonRelPos) : Number.POSITIVE_INFINITY,
     finalMoonRelativeSpeedKmS: finalMoonRelVel ? length(finalMoonRelVel) : Number.POSITIVE_INFINITY,
+    sampledStates,
   };
 }
 

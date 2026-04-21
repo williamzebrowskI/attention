@@ -43,6 +43,8 @@ const GLOBAL_THROTTLE_MAX = 1.0;
 const GLOBAL_ENGINE_ACCEL_AT_THROTTLE1_KM_S2 = 0.0055;
 const GLOBAL_TARGET_PERILUNE_ALTITUDE_KM = 120;
 const GLOBAL_EARTH_SAFETY_MIN_ALTITUDE_KM = 130;
+const GLOBAL_SHORT_HORIZON_MOONWARD_SAMPLE_SEC = 30 * 60;
+const GLOBAL_SHORT_HORIZON_MOONWARD_MIN_ALIGNMENT = 0.35;
 const GLOBAL_MIN_LUNAR_LEAD_RESERVE_SEC = 4 * 3600;
 const GLOBAL_CONSERVATIVE_LUNAR_LEAD_RESERVE_SEC = 6 * 3600;
 const STATIC_WINDOW_CACHE = new Map();
@@ -226,6 +228,16 @@ function cloneVector(vector) {
     y: finiteNumber(vector.y, 0),
     z: finiteNumber(vector.z, 0),
   };
+}
+
+function moonwardAlignment(relativePositionKm = null, relativeVelocityKmS = null) {
+  if (!finiteVector(relativePositionKm) || !finiteVector(relativeVelocityKmS)) {
+    return Number.NaN;
+  }
+  const distanceKm = Math.max(1e-9, length(relativePositionKm));
+  const speedKmS = Math.max(1e-9, length(relativeVelocityKmS));
+  const towardMoonUnit = scale(relativePositionKm, -1 / distanceKm);
+  return clamp(dot(scale(relativeVelocityKmS, 1 / speedKmS), towardMoonUnit), -1, 1);
 }
 
 function rad(valueDeg) {
@@ -719,6 +731,20 @@ function chooseBetterEvaluatedCandidate(currentBest, candidateBest) {
   ) {
     return candidateBest;
   }
+  const currentShortHorizonAccepted = Boolean(currentEvaluated.shortHorizonMoonwardAccepted);
+  const candidateShortHorizonAccepted = Boolean(candidateEvaluated.shortHorizonMoonwardAccepted);
+  if (candidateShortHorizonAccepted !== currentShortHorizonAccepted) {
+    return candidateShortHorizonAccepted ? candidateBest : currentBest;
+  }
+  const currentShortHorizonAlignment = Number(currentEvaluated.shortHorizonMoonAlignment);
+  const candidateShortHorizonAlignment = Number(candidateEvaluated.shortHorizonMoonAlignment);
+  if (
+    Number.isFinite(candidateShortHorizonAlignment)
+    && Number.isFinite(currentShortHorizonAlignment)
+    && candidateShortHorizonAlignment > currentShortHorizonAlignment
+  ) {
+    return candidateBest;
+  }
   return currentBest;
 }
 
@@ -978,6 +1004,7 @@ function evaluatePropagatedDepartureCandidate({
               ),
               burnDurationSec,
             },
+            sampleTimesSec: [GLOBAL_SHORT_HORIZON_MOONWARD_SAMPLE_SEC],
           });
           if (!propagation) {
             continue;
@@ -1013,6 +1040,37 @@ function evaluatePropagatedDepartureCandidate({
           const escapePenalty = Number.isFinite(propagation.finalMoonDistanceKm)
             ? Math.max(0, propagation.finalMoonDistanceKm - predictedMissDistanceKm) * 0.08
             : 0;
+          const shortHorizonSample = Array.isArray(propagation.sampledStates)
+            ? propagation.sampledStates.find(
+              (sample) => Math.abs((Number(sample?.requestedElapsedSec) || 0) - GLOBAL_SHORT_HORIZON_MOONWARD_SAMPLE_SEC) <= 1e-6,
+            )
+            : null;
+          const shortHorizonMoonAlignment = moonwardAlignment(
+            shortHorizonSample?.moonRelativePositionKm,
+            shortHorizonSample?.moonRelativeVelocityKmS,
+          );
+          const shortHorizonMoonClosingSpeedKmS = Number(shortHorizonSample?.moonClosingSpeedKmS);
+          const shortHorizonMoonwardAccepted = (
+            Number.isFinite(shortHorizonMoonAlignment)
+            && shortHorizonMoonAlignment >= GLOBAL_SHORT_HORIZON_MOONWARD_MIN_ALIGNMENT
+            && Number.isFinite(shortHorizonMoonClosingSpeedKmS)
+            && shortHorizonMoonClosingSpeedKmS > 0
+          );
+          const shortHorizonMoonwardPenalty = shortHorizonMoonwardAccepted
+            ? 0
+            : (
+              120_000
+              + (
+                Number.isFinite(shortHorizonMoonAlignment)
+                  ? Math.max(0, GLOBAL_SHORT_HORIZON_MOONWARD_MIN_ALIGNMENT - shortHorizonMoonAlignment) * 220_000
+                  : 80_000
+              )
+              + (
+                Number.isFinite(shortHorizonMoonClosingSpeedKmS)
+                  ? Math.max(0, -shortHorizonMoonClosingSpeedKmS) * 180_000
+                  : 40_000
+              )
+            );
           const corridor = evaluateMoonDepartureCorridor({
             predictedMissDistanceKm,
             predictedPeriluneAltitudeKm,
@@ -1070,6 +1128,7 @@ function evaluatePropagatedDepartureCandidate({
             + (safetyRiskKm * 8_000)
             + closingPenalty
             + escapePenalty
+            + shortHorizonMoonwardPenalty
             + corridorPenalty
             + (deltaVNeedKmS * 650)
             + (Math.abs(1 - tangentWeight) * 1_500)
@@ -1095,6 +1154,9 @@ function evaluatePropagatedDepartureCandidate({
             safetyAltitudeKm,
             projectedAlignment,
             coastEntryAlignment,
+            shortHorizonMoonAlignment,
+            shortHorizonMoonClosingSpeedKmS,
+            shortHorizonMoonwardAccepted,
             propagation,
           };
           const preferred = chooseBetterEvaluatedCandidate(

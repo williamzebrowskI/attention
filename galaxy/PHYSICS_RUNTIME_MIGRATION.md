@@ -77,6 +77,7 @@ Launch-body ownership has also moved inward:
 - stage burnout no longer mutates stages immediately; runtime now requests, authorizes, and then executes hotstage ignition / next-stage separation from physical flight conditions
 - guidance no longer hard-owns command phase inside autopilot branches; runtime now resolves command phase from applied control plus physics-aware advisory intent
 - moon mission phase progression no longer mutates immediately from planner output; runtime now holds pending mission-phase advisories briefly before authorizing them
+- launch thrust authority now scales from configured engine counts instead of treating stage/booster thrust as engine-count-independent aggregate force
 
 Startup authority has also moved inward:
 
@@ -88,7 +89,7 @@ Lunar source-model authority has also moved inward:
 
 - lunar planners no longer build guidance source models from `moonDynamicsModel.js`
 - source descriptors, interpolation, and source-model cache restore now live in the runtime namespace
-- `moonDynamicsModel.js` now consumes the runtime-owned source-model surface instead of defining it locally
+- the `moonDynamicsModel.js` compatibility wrapper has been removed; tests and callers now import the runtime surface directly
 
 Lunar propagation authority has also moved inward:
 
@@ -123,8 +124,6 @@ The codebase already has most of the physics pieces, but authority is split acro
 - `app/static/js/physics/launch/launchController.js`
   - owns launch vehicle state transitions
   - injects thrust and vehicle-specific state into the global loop
-- `app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js`
-  - remains as a compatibility wrapper around the runtime lunar planner surface
 - `app/services/solar_system.py`
   - provides startup and validation ephemerides from Horizons
 
@@ -238,7 +237,7 @@ Existing hooks already point in the right direction:
 
 ### Phase 6: Moon Navigation Unification
 
-Align `moonDynamicsModel.js` with the same force-source definitions used by the global runtime.
+Align the lunar planner/runtime surface with the same force-source definitions used by the global runtime.
 
 Do not immediately force the mission solver to use the same integrator implementation. First unify:
 
@@ -312,5 +311,5 @@ The environment is "physics-driven" when these conditions hold:
 
 - `app.js` is the primary extraction target.
 - `launchController.js` should stay mission-focused, not become the global world owner.
-- `moonDynamicsModel.js` is valuable reference code for higher-fidelity local propagation, not something to delete early.
+- the runtime lunar propagation/source-model surface is now the only supported import path.
 - The existing regression suite is a major advantage. Use it to lock each phase before moving on.

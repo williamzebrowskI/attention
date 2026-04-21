@@ -1,4 +1,4 @@
-import { estimateBPlaneErrorKm } from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+import { estimateBPlaneErrorKm } from "../app/static/js/physics/runtime/index.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
 const MOON_MASS_KG = 7.342e22;

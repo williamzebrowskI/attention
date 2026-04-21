@@ -6,6 +6,7 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
+  resolveConfiguredThrustBoundsN,
 } from "./launchConfig.js";
 import {
   LAUNCH_MISSION_IDS,
@@ -1082,6 +1083,10 @@ function interpolateSeaToVac(vacuumValue, seaLevelValue, pressurePa) {
   return vacuum - ((vacuum - sea) * pressureRatio(pressurePa));
 }
 
+function configuredThrustBoundsN(config, fallbackEngineCount = 1) {
+  return resolveConfiguredThrustBoundsN(config, fallbackEngineCount);
+}
+
 function clampVectorMagnitude(vector, maxMagnitude) {
   const maxMag = Math.max(0, Number(maxMagnitude) || 0);
   if (!(maxMag > 0)) {
@@ -1773,13 +1778,14 @@ export function createLaunchFleetController({
           : optimizerStage2PropellantMassKg
       )
       : optimizerStage2PropellantMassKg;
+    const optimizerStage2ThrustBounds = configuredThrustBoundsN(stage2Raw);
     const optimizerStage2ThrustVacuumN = Math.max(
       0,
-      Number(stage2Raw?.thrustVacuumN) || Number(stage2Raw?.thrustSeaLevelN) || 0,
+      Number(optimizerStage2ThrustBounds.thrustVacuumN) || 0,
     );
     const optimizerStage2ThrustSeaLevelN = Math.max(
       0,
-      Number(stage2Raw?.thrustSeaLevelN) || optimizerStage2ThrustVacuumN,
+      Number(optimizerStage2ThrustBounds.thrustSeaLevelN) || optimizerStage2ThrustVacuumN,
     );
     const optimizerStage2IspVacuumS = Math.max(1, Number(stage2Raw?.ispVacuumS) || 360);
     const optimizerStage2IspSeaLevelS = Math.max(1, Number(stage2Raw?.ispSeaLevelS) || optimizerStage2IspVacuumS);
@@ -1915,13 +1921,15 @@ export function createLaunchFleetController({
       moonDeparturePlanReady: Boolean(moonDeparturePlanSource?.ready),
     });
 
+    const stage1ThrustBounds = configuredThrustBoundsN(stage1Raw);
+    const stage2ThrustBounds = configuredThrustBoundsN(stage2Raw);
     const stageProfiles = [
       {
         name: String(stage1Raw?.name || "Stage 1"),
         dryMassKg: Math.max(50_000, Number(stage1Raw?.dryMassKg) || 200_000),
         propellantMassKg: Math.max(100_000, Number(stage1Raw?.propellantMassKg) || 3_400_000),
-        thrustSeaLevelN: Math.max(0, Number(stage1Raw?.thrustSeaLevelN) || 0),
-        thrustVacuumN: Math.max(0, Number(stage1Raw?.thrustVacuumN) || Number(stage1Raw?.thrustSeaLevelN) || 0),
+        thrustSeaLevelN: Math.max(0, Number(stage1ThrustBounds.thrustSeaLevelN) || 0),
+        thrustVacuumN: Math.max(0, Number(stage1ThrustBounds.thrustVacuumN) || Number(stage1ThrustBounds.thrustSeaLevelN) || 0),
         ispSeaLevelS: Math.max(1, Number(stage1Raw?.ispSeaLevelS) || 327),
         ispVacuumS: Math.max(1, Number(stage1Raw?.ispVacuumS) || Number(stage1Raw?.ispSeaLevelS) || 350),
       },
@@ -1929,8 +1937,8 @@ export function createLaunchFleetController({
         name: String(stage2Raw?.name || "Stage 2"),
         dryMassKg: Math.max(30_000, Number(stage2Raw?.dryMassKg) || 120_000),
         propellantMassKg: Math.max(100_000, Number(stage2Raw?.propellantMassKg) || 1_200_000),
-        thrustSeaLevelN: Math.max(0, Number(stage2Raw?.thrustSeaLevelN) || 0),
-        thrustVacuumN: Math.max(0, Number(stage2Raw?.thrustVacuumN) || Number(stage2Raw?.thrustSeaLevelN) || 0),
+        thrustSeaLevelN: Math.max(0, Number(stage2ThrustBounds.thrustSeaLevelN) || 0),
+        thrustVacuumN: Math.max(0, Number(stage2ThrustBounds.thrustVacuumN) || Number(stage2ThrustBounds.thrustSeaLevelN) || 0),
         ispSeaLevelS: Math.max(1, Number(stage2Raw?.ispSeaLevelS) || 353),
         ispVacuumS: Math.max(1, Number(stage2Raw?.ispVacuumS) || Number(stage2Raw?.ispSeaLevelS) || 380),
       },
@@ -2467,26 +2475,30 @@ export function createLaunchFleetController({
           timeToApoapsisSec: Number.NaN,
           specificEnergy: Number.NaN,
         };
+      const fallbackStage1 = LAUNCH_VEHICLE_CONFIG.stages?.[0] || {};
+      const fallbackStage2 = LAUNCH_VEHICLE_CONFIG.stages?.[1] || {};
+      const fallbackStage1ThrustBounds = configuredThrustBoundsN(fallbackStage1);
+      const fallbackStage2ThrustBounds = configuredThrustBoundsN(fallbackStage2);
       const stageProfiles = Array.isArray(vehicle.stageProfiles) && vehicle.stageProfiles.length >= 2
         ? vehicle.stageProfiles
         : [
           {
-            name: "Stage 1",
-            dryMassKg: 200_000,
-            propellantMassKg: 3_400_000,
-            thrustSeaLevelN: 74_000_000,
-            thrustVacuumN: 77_000_000,
-            ispSeaLevelS: 327,
-            ispVacuumS: 350,
+            name: String(fallbackStage1?.name || "Stage 1"),
+            dryMassKg: Math.max(50_000, Number(fallbackStage1?.dryMassKg) || 200_000),
+            propellantMassKg: Math.max(100_000, Number(fallbackStage1?.propellantMassKg) || 3_400_000),
+            thrustSeaLevelN: Math.max(0, Number(fallbackStage1ThrustBounds.thrustSeaLevelN) || 0),
+            thrustVacuumN: Math.max(0, Number(fallbackStage1ThrustBounds.thrustVacuumN) || Number(fallbackStage1ThrustBounds.thrustSeaLevelN) || 0),
+            ispSeaLevelS: Math.max(1, Number(fallbackStage1?.ispSeaLevelS) || 327),
+            ispVacuumS: Math.max(1, Number(fallbackStage1?.ispVacuumS) || Number(fallbackStage1?.ispSeaLevelS) || 350),
           },
           {
-            name: "Stage 2",
-            dryMassKg: 120_000,
-            propellantMassKg: 1_200_000,
-            thrustSeaLevelN: 6_900_000,
-            thrustVacuumN: 15_600_000,
-            ispSeaLevelS: 353,
-            ispVacuumS: 380,
+            name: String(fallbackStage2?.name || "Stage 2"),
+            dryMassKg: Math.max(30_000, Number(fallbackStage2?.dryMassKg) || 120_000),
+            propellantMassKg: Math.max(100_000, Number(fallbackStage2?.propellantMassKg) || 1_200_000),
+            thrustSeaLevelN: Math.max(0, Number(fallbackStage2ThrustBounds.thrustSeaLevelN) || 0),
+            thrustVacuumN: Math.max(0, Number(fallbackStage2ThrustBounds.thrustVacuumN) || Number(fallbackStage2ThrustBounds.thrustSeaLevelN) || 0),
+            ispSeaLevelS: Math.max(1, Number(fallbackStage2?.ispSeaLevelS) || 353),
+            ispVacuumS: Math.max(1, Number(fallbackStage2?.ispVacuumS) || Number(fallbackStage2?.ispSeaLevelS) || 380),
           },
         ];
       let activeStageIndex = Math.max(0, Math.min(1, Number(vehicle.stageIndex) || 0));
@@ -2871,11 +2883,17 @@ export function createLaunchFleetController({
           1,
           Number(activeStage?.dryMassKg) || Number(vehicle.dryMassKg) || Math.max(1, stageMassKg - stagePropellantKg),
         );
+        const activeStageThrustBounds = configuredThrustBoundsN(activeStage);
+        const activeStageThrustVacuumN = Math.max(0, Number(activeStageThrustBounds.thrustVacuumN) || 0);
+        const activeStageThrustSeaLevelN = Math.max(
+          0,
+          Number(activeStageThrustBounds.thrustSeaLevelN) || activeStageThrustVacuumN,
+        );
         const engineAccelAtThrottle1KmS2 = (
-          Number(activeStage?.thrustVacuumN) > 0
+          activeStageThrustVacuumN > 0
           && stageMassKg > 0
         )
-          ? ((Number(activeStage.thrustVacuumN) / stageMassKg) / 1000)
+          ? ((activeStageThrustVacuumN / stageMassKg) / 1000)
           : null;
         const moonRefuelTarget = vehicle.missionPhase === "orbital_refuel"
           ? selectLockedTankerTargetForVehicle(vehicle, state, shipState, earthState)
@@ -2967,11 +2985,8 @@ export function createLaunchFleetController({
                 stageMassKg,
                 stagePropellantKg,
                 stageDryMassKg,
-                stageThrustVacuumN: Math.max(0, Number(activeStage?.thrustVacuumN) || 0),
-                stageThrustSeaLevelN: Math.max(
-                  0,
-                  Number(activeStage?.thrustSeaLevelN) || Number(activeStage?.thrustVacuumN) || 0,
-                ),
+                stageThrustVacuumN: activeStageThrustVacuumN,
+                stageThrustSeaLevelN: activeStageThrustSeaLevelN,
                 stageIspVacuumS: Math.max(0, Number(activeStage?.ispVacuumS) || 0),
                 stageIspSeaLevelS: Math.max(
                   0,
@@ -3392,8 +3407,9 @@ export function createLaunchFleetController({
         guidanceMode = `${guidanceMode}+attitude-align`;
       }
       const ambientPressurePa = Number(atmosphereSample?.pressurePa) || 0;
-      const stageThrustVacuumN = Math.max(0, Number(activeStage?.thrustVacuumN) || 0);
-      const stageThrustSeaLevelN = Math.max(0, Number(activeStage?.thrustSeaLevelN) || stageThrustVacuumN);
+      const activeStageThrustBounds = configuredThrustBoundsN(activeStage);
+      const stageThrustVacuumN = Math.max(0, Number(activeStageThrustBounds.thrustVacuumN) || 0);
+      const stageThrustSeaLevelN = Math.max(0, Number(activeStageThrustBounds.thrustSeaLevelN) || stageThrustVacuumN);
       const thrustPerThrottleN = interpolateSeaToVac(
         stageThrustVacuumN,
         stageThrustSeaLevelN,

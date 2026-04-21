@@ -1,7 +1,7 @@
 import { planMoonMissionCommand } from "../app/static/js/physics/navigation_system/planners/moonMissionPlanner.js";
 import { createPlannerRuntime } from "../app/static/js/physics/navigation_system/planners/moonGuidanceState.js";
 import { NAVIGATION_DEFAULTS } from "../app/static/js/physics/navigation_system/navigationSystemConfig.js";
-import { sampleMoonGuidanceSourceModelAtTimeSec } from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+import { sampleMoonGuidanceSourceModelAtTimeSec } from "../app/static/js/physics/runtime/index.js";
 
 function assert(condition, message) {
   if (!condition) {

@@ -1,4 +1,4 @@
-import { burnDurationForDeltaVSec } from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+import { burnDurationForDeltaVSec } from "../app/static/js/physics/runtime/index.js";
 import { createLaunchFleetController } from "../app/static/js/physics/launch/launchFleetController.js";
 import { LAUNCH_VEHICLE_CONFIG } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";

@@ -1,7 +1,7 @@
 import {
   buildMoonGuidanceSourceModel,
   sampleMoonGuidanceSourceModelAtTimeSec,
-} from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+} from "../app/static/js/physics/runtime/index.js";
 
 function assert(condition, message) {
   if (!condition) {

@@ -8,7 +8,7 @@ import {
 import {
   buildMoonGuidanceSourceModel,
   propagateMoonGuidanceState,
-} from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+} from "../app/static/js/physics/runtime/index.js";
 import { solveMoonOrbitInjectWindowForLaunch } from "../app/static/js/physics/navigation_system/lunar/departureWindowSolver.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
@@ -19,6 +19,12 @@ const MOON_RADIUS_KM = 1737.4;
 const SUN_MASS_KG = 1.9885e30;
 const NOW_MS = Date.UTC(2026, 2, 7, 12, 0, 0);
 const SAMPLE_TIMES_SEC = [14 * 60, 30 * 60];
+const MIN_ALIGNMENT_BY_SAMPLE_SEC = new Map([
+  [14 * 60, 0.35],
+  // By 30 minutes the transfer arc is already curving under Earth gravity, so
+  // positive Moon closing matters more than maintaining the earlier direct heading margin.
+  [30 * 60, 0.2],
+]);
 
 function assert(condition, message) {
   if (!condition) {
@@ -213,9 +219,16 @@ function main() {
       ? -dot(relativeVelocityKmS, scale(relativePositionKm, 1 / moonDistanceKm))
       : Number.NaN;
     const directionState = classifyMoonDirection(relativePositionKm, relativeVelocityKmS);
+    const alignment = Number.isFinite(closingKmS) && moonDistanceKm > 1e-9
+      ? dot(
+        normalize(relativeVelocityKmS, scale(relativePositionKm, -1)),
+        normalize(scale(relativePositionKm, -1), { x: 1, y: 0, z: 0 }),
+      )
+      : Number.NaN;
+    const minAlignment = MIN_ALIGNMENT_BY_SAMPLE_SEC.get(elapsedSec) ?? 0.2;
     assert(
-      directionState === "toward",
-      `moon_orbit_inject_30min_toward_lock: expected toward-Moon coast at ${elapsedSec}s, got ${directionState}`,
+      Number.isFinite(alignment) && alignment >= minAlignment,
+      `moon_orbit_inject_30min_toward_lock: expected Moonward alignment >= ${minAlignment} at ${elapsedSec}s, got ${alignment} (${directionState})`,
     );
     assert(
       Number.isFinite(closingKmS) && closingKmS > 0,

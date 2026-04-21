@@ -17,6 +17,7 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
+  resolveConfiguredThrustBoundsN,
 } from "./launchConfig.js";
 import { computeBoosterRecoveryCommand } from "./boosterRecovery.js?v=20260420am";
 import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js";
@@ -578,6 +579,19 @@ function interpolateSeaToVac(vacuumValue, seaLevelValue, pressurePa) {
   return vacuumValue - ((vacuumValue - sea) * pressureRatio(pressurePa));
 }
 
+function configuredThrustBoundsN(config, fallbackEngineCount = 1) {
+  return resolveConfiguredThrustBoundsN(config, fallbackEngineCount);
+}
+
+function interpolateConfiguredThrustN(config, pressurePa, fallbackEngineCount = 1) {
+  const thrustBounds = configuredThrustBoundsN(config, fallbackEngineCount);
+  return interpolateSeaToVac(
+    Number(thrustBounds.thrustVacuumN) || 0,
+    Number(thrustBounds.thrustSeaLevelN) || 0,
+    pressurePa,
+  );
+}
+
 function stageBodyKindFromStageIndex(stageIndex) {
   return Number(stageIndex) >= 1 ? "stage2" : "stage1";
 }
@@ -1099,11 +1113,7 @@ function computeBoosterEngineAngularControlState({
       dampingPerS: 0,
     };
   }
-  const fullThrustN = interpolateSeaToVac(
-    Number(LAUNCH_BOOSTER_CONFIG.thrustVacuumN) || 0,
-    Number(LAUNCH_BOOSTER_CONFIG.thrustSeaLevelN) || 0,
-    pressurePa,
-  );
+  const fullThrustN = interpolateConfiguredThrustN(LAUNCH_BOOSTER_CONFIG, pressurePa);
   const thrustN = fullThrustN * clamp(Number(throttle) || 0, 0, 1);
   if (!(thrustN > 0)) {
     return {
@@ -1308,11 +1318,7 @@ function limitThrottleByThrustAccelerationG({
     return clamp(throttle, 0, 1);
   }
 
-  const stageFullThrustN = interpolateSeaToVac(
-    Number(stage.thrustVacuumN) || 0,
-    Number(stage.thrustSeaLevelN) || 0,
-    pressurePa,
-  );
+  const stageFullThrustN = interpolateConfiguredThrustN(stage, pressurePa);
   if (!(stageFullThrustN > 0)) {
     return 0;
   }
@@ -2644,11 +2650,17 @@ export function createLaunchController(options) {
       1,
       Number(activeStage?.dryMassKg) || Math.max(1, stageMassKg - stagePropellantKg),
     );
+    const activeStageThrustBounds = configuredThrustBoundsN(activeStage);
+    const activeStageThrustVacuumN = Math.max(0, Number(activeStageThrustBounds.thrustVacuumN) || 0);
+    const activeStageThrustSeaLevelN = Math.max(
+      0,
+      Number(activeStageThrustBounds.thrustSeaLevelN) || activeStageThrustVacuumN,
+    );
     const engineAccelAtThrottle1KmS2 = (
-      Number(activeStage?.thrustVacuumN) > 0
+      activeStageThrustVacuumN > 0
       && stageMassKg > 0
     )
-      ? ((Number(activeStage.thrustVacuumN) / stageMassKg) / 1000)
+      ? ((activeStageThrustVacuumN / stageMassKg) / 1000)
       : null;
     const navResult = primaryNavigationSystem.update({
       measurement: {
@@ -2672,11 +2684,8 @@ export function createLaunchController(options) {
         stageMassKg,
         stagePropellantKg,
         stageDryMassKg,
-        stageThrustVacuumN: Math.max(0, Number(activeStage?.thrustVacuumN) || 0),
-        stageThrustSeaLevelN: Math.max(
-          0,
-          Number(activeStage?.thrustSeaLevelN) || Number(activeStage?.thrustVacuumN) || 0,
-        ),
+        stageThrustVacuumN: activeStageThrustVacuumN,
+        stageThrustSeaLevelN: activeStageThrustSeaLevelN,
         stageIspVacuumS: Math.max(0, Number(activeStage?.ispVacuumS) || 0),
         stageIspSeaLevelS: Math.max(
           0,
@@ -3968,11 +3977,9 @@ export function createLaunchController(options) {
     const orbitInjectStagePropellantKg = Number.isFinite(requestedInjectStagePropellantKg)
       ? clamp(requestedInjectStagePropellantKg, 0, stage2PropellantMassKg)
       : stage2PropellantMassKg;
-    const stage2ThrustVacuumN = Math.max(
-      0,
-      Number(stage2?.thrustVacuumN) || Number(stage2?.thrustSeaLevelN) || 0,
-    );
-    const stage2ThrustSeaLevelN = Math.max(0, Number(stage2?.thrustSeaLevelN) || stage2ThrustVacuumN);
+    const stage2ThrustBounds = configuredThrustBoundsN(stage2);
+    const stage2ThrustVacuumN = Math.max(0, Number(stage2ThrustBounds.thrustVacuumN) || 0);
+    const stage2ThrustSeaLevelN = Math.max(0, Number(stage2ThrustBounds.thrustSeaLevelN) || stage2ThrustVacuumN);
     const stage2IspVacuumS = Math.max(1, Number(stage2?.ispVacuumS) || 360);
     const stage2IspSeaLevelS = Math.max(1, Number(stage2?.ispSeaLevelS) || stage2IspVacuumS);
     const spacecraftMassKg = stage2DryMassKg + orbitInjectStagePropellantKg;
@@ -6099,11 +6106,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.boosterActuator.gimbalErrorDeg = degrees(angleBetweenRadians(directionActual, direction));
     runtime.boosterActuator.angularRateRadS = length(runtime.booster.attitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 });
 
-    const fullThrustN = interpolateSeaToVac(
-      Number(LAUNCH_BOOSTER_CONFIG.thrustVacuumN) || 0,
-      Number(LAUNCH_BOOSTER_CONFIG.thrustSeaLevelN) || 0,
-      pressurePa,
-    );
+    const fullThrustN = interpolateConfiguredThrustN(LAUNCH_BOOSTER_CONFIG, pressurePa);
     const thrustN = fullThrustN * throttleActual;
     const ispS = interpolateSeaToVac(
       Number(LAUNCH_BOOSTER_CONFIG.ispVacuumS) || 0,
@@ -6867,11 +6870,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         let burnRateKgS = 0;
         let burnKg = 0;
         if (canThrust && throttleActual > 1e-7 && stageForStep) {
-          const fullThrustN = interpolateSeaToVac(
-            Number(stageForStep.thrustVacuumN) || 0,
-            Number(stageForStep.thrustSeaLevelN) || 0,
-            pressurePa,
-          );
+          const fullThrustN = interpolateConfiguredThrustN(stageForStep, pressurePa);
           thrustN = fullThrustN * throttleActual;
           const ispS = interpolateSeaToVac(
             Number(stageForStep.ispVacuumS) || 0,
@@ -7682,9 +7681,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     // Hot-staging overlap: detach booster when stage-2 ignition is stable and overlap gates are met.
     if (runtime.hotstage.active && !runtime.booster.active) {
       const stage2 = stageAtIndex(1);
+      const stage2PeakThrustBounds = configuredThrustBoundsN(stage2);
       const stage2PeakThrustN = Math.max(
-        Number(stage2?.thrustVacuumN) || 0,
-        Number(stage2?.thrustSeaLevelN) || 0,
+        Number(stage2PeakThrustBounds.thrustVacuumN) || 0,
+        Number(stage2PeakThrustBounds.thrustSeaLevelN) || 0,
       );
       const hotstageGate = updateHotstageGates(runtime.hotstage, {
         elapsedSeconds: runtime.elapsedSeconds,
@@ -8503,7 +8503,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     if (!snapshot || typeof snapshot !== "object") {
       return false;
     }
-    setLaunchCommandPhase(String(snapshot.commandPhase || snapshot.phase || currentLaunchCommandPhase() || "idle"));
+    setLaunchCommandPhase(String(snapshot.commandPhase || currentLaunchCommandPhase() || "idle"));
     runtime.elapsedSeconds = Math.max(0, finiteNumber(snapshot.elapsedSeconds, runtime.elapsedSeconds));
     runtime.stageIndex = Math.max(0, Math.floor(finiteNumber(snapshot.stageIndex, runtime.stageIndex)));
     runtime.stagePropellantKg = Math.max(0, finiteNumber(snapshot.stagePropellantKg, runtime.stagePropellantKg));

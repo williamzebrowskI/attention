@@ -1,4 +1,8 @@
-import { STANDARD_GRAVITY_M_S2, LAUNCH_BOOSTER_CONFIG } from "./launchConfig.js";
+import {
+  STANDARD_GRAVITY_M_S2,
+  LAUNCH_BOOSTER_CONFIG,
+  resolveConfiguredThrustBoundsN,
+} from "./launchConfig.js";
 import { resolveBoosterCatchCommand } from "./boosterCatchGuidance.js";
 
 function clamp(value, min, max) {
@@ -42,10 +46,11 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const downwardSpeedKmS = Math.max(0, -radialSpeedKmS);
   const dryMassKg = Math.max(1, Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 1);
   const totalMassKg = Math.max(dryMassKg + propellantKg, dryMassKg + 1);
+  const boosterThrustBounds = resolveConfiguredThrustBoundsN(LAUNCH_BOOSTER_CONFIG);
   const maxThrustN = Math.max(
     0,
-    Number(LAUNCH_BOOSTER_CONFIG.thrustSeaLevelN)
-      || Number(LAUNCH_BOOSTER_CONFIG.thrustVacuumN)
+    Number(boosterThrustBounds.thrustSeaLevelN)
+      || Number(boosterThrustBounds.thrustVacuumN)
       || 0,
   );
   const gravityKmS2 = STANDARD_GRAVITY_M_S2 / 1000;

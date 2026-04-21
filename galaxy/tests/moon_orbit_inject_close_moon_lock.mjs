@@ -4,7 +4,7 @@ import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissio
 import {
   buildMoonGuidanceSourceModel,
   propagateMoonGuidanceState,
-} from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+} from "../app/static/js/physics/runtime/index.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;

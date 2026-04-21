@@ -1,7 +1,7 @@
 import {
   burnDurationForDeltaVSec,
   propagateMoonGuidanceState,
-} from "../app/static/js/physics/navigation_system/lunar/moonDynamicsModel.js";
+} from "../app/static/js/physics/runtime/index.js";
 
 const EARTH_MASS_KG = 5.97237e24;
 const EARTH_RADIUS_KM = 6371.0084;

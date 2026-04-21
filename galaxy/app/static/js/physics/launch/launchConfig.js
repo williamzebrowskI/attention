@@ -86,6 +86,50 @@ export const STANDARD_GRAVITY_M_S2 = 9.80665;
 export const EARTH_SIDEREAL_ANGULAR_RATE_RAD_S = 7.2921150e-5;
 export const SEA_LEVEL_PRESSURE_PA = 101325;
 
+function finiteNonNegativeInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, Math.round(Number(fallback) || 0));
+  }
+  return Math.max(0, Math.round(numeric));
+}
+
+export function resolveConfiguredEngineCounts(config = {}, fallbackEngineCount = 1) {
+  const fallbackCount = finiteNonNegativeInteger(fallbackEngineCount, 1);
+  const configuredEngineCount = finiteNonNegativeInteger(config?.engineCount, fallbackCount);
+  const nominalFromConfig = finiteNonNegativeInteger(config?.nominalEngineCount, configuredEngineCount);
+  const nominalEngineCount = Math.max(
+    1,
+    nominalFromConfig || configuredEngineCount || fallbackCount || 1,
+  );
+  return {
+    engineCount: configuredEngineCount,
+    nominalEngineCount,
+  };
+}
+
+export function resolveConfiguredThrustBoundsN(config = {}, fallbackEngineCount = 1) {
+  const { engineCount, nominalEngineCount } = resolveConfiguredEngineCounts(config, fallbackEngineCount);
+  const engineScale = nominalEngineCount > 0
+    ? (engineCount / nominalEngineCount)
+    : 0;
+  const rawVacuumN = Math.max(
+    0,
+    Number(config?.thrustVacuumN) || Number(config?.thrustSeaLevelN) || 0,
+  );
+  const rawSeaLevelN = Math.max(
+    0,
+    Number(config?.thrustSeaLevelN) || rawVacuumN,
+  );
+  return {
+    engineCount,
+    nominalEngineCount,
+    engineScale,
+    thrustVacuumN: rawVacuumN * engineScale,
+    thrustSeaLevelN: rawSeaLevelN * engineScale,
+  };
+}
+
 export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
   name: "Earth Launch Vehicle",
   payloadMassKg: 100_000,
@@ -132,6 +176,9 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
       name: "Stage 1",
       dryMassKg: 200_000,
       propellantMassKg: 3_400_000,
+      // Aggregate stage-1 thrust is calibrated to a full 33-engine booster cluster.
+      engineCount: 33,
+      nominalEngineCount: 33,
       thrustSeaLevelN: 74_000_000,
       thrustVacuumN: 77_000_000,
       ispSeaLevelS: 327,
@@ -156,6 +203,9 @@ export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
   dryMassKg: 200_000,
   referenceAreaM2: 78,
   dragCoefficient: 0.42,
+  // Separated-booster recovery thrust is modeled as a multi-engine burn cluster.
+  engineCount: 13,
+  nominalEngineCount: 13,
   thrustSeaLevelN: 19_000_000,
   thrustVacuumN: 20_500_000,
   ispSeaLevelS: 327,
