@@ -44,6 +44,14 @@ Completed in the repo so far:
   - deterministic internal space-weather generation
   - deterministic internal Earth EOP generation
   - deterministic internal launch-weather generation
+- `physics/runtime/environmentRuntime.js`
+  - runtime-owned environment provider lifecycle
+  - runtime-owned Earth atmosphere and launch-weather sampling
+  - runtime-owned environment forcing scenario application
+- `physics/runtime/ephemerisRuntime.js`
+  - runtime-owned local ephemeris bootstrap surface
+  - catalog-wide recursive orbital state generation
+  - startup seed supplements when live startup positions are unavailable
 
 `app/static/js/app.js` now delegates world seeding, force evaluation, and integrator stepping through the runtime modules, while still retaining the higher-level orchestration shell.
 
@@ -90,6 +98,12 @@ Earth environment forcing has also moved inward:
 - scenario changes no longer post through `/api/environment-forcing`
 - `app.js` now drives those providers from internal deterministic forcing models
 
+Startup fallback authority has also been reduced:
+
+- startup seeding now backfills missing catalog bodies from a dedicated runtime local ephemeris surface
+- startup no longer hard-fails if `/api/positions` is unavailable during bootstrap
+- launch/runtime Earth-environment queries now route through the runtime environment surface instead of app-owned provider state
+
 ## Current State
 
 The codebase already has most of the physics pieces, but authority is split across several places:
@@ -107,7 +121,7 @@ The codebase already has most of the physics pieces, but authority is split acro
 - `app/services/solar_system.py`
   - provides startup and validation ephemerides from Horizons
 
-That still leaves startup body seeding from Horizons and a higher-level launch mission shell, but the live Earth-environment forcing path is now runtime-local.
+That still leaves startup preference for Horizons when available and a higher-level launch mission shell, but the live Earth-environment forcing path is now runtime-local and bootstrap no longer hard-depends on a startup positions fetch.
 
 ## Target Architecture
 

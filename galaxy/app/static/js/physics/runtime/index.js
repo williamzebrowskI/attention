@@ -10,6 +10,8 @@ export {
   seedPhysicsWorldStateFromSnapshot,
 } from "./worldState.js";
 export { createPhysicsForceModel } from "./forceModel.js";
+export { createPhysicsEnvironmentRuntime } from "./environmentRuntime.js";
+export { createPhysicsEphemerisRuntime } from "./ephemerisRuntime.js";
 export { createPhysicsIntegrator } from "./integrator.js";
 export { createPhysicsLaunchRuntime } from "./launchRuntime.js";
 export {

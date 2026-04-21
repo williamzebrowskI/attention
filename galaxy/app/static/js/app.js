@@ -21,17 +21,7 @@ import { createRigidBodyAttitudeController } from "./physics/rigidBodyAttitude.j
 import { createTidalOverlayController } from "./physics/overlays/tidalOverlay.js";
 import { createLagrangeOverlayController } from "./physics/overlays/lagrangeOverlay.js";
 import { createEarthAtmosphereController } from "./physics/atmosphere/visualAtmosphere.js";
-import {
-  createAtmosphereDynamicsController,
-  earthAtmosphereSampleUS1976,
-} from "./physics/atmosphere/atmosphereDynamics.js";
-import { createSpaceWeatherProvider } from "./physics/space_weather/simulatedSpaceWeatherProvider.js";
-import { createEarthEopProvider } from "./physics/dynamics/simulatedEarthEopProvider.js";
-import { createLaunchWeatherProvider } from "./physics/launch/simulatedLaunchWeatherProvider.js";
-import {
-  createInternalEnvironmentForcingSnapshot,
-  normalizeEnvironmentScenario,
-} from "./physics/environment/internalEnvironmentModels.js";
+import { createAtmosphereDynamicsController } from "./physics/atmosphere/atmosphereDynamics.js";
 import {
   LUNAR_MASCON_MODEL_ENABLED,
   computeLunarMasconAccelerationKmS2,
@@ -59,6 +49,8 @@ import {
 } from "./physics/config/oblatenessConfig.js";
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
 import {
+  createPhysicsEnvironmentRuntime,
+  createPhysicsEphemerisRuntime,
   createPhysicsForceModel,
   createPhysicsIntegrator,
   createPhysicsLaunchRuntime,
@@ -339,10 +331,6 @@ let applyStarshipAtmosphereEffectsFn = null;
 let createStarshipStackVisualFn = null;
 let starshipPhysicalRenderRadiusSceneFn = null;
 let launchModuleLoadError = "";
-let spaceWeatherProvider = null;
-let earthEopProvider = null;
-let launchWeatherProvider = null;
-let environmentForcingSnapshot = null;
 const RIGID_BODY_ATTITUDE_IDS = Object.freeze([
   "sun",
   "mercury",
@@ -1434,13 +1422,37 @@ const physicsLaunchRuntime = createPhysicsLaunchRuntime({
     rememberAllDynamicBodyStableSnapshots(state);
   },
 });
+const physicsEphemerisRuntime = createPhysicsEphemerisRuntime();
 const physicsStartupRuntime = createPhysicsStartupRuntime({
   getNBodyAllBodiesMode: () => N_BODY_ALL_BODIES_MODE,
   parseTimestampMs,
   seedWorldStateFromSnapshot: seedPhysicsWorldStateFromSnapshot,
   launchRuntime: physicsLaunchRuntime,
+  ephemerisRuntime: physicsEphemerisRuntime,
   onWorldStateSeeded: (state) => {
     rememberAllDynamicBodyStableSnapshots(state);
+  },
+});
+const physicsEnvironmentRuntime = createPhysicsEnvironmentRuntime({
+  spaceWeatherRefreshIntervalMs: SPACE_WEATHER_REFRESH_INTERVAL_MS,
+  earthEopRefreshIntervalMs: EARTH_EOP_REFRESH_INTERVAL_MS,
+  launchWeatherRefreshIntervalMs: LAUNCH_WEATHER_REFRESH_INTERVAL_MS,
+  getLaunchSite: () => ({
+    latitudeDeg: Number(RUNTIME_LAUNCH_SITE?.latitudeDeg),
+    longitudeDeg: Number(RUNTIME_LAUNCH_SITE?.longitudeDeg),
+    siteName: String(RUNTIME_LAUNCH_SITE?.name || "").trim(),
+  }),
+  resolveEarthLatLon: (context = {}) => {
+    const relPositionKm = context?.relativePositionKm;
+    if (!finiteVectorKm(relPositionKm)) {
+      return null;
+    }
+    const earthAxes = context?.earthAxes || (
+      finiteVectorKm(context?.earthPole)
+        ? { pole: context.earthPole }
+        : null
+    );
+    return earthLatLonFromRelativePositionKm(relPositionKm, earthAxes);
   },
 });
 const launchVehicleDeleteController = createLaunchVehicleDeleteController({
@@ -1935,9 +1947,7 @@ let geolocationTrackingActive = false;
 
 window.addEventListener("resize", onResize);
 window.addEventListener("beforeunload", () => {
-  spaceWeatherProvider?.stop?.();
-  earthEopProvider?.stop?.();
-  launchWeatherProvider?.stop?.();
+  physicsEnvironmentRuntime.stop();
   setEarthOrientationRuntimeProvider(null);
   persistLaunchRuntimeState(Date.now(), { force: true });
   stopLiveLocationTracking(false);
@@ -1956,9 +1966,7 @@ async function init() {
   assertPhysicsLockInvariants();
   registerLaunchLogDebugHandles();
   await loadRuntimeConfig();
-  setupSpaceWeatherProvider();
-  await setupEarthEopProvider();
-  setupLaunchWeatherProvider();
+  await setupPhysicsEnvironmentRuntime();
   if (launchFeatureEnabled) {
     try {
       await loadLaunchFeatureModules();
@@ -1984,69 +1992,23 @@ async function init() {
   animate();
 }
 
-function setupSpaceWeatherProvider() {
-  if (spaceWeatherProvider) {
-    return;
-  }
-  spaceWeatherProvider = createSpaceWeatherProvider({
-    refreshIntervalMs: SPACE_WEATHER_REFRESH_INTERVAL_MS,
-    scenario: normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate"),
-  });
-  spaceWeatherProvider.start();
-}
-
-async function setupEarthEopProvider() {
-  if (earthEopProvider) {
-    return earthEopProvider;
-  }
-  earthEopProvider = createEarthEopProvider({
-    refreshIntervalMs: EARTH_EOP_REFRESH_INTERVAL_MS,
-    scenario: normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate"),
-  });
+async function setupPhysicsEnvironmentRuntime() {
+  await physicsEnvironmentRuntime.start();
   setEarthOrientationRuntimeProvider((timestampMs) => (
-    earthEopProvider?.sampleOrientation?.(timestampMs) || null
+    physicsEnvironmentRuntime.sampleEarthOrientation(timestampMs)
   ));
-  await earthEopProvider.refresh();
-  return earthEopProvider;
-}
-
-function setupLaunchWeatherProvider() {
-  if (launchWeatherProvider) {
-    return;
-  }
-  launchWeatherProvider = createLaunchWeatherProvider({
-    refreshIntervalMs: LAUNCH_WEATHER_REFRESH_INTERVAL_MS,
-    scenario: normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate"),
-    locationProvider: () => ({
-      latitudeDeg: Number(RUNTIME_LAUNCH_SITE?.latitudeDeg),
-      longitudeDeg: Number(RUNTIME_LAUNCH_SITE?.longitudeDeg),
-      siteName: String(RUNTIME_LAUNCH_SITE?.name || "").trim(),
-    }),
-  });
-  launchWeatherProvider.start();
 }
 
 function currentSpaceWeatherSnapshot() {
-  return spaceWeatherProvider?.snapshot?.() || null;
+  return physicsEnvironmentRuntime.currentSpaceWeatherSnapshot();
 }
 
 function currentEarthEopSnapshot() {
-  return earthEopProvider?.snapshot?.() || null;
+  return physicsEnvironmentRuntime.currentEarthEopSnapshot();
 }
 
 function currentLaunchWeatherSnapshot() {
-  return launchWeatherProvider?.snapshot?.() || null;
-}
-
-function longitudeDifferenceDeg(a, b) {
-  if (!Number.isFinite(Number(a)) || !Number.isFinite(Number(b))) {
-    return Number.POSITIVE_INFINITY;
-  }
-  let delta = Math.abs(Number(a) - Number(b)) % 360;
-  if (delta > 180) {
-    delta = 360 - delta;
-  }
-  return delta;
+  return physicsEnvironmentRuntime.currentLaunchWeatherSnapshot();
 }
 
 function earthLatLonFromRelativePositionKm(relativePositionKm, earthAxes) {
@@ -2090,96 +2052,11 @@ function earthLatLonFromRelativePositionKm(relativePositionKm, earthAxes) {
 }
 
 function sampleLaunchWeatherRuntime(context = {}) {
-  const snapshot = currentLaunchWeatherSnapshot();
-  if (!snapshot) {
-    return null;
-  }
-  let latitudeDeg = Number(context?.latitudeDeg);
-  let longitudeDeg = Number(context?.longitudeDeg);
-  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
-    const relPositionKm = context?.relativePositionKm;
-    if (finiteVectorKm(relPositionKm)) {
-      const earthAxes = context?.earthAxes || (
-        finiteVectorKm(context?.earthPole)
-          ? { pole: context.earthPole }
-          : null
-      );
-      const latLon = earthLatLonFromRelativePositionKm(relPositionKm, earthAxes);
-      if (latLon) {
-        latitudeDeg = latLon.latitudeDeg;
-        longitudeDeg = latLon.longitudeDeg;
-      }
-    }
-  }
-  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
-    return null;
-  }
-  const siteLatitudeDeg = Number(snapshot.latitudeDeg);
-  const siteLongitudeDeg = Number(snapshot.longitudeDeg);
-  if (
-    !Number.isFinite(siteLatitudeDeg)
-    || !Number.isFinite(siteLongitudeDeg)
-    || Math.abs(latitudeDeg - siteLatitudeDeg) > 2.5
-    || longitudeDifferenceDeg(longitudeDeg, siteLongitudeDeg) > 2.5
-  ) {
-    return null;
-  }
-  const surfaceWind = launchWeatherProvider?.surfaceWindComponentsMS?.() || null;
-  return {
-    source: snapshot.source,
-    temperatureC: Number.isFinite(Number(snapshot.temperatureC)) ? Number(snapshot.temperatureC) : null,
-    relativeHumidity: Number.isFinite(Number(snapshot.relativeHumidity)) ? Number(snapshot.relativeHumidity) : null,
-    windSpeedMS: Number.isFinite(Number(snapshot.windSpeedMS)) ? Number(snapshot.windSpeedMS) : null,
-    windDirectionDeg: Number.isFinite(Number(snapshot.windDirectionDeg)) ? Number(snapshot.windDirectionDeg) : null,
-    windEastMS: Number.isFinite(Number(surfaceWind?.eastMS)) ? Number(surfaceWind.eastMS) : null,
-    windNorthMS: Number.isFinite(Number(surfaceWind?.northMS)) ? Number(surfaceWind.northMS) : null,
-  };
+  return physicsEnvironmentRuntime.sampleLaunchWeather(context);
 }
 
 function sampleEarthAtmosphereRuntime(altitudeKm, context = {}) {
-  const snapshot = currentSpaceWeatherSnapshot();
-  const launchWeather = sampleLaunchWeatherRuntime({
-    ...context,
-    altitudeKm,
-  });
-  const timestampMs = Number(context?.timestampMs) || Date.now();
-  let latitudeDeg = Number(context?.latitudeDeg);
-  let longitudeDeg = Number(context?.longitudeDeg);
-  if (!Number.isFinite(latitudeDeg) || !Number.isFinite(longitudeDeg)) {
-    const relPositionKm = context?.relativePositionKm;
-    if (finiteVectorKm(relPositionKm)) {
-      const earthAxes = context?.earthAxes || (
-        finiteVectorKm(context?.earthPole)
-          ? { pole: context.earthPole }
-          : null
-      );
-      const latLon = earthLatLonFromRelativePositionKm(relPositionKm, earthAxes);
-      if (latLon) {
-        latitudeDeg = latLon.latitudeDeg;
-        longitudeDeg = latLon.longitudeDeg;
-      }
-    }
-  }
-  const atmosphereOptions = spaceWeatherProvider?.atmosphereOptions?.({
-    timestampMs,
-    latitudeDeg: Number.isFinite(latitudeDeg) ? latitudeDeg : 0,
-    longitudeDeg: Number.isFinite(longitudeDeg) ? longitudeDeg : 0,
-  }) || {
-    timestampMs,
-    latitudeDeg: Number.isFinite(latitudeDeg) ? latitudeDeg : 0,
-    longitudeDeg: Number.isFinite(longitudeDeg) ? longitudeDeg : 0,
-    f107: Number(snapshot?.f107) || 150,
-    f107a: Number(snapshot?.f107a) || Number(snapshot?.f107) || 150,
-    kp: Number(snapshot?.kp) || 3,
-    kpHistory: Array.isArray(snapshot?.kpHistory) ? snapshot.kpHistory : [],
-  };
-  if (
-    Number(altitudeKm) <= 20
-    && Number.isFinite(Number(launchWeather?.relativeHumidity))
-  ) {
-    atmosphereOptions.relativeHumidity = Number(launchWeather.relativeHumidity);
-  }
-  return earthAtmosphereSampleUS1976(altitudeKm, atmosphereOptions);
+  return physicsEnvironmentRuntime.sampleEarthAtmosphere(altitudeKm, context);
 }
 
 async function loadRuntimeConfig() {
@@ -2199,19 +2076,9 @@ async function loadRuntimeConfig() {
       syncLaunchPadSurfaceObserverPreset();
       updateSurfaceObserverTargetOptionLabels();
     }
-    const forcing = payload?.environment_forcing;
-    if (forcing && typeof forcing === "object") {
-      const updatedAtMs = Date.parse(String(forcing.updated_at_utc || "").trim());
-      environmentForcingSnapshot = createInternalEnvironmentForcingSnapshot(
-        normalizeEnvironmentScenario(forcing.scenario || "moderate"),
-        Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now(),
-      );
-    }
+    physicsEnvironmentRuntime.applyConfigForcing(payload?.environment_forcing || null);
   } catch (error) {
     console.warn("[solar-system] Using default runtime config:", error);
-  }
-  if (!environmentForcingSnapshot) {
-    environmentForcingSnapshot = createInternalEnvironmentForcingSnapshot("moderate", Date.now());
   }
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
@@ -2221,47 +2088,11 @@ async function loadRuntimeConfig() {
 }
 
 function currentEnvironmentForcingSnapshot() {
-  return environmentForcingSnapshot
-    ? {
-        ...environmentForcingSnapshot,
-        profile: environmentForcingSnapshot.profile ? { ...environmentForcingSnapshot.profile } : null,
-      }
-    : null;
+  return physicsEnvironmentRuntime.currentEnvironmentForcingSnapshot();
 }
 
 async function setEnvironmentForcingScenario(scenario = "moderate", forceRefresh = true) {
-  const scenarioLabel = normalizeEnvironmentScenario(scenario);
-  const previousScenario = normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate");
-  environmentForcingSnapshot = createInternalEnvironmentForcingSnapshot(scenarioLabel, Date.now());
-  if (forceRefresh || scenarioLabel !== previousScenario) {
-    const refreshTasks = [];
-    if (spaceWeatherProvider) {
-      refreshTasks.push(
-        typeof spaceWeatherProvider.setScenario === "function"
-          ? spaceWeatherProvider.setScenario(scenarioLabel)
-          : spaceWeatherProvider.refresh?.(),
-      );
-    }
-    if (earthEopProvider) {
-      refreshTasks.push(
-        typeof earthEopProvider.setScenario === "function"
-          ? earthEopProvider.setScenario(scenarioLabel)
-          : earthEopProvider.refresh?.(),
-      );
-    }
-    if (launchWeatherProvider) {
-      refreshTasks.push(
-        typeof launchWeatherProvider.setScenario === "function"
-          ? launchWeatherProvider.setScenario(scenarioLabel)
-          : launchWeatherProvider.refresh?.(),
-      );
-    }
-    try {
-      await Promise.all(refreshTasks);
-    } catch (error) {
-      console.warn("[environment-forcing] refresh after scenario change failed:", error);
-    }
-  }
+  await physicsEnvironmentRuntime.setScenario(scenario, forceRefresh);
   updateInfoOverlay();
   return currentEnvironmentForcingSnapshot();
 }
@@ -2707,12 +2538,17 @@ async function loadBodyCatalog() {
 }
 
 async function loadSnapshot() {
-  const response = await fetch(`/api/positions?include_moons=${INCLUDE_MOONS}`);
-  if (!response.ok) {
-    throw new Error(`Position request failed with ${response.status}`);
+  try {
+    const response = await fetch(`/api/positions?include_moons=${INCLUDE_MOONS}`);
+    if (!response.ok) {
+      throw new Error(`Position request failed with ${response.status}`);
+    }
+    const payload = await response.json();
+    updatePositions(payload, "startup_seed");
+  } catch (error) {
+    console.warn("[solar-system] Using runtime local ephemeris bootstrap:", error);
+    updatePositions(null, "startup_seed");
   }
-  const payload = await response.json();
-  updatePositions(payload, "startup_seed");
 }
 
 async function rebuildMeshes() {
@@ -9183,6 +9019,11 @@ function physicsStartupSeedOptions(entriesById = positionsById, nowMs = Date.now
     bodies,
     entriesById,
     bodyMassKgById,
+    ephemerisEntriesById: physicsStartupRuntime.createCatalogEphemerisEntries({
+      bodies,
+      bodyMassKgById,
+      nowMs,
+    }),
     excludedIds: N_BODY_EXCLUDED_IDS,
     staticSourceIds: N_BODY_STATIC_SOURCE_IDS,
     nowMs,

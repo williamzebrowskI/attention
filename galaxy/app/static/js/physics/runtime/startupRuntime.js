@@ -4,8 +4,26 @@ export function createPhysicsStartupRuntime(options = {}) {
     parseTimestampMs = () => Date.now(),
     seedWorldStateFromSnapshot = () => null,
     launchRuntime = null,
+    ephemerisRuntime = null,
     onWorldStateSeeded = () => {},
   } = options;
+
+  function createCatalogEphemerisEntries(seedOptions = {}) {
+    return ephemerisRuntime?.buildCatalogEntries?.(seedOptions) || new Map();
+  }
+
+  function mergeMissingEntries(entriesById, ephemerisEntriesById) {
+    const target = entriesById instanceof Map ? entriesById : new Map();
+    if (!(ephemerisEntriesById instanceof Map)) {
+      return target;
+    }
+    for (const [bodyId, entry] of ephemerisEntriesById.entries()) {
+      if (!target.has(bodyId)) {
+        target.set(bodyId, entry);
+      }
+    }
+    return target;
+  }
 
   function normalizePayloadEntries(payload, fallbackNowMs = Date.now()) {
     const resolvedNowMs = Number.isFinite(Number(fallbackNowMs)) ? Number(fallbackNowMs) : Date.now();
@@ -64,13 +82,17 @@ export function createPhysicsStartupRuntime(options = {}) {
       ? Number(optionsForSeed.nowMs)
       : Date.now();
     const normalized = normalizePayloadEntries(payload, nowMs);
+    const ephemerisEntriesById = optionsForSeed?.ephemerisEntriesById instanceof Map
+      ? optionsForSeed.ephemerisEntriesById
+      : createCatalogEphemerisEntries(optionsForSeed);
+    const entriesById = mergeMissingEntries(normalized.entriesById, ephemerisEntriesById);
     const worldState = seedWorldFromEntries({
       ...optionsForSeed,
-      entriesById: normalized.entriesById,
+      entriesById,
       nowMs,
     });
     return {
-      entriesById: normalized.entriesById,
+      entriesById,
       timestampMs: normalized.timestampMs,
       worldState,
     };
@@ -78,6 +100,7 @@ export function createPhysicsStartupRuntime(options = {}) {
 
   return {
     normalizePayloadEntries,
+    createCatalogEphemerisEntries,
     seedWorldFromEntries,
     applyStartupPayload,
   };
