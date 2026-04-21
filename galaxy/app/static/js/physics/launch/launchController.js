@@ -175,6 +175,7 @@ const ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S = 4.2;
 const ATTACHED_STACK_JOINT_DAMPING_RATIO = 1.18;
 const ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2 = 0.085;
 const ATTACHED_STACK_JOINT_MAX_LOAD_N = 2.4e8;
+const MISSION_PHASE_ADVISORY_HOLD_SEC = 0.35;
 
 function canonicalMoonMissionPhase(phase) {
   return normalizeMissionPhase(phase, LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
@@ -350,6 +351,92 @@ function createAttachedStackJointState() {
     shipMassKg: 0,
     boosterMassKg: 0,
   };
+}
+
+function createGuidanceAdvisoryState() {
+  return {
+    source: "",
+    requestedPhase: "idle",
+    resolvedPhase: "idle",
+    requestedThrottle: 0,
+    requestedMode: "",
+    reason: "",
+    updatedAtElapsedSec: 0,
+  };
+}
+
+function resetGuidanceAdvisoryState(advisoryState) {
+  const state = advisoryState && typeof advisoryState === "object"
+    ? advisoryState
+    : createGuidanceAdvisoryState();
+  state.source = "";
+  state.requestedPhase = "idle";
+  state.resolvedPhase = "idle";
+  state.requestedThrottle = 0;
+  state.requestedMode = "";
+  state.reason = "";
+  state.updatedAtElapsedSec = 0;
+  return state;
+}
+
+function createPendingMissionPhaseState() {
+  return {
+    active: false,
+    requestedPhase: "",
+    source: "",
+    reason: "",
+    requestedAtElapsedSec: 0,
+    authorizationMode: "",
+  };
+}
+
+function resetPendingMissionPhaseState(pendingState) {
+  const state = pendingState && typeof pendingState === "object"
+    ? pendingState
+    : createPendingMissionPhaseState();
+  state.active = false;
+  state.requestedPhase = "";
+  state.source = "";
+  state.reason = "";
+  state.requestedAtElapsedSec = 0;
+  state.authorizationMode = "";
+  return state;
+}
+
+function createPendingStageTransitionState() {
+  return {
+    active: false,
+    kind: "",
+    fromStageIndex: 0,
+    toStageIndex: null,
+    requestedAtElapsedSec: 0,
+    requestReason: "",
+    reservePropellantKg: 0,
+    requestAltitudeKm: null,
+    requestGroundRelativeSpeedKmS: null,
+    requestDynamicPressurePa: null,
+    waitReason: "",
+    authorizationMode: "",
+  };
+}
+
+function resetPendingStageTransition(transitionState) {
+  const state = transitionState && typeof transitionState === "object"
+    ? transitionState
+    : createPendingStageTransitionState();
+  state.active = false;
+  state.kind = "";
+  state.fromStageIndex = 0;
+  state.toStageIndex = null;
+  state.requestedAtElapsedSec = 0;
+  state.requestReason = "";
+  state.reservePropellantKg = 0;
+  state.requestAltitudeKm = null;
+  state.requestGroundRelativeSpeedKmS = null;
+  state.requestDynamicPressurePa = null;
+  state.waitReason = "";
+  state.authorizationMode = "";
+  return state;
 }
 
 function stage2HotStagingThrottleCap(timeSinceIgnitionSec) {
@@ -1339,8 +1426,25 @@ function telemetryFromState({
     shipMassKg: rocketState.massKg,
     boosterMassKg: boosterHotstageMassKg,
   });
+  const vehiclePhase = deriveStarshipVehiclePhase({
+    telemetry: {
+      altitudeKm: reportedAltitudeKm,
+      altitudeAboveTerrainKm: vehicleAltitudeAboveTerrainKm,
+      groundRelativeSpeedKmS,
+      speedKmS: orbital.speedKmS,
+      apoapsisKm,
+      periapsisKm,
+      targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+      throttle: runtime.lastStep?.throttle || 0,
+      thrustN: runtime.lastStep?.thrustN || 0,
+    },
+    runtimePhase: runtime.commandPhase || runtime.phase,
+    lastStep: runtime.lastStep,
+    targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+  });
   return {
-    phase: runtime.phase,
+    phase: vehiclePhase,
+    commandPhase: runtime.commandPhase || runtime.phase,
     elapsedSeconds: runtime.elapsedSeconds,
     stageIndex: runtime.stageIndex,
     stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
@@ -1504,8 +1608,22 @@ function boosterTelemetryFromState({
   const reportedAltitudeKm = Number.isFinite(boosterAltitudeAboveTerrainKm) && Number(orbital.altitudeKm) < 25
     ? Math.max(0, boosterAltitudeAboveTerrainKm)
     : orbital.altitudeKm;
+  const boosterPhase = deriveBoosterVehiclePhase({
+    telemetry: {
+      altitudeKm: reportedAltitudeKm,
+      altitudeAboveTerrainKm: boosterAltitudeAboveTerrainKm,
+      groundRelativeSpeedKmS,
+      speedKmS: orbital.speedKmS,
+      throttle: runtime.booster.lastStep?.throttle || 0,
+      thrustN: runtime.booster.lastStep?.thrustN || 0,
+      guidanceMode: runtime.booster.guidanceMode,
+      commandPhase: runtime.booster.commandPhase || runtime.booster.phase,
+    },
+    boosterRuntime: runtime.booster,
+  });
   return {
-    phase: runtime.booster.phase,
+    phase: boosterPhase,
+    commandPhase: runtime.booster.commandPhase || runtime.booster.phase,
     guidanceMode: runtime.booster.guidanceMode,
     requestedDirectionKm: cloneLaunchVectorOrNull(requestedDirection),
     bodyAxisDirectionKm: cloneLaunchVectorOrNull(bodyAxisDirection),
@@ -1707,23 +1825,115 @@ function phaseLabel(phase) {
   if (phase === "orbit") {
     return "Orbit";
   }
+  if (phase === "landed") {
+    return "Landed";
+  }
+  if (phase === "caught") {
+    return "Caught";
+  }
   if (phase === "complete") {
     return "Mission Complete";
   }
   return "Idle";
 }
 
-function reportedLaunchPhase(runtimePhase, telemetry = null, fallbackStep = null) {
-  const phase = String(runtimePhase || "idle");
-  if (phase !== "powered") {
-    return phase;
+function telemetryIndicatesStableOrbit(telemetry = null, targetOrbitAltitudeKm = null) {
+  const apoapsisKm = finiteOrNull(telemetry?.apoapsisKm);
+  const periapsisKm = finiteOrNull(telemetry?.periapsisKm);
+  if (!Number.isFinite(apoapsisKm) || !Number.isFinite(periapsisKm)) {
+    return false;
   }
+  const resolvedTargetAltitudeKm = Math.max(
+    80,
+    Number.isFinite(Number(targetOrbitAltitudeKm))
+      ? Number(targetOrbitAltitudeKm)
+      : (Number(LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm) || 250),
+  );
+  return orbitInsertionWithinTolerance(
+    { apoapsisKm, periapsisKm },
+    LAUNCH_AUTOPILOT_CONFIG,
+    resolvedTargetAltitudeKm,
+  );
+}
+
+function deriveStarshipVehiclePhase({
+  telemetry = null,
+  runtimePhase = "idle",
+  lastStep = null,
+  targetOrbitAltitudeKm = null,
+} = {}) {
   const source = telemetry && typeof telemetry === "object"
     ? telemetry
-    : (fallbackStep && typeof fallbackStep === "object" ? fallbackStep : null);
+    : (lastStep && typeof lastStep === "object" ? lastStep : null);
   const thrustN = Number(source?.thrustN) || 0;
   const throttle = Number(source?.throttle) || 0;
-  return (thrustN > 1 || throttle > 1e-3) ? phase : "coast";
+  const altitudeAboveTerrainKm = finiteOrNull(telemetry?.altitudeAboveTerrainKm);
+  const groundRelativeSpeedKmS = Math.abs(
+    Number.isFinite(Number(telemetry?.groundRelativeSpeedKmS))
+      ? Number(telemetry.groundRelativeSpeedKmS)
+      : (Number(source?.speedKmS) || 0),
+  );
+  if (thrustN > 1 || throttle > 1e-3) {
+    return "powered";
+  }
+  if (telemetryIndicatesStableOrbit(telemetry, targetOrbitAltitudeKm || telemetry?.targetOrbitAltitudeKm)) {
+    return "orbit";
+  }
+  if (Number.isFinite(altitudeAboveTerrainKm) && altitudeAboveTerrainKm <= 0.05 && groundRelativeSpeedKmS < 0.05) {
+    return "idle";
+  }
+  return String(runtimePhase || "idle") === "idle" && groundRelativeSpeedKmS < 0.05
+    ? "idle"
+    : "coast";
+}
+
+function deriveBoosterVehiclePhase({
+  telemetry = null,
+  boosterRuntime = null,
+} = {}) {
+  const source = telemetry && typeof telemetry === "object"
+    ? telemetry
+    : (boosterRuntime?.lastStep && typeof boosterRuntime.lastStep === "object" ? boosterRuntime.lastStep : null);
+  const guidanceText = `${String(telemetry?.guidanceMode || boosterRuntime?.guidanceMode || "")} ${String(telemetry?.commandPhase || boosterRuntime?.commandPhase || boosterRuntime?.phase || "")}`.toLowerCase();
+  const thrustN = Number(source?.thrustN) || 0;
+  const throttle = Number(source?.throttle) || 0;
+  const altitudeAboveTerrainKm = finiteOrNull(telemetry?.altitudeAboveTerrainKm);
+  const groundRelativeSpeedKmS = Math.abs(
+    Number.isFinite(Number(telemetry?.groundRelativeSpeedKmS))
+      ? Number(telemetry.groundRelativeSpeedKmS)
+      : (Number(source?.speedKmS) || 0),
+  );
+  const surfaceSettled = (
+    Number.isFinite(altitudeAboveTerrainKm)
+    && altitudeAboveTerrainKm <= 0.02
+    && groundRelativeSpeedKmS < 0.04
+  );
+  if (boosterRuntime?.landed || surfaceSettled) {
+    return guidanceText.includes("caught") ? "caught" : "landed";
+  }
+  if (boosterRuntime?.attached && !boosterRuntime?.active) {
+    return "idle";
+  }
+  if (thrustN > 1 || throttle > 1e-3) {
+    return "powered";
+  }
+  return "coast";
+}
+
+function reportedLaunchPhase(runtimePhase, telemetry = null, fallbackStep = null, targetOrbitAltitudeKm = null) {
+  return deriveStarshipVehiclePhase({
+    telemetry,
+    runtimePhase,
+    lastStep: fallbackStep,
+    targetOrbitAltitudeKm,
+  });
+}
+
+function reportedBoosterPhase(telemetry = null, boosterRuntime = null) {
+  return deriveBoosterVehiclePhase({
+    telemetry,
+    boosterRuntime,
+  });
 }
 
 export { LAUNCH_BODY_ID, LAUNCH_BODY_META, LAUNCH_BOOSTER_BODY_ID, LAUNCH_BOOSTER_META };
@@ -1749,6 +1959,7 @@ export function createLaunchController(options) {
   );
 
   const runtime = {
+    commandPhase: "idle",
     phase: "idle",
     elapsedSeconds: 0,
     stageIndex: 0,
@@ -1796,6 +2007,7 @@ export function createLaunchController(options) {
     boosterActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     boosterMassModel: createMassModelState(),
     attachedJoint: createAttachedStackJointState(),
+    guidanceAdvisory: createGuidanceAdvisoryState(),
     stage2RefuelRecoveryApplied: false,
     mission: {
       selectedId: DEFAULT_LAUNCH_MISSION_ID,
@@ -1803,9 +2015,11 @@ export function createLaunchController(options) {
       phaseStartedElapsedSec: 0,
       completed: false,
     },
+    pendingMissionPhase: createPendingMissionPhaseState(),
     booster: {
       attached: true,
       active: false,
+      commandPhase: "idle",
       phase: "idle",
       guidanceMode: "booster-idle",
       attitude: createBoosterAttitudeState({ x: 0, y: 0, z: 1 }),
@@ -1839,6 +2053,7 @@ export function createLaunchController(options) {
       nodeSamples: 0,
     },
     hotstage: createHotstageState(),
+    pendingStageTransition: createPendingStageTransitionState(),
     pendingPadTankerLaunch: null,
   };
   const primaryNavigationSystem = createNavigationSystem({
@@ -2052,6 +2267,8 @@ export function createLaunchController(options) {
       return {};
     }
     return {
+      phase: telemetry.phase,
+      commandPhase: telemetry.commandPhase,
       altitudeKm: Number(telemetry.altitudeKm),
       speedKmS: Number(telemetry.speedKmS),
       stageIndex: Number(telemetry.stageIndex),
@@ -2072,17 +2289,32 @@ export function createLaunchController(options) {
     if (!shouldEmitEvent(name, details)) {
       return;
     }
+    const vehiclePhase = reportedLaunchPhase(
+      currentLaunchCommandPhase(),
+      runtime.lastTelemetry,
+      runtime.lastStep,
+      runtime.targetOrbitAltitudeKm,
+    );
+    const boosterPhase = reportedBoosterPhase(runtime.booster.telemetry, runtime.booster);
+    const detailPhase = Object.prototype.hasOwnProperty.call(details || {}, "phase")
+      ? details.phase
+      : undefined;
+    const payloadDetails = detailPhase === undefined
+      ? details
+      : { ...details, detailPhase };
     const payload = {
       timestampUtc: new Date().toISOString(),
       name,
       elapsedSeconds: Number(runtime.elapsedSeconds) || 0,
-      phase: runtime.phase,
       stageIndex: runtime.stageIndex,
       stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
       missionId: runtime.mission.selectedId,
       missionPhase: runtime.mission.phase,
-      boosterPhase: runtime.booster.phase,
-      ...details,
+      ...payloadDetails,
+      phase: vehiclePhase,
+      commandPhase: currentLaunchCommandPhase(),
+      boosterPhase,
+      boosterCommandPhase: currentBoosterCommandPhase(),
     };
     try {
       onEvent(payload);
@@ -2095,18 +2327,33 @@ export function createLaunchController(options) {
     if (!shouldEmitEvent(`${name}:error`, details)) {
       return;
     }
+    const vehiclePhase = reportedLaunchPhase(
+      currentLaunchCommandPhase(),
+      runtime.lastTelemetry,
+      runtime.lastStep,
+      runtime.targetOrbitAltitudeKm,
+    );
+    const boosterPhase = reportedBoosterPhase(runtime.booster.telemetry, runtime.booster);
+    const detailPhase = Object.prototype.hasOwnProperty.call(details || {}, "phase")
+      ? details.phase
+      : undefined;
+    const payloadDetails = detailPhase === undefined
+      ? details
+      : { ...details, detailPhase };
     const payload = {
       timestampUtc: new Date().toISOString(),
       name,
       severity: "error",
       elapsedSeconds: Number(runtime.elapsedSeconds) || 0,
-      phase: runtime.phase,
       stageIndex: runtime.stageIndex,
       stageName: stageAtIndex(runtime.stageIndex)?.name || "Coast/Complete",
       missionId: runtime.mission.selectedId,
       missionPhase: runtime.mission.phase,
-      boosterPhase: runtime.booster.phase,
-      ...details,
+      ...payloadDetails,
+      phase: vehiclePhase,
+      commandPhase: currentLaunchCommandPhase(),
+      boosterPhase,
+      boosterCommandPhase: currentBoosterCommandPhase(),
     };
     if (typeof onError === "function") {
       try {
@@ -2489,10 +2736,12 @@ export function createLaunchController(options) {
       phaseDecisionReason: navPhaseDecisionReason,
     });
     const navPhase = String(navState?.missionPhase || "").trim();
-    if (navPhase && runtime.mission.phase !== navPhase) {
-      setMissionPhase(runtime, navPhase);
-    }
-    runtime.mission.completed = Boolean(navState?.missionCompleted);
+    reconcileMissionPhaseAdvisory({
+      requestedPhase: navPhase,
+      source: "navigation-system",
+      reason: navPhaseDecisionReason || "planner-phase-update",
+      missionCompleted: Boolean(navState?.missionCompleted),
+    });
     const navDrivenMoonPhases = new Set([
       NAVIGATION_MISSION_PHASES.TLI_BURN,
       NAVIGATION_MISSION_PHASES.MIDCOURSE,
@@ -2646,13 +2895,22 @@ export function createLaunchController(options) {
       (Number(runtime.lastStep?.throttle) || 0) > 1e-3
       || (Number(runtime.lastStep?.thrustN) || 0) > 1
     );
+    const vehiclePhase = reportedLaunchPhase(
+      currentLaunchCommandPhase(),
+      runtime.lastTelemetry,
+      runtime.lastStep,
+      runtime.targetOrbitAltitudeKm,
+    );
+    const boosterPhase = reportedBoosterPhase(runtime.booster.telemetry, runtime.booster);
     return {
-      phase: runtime.phase,
+      phase: vehiclePhase,
+      commandPhase: currentLaunchCommandPhase(),
       stageIndex: runtime.stageIndex,
       missionPhase: runtime.mission.phase,
       missionCompleted: Boolean(runtime.mission.completed),
       boosterActive: Boolean(runtime.booster.active),
-      boosterPhase: runtime.booster.phase,
+      boosterPhase,
+      boosterCommandPhase: currentBoosterCommandPhase(),
       boosterLanded: Boolean(runtime.booster.landed),
       guidanceMode,
       targetBodyId,
@@ -2824,9 +3082,553 @@ export function createLaunchController(options) {
     return state?.dynamicBodies?.get(LAUNCH_BOOSTER_BODY_ID) || null;
   }
 
+  function currentLaunchCommandPhase() {
+    return String(runtime.commandPhase || runtime.phase || "idle");
+  }
+
+  function setLaunchCommandPhase(nextPhase = "idle") {
+    const normalized = String(nextPhase || "idle");
+    runtime.commandPhase = normalized;
+    runtime.phase = normalized;
+    return normalized;
+  }
+
+  function currentBoosterCommandPhase() {
+    return String(runtime.booster?.commandPhase || runtime.booster?.phase || "idle");
+  }
+
+  function setBoosterCommandPhase(nextPhase = "idle") {
+    const normalized = String(nextPhase || "idle");
+    runtime.booster.commandPhase = normalized;
+    runtime.booster.phase = normalized;
+    return normalized;
+  }
+
+  function currentLaunchVehiclePhase() {
+    return reportedLaunchPhase(
+      currentLaunchCommandPhase(),
+      runtime.lastTelemetry,
+      runtime.lastStep,
+      runtime.targetOrbitAltitudeKm,
+    );
+  }
+
+  function resolvedLaunchVehicleAltitudeAboveTerrainKm(fallbackAltitudeKm = null) {
+    const centerAltitudeAboveTerrainKm = Number(runtime.lastSurfaceSample?.altitudeAboveTerrainKm);
+    if (Number.isFinite(centerAltitudeAboveTerrainKm)) {
+      return Math.max(0, centerAltitudeAboveTerrainKm - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM);
+    }
+    const numericFallback = Number(fallbackAltitudeKm);
+    return Number.isFinite(numericFallback) ? Math.max(0, numericFallback) : null;
+  }
+
+  function launchVehiclePhaseFromKinematics({
+    earthState,
+    rocketState,
+    earthRadiusKm,
+    earthPole,
+    orbital = null,
+    altitudeAboveTerrainKm = null,
+  } = {}) {
+    if (
+      !earthState
+      || !rocketState
+      || !finiteVector(earthState.position)
+      || !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 })
+      || !finiteVector(rocketState.position)
+      || !finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      return currentLaunchVehiclePhase();
+    }
+    const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+    const resolvedOrbital = orbital || orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
+    return deriveStarshipVehiclePhase({
+      telemetry: {
+        altitudeKm: finiteOrNull(resolvedOrbital?.altitudeKm),
+        altitudeAboveTerrainKm: finiteOrNull(
+          Number.isFinite(Number(altitudeAboveTerrainKm))
+            ? Number(altitudeAboveTerrainKm)
+            : resolvedLaunchVehicleAltitudeAboveTerrainKm(resolvedOrbital?.altitudeKm),
+        ),
+        groundRelativeSpeedKmS: length(atmosphereRelativeVelocityKmS(
+          relPos,
+          relVel,
+          earthPole || { x: 0, y: 0, z: 1 },
+        )),
+        speedKmS: finiteOrNull(resolvedOrbital?.speedKmS),
+        apoapsisKm: finiteOrNull(resolvedOrbital?.apoapsisKm),
+        periapsisKm: finiteOrNull(resolvedOrbital?.periapsisKm),
+        targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+        throttle: runtime.lastStep?.throttle || 0,
+        thrustN: runtime.lastStep?.thrustN || 0,
+      },
+      runtimePhase: currentLaunchCommandPhase(),
+      lastStep: runtime.lastStep,
+      targetOrbitAltitudeKm: runtime.targetOrbitAltitudeKm,
+    });
+  }
+
+  function requestPendingStageTransition({
+    kind = "",
+    fromStageIndex = 0,
+    toStageIndex = null,
+    requestReason = "",
+    reservePropellantKg = 0,
+    altitudeKm = null,
+    groundRelativeSpeedKmS = null,
+    dynamicPressurePa = null,
+  } = {}) {
+    const transition = resetPendingStageTransition(runtime.pendingStageTransition);
+    transition.active = true;
+    transition.kind = String(kind || "");
+    transition.fromStageIndex = Math.max(0, Math.floor(Number(fromStageIndex) || 0));
+    transition.toStageIndex = (toStageIndex !== null && toStageIndex !== undefined && Number.isFinite(Number(toStageIndex)))
+      ? Math.max(0, Math.floor(Number(toStageIndex)))
+      : null;
+    transition.requestedAtElapsedSec = Math.max(0, Number(runtime.elapsedSeconds) || 0);
+    transition.requestReason = String(requestReason || "");
+    transition.reservePropellantKg = Math.max(0, Number(reservePropellantKg) || 0);
+    transition.requestAltitudeKm = Number.isFinite(Number(altitudeKm)) ? Number(altitudeKm) : null;
+    transition.requestGroundRelativeSpeedKmS = Number.isFinite(Number(groundRelativeSpeedKmS))
+      ? Number(groundRelativeSpeedKmS)
+      : null;
+    transition.requestDynamicPressurePa = Number.isFinite(Number(dynamicPressurePa))
+      ? Number(dynamicPressurePa)
+      : null;
+    return transition;
+  }
+
+  function evaluatePendingStageTransitionAuthorization({
+    earthState,
+    rocketState,
+    earthRadiusKm,
+    earthPole,
+    orbital = null,
+    dynamicPressurePa = null,
+  } = {}) {
+    const pending = runtime.pendingStageTransition;
+    if (!pending?.active) {
+      return { authorized: false, waitReason: "inactive" };
+    }
+    if (
+      pending.fromStageIndex !== runtime.stageIndex
+      || (runtime.hotstage.active && pending.kind !== "hotstage_ignite")
+    ) {
+      pending.waitReason = "stale_request";
+      pending.authorizationMode = "";
+      return { authorized: false, waitReason: pending.waitReason };
+    }
+    if (
+      !earthState
+      || !rocketState
+      || !finiteVector(earthState.position)
+      || !finiteVector(earthState.velocity || { x: 0, y: 0, z: 0 })
+      || !finiteVector(rocketState.position)
+      || !finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      pending.waitReason = "state_unavailable";
+      pending.authorizationMode = "";
+      return { authorized: false, waitReason: pending.waitReason };
+    }
+    const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const resolvedOrbital = orbital || orbitalStateFromRelative(
+      gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0),
+      earthRadiusKm,
+      relPos,
+      relVel,
+    );
+    const groundRelativeSpeedKmS = length(atmosphereRelativeVelocityKmS(
+      relPos,
+      relVel,
+      earthPole || { x: 0, y: 0, z: 1 },
+    ));
+    const altitudeAboveTerrainKm = resolvedLaunchVehicleAltitudeAboveTerrainKm(resolvedOrbital?.altitudeKm);
+    const altitudeMetricKm = Number.isFinite(Number(altitudeAboveTerrainKm))
+      ? Number(altitudeAboveTerrainKm)
+      : Math.max(0, Number(resolvedOrbital?.altitudeKm) || 0);
+    const stableOrbit = Number(resolvedOrbital?.specificEnergy) < 0 && Number(resolvedOrbital?.periapsisKm) > 80;
+    const airborne = altitudeMetricKm > 0.25 || groundRelativeSpeedKmS > 0.05;
+    const requestAgeSec = Math.max(
+      0,
+      (Number(runtime.elapsedSeconds) || 0) - (Number(pending.requestedAtElapsedSec) || 0),
+    );
+    const dynamicPressureMetricPa = Number.isFinite(Number(dynamicPressurePa))
+      ? Number(dynamicPressurePa)
+      : Number(pending.requestDynamicPressurePa);
+    const burnInactive = (
+      (Number(runtime.lastStep?.throttle) || 0) <= 1e-3
+      && (Number(runtime.lastStep?.thrustN) || 0) <= 1
+    );
+
+    if (pending.kind === "hotstage_ignite") {
+      const hotstageEnvelope = evaluateHotstageRealismEnvelope(
+        runtime,
+        rocketState,
+        earthState,
+        earthRadiusKm,
+      );
+      const lowDynamicPressure = (
+        !Number.isFinite(dynamicPressureMetricPa)
+        || dynamicPressureMetricPa <= 145_000
+      );
+      const nominalEnvelopeSatisfied = airborne
+        && groundRelativeSpeedKmS > 0.10
+        && hotstageEnvelope.withinEnvelope;
+      const failsafeSatisfied = airborne
+        && altitudeMetricKm > 20
+        && lowDynamicPressure
+        && requestAgeSec >= 2.5;
+      const authorizationMode = nominalEnvelopeSatisfied
+        ? "nominal-envelope"
+        : (failsafeSatisfied ? "failsafe-low-q" : "");
+      const waitReason = authorizationMode
+        ? ""
+        : (
+          !airborne
+            ? "vehicle_not_airborne"
+            : (!hotstageEnvelope.withinEnvelope ? "outside_hotstage_envelope" : "dynamic_pressure_high")
+        );
+      pending.waitReason = waitReason;
+      pending.authorizationMode = authorizationMode;
+      return {
+        authorized: Boolean(authorizationMode),
+        authorizationMode,
+        waitReason,
+        requestAgeSec,
+        altitudeAboveTerrainKm: altitudeMetricKm,
+        groundRelativeSpeedKmS,
+        hotstageEnvelope,
+        stableOrbit,
+      };
+    }
+
+    if (pending.kind === "next_stage_separation") {
+      const lowDynamicPressure = (
+        !Number.isFinite(dynamicPressureMetricPa)
+        || dynamicPressureMetricPa <= 80_000
+      );
+      const nominalAuthorized = burnInactive
+        && airborne
+        && (stableOrbit || (altitudeMetricKm > 25 && lowDynamicPressure));
+      const failsafeAuthorized = burnInactive
+        && altitudeMetricKm > 10
+        && requestAgeSec >= 0.75;
+      const authorizationMode = nominalAuthorized
+        ? "nominal-low-q"
+        : (failsafeAuthorized ? "failsafe-burnout" : "");
+      const waitReason = authorizationMode
+        ? ""
+        : (
+          !burnInactive
+            ? "burn_still_active"
+            : (!airborne ? "vehicle_not_airborne" : "waiting_for_low_q_or_altitude")
+        );
+      pending.waitReason = waitReason;
+      pending.authorizationMode = authorizationMode;
+      return {
+        authorized: Boolean(authorizationMode),
+        authorizationMode,
+        waitReason,
+        requestAgeSec,
+        altitudeAboveTerrainKm: altitudeMetricKm,
+        groundRelativeSpeedKmS,
+        stableOrbit,
+      };
+    }
+
+    pending.waitReason = "unknown_transition_kind";
+    pending.authorizationMode = "";
+    return {
+      authorized: false,
+      waitReason: pending.waitReason,
+      requestAgeSec,
+      altitudeAboveTerrainKm: altitudeMetricKm,
+      groundRelativeSpeedKmS,
+      stableOrbit,
+    };
+  }
+
+  function applyAuthorizedPendingStageTransition({
+    state,
+    rocketState,
+    earthState,
+    currentEarthAxes,
+    earthRadiusKm,
+    authorization = null,
+  } = {}) {
+    const pending = runtime.pendingStageTransition;
+    if (!pending?.active || !rocketState || !earthState) {
+      return false;
+    }
+    const currentStage = stageAtIndex(runtime.stageIndex);
+    if (!currentStage || pending.fromStageIndex !== runtime.stageIndex) {
+      resetPendingStageTransition(runtime.pendingStageTransition);
+      return false;
+    }
+    const relPos = subtract(rocketState.position, earthState.position);
+    const relVel = subtract(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      earthState.velocity || { x: 0, y: 0, z: 0 },
+    );
+
+    emitLaunchEvent("stage_transition_authorized", {
+      transitionKind: pending.kind,
+      fromStageIndex: pending.fromStageIndex,
+      toStageIndex: pending.toStageIndex,
+      requestReason: pending.requestReason,
+      authorizationMode: authorization?.authorizationMode || "",
+      requestAgeSec: Number(authorization?.requestAgeSec) || 0,
+      altitudeAboveTerrainKm: Number.isFinite(Number(authorization?.altitudeAboveTerrainKm))
+        ? Number(authorization.altitudeAboveTerrainKm)
+        : pending.requestAltitudeKm,
+      groundRelativeSpeedKmS: Number.isFinite(Number(authorization?.groundRelativeSpeedKmS))
+        ? Number(authorization.groundRelativeSpeedKmS)
+        : pending.requestGroundRelativeSpeedKmS,
+    });
+
+    if (pending.kind === "hotstage_ignite") {
+      const hotstageEnvelope = authorization?.hotstageEnvelope || evaluateHotstageRealismEnvelope(
+        runtime,
+        rocketState,
+        earthState,
+        earthRadiusKm,
+      );
+      runtime.hotstage = startHotstageSequence(runtime.hotstage, {
+        elapsedSeconds: runtime.elapsedSeconds,
+        boosterReservePropellantKg: pending.reservePropellantKg,
+        overlapSeconds: hotstageOverlapSeconds(),
+      });
+      runtime.stageIndex = Math.max(1, Number(pending.toStageIndex) || 1);
+      runtime.stagePropellantKg = surfaceLaunchStagePropellantCapacityKgForMissionStage(
+        runtime.stageIndex,
+        runtime.mission.selectedId,
+      );
+      runtime.coastRemainingSec = 0;
+      setLaunchCommandPhase("powered");
+      runtime.stageActuator = createActuatorState(normalize(
+        runtime.lastStep?.bodyAxisDirectionKm
+          || runtime.stageActuator?.directionActual
+          || relPos,
+        currentEarthAxes.pole,
+      ));
+      runtime.stageMassModel = createMassModelState();
+      runtime.lastStep = {
+        ...(runtime.lastStep && typeof runtime.lastStep === "object" ? runtime.lastStep : {}),
+        accelerationKmS2: { x: 0, y: 0, z: 0 },
+        thrustAccelerationKmS2: { x: 0, y: 0, z: 0 },
+        throttle: 0,
+        throttleCommand: 0,
+        thrustN: 0,
+        burnKg: 0,
+        burnRateKgS: 0,
+        guidanceMode: "stage-transition:hotstage-authorized",
+      };
+      emitLaunchEvent("hotstage_ignition", {
+        transitionAuthorizationMode: authorization?.authorizationMode || "",
+        boosterReservePropellantKg: pending.reservePropellantKg,
+        overlapSeconds: runtime.hotstage.overlapSeconds,
+        elapsedSec: hotstageEnvelope.elapsedSec,
+        altitudeKm: hotstageEnvelope.altitudeKm,
+        speedKmS: hotstageEnvelope.speedKmS,
+        nominalElapsedSec: hotstageEnvelope.nominalElapsedSec,
+        nominalAltitudeKm: hotstageEnvelope.nominalAltitudeKm,
+        nominalSpeedKmS: hotstageEnvelope.nominalSpeedKmS,
+        realismEnvelopeSatisfied: hotstageEnvelope.withinEnvelope,
+      });
+      resetPendingStageTransition(runtime.pendingStageTransition);
+      return true;
+    }
+
+    if (pending.kind === "next_stage_separation") {
+      const nextStageIndex = Math.max(runtime.stageIndex + 1, Number(pending.toStageIndex) || (runtime.stageIndex + 1));
+      const nextStage = stageAtIndex(nextStageIndex);
+      if (!nextStage) {
+        resetPendingStageTransition(runtime.pendingStageTransition);
+        return false;
+      }
+      rocketState.massKg = Math.max(
+        MIN_ROCKET_MASS_KG,
+        rocketState.massKg - (Number(currentStage.dryMassKg) || 0),
+      );
+      runtime.stageIndex = nextStageIndex;
+      runtime.stagePropellantKg = stagePropellantCapacityKgForMissionStage(
+        runtime.stageIndex,
+        runtime.mission.selectedId,
+      );
+      runtime.coastRemainingSec = Math.max(0, Number(currentStage.coastAfterBurnSec) || 0);
+      setLaunchCommandPhase(runtime.coastRemainingSec > 0 ? "coast" : "powered");
+      runtime.stageActuator = createActuatorState(
+        normalize(relPos, currentEarthAxes.pole),
+      );
+      runtime.stageMassModel = createMassModelState();
+      runtime.lastStep = {
+        ...(runtime.lastStep && typeof runtime.lastStep === "object" ? runtime.lastStep : {}),
+        accelerationKmS2: { x: 0, y: 0, z: 0 },
+        thrustAccelerationKmS2: { x: 0, y: 0, z: 0 },
+        throttle: 0,
+        throttleCommand: 0,
+        thrustN: 0,
+        burnKg: 0,
+        burnRateKgS: 0,
+        guidanceMode: "stage-transition:stage-separated",
+      };
+      resetPendingStageTransition(runtime.pendingStageTransition);
+      return true;
+    }
+
+    resetPendingStageTransition(runtime.pendingStageTransition);
+    return false;
+  }
+
+  function setGuidanceAdvisory({
+    source = "",
+    requestedPhase = "idle",
+    resolvedPhase = "idle",
+    requestedThrottle = 0,
+    requestedMode = "",
+    reason = "",
+  } = {}) {
+    const advisory = runtime.guidanceAdvisory && typeof runtime.guidanceAdvisory === "object"
+      ? runtime.guidanceAdvisory
+      : createGuidanceAdvisoryState();
+    advisory.source = String(source || "");
+    advisory.requestedPhase = String(requestedPhase || "idle");
+    advisory.resolvedPhase = String(resolvedPhase || advisory.requestedPhase || "idle");
+    advisory.requestedThrottle = clamp(Number(requestedThrottle) || 0, 0, 1);
+    advisory.requestedMode = String(requestedMode || "");
+    advisory.reason = String(reason || "");
+    advisory.updatedAtElapsedSec = Math.max(0, Number(runtime.elapsedSeconds) || 0);
+    runtime.guidanceAdvisory = advisory;
+    return advisory;
+  }
+
+  function resolveLaunchCommandPhaseFromGuidanceAdvisory({
+    requestedPhase = "",
+    requestedThrottle = 0,
+    throttleActual = 0,
+    canThrust = false,
+    passiveVehiclePhase = "coast",
+    moonTransferMissionActive = false,
+  } = {}) {
+    const normalizedRequestedPhase = String(requestedPhase || "").trim().toLowerCase();
+    const requestedThrottleNumeric = clamp(Number(requestedThrottle) || 0, 0, 1);
+    const throttleActualNumeric = clamp(Number(throttleActual) || 0, 0, 1);
+    if (
+      passiveVehiclePhase === "orbit"
+      && normalizedRequestedPhase === "orbit"
+      && !moonTransferMissionActive
+    ) {
+      return "orbit";
+    }
+    if (
+      throttleActualNumeric > 1e-3
+      || (canThrust && requestedThrottleNumeric > 1e-3)
+      || normalizedRequestedPhase === "powered"
+    ) {
+      return "powered";
+    }
+    if (normalizedRequestedPhase === "idle" && passiveVehiclePhase === "idle") {
+      return "idle";
+    }
+    if (passiveVehiclePhase === "orbit" && !moonTransferMissionActive) {
+      return "orbit";
+    }
+    return "coast";
+  }
+
+  function requestPendingMissionPhaseAdvisory({
+    nextPhase = "",
+    source = "",
+    reason = "",
+  } = {}) {
+    const normalizedPhase = String(nextPhase || "").trim();
+    if (!normalizedPhase || normalizedPhase === runtime.mission.phase) {
+      return resetPendingMissionPhaseState(runtime.pendingMissionPhase);
+    }
+    const pending = runtime.pendingMissionPhase && typeof runtime.pendingMissionPhase === "object"
+      ? runtime.pendingMissionPhase
+      : createPendingMissionPhaseState();
+    if (!(pending.active && pending.requestedPhase === normalizedPhase)) {
+      resetPendingMissionPhaseState(pending);
+      pending.active = true;
+      pending.requestedPhase = normalizedPhase;
+      pending.requestedAtElapsedSec = Math.max(0, Number(runtime.elapsedSeconds) || 0);
+    }
+    pending.source = String(source || "");
+    pending.reason = String(reason || "");
+    runtime.pendingMissionPhase = pending;
+    return pending;
+  }
+
+  function reconcileMissionPhaseAdvisory({
+    requestedPhase = "",
+    source = "",
+    reason = "",
+    missionCompleted = false,
+  } = {}) {
+    const normalizedRequestedPhase = String(requestedPhase || "").trim();
+    if (!normalizedRequestedPhase) {
+      resetPendingMissionPhaseState(runtime.pendingMissionPhase);
+      return {
+        phase: runtime.mission.phase,
+        completed: runtime.mission.completed,
+        pending: false,
+        authorizationMode: "",
+      };
+    }
+    if (normalizedRequestedPhase === runtime.mission.phase) {
+      resetPendingMissionPhaseState(runtime.pendingMissionPhase);
+      runtime.mission.completed = Boolean(missionCompleted);
+      return {
+        phase: runtime.mission.phase,
+        completed: runtime.mission.completed,
+        pending: false,
+        authorizationMode: "phase-already-current",
+      };
+    }
+    const pending = requestPendingMissionPhaseAdvisory({
+      nextPhase: normalizedRequestedPhase,
+      source,
+      reason,
+    });
+    const requestAgeSec = Math.max(
+      0,
+      (Number(runtime.elapsedSeconds) || 0) - (Number(pending.requestedAtElapsedSec) || 0),
+    );
+    if (requestAgeSec >= MISSION_PHASE_ADVISORY_HOLD_SEC) {
+      pending.authorizationMode = "nav-stable-hold";
+      setMissionPhase(runtime, normalizedRequestedPhase);
+      runtime.mission.completed = Boolean(missionCompleted);
+      resetPendingMissionPhaseState(runtime.pendingMissionPhase);
+      return {
+        phase: runtime.mission.phase,
+        completed: runtime.mission.completed,
+        pending: false,
+        authorizationMode: "nav-stable-hold",
+      };
+    }
+    pending.authorizationMode = "awaiting-nav-stable-hold";
+    runtime.mission.completed = false;
+    return {
+      phase: runtime.mission.phase,
+      completed: runtime.mission.completed,
+      pending: true,
+      authorizationMode: pending.authorizationMode,
+    };
+  }
+
   function resetRuntime() {
     const missionId = normalizeMissionId(runtime.mission.selectedId);
-    runtime.phase = "idle";
+    setLaunchCommandPhase("idle");
     runtime.elapsedSeconds = 0;
     runtime.stageIndex = 0;
     runtime.stagePropellantKg = stageAtIndex(0)?.propellantMassKg || 0;
@@ -2867,14 +3669,16 @@ export function createLaunchController(options) {
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.boosterMassModel = createMassModelState();
     runtime.attachedJoint = createAttachedStackJointState();
+    runtime.guidanceAdvisory = resetGuidanceAdvisoryState(runtime.guidanceAdvisory);
     runtime.stage2RefuelRecoveryApplied = false;
     runtime.mission.selectedId = missionId;
     runtime.mission.phase = defaultMissionPhaseForProfileId(missionId);
     runtime.mission.phaseStartedElapsedSec = 0;
     runtime.mission.completed = false;
+    runtime.pendingMissionPhase = resetPendingMissionPhaseState(runtime.pendingMissionPhase);
     runtime.booster.active = false;
     runtime.booster.attached = true;
-    runtime.booster.phase = "idle";
+    setBoosterCommandPhase("idle");
     runtime.booster.guidanceMode = "booster-idle";
     runtime.booster.propellantKg = 0;
     runtime.booster.initialPropellantKg = 0;
@@ -2889,6 +3693,7 @@ export function createLaunchController(options) {
     runtime.booster.navigation = resetBoosterNavigationState(runtime.booster.navigation);
     refuelController.resetRefuelState();
     runtime.hotstage = resetHotstageState(runtime.hotstage);
+    runtime.pendingStageTransition = resetPendingStageTransition(runtime.pendingStageTransition);
     runtime.pendingPadTankerLaunch = null;
     primaryNavigationSystem.reset({
       missionIdOverride: missionId,
@@ -2902,7 +3707,7 @@ export function createLaunchController(options) {
     state?.dynamicBodies?.delete?.(LAUNCH_BOOSTER_BODY_ID);
     runtime.booster.active = false;
     runtime.booster.attached = true;
-    runtime.booster.phase = "idle";
+    setBoosterCommandPhase("idle");
     runtime.booster.guidanceMode = "booster-idle";
     runtime.booster.propellantKg = 0;
     runtime.booster.initialPropellantKg = 0;
@@ -3748,7 +4553,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const requestedModeRaw = String(options?.mode || "pad_launch").trim().toLowerCase();
     const requestedMode = requestedModeRaw === "orbit_inject" ? "orbit_inject" : "pad_launch";
     const pendingPadTankerLaunchActive = Boolean(runtime.pendingPadTankerLaunch?.active);
-    const launchStackIdle = runtime.phase === "idle"
+    const launchStackIdle = currentLaunchCommandPhase() === "idle"
+      && currentLaunchVehiclePhase() === "idle"
       && !runtime.booster.active
       && !pendingPadTankerLaunchActive;
     if (requestedMode === "orbit_inject") {
@@ -4472,7 +5278,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   function repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs = Date.now()) {
     if (
       !state?.dynamicBodies
-      || runtime.phase !== "idle"
       || runtime.booster.active
       || Boolean(runtime.pendingPadTankerLaunch?.active)
     ) {
@@ -4488,6 +5293,16 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
     const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
     const currentEarthAxes = earthAxes(nowMs);
+    const existingRocketState = state.dynamicBodies.get(LAUNCH_BODY_ID) || null;
+    const currentVehiclePhase = launchVehiclePhaseFromKinematics({
+      earthState,
+      rocketState: existingRocketState,
+      earthRadiusKm,
+      earthPole: currentEarthAxes.pole,
+    });
+    if (currentLaunchCommandPhase() !== "idle" || currentVehiclePhase !== "idle") {
+      return false;
+    }
     const pad = computePadState({
       earthState,
       earthRadiusKm,
@@ -4661,7 +5476,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       { hardSync: true },
     );
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(currentEarthAxes);
-    runtime.phase = "idle";
+    setLaunchCommandPhase("idle");
     const relPos = subtract(rocketState.position, earthState.position);
     const relVel = subtract(
       rocketState.velocity || { x: 0, y: 0, z: 0 },
@@ -4756,7 +5571,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       }
     }
     refuelController.applyMissionProfile(runtime.mission.selectedId);
-    runtime.phase = "powered";
+    setLaunchCommandPhase("powered");
     runtime.autopilotMode = runtime.autopilotEnabled ? "autopilot-vertical-ascent" : "manual-ascent";
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(runtime.mission.selectedId));
     runtime.mission.phaseStartedElapsedSec = runtime.elapsedSeconds;
@@ -4861,7 +5676,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.booster.attached = false;
     runtime.attachedJoint = createAttachedStackJointState();
     runtime.booster.active = true;
-    runtime.booster.phase = "separation-flip";
+    setBoosterCommandPhase("separation-flip");
     runtime.booster.guidanceMode = "booster-separation-flip";
     runtime.booster.propellantKg = reservePropellantKg;
     runtime.booster.initialPropellantKg = reservePropellantKg;
@@ -4926,7 +5741,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     if (!earthState || !boosterState) {
       runtime.booster.lastStep = zeroBoosterStep("booster-inactive");
       runtime.booster.active = false;
-      runtime.booster.phase = "idle";
+      setBoosterCommandPhase("idle");
       runtime.booster.guidanceMode = "booster-inactive";
       runtime.booster.attitude = createBoosterAttitudeState({ x: 0, y: 0, z: 1 });
       return;
@@ -5026,7 +5841,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const launchSiteLateralClosingSpeedKmS = dot(scale(relVelocityToPad, -1), launchSiteLateralDirection);
     const currentBoosterAxis = boosterBodyAxisWorld(runtime.booster.attitude);
     const command = computeBoosterRecoveryCommand({
-      currentPhase: runtime.booster.phase,
+      currentPhase: currentBoosterCommandPhase(),
       altitudeKm,
       radialSpeedKmS: guidanceOrbital.radialSpeedKmS,
       tangentialSpeedKmS: guidanceOrbital.tangentialSpeedKmS,
@@ -5319,7 +6134,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massModel: runtime.boosterMassModel,
       throttle: throttleActual,
     });
-    runtime.booster.phase = command.phase || "descent";
+    setBoosterCommandPhase(command.phase || "descent");
     runtime.booster.guidanceMode = command.guidanceMode || "booster-guidance";
     const boosterRcs = computeBoosterRcsAssist({
       desiredDirection: direction,
@@ -5327,7 +6142,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       relVel,
       up,
       throttle: throttleActual,
-      phase: command.phase || runtime.booster.phase,
+      phase: command.phase || currentBoosterCommandPhase(),
       guidanceMode: command.guidanceMode || runtime.booster.guidanceMode,
       controlAuthorityScale: runtime.boosterMassModel.controlAuthorityScale,
       aeroAuthority: Number(gridFinControl.authority) || 0,
@@ -5492,7 +6307,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
     if (runtime.booster.contactHoldSec >= 1.5) {
       runtime.booster.landed = true;
-      runtime.booster.phase = "landed";
+      setBoosterCommandPhase("landed");
       runtime.booster.guidanceMode = "booster-landed";
       runtime.booster.lastStep = zeroBoosterStep("booster-landed");
       runtime.booster.active = false;
@@ -5613,7 +6428,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         boosterState.velocity = { ...padVelocity };
       }
       runtime.booster.landed = true;
-      runtime.booster.phase = "caught";
+      setBoosterCommandPhase("caught");
       runtime.booster.guidanceMode = "booster-caught";
       runtime.booster.lastStep = zeroBoosterStep("booster-caught");
       runtime.booster.active = false;
@@ -5662,7 +6477,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     try {
       prepareBoosterStep(state, dtSeconds, nowMs);
       fleetController.prepareStep(state, dtSeconds, nowMs);
-      if (runtime.phase === "idle") {
+      if (currentLaunchCommandPhase() === "idle") {
         const earthState = earthStateFromNBody(state);
         const rocketState = rocketStateFromNBody(state);
         if (
@@ -5679,18 +6494,32 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             earthState.velocity || { x: 0, y: 0, z: 0 },
           );
           updateRuntimeTargetMetrics(state, relPos, relVel, nowMs);
+          const earthRadiusKm = Number(getEarthRadiusKm?.()) || 6371.0084;
+          const currentEarthAxes = earthAxes(nowMs);
+          updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
+          const physicalIdlePhase = launchVehiclePhaseFromKinematics({
+            earthState,
+            rocketState,
+            earthRadiusKm,
+            earthPole: currentEarthAxes.pole,
+          });
+          if (physicalIdlePhase !== "idle") {
+            setLaunchCommandPhase(physicalIdlePhase === "orbit" ? "orbit" : "coast");
+          }
         }
-        return;
+        if (currentLaunchCommandPhase() === "idle") {
+          return;
+        }
       }
-      if (runtime.phase === "complete") {
-        runtime.phase = "coast";
+      if (currentLaunchCommandPhase() === "complete") {
+        setLaunchCommandPhase("coast");
       }
 
       const earthState = earthStateFromNBody(state);
       const rocketState = ensureRocketInNBody(state, nowMs);
       if (!earthState || !rocketState) {
         runtime.lastError = "Earth/rocket state unavailable";
-        runtime.phase = "idle";
+        setLaunchCommandPhase("idle");
         return;
       }
       if (
@@ -5706,7 +6535,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           rocketPositionFinite: finiteVector(rocketState.position),
           rocketVelocityFinite: finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 }),
         });
-        runtime.phase = "idle";
+        setLaunchCommandPhase("idle");
         return;
       }
 
@@ -5749,6 +6578,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       );
       const moonTransferMissionActive = isMoonTransferMissionActive(runtime);
       updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
+      let passiveVehiclePhase = launchVehiclePhaseFromKinematics({
+        earthState,
+        rocketState,
+        earthRadiusKm,
+        earthPole: currentEarthAxes.pole,
+        orbital,
+        altitudeAboveTerrainKm: resolvedLaunchVehicleAltitudeAboveTerrainKm(orbital?.altitudeKm),
+      });
 
       const activeStage = stageAtIndex(runtime.stageIndex);
       const stageNominalPropellantKg = Number(activeStage?.propellantMassKg) || 0;
@@ -5800,6 +6637,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         desiredDirection,
         requestedThrottle = 0,
         guidanceMode = "coast",
+        advisoryPhase = null,
+        advisorySource = "flight-control",
+        advisoryReason = "",
         angularAccelerationRadS2 = null,
         angularDampingPerS = null,
         maxBodyRateDegS = null,
@@ -5859,7 +6699,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           Number(LAUNCH_AUTOPILOT_CONFIG.towerClearAltitudeKm) || 0,
         );
         const earlyPadLaunchActive =
-          runtime.phase === "powered"
+          currentLaunchCommandPhase() === "powered"
           && runtime.stageIndex === 0
           && (Number(requestedThrottle) || 0) > 1e-3
           && Number.isFinite(launchClearanceAltitudeKm)
@@ -5880,7 +6720,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         const controlCommand = augmentAttitudeCommand({
           phase: (Number(requestedThrottle) || 0) > 1e-3
             ? "powered"
-            : (runtime.phase === "orbit" ? "orbit" : "coast"),
+            : (passiveVehiclePhase === "orbit" ? "orbit" : "coast"),
           throttle: requestedThrottle,
           direction: directionRequested,
           mode: effectiveGuidanceMode,
@@ -5940,6 +6780,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         }
         const pressurePa = Number(atmo?.pressurePa) || 0;
         let throttleCommand = clamp(Number(requestedThrottle) || 0, 0, 1);
+        const requestedPhase = String(
+          advisoryPhase
+          || ((Number(requestedThrottle) || 0) > 1e-3 ? "powered" : (passiveVehiclePhase === "orbit" ? "orbit" : "coast"))
+          || "coast"
+        );
         let canThrust = Boolean(stageForStep);
         const reservePropellantKg = canThrust ? stageReservePropellantKg(runtime.stageIndex) : 0;
         const availablePropellantKg = canThrust
@@ -6088,7 +6933,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           guidanceModeLabel = `${guidanceModeLabel}+attitude-align`;
         }
         const burnActive = throttleActual > 1e-3 || thrustN > 1;
-        if (runtime.phase === "powered" && !burnActive && !guidanceModeLabel.includes("coast-fallback")) {
+        if (requestedPhase === "powered" && !burnActive && !guidanceModeLabel.includes("coast-fallback")) {
           guidanceModeLabel = `${guidanceModeLabel}+coast-fallback`;
         }
         runtime.lastStep = {
@@ -6135,53 +6980,65 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           currentEarthAxes,
           dtSeconds,
         );
-        if (runtime.phase === "powered" && !burnActive) {
-          runtime.phase = "coast";
-        }
+        const resolvedCommandPhase = resolveLaunchCommandPhaseFromGuidanceAdvisory({
+          requestedPhase,
+          requestedThrottle: canThrust ? throttleCommand : 0,
+          throttleActual,
+          canThrust,
+          passiveVehiclePhase,
+          moonTransferMissionActive,
+        });
+        setLaunchCommandPhase(resolvedCommandPhase);
+        setGuidanceAdvisory({
+          source: advisorySource,
+          requestedPhase,
+          resolvedPhase: resolvedCommandPhase,
+          requestedThrottle: canThrust ? throttleCommand : 0,
+          requestedMode: effectiveGuidanceMode,
+          reason: advisoryReason,
+        });
         updateTelemetry();
       };
 
       const orbitalRefuelMissionActive =
         runtime.stageIndex >= 1
         && String(runtime?.mission?.phase || "") === "orbital_refuel";
-      if (runtime.phase === "orbit" && orbitalRefuelMissionActive) {
-        runtime.phase = "coast";
+      if (passiveVehiclePhase === "orbit" && orbitalRefuelMissionActive) {
         runtime.autopilotMode = "navsys:orbital-refuel-await-target";
+        passiveVehiclePhase = "coast";
       }
-      if (runtime.phase === "orbit" && moonTransferMissionActive) {
-        runtime.phase = "coast";
+      if (passiveVehiclePhase === "orbit" && moonTransferMissionActive) {
+        passiveVehiclePhase = "coast";
       }
-      if (runtime.phase === "orbit") {
-        const stableTargetOrbit = orbitInsertionWithinTolerance(
-          orbital,
-          LAUNCH_AUTOPILOT_CONFIG,
-          runtime.targetOrbitAltitudeKm || LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm,
-        );
-        if (!stableTargetOrbit) {
-          runtime.phase = "coast";
-          runtime.autopilotMode = "autopilot-coast-to-circularize";
-        } else {
-          setFlightStep({
-            desiredDirection: normalize(relVel, orbital.up),
-            requestedThrottle: 0,
-            guidanceMode: runtime.autopilotMode || "orbit-hold",
-          });
-          return;
-        }
+      if (passiveVehiclePhase === "orbit") {
+        setFlightStep({
+          desiredDirection: normalize(relVel, orbital.up),
+          requestedThrottle: 0,
+          guidanceMode: runtime.autopilotMode || "orbit-hold",
+          advisoryPhase: "orbit",
+          advisorySource: "physics-passive",
+          advisoryReason: "passive-orbit-detected",
+        });
+        return;
+      }
+      if (currentLaunchCommandPhase() === "orbit") {
+        runtime.autopilotMode = "autopilot-coast-to-circularize";
       }
 
       if (runtime.coastRemainingSec > 0) {
         runtime.coastRemainingSec = Math.max(0, runtime.coastRemainingSec - dtSeconds);
-        runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
         setFlightStep({
           desiredDirection: normalize(relVel, orbital.up),
           requestedThrottle: 0,
           guidanceMode: "stage-post-burn-coast",
+          advisoryPhase: runtime.coastRemainingSec > 0 ? "coast" : "powered",
+          advisorySource: "stage-coast-timer",
+          advisoryReason: "post-burn-coast-window",
         });
         return;
       }
 
-      if (runtime.phase === "coast") {
+      if (currentLaunchCommandPhase() === "coast") {
         if (runtime.autopilotEnabled) {
           const activeRefuelTarget = refuelController.activeRendezvousTarget?.(state) || null;
           let autopilotCommand = computeAutopilotCommand({
@@ -6224,23 +7081,26 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           if (missionCommand) {
             autopilotCommand = missionCommand;
           }
-          if (autopilotCommand.phase === "powered") {
-            runtime.phase = "powered";
-          } else if (autopilotCommand.phase === "orbit" && !moonTransferMissionActive) {
-            runtime.phase = "orbit";
+          if (autopilotCommand.phase === "orbit" && !moonTransferMissionActive) {
             runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
             setFlightStep({
               desiredDirection: autopilotCommand.direction || normalize(relVel, orbital.up),
               requestedThrottle: 0,
               guidanceMode: autopilotCommand.mode || "autopilot-orbital-hold",
+              advisoryPhase: "orbit",
+              advisorySource: "autopilot",
+              advisoryReason: "orbital-hold-request",
             });
             return;
-          } else {
-            runtime.phase = "coast";
+          }
+          if (autopilotCommand.phase !== "powered") {
             setFlightStep({
               desiredDirection: autopilotCommand.direction || normalize(relVel, orbital.up),
               requestedThrottle: 0,
               guidanceMode: autopilotCommand.mode || "coast",
+              advisoryPhase: "coast",
+              advisorySource: "autopilot",
+              advisoryReason: "coast-guidance-request",
             });
             return;
           }
@@ -6249,6 +7109,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             desiredDirection: normalize(relVel, orbital.up),
             requestedThrottle: 0,
             guidanceMode: "coast",
+            advisoryPhase: "coast",
+            advisorySource: "manual",
+            advisoryReason: "manual-coast",
           });
           return;
         }
@@ -6257,12 +7120,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const stage = stageAtIndex(runtime.stageIndex);
       if (!stage) {
         const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
-        runtime.phase = stableOrbit ? "orbit" : "coast";
         runtime.autopilotMode = stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast";
         setFlightStep({
           desiredDirection: normalize(relVel, orbital.up),
           requestedThrottle: 0,
           guidanceMode: runtime.autopilotMode,
+          advisoryPhase: stableOrbit ? "orbit" : "coast",
+          advisorySource: "ballistic",
+          advisoryReason: stableOrbit ? "stable-orbit-detected" : "ballistic-coast",
         });
         return;
       }
@@ -6328,16 +7193,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           });
         }
         if (autopilotCommand.phase === "coast") {
-          runtime.phase = "coast";
           setFlightStep({
             desiredDirection: autopilotCommand.direction || guidance.direction,
             requestedThrottle: 0,
             guidanceMode: autopilotCommand.mode || "autopilot-coast",
+            advisoryPhase: "coast",
+            advisorySource: "autopilot",
+            advisoryReason: "coast-guidance-request",
           });
           return;
         }
         if (autopilotCommand.phase === "orbit") {
-          runtime.phase = moonTransferMissionActive ? "coast" : "orbit";
           runtime.autopilotMode = autopilotCommand.mode || runtime.autopilotMode;
           setFlightStep({
             desiredDirection: autopilotCommand.direction || guidance.direction,
@@ -6345,6 +7211,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             guidanceMode: moonTransferMissionActive
               ? (autopilotCommand.mode || "mission-moon-orbit-return:coast")
               : (autopilotCommand.mode || "autopilot-orbital-hold"),
+            advisoryPhase: moonTransferMissionActive ? "coast" : "orbit",
+            advisorySource: "autopilot",
+            advisoryReason: moonTransferMissionActive ? "mission-coast-request" : "orbital-hold-request",
           });
           return;
         }
@@ -6420,6 +7289,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         desiredDirection: guidance.direction,
         requestedThrottle: throttle,
         guidanceMode: guidance.mode,
+        advisoryPhase: throttle > 1e-3 ? "powered" : (passiveVehiclePhase === "orbit" ? "orbit" : "coast"),
+        advisorySource: runtime.autopilotEnabled ? "autopilot" : "open-loop-guidance",
+        advisoryReason: runtime.autopilotEnabled ? "guided-flight-command" : "open-loop-profile",
         angularAccelerationRadS2: guidance.angularAccelerationRadS2,
         angularDampingPerS: guidance.angularDampingPerS,
         maxBodyRateDegS: guidance.maxBodyRateDegS,
@@ -6451,22 +7323,32 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   function finalizeStep(state, dtSeconds, nowMs = Date.now()) {
     try {
       const fleetActive = fleetController.hasActiveVehicles();
-      if (runtime.phase === "idle" && !runtime.booster.active && !fleetActive) {
+      const reportedVehiclePhaseAtFinalizeStart = currentLaunchVehiclePhase();
+      if (
+        currentLaunchCommandPhase() === "idle"
+        && reportedVehiclePhaseAtFinalizeStart === "idle"
+        && !runtime.booster.active
+        && !fleetActive
+      ) {
         repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs);
         return;
       }
-      if (runtime.phase === "idle" && !runtime.booster.active) {
+      if (
+        currentLaunchCommandPhase() === "idle"
+        && reportedVehiclePhaseAtFinalizeStart === "idle"
+        && !runtime.booster.active
+      ) {
         repairIdlePrimaryLaunchBodyToPadIfNeeded(state, nowMs);
         fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
-      if (runtime.phase === "complete") {
-        runtime.phase = "coast";
+      if (currentLaunchCommandPhase() === "complete") {
+        setLaunchCommandPhase("coast");
       }
       const rocketState = rocketStateFromNBody(state);
       const earthState = earthStateFromNBody(state);
       if (!rocketState || !earthState) {
-        runtime.phase = "idle";
+        setLaunchCommandPhase("idle");
         fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
@@ -6483,7 +7365,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           rocketPositionFinite: finiteVector(rocketState.position),
           rocketVelocityFinite: finiteVector(rocketState.velocity || { x: 0, y: 0, z: 0 }),
         });
-        runtime.phase = "idle";
+        setLaunchCommandPhase("idle");
         fleetController.finalizeStep(state, dtSeconds, nowMs);
         return;
       }
@@ -6509,7 +7391,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           });
         }
         runtime.stageIndex = 1;
-        runtime.phase = "coast";
+        setLaunchCommandPhase("coast");
         runtime.autopilotMode = "navsys:orbital-refuel-await-target";
       }
       const distanceStageIndex = runtime.stageIndex;
@@ -6554,60 +7436,66 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
       }
 
-      if (runtime.phase === "orbit" && isMoonTransferMissionActive(runtime)) {
-        runtime.phase = "coast";
-      }
-      if (runtime.phase === "orbit") {
-        const relPosNow = subtract(rocketState.position, earthState.position);
-        const relVelNow = subtract(
-          rocketState.velocity || { x: 0, y: 0, z: 0 },
-          earthState.velocity || { x: 0, y: 0, z: 0 },
+      const relPosAfterContact = subtract(rocketState.position, earthState.position);
+      const relVelAfterContact = subtract(
+        rocketState.velocity || { x: 0, y: 0, z: 0 },
+        earthState.velocity || { x: 0, y: 0, z: 0 },
+      );
+      const muKm3S2AfterContact = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
+      const orbitalAfterContact = orbitalStateFromRelative(
+        muKm3S2AfterContact,
+        earthRadiusKm,
+        relPosAfterContact,
+        relVelAfterContact,
+      );
+      const passiveVehiclePhase = launchVehiclePhaseFromKinematics({
+        earthState,
+        rocketState,
+        earthRadiusKm,
+        earthPole: currentEarthAxes.pole,
+        orbital: orbitalAfterContact,
+        altitudeAboveTerrainKm: resolvedLaunchVehicleAltitudeAboveTerrainKm(orbitalAfterContact?.altitudeKm),
+      });
+      if (passiveVehiclePhase === "orbit" && isMoonTransferMissionActive(runtime)) {
+        setLaunchCommandPhase("coast");
+      } else if (passiveVehiclePhase === "orbit") {
+        setLaunchCommandPhase("orbit");
+        const environmentSample = launchEnvironmentSample(relPosAfterContact, currentEarthAxes, earthRadiusKm, nowMs);
+        const atmosphereSample = environmentSample.atmosphereSample;
+        const windSample = environmentSample.windSample;
+        const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
+          atmosphereSample,
+          relPosAfterContact,
+          relVelAfterContact,
+          currentEarthAxes.pole,
+          windSample.vectorKmS,
         );
-        const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
-        const orbitalNow = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPosNow, relVelNow);
-        const stableTargetOrbit = orbitInsertionWithinTolerance(
-          orbitalNow,
-          LAUNCH_AUTOPILOT_CONFIG,
-          runtime.targetOrbitAltitudeKm || LAUNCH_AUTOPILOT_CONFIG.targetOrbitAltitudeKm,
-        );
-        if (!stableTargetOrbit) {
-          runtime.phase = "coast";
-          runtime.autopilotMode = "autopilot-coast-to-circularize";
-        } else {
-          const environmentSample = launchEnvironmentSample(relPosNow, currentEarthAxes, earthRadiusKm, nowMs);
-          const atmosphereSample = environmentSample.atmosphereSample;
-          const windSample = environmentSample.windSample;
-          const dynamicPressurePa = dynamicPressurePaFromAtmosphere(
-            atmosphereSample,
-            relPosNow,
-            relVelNow,
-            currentEarthAxes.pole,
-            windSample.vectorKmS,
-          );
-          runtime.lastTelemetry = telemetryFromState({
-            gravitationalConstantKm3PerKgS2,
-            earthMassKg: Number(getEarthMassKg?.()) || 0,
-            earthRadiusKm,
-            earthState,
-            rocketState,
-            atmosphereSample,
-            earthPole: currentEarthAxes.pole,
-            windVectorKmS: windSample.vectorKmS,
-            dynamicPressurePaOverride: dynamicPressurePa,
-            runtime,
-          });
-          if (maybeFinalizePendingPadTankerLaunch(state, nowMs, {
-            rocketState,
-            orbital: orbitalNow,
-          })) {
-            fleetController.finalizeStep(state, dtSeconds, nowMs);
-            return;
-          }
-          finalizeBoosterStep(state, dtSeconds, nowMs);
+        runtime.lastTelemetry = telemetryFromState({
+          gravitationalConstantKm3PerKgS2,
+          earthMassKg: Number(getEarthMassKg?.()) || 0,
+          earthRadiusKm,
+          earthState,
+          rocketState,
+          atmosphereSample,
+          earthPole: currentEarthAxes.pole,
+          windVectorKmS: windSample.vectorKmS,
+          dynamicPressurePaOverride: dynamicPressurePa,
+          runtime,
+        });
+        if (maybeFinalizePendingPadTankerLaunch(state, nowMs, {
+          rocketState,
+          orbital: orbitalAfterContact,
+        })) {
           fleetController.finalizeStep(state, dtSeconds, nowMs);
-          runtime.elapsedSeconds += dtSeconds;
           return;
         }
+        finalizeBoosterStep(state, dtSeconds, nowMs);
+        fleetController.finalizeStep(state, dtSeconds, nowMs);
+        runtime.elapsedSeconds += dtSeconds;
+        return;
+      } else if (currentLaunchCommandPhase() === "orbit") {
+        setLaunchCommandPhase("coast");
+        runtime.autopilotMode = "autopilot-coast-to-circularize";
       }
 
     runtime.elapsedSeconds += dtSeconds;
@@ -6635,6 +7523,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
 
     const stage = stageAtIndex(runtime.stageIndex);
+    if (
+      runtime.pendingStageTransition?.active
+      && runtime.pendingStageTransition.fromStageIndex !== runtime.stageIndex
+    ) {
+      resetPendingStageTransition(runtime.pendingStageTransition);
+    }
     const reservePropellantKg = stageReservePropellantKg(runtime.stageIndex);
     const stagePropellantThresholdKg = reservePropellantKg + 1e-6;
     const stagePropellantDepleted = Boolean(
@@ -6656,6 +7550,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           stagePropellantThresholdKg + EARTH_ORBIT_HOLD_MISSION_CONFIG.sustainedOrbitReserveKg,
         );
     } else if (stagePropellantDepleted && stageDepletedThisStep) {
+      const groundRelativeSpeedKmS = length(atmosphereRelativeVelocityKmS(
+        relPosAfterContact,
+        relVelAfterContact,
+        currentEarthAxes.pole,
+      ));
       if (runtime.stageIndex === 0) {
         const nextStage = stageAtIndex(1);
         if (nextStage) {
@@ -6664,46 +7563,25 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             0,
             stageReservePropellantKg(0),
           );
-          const hotstageEnvelope = evaluateHotstageRealismEnvelope(
-            runtime,
-            rocketState,
-            earthState,
-            earthRadiusKm,
-          );
-
-          runtime.hotstage = startHotstageSequence(runtime.hotstage, {
-            elapsedSeconds: runtime.elapsedSeconds,
-            boosterReservePropellantKg,
-            overlapSeconds: hotstageOverlapSeconds(),
+          requestPendingStageTransition({
+            kind: "hotstage_ignite",
+            fromStageIndex: runtime.stageIndex,
+            toStageIndex: 1,
+            requestReason: "stage0_propellant_depleted",
+            reservePropellantKg: boosterReservePropellantKg,
+            altitudeKm: resolvedLaunchVehicleAltitudeAboveTerrainKm(orbitalAfterContact?.altitudeKm),
+            groundRelativeSpeedKmS,
+            dynamicPressurePa: runtime.lastStep?.dynamicPressurePa,
           });
-
-          // Switch propulsion to Stage 2 immediately (hot-staging overlap). Physical detachment is handled
-          // separately after a short overlap window.
-          runtime.stageIndex = 1;
-          runtime.stagePropellantKg = surfaceLaunchStagePropellantCapacityKgForMissionStage(
-            runtime.stageIndex,
-            runtime.mission.selectedId,
-          );
-          runtime.coastRemainingSec = 0;
-          runtime.phase = "powered";
-          runtime.stageActuator = createActuatorState(normalize(
-            runtime.lastStep?.bodyAxisDirectionKm
-              || runtime.stageActuator?.directionActual
-              || subtract(rocketState.position, earthState.position),
-            currentEarthAxes.pole,
-          ));
-          runtime.stageMassModel = createMassModelState();
-
-          emitLaunchEvent("hotstage_ignition", {
-            boosterReservePropellantKg,
-            overlapSeconds: runtime.hotstage.overlapSeconds,
-            elapsedSec: hotstageEnvelope.elapsedSec,
-            altitudeKm: hotstageEnvelope.altitudeKm,
-            speedKmS: hotstageEnvelope.speedKmS,
-            nominalElapsedSec: hotstageEnvelope.nominalElapsedSec,
-            nominalAltitudeKm: hotstageEnvelope.nominalAltitudeKm,
-            nominalSpeedKmS: hotstageEnvelope.nominalSpeedKmS,
-            realismEnvelopeSatisfied: hotstageEnvelope.withinEnvelope,
+          emitLaunchEvent("stage_transition_requested", {
+            transitionKind: "hotstage_ignite",
+            fromStageIndex: 0,
+            toStageIndex: 1,
+            requestReason: runtime.pendingStageTransition.requestReason,
+            reservePropellantKg: boosterReservePropellantKg,
+            altitudeAboveTerrainKm: runtime.pendingStageTransition.requestAltitudeKm,
+            groundRelativeSpeedKmS,
+            dynamicPressurePa: runtime.pendingStageTransition.requestDynamicPressurePa,
           });
         } else {
           rocketState.massKg = Math.max(
@@ -6712,7 +7590,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           );
           runtime.stageIndex += 1;
           runtime.stagePropellantKg = 0;
-          runtime.phase = "coast";
+          setLaunchCommandPhase("coast");
           runtime.autopilotMode = "ballistic-coast";
           runtime.stageActuator = createActuatorState(
             normalize(subtract(rocketState.position, earthState.position), currentEarthAxes.pole),
@@ -6722,21 +7600,25 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       } else {
         const nextStage = stageAtIndex(runtime.stageIndex + 1);
         if (nextStage) {
-          rocketState.massKg = Math.max(
-            MIN_ROCKET_MASS_KG,
-            rocketState.massKg - (Number(stage.dryMassKg) || 0),
-          );
-          runtime.stageIndex += 1;
-          runtime.stagePropellantKg = stagePropellantCapacityKgForMissionStage(
-            runtime.stageIndex,
-            runtime.mission.selectedId,
-          );
-          runtime.coastRemainingSec = Math.max(0, Number(stage.coastAfterBurnSec) || 0);
-          runtime.phase = runtime.coastRemainingSec > 0 ? "coast" : "powered";
-          runtime.stageActuator = createActuatorState(
-            normalize(subtract(rocketState.position, earthState.position), currentEarthAxes.pole),
-          );
-          runtime.stageMassModel = createMassModelState();
+          requestPendingStageTransition({
+            kind: "next_stage_separation",
+            fromStageIndex: runtime.stageIndex,
+            toStageIndex: runtime.stageIndex + 1,
+            requestReason: "stage_propellant_depleted",
+            reservePropellantKg: 0,
+            altitudeKm: resolvedLaunchVehicleAltitudeAboveTerrainKm(orbitalAfterContact?.altitudeKm),
+            groundRelativeSpeedKmS,
+            dynamicPressurePa: runtime.lastStep?.dynamicPressurePa,
+          });
+          emitLaunchEvent("stage_transition_requested", {
+            transitionKind: "next_stage_separation",
+            fromStageIndex: runtime.stageIndex,
+            toStageIndex: runtime.stageIndex + 1,
+            requestReason: runtime.pendingStageTransition.requestReason,
+            altitudeAboveTerrainKm: runtime.pendingStageTransition.requestAltitudeKm,
+            groundRelativeSpeedKmS,
+            dynamicPressurePa: runtime.pendingStageTransition.requestDynamicPressurePa,
+          });
         } else {
           // Terminal stage dry-out: keep stage attached so on-orbit refuel can re-enable propulsion.
           runtime.stagePropellantKg = 0;
@@ -6748,7 +7630,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           const muKm3S2 = gravitationalConstantKm3PerKgS2 * (Number(getEarthMassKg?.()) || 0);
           const orbital = orbitalStateFromRelative(muKm3S2, earthRadiusKm, relPos, relVel);
           const stableOrbit = orbital.specificEnergy < 0 && Number(orbital.periapsisKm) > 80;
-          runtime.phase = "coast";
+          setLaunchCommandPhase("coast");
           runtime.autopilotMode = (
             isMoonTransferMissionActive(runtime) && runtime.mission.phase === "orbital_refuel"
           )
@@ -6764,6 +7646,27 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             stableOrbit,
           });
         }
+      }
+    }
+
+    if (runtime.pendingStageTransition?.active) {
+      const transitionAuthorization = evaluatePendingStageTransitionAuthorization({
+        earthState,
+        rocketState,
+        earthRadiusKm,
+        earthPole: currentEarthAxes.pole,
+        orbital: orbitalAfterContact,
+        dynamicPressurePa: runtime.lastStep?.dynamicPressurePa,
+      });
+      if (transitionAuthorization.authorized) {
+        applyAuthorizedPendingStageTransition({
+          state,
+          rocketState,
+          earthState,
+          currentEarthAxes,
+          earthRadiusKm,
+          authorization: transitionAuthorization,
+        });
       }
     }
 
@@ -6786,7 +7689,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const hotstageGate = updateHotstageGates(runtime.hotstage, {
         elapsedSeconds: runtime.elapsedSeconds,
         stageIndex: runtime.stageIndex,
-        phase: runtime.phase,
+        phase: currentLaunchCommandPhase(),
         stage2ThrustN: Number(runtime.lastStep?.thrustN) || 0,
         stage2PeakThrustN,
         dtSeconds,
@@ -6887,6 +7790,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
   function statusSnapshot(state = null) {
     repairIdlePrimaryLaunchBodyToPadIfNeeded(state, Date.now());
     const telemetry = runtime.lastTelemetry;
+    const launchPhase = reportedLaunchPhase(
+      currentLaunchCommandPhase(),
+      telemetry,
+      runtime.lastStep,
+      runtime.targetOrbitAltitudeKm,
+    );
+    const boosterPhase = reportedBoosterPhase(runtime.booster.telemetry, runtime.booster);
     const targetDescriptor = missionTargetDescriptor();
     const directionTelemetry = resolveRelativeDirectionTelemetry(state, LAUNCH_BODY_ID);
     const hotstageSinceIgnitionSec = hotstageTimeSinceIgnitionSec(runtime.hotstage, runtime.elapsedSeconds);
@@ -6927,10 +7837,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ? "available"
       : (refuelOnlineTankers > 0 ? "online" : "offline");
     if (!telemetry) {
-      const launchPhase = reportedLaunchPhase(runtime.phase, null, runtime.lastStep);
       return {
         bodyId: LAUNCH_BODY_ID,
         phase: launchPhase,
+        commandPhase: currentLaunchCommandPhase(),
         phaseLabel: phaseLabel(launchPhase),
         stageIndex: runtime.stageIndex,
         autopilotMode: runtime.autopilotMode || "manual",
@@ -6983,6 +7893,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           ? Number(runtime.moonDepartureWindowLaunchTimeMs)
           : null,
         missionPhaseGateReason: runtime.missionPhaseGateReason || "",
+        missionPhasePending: Boolean(runtime.pendingMissionPhase?.active),
+        missionPhaseRequested: runtime.pendingMissionPhase?.active ? String(runtime.pendingMissionPhase.requestedPhase || "") : "",
+        missionPhaseAuthorizationMode: runtime.pendingMissionPhase?.active ? String(runtime.pendingMissionPhase.authorizationMode || "") : "",
+        guidanceAdvisorySource: String(runtime.guidanceAdvisory?.source || ""),
+        guidanceAdvisoryRequestedPhase: String(runtime.guidanceAdvisory?.requestedPhase || "idle"),
+        guidanceAdvisoryResolvedPhase: String(runtime.guidanceAdvisory?.resolvedPhase || "idle"),
+        guidanceAdvisoryRequestedThrottle: clamp(Number(runtime.guidanceAdvisory?.requestedThrottle) || 0, 0, 1),
+        guidanceAdvisoryRequestedMode: String(runtime.guidanceAdvisory?.requestedMode || ""),
+        stageTransitionPending: Boolean(runtime.pendingStageTransition?.active),
+        stageTransitionKind: runtime.pendingStageTransition?.active ? String(runtime.pendingStageTransition.kind || "") : "",
+        stageTransitionWaitReason: runtime.pendingStageTransition?.active ? String(runtime.pendingStageTransition.waitReason || "") : "",
+        stageTransitionAuthorizationMode: runtime.pendingStageTransition?.active ? String(runtime.pendingStageTransition.authorizationMode || "") : "",
         targetBodyId: targetDescriptor.bodyId,
         targetBodyName: targetDescriptor.bodyName,
         targetDistanceKm: targetDescriptor.distanceKm,
@@ -6994,7 +7916,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         rcsJets: refuelShipRcsActive ? refuelShipRcsJets : [],
         boosterDistanceKm: runtime.boosterDistanceKm,
         starshipDistanceKm: runtime.starshipDistanceKm,
-        boosterPhase: runtime.booster.phase,
+        boosterPhase,
+        boosterCommandPhase: currentBoosterCommandPhase(),
         boosterGuidanceMode: runtime.booster.guidanceMode,
         attachedJointActive: Boolean(runtime.attachedJoint.active),
         attachedJointLoadMN: Number(runtime.attachedJoint.reactionForceN) / 1e6 || 0,
@@ -7078,7 +8001,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         statusLine: `Launch vehicle initialized at ${LAUNCH_SITE.name || "launch site"}.`,
       };
     }
-    const launchPhase = reportedLaunchPhase(runtime.phase, telemetry, runtime.lastStep);
     const telemetryGuidanceMode = refuelShipRcsMode
       ? `${telemetry.guidanceMode}:${refuelShipRcsMode}`
       : telemetry.guidanceMode;
@@ -7099,6 +8021,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     return {
       bodyId: LAUNCH_BODY_ID,
       phase: launchPhase,
+      commandPhase: telemetry.commandPhase || currentLaunchCommandPhase(),
       phaseLabel: phaseLabel(launchPhase),
       stageName: telemetry.stageName,
       stageIndex: telemetry.stageIndex,
@@ -7181,6 +8104,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         ? Number(runtime.moonDepartureWindowLaunchTimeMs)
         : null,
       missionPhaseGateReason: runtime.missionPhaseGateReason || "",
+      missionPhasePending: Boolean(runtime.pendingMissionPhase?.active),
+      missionPhaseRequested: runtime.pendingMissionPhase?.active ? String(runtime.pendingMissionPhase.requestedPhase || "") : "",
+      missionPhaseAuthorizationMode: runtime.pendingMissionPhase?.active ? String(runtime.pendingMissionPhase.authorizationMode || "") : "",
+      guidanceAdvisorySource: String(runtime.guidanceAdvisory?.source || ""),
+      guidanceAdvisoryRequestedPhase: String(runtime.guidanceAdvisory?.requestedPhase || "idle"),
+      guidanceAdvisoryResolvedPhase: String(runtime.guidanceAdvisory?.resolvedPhase || currentLaunchCommandPhase()),
+      guidanceAdvisoryRequestedThrottle: clamp(Number(runtime.guidanceAdvisory?.requestedThrottle) || 0, 0, 1),
+      guidanceAdvisoryRequestedMode: String(runtime.guidanceAdvisory?.requestedMode || ""),
+      stageTransitionPending: Boolean(runtime.pendingStageTransition?.active),
+      stageTransitionKind: runtime.pendingStageTransition?.active ? String(runtime.pendingStageTransition.kind || "") : "",
+      stageTransitionWaitReason: runtime.pendingStageTransition?.active ? String(runtime.pendingStageTransition.waitReason || "") : "",
+      stageTransitionAuthorizationMode: runtime.pendingStageTransition?.active ? String(runtime.pendingStageTransition.authorizationMode || "") : "",
       targetBodyId: targetDescriptor.bodyId,
       targetBodyName: targetDescriptor.bodyName,
       targetDistanceKm: targetDescriptor.distanceKm,
@@ -7198,7 +8133,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       timeToApoapsisSec: telemetry.timeToApoapsisSec,
       boosterDistanceKm: telemetry.boosterDistanceKm,
       starshipDistanceKm: telemetry.starshipDistanceKm,
-      boosterPhase: runtime.booster.telemetry?.phase || runtime.booster.phase,
+      boosterPhase,
+      boosterCommandPhase: runtime.booster.telemetry?.commandPhase || currentBoosterCommandPhase(),
       boosterGuidanceMode: runtime.booster.telemetry?.guidanceMode || runtime.booster.guidanceMode,
       attachedJointActive: Boolean(runtime.attachedJoint.active),
       attachedJointLoadMN: Number(runtime.attachedJoint.reactionForceN) / 1e6 || 0,
@@ -7308,7 +8244,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       altitudeAboveTerrainKm: telemetry.altitudeAboveTerrainKm,
       latitudeDeg: telemetry.latitudeDeg,
       longitudeDeg: telemetry.longitudeDeg,
-      statusLine: runtime.lastError || `${phaseLabel(runtime.phase)} | ${telemetry.stageName}`,
+      statusLine: runtime.lastError || `${phaseLabel(launchPhase)} | ${telemetry.stageName}`,
     };
   }
 
@@ -7358,6 +8294,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.missionPhaseGateReason = "";
     runtime.moonProjectedPeriluneAltitudeKm = null;
     runtime.moonBPlaneErrorKm = null;
+    runtime.pendingMissionPhase = resetPendingMissionPhaseState(runtime.pendingMissionPhase);
     setMissionPhase(runtime, defaultMissionPhaseForProfileId(normalized));
     refuelController.applyMissionProfile(normalized);
     primaryNavigationSystem.setMission(normalized, runtime.elapsedSeconds);
@@ -7441,6 +8378,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       }
     }
     return {
+      commandPhase: currentLaunchCommandPhase(),
       phase: String(runtime.phase || "idle"),
       elapsedSeconds: Math.max(0, finiteNumber(runtime.elapsedSeconds, 0)),
       stageIndex: Math.max(0, Math.floor(finiteNumber(runtime.stageIndex, 0))),
@@ -7486,6 +8424,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterActuator: cloneJson(runtime.boosterActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
       boosterMassModel: cloneJson(runtime.boosterMassModel, createMassModelState()),
       attachedJoint: cloneJson(runtime.attachedJoint, createAttachedStackJointState()),
+      guidanceAdvisory: cloneJson(runtime.guidanceAdvisory, createGuidanceAdvisoryState()),
       stage2RefuelRecoveryApplied: Boolean(runtime.stage2RefuelRecoveryApplied),
       mission: {
         selectedId: normalizeMissionId(runtime.mission.selectedId),
@@ -7493,9 +8432,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         phaseStartedElapsedSec: Math.max(0, finiteNumber(runtime.mission.phaseStartedElapsedSec, 0)),
         completed: Boolean(runtime.mission.completed),
       },
+      pendingMissionPhase: cloneJson(runtime.pendingMissionPhase, createPendingMissionPhaseState()),
       booster: {
         attached: Boolean(runtime.booster.attached),
         active: Boolean(runtime.booster.active),
+        commandPhase: currentBoosterCommandPhase(),
         phase: String(runtime.booster.phase || "idle"),
         guidanceMode: String(runtime.booster.guidanceMode || "booster-idle"),
         attitude: cloneJson(runtime.booster.attitude, createBoosterAttitudeState({ x: 0, y: 0, z: 1 })),
@@ -7521,6 +8462,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         vehicles: fleetVehicles,
       },
       hotstage: cloneJson(runtime.hotstage, createHotstageState()),
+      pendingStageTransition: cloneJson(
+        runtime.pendingStageTransition,
+        createPendingStageTransitionState(),
+      ),
       pendingPadTankerLaunch: cloneJson(runtime.pendingPadTankerLaunch),
     };
   }
@@ -7558,7 +8503,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     if (!snapshot || typeof snapshot !== "object") {
       return false;
     }
-    runtime.phase = String(snapshot.phase || runtime.phase || "idle");
+    setLaunchCommandPhase(String(snapshot.commandPhase || snapshot.phase || currentLaunchCommandPhase() || "idle"));
     runtime.elapsedSeconds = Math.max(0, finiteNumber(snapshot.elapsedSeconds, runtime.elapsedSeconds));
     runtime.stageIndex = Math.max(0, Math.floor(finiteNumber(snapshot.stageIndex, runtime.stageIndex)));
     runtime.stagePropellantKg = Math.max(0, finiteNumber(snapshot.stagePropellantKg, runtime.stagePropellantKg));
@@ -7617,6 +8562,24 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ...createAttachedStackJointState(),
       ...(cloneJson(snapshot.attachedJoint, createAttachedStackJointState()) || {}),
     };
+    runtime.guidanceAdvisory = {
+      ...createGuidanceAdvisoryState(),
+      ...(cloneJson(snapshot.guidanceAdvisory, {}) || {}),
+    };
+    runtime.guidanceAdvisory.source = String(runtime.guidanceAdvisory.source || "");
+    runtime.guidanceAdvisory.requestedPhase = String(runtime.guidanceAdvisory.requestedPhase || "idle");
+    runtime.guidanceAdvisory.resolvedPhase = String(runtime.guidanceAdvisory.resolvedPhase || "idle");
+    runtime.guidanceAdvisory.requestedThrottle = clamp(
+      Number(runtime.guidanceAdvisory.requestedThrottle) || 0,
+      0,
+      1,
+    );
+    runtime.guidanceAdvisory.requestedMode = String(runtime.guidanceAdvisory.requestedMode || "");
+    runtime.guidanceAdvisory.reason = String(runtime.guidanceAdvisory.reason || "");
+    runtime.guidanceAdvisory.updatedAtElapsedSec = Math.max(
+      0,
+      finiteNumber(runtime.guidanceAdvisory.updatedAtElapsedSec, 0),
+    );
     runtime.stage2RefuelRecoveryApplied = Boolean(snapshot.stage2RefuelRecoveryApplied);
 
     const missionSnapshot = snapshot.mission && typeof snapshot.mission === "object"
@@ -7632,6 +8595,19 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       finiteNumber(missionSnapshot.phaseStartedElapsedSec, runtime.mission.phaseStartedElapsedSec),
     );
     runtime.mission.completed = Boolean(missionSnapshot.completed);
+    runtime.pendingMissionPhase = {
+      ...createPendingMissionPhaseState(),
+      ...(cloneJson(snapshot.pendingMissionPhase, {}) || {}),
+    };
+    runtime.pendingMissionPhase.active = Boolean(runtime.pendingMissionPhase.active);
+    runtime.pendingMissionPhase.requestedPhase = String(runtime.pendingMissionPhase.requestedPhase || "");
+    runtime.pendingMissionPhase.source = String(runtime.pendingMissionPhase.source || "");
+    runtime.pendingMissionPhase.reason = String(runtime.pendingMissionPhase.reason || "");
+    runtime.pendingMissionPhase.requestedAtElapsedSec = Math.max(
+      0,
+      finiteNumber(runtime.pendingMissionPhase.requestedAtElapsedSec, 0),
+    );
+    runtime.pendingMissionPhase.authorizationMode = String(runtime.pendingMissionPhase.authorizationMode || "");
 
     const boosterSnapshot = snapshot.booster && typeof snapshot.booster === "object"
       ? snapshot.booster
@@ -7642,7 +8618,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         ? boosterSnapshot.attached
         : runtime.booster.attached,
     );
-    runtime.booster.phase = String(boosterSnapshot.phase || runtime.booster.phase || "idle");
+    setBoosterCommandPhase(String(
+      boosterSnapshot.commandPhase
+      || boosterSnapshot.phase
+      || currentBoosterCommandPhase()
+      || "idle"
+    ));
     runtime.booster.guidanceMode = String(
       boosterSnapshot.guidanceMode || runtime.booster.guidanceMode || "booster-idle",
     );
@@ -7772,6 +8753,42 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.hotstage.ignitionStableSec = Math.max(0, finiteNumber(runtime.hotstage.ignitionStableSec, 0));
     runtime.hotstage.virtualSeparationKm = Math.max(0, finiteNumber(runtime.hotstage.virtualSeparationKm, 0));
     runtime.hotstage.detachReason = String(runtime.hotstage.detachReason || "");
+
+    runtime.pendingStageTransition = {
+      ...createPendingStageTransitionState(),
+      ...(cloneJson(snapshot.pendingStageTransition, {}) || {}),
+    };
+    runtime.pendingStageTransition.active = Boolean(runtime.pendingStageTransition.active);
+    runtime.pendingStageTransition.kind = String(runtime.pendingStageTransition.kind || "");
+    runtime.pendingStageTransition.fromStageIndex = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.pendingStageTransition.fromStageIndex, 0)),
+    );
+    runtime.pendingStageTransition.toStageIndex = (
+      runtime.pendingStageTransition.toStageIndex !== null
+      && runtime.pendingStageTransition.toStageIndex !== undefined
+      && Number.isFinite(Number(runtime.pendingStageTransition.toStageIndex))
+    )
+      ? Math.max(0, Math.floor(Number(runtime.pendingStageTransition.toStageIndex)))
+      : null;
+    runtime.pendingStageTransition.requestedAtElapsedSec = Math.max(
+      0,
+      finiteNumber(runtime.pendingStageTransition.requestedAtElapsedSec, 0),
+    );
+    runtime.pendingStageTransition.requestReason = String(runtime.pendingStageTransition.requestReason || "");
+    runtime.pendingStageTransition.reservePropellantKg = Math.max(
+      0,
+      finiteNumber(runtime.pendingStageTransition.reservePropellantKg, 0),
+    );
+    runtime.pendingStageTransition.requestAltitudeKm = finiteOrNull(runtime.pendingStageTransition.requestAltitudeKm);
+    runtime.pendingStageTransition.requestGroundRelativeSpeedKmS = finiteOrNull(
+      runtime.pendingStageTransition.requestGroundRelativeSpeedKmS,
+    );
+    runtime.pendingStageTransition.requestDynamicPressurePa = finiteOrNull(
+      runtime.pendingStageTransition.requestDynamicPressurePa,
+    );
+    runtime.pendingStageTransition.waitReason = String(runtime.pendingStageTransition.waitReason || "");
+    runtime.pendingStageTransition.authorizationMode = String(runtime.pendingStageTransition.authorizationMode || "");
 
     runtime.pendingPadTankerLaunch = snapshot.pendingPadTankerLaunch
       && typeof snapshot.pendingPadTankerLaunch === "object"
@@ -7939,7 +8956,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       restoredBodyCount: restoredBodyIds.length,
       missionId: runtime.mission.selectedId,
       missionPhase: runtime.mission.phase,
-      phase: runtime.phase,
+      commandPhase: currentLaunchCommandPhase(),
       savedAtMs: finiteOrNull(payload.savedAtMs),
     });
     return {
@@ -7981,12 +8998,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     getMissionProfile,
     getMissionProfiles,
     isPrimaryLaunchActive() {
-      return runtime.phase !== "idle"
+      return currentLaunchVehiclePhase() !== "idle"
         || runtime.booster.active
         || Boolean(runtime.pendingPadTankerLaunch?.active);
     },
     isActive() {
-      return runtime.phase !== "idle"
+      return currentLaunchVehiclePhase() !== "idle"
         || runtime.booster.active
         || fleetController.hasActiveVehicles();
     },

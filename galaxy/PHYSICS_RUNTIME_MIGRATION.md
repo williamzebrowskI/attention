@@ -70,6 +70,13 @@ Launch-body ownership has also moved inward:
 
 - the app shell no longer mutates `nBodyState` through `launchController` directly
 - shell-side launch body insertion/reset/delete/start/tanker/mission launch calls now flow through the runtime bridge
+- reported ship/booster vehicle phase now derives from runtime body state, contact, thrust, and orbit conditions
+- scripted launch/booster phase is now treated as command state and exposed separately from physics-derived vehicle phase
+- launch-controller idle/orbit handling now reconciles command phase against physics-derived vehicle phase during `prepareStep` and `finalizeStep`
+- burn sequencing, staging transitions, and booster recovery intent now write through explicit `commandPhase` fields that persist separately from reported vehicle phase
+- stage burnout no longer mutates stages immediately; runtime now requests, authorizes, and then executes hotstage ignition / next-stage separation from physical flight conditions
+- guidance no longer hard-owns command phase inside autopilot branches; runtime now resolves command phase from applied control plus physics-aware advisory intent
+- moon mission phase progression no longer mutates immediately from planner output; runtime now holds pending mission-phase advisories briefly before authorizing them
 
 Startup authority has also moved inward:
 
