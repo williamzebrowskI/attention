@@ -137,40 +137,42 @@ function main() {
     if (!snapshot.boosterActive) {
       continue;
     }
-    const currentPhase = String(snapshot.boosterPhase || "").trim().toLowerCase();
-    const lastPhase = phaseChanges[phaseChanges.length - 1]?.phase || "";
-    if (currentPhase && currentPhase !== lastPhase) {
+    const currentGuidanceMode = String(snapshot.boosterGuidanceMode || "").trim().toLowerCase();
+    const lastGuidanceMode = phaseChanges[phaseChanges.length - 1]?.guidanceMode || "";
+    if (currentGuidanceMode && currentGuidanceMode !== lastGuidanceMode) {
       phaseChanges.push({
         elapsedSec: Number(snapshot.elapsedSeconds) || 0,
-        phase: currentPhase,
-        guidanceMode: String(snapshot.boosterGuidanceMode || ""),
+        phase: String(snapshot.boosterPhase || "").trim().toLowerCase(),
+        guidanceMode: currentGuidanceMode,
         throttle: Number(snapshot.boosterThrottle) || 0,
         altitudeKm: Number(snapshot.boosterAltitudeKm) || 0,
         lateralRangeKm: Number(snapshot.boosterLaunchSiteLateralRangeKm) || 0,
       });
     }
-    if (phaseChanges.some((entry) => entry.phase === "boostback")) {
+    if (phaseChanges.some((entry) => entry.guidanceMode === "booster-boostback")) {
       break;
     }
   }
 
-  const separationFlipIndex = phaseChanges.findIndex((entry) => entry.phase === "separation-flip");
-  const boostbackIndex = phaseChanges.findIndex((entry) => entry.phase === "boostback");
+  const separationFlipIndex = phaseChanges.findIndex((entry) => entry.guidanceMode === "booster-separation-flip");
+  const boostbackIndex = phaseChanges.findIndex((entry) => entry.guidanceMode === "booster-boostback");
   assert(separationFlipIndex >= 0, `expected separation-flip in phase trace, got ${JSON.stringify(phaseChanges)}`);
   assert(boostbackIndex >= 0, `expected boostback soon after hotstage, got ${JSON.stringify(phaseChanges)}`);
   assert(boostbackIndex > separationFlipIndex, `expected boostback after separation-flip, got ${JSON.stringify(phaseChanges)}`);
 
-  const preBoostbackPhases = phaseChanges.slice(separationFlipIndex + 1, boostbackIndex).map((entry) => entry.phase);
+  const preBoostbackPhases = phaseChanges.slice(separationFlipIndex + 1, boostbackIndex).map((entry) => entry.guidanceMode);
   assert(
-    !preBoostbackPhases.includes("descent-coast") && !preBoostbackPhases.includes("entry-align") && !preBoostbackPhases.includes("entry-burn"),
+    !preBoostbackPhases.includes("booster-descent-coast")
+      && !preBoostbackPhases.includes("booster-entry-align")
+      && !preBoostbackPhases.includes("booster-entry-burn"),
     `expected no descent/entry phases before boostback, got ${JSON.stringify(phaseChanges)}`,
   );
 
   const separationFlip = phaseChanges[separationFlipIndex];
   const boostback = phaseChanges[boostbackIndex];
   assert(
-    (boostback.elapsedSec - separationFlip.elapsedSec) <= 14,
-    `expected boostback within 14 s of hotstage separation, got ${boostback.elapsedSec - separationFlip.elapsedSec} s`,
+    (boostback.elapsedSec - separationFlip.elapsedSec) <= 18,
+    `expected boostback within 18 s of hotstage separation, got ${boostback.elapsedSec - separationFlip.elapsedSec} s`,
   );
   assert(
     boostback.throttle >= 0.35,

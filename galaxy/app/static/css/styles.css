@@ -92,8 +92,8 @@ body {
   right: 18px;
   bottom: 18px;
   z-index: 11;
-  width: 186px;
-  height: 186px;
+  width: 208px;
+  min-height: 246px;
   display: block;
   opacity: 0;
   pointer-events: none;
@@ -107,6 +107,8 @@ body {
 .launch-booster-engine-hud.visible {
   opacity: 1;
   transform: translateY(0) scale(1);
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .launch-booster-engine-hud.engines-hot {
@@ -117,8 +119,56 @@ body {
 
 .launch-booster-engine-hud-svg {
   width: 100%;
-  height: 100%;
+  height: auto;
   overflow: visible;
+}
+
+.launch-booster-engine-hud-readouts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.launch-booster-engine-hud-metric {
+  min-width: 0;
+  padding: 8px 10px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(101, 164, 208, 0.18);
+  background:
+    linear-gradient(180deg, rgba(8, 18, 28, 0.82), rgba(4, 11, 18, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(205, 236, 255, 0.04),
+    0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+.launch-booster-engine-hud-metric.ignition {
+  border-color: rgba(149, 220, 255, 0.18);
+}
+
+.launch-booster-engine-hud-metric.chamber {
+  border-color: rgba(255, 196, 136, 0.16);
+}
+
+.launch-booster-engine-hud-metric-label {
+  display: block;
+  color: rgba(166, 203, 229, 0.74);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.launch-booster-engine-hud-metric-value {
+  display: block;
+  margin-top: 3px;
+  color: rgba(243, 250, 255, 0.98);
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 
 .launch-booster-engine-hud-backdrop {
@@ -193,6 +243,321 @@ body {
   filter:
     drop-shadow(0 0 4px rgba(255, 120, 120, 0.42))
     drop-shadow(0 0 10px rgba(255, 82, 82, 0.24));
+}
+
+.launch-engine-inspector-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 36;
+  display: none;
+  overflow: hidden;
+  color: #ecf7ff;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(36, 92, 136, 0.22), transparent 32%),
+    radial-gradient(circle at 84% 16%, rgba(21, 81, 128, 0.18), transparent 28%),
+    linear-gradient(180deg, rgba(3, 9, 15, 0.97), rgba(2, 6, 10, 0.985));
+}
+
+.launch-engine-inspector-screen.visible {
+  display: block;
+}
+
+.launch-engine-inspector-shell {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 18px;
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+.launch-engine-inspector-header {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 16px;
+}
+
+.launch-engine-inspector-header-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: end;
+}
+
+.launch-engine-inspector-back-button {
+  min-width: 176px;
+  margin: 0;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(151, 220, 255, 0.4);
+  background: linear-gradient(180deg, rgba(8, 20, 31, 0.96), rgba(5, 13, 21, 0.98));
+  color: #edf8ff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow:
+    inset 0 0 0 1px rgba(163, 225, 255, 0.06),
+    0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.launch-engine-inspector-back-button:hover {
+  border-color: rgba(193, 237, 255, 0.9);
+}
+
+.launch-engine-inspector-header-copy {
+  min-width: 0;
+}
+
+.launch-engine-inspector-kicker,
+.launch-engine-inspector-panel-kicker {
+  margin: 0;
+  color: #8fb6cf;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.launch-engine-inspector-title {
+  margin: 4px 0 0;
+  color: #f4fbff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: clamp(28px, 2.2vw, 38px);
+  line-height: 1.08;
+  font-weight: 700;
+}
+
+.launch-engine-inspector-subtitle {
+  margin: 8px 0 0;
+  color: #b6d6eb;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.launch-engine-inspector-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.launch-engine-inspector-summary-chip {
+  min-width: 148px;
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 13px;
+  border: 1px solid rgba(112, 197, 255, 0.24);
+  background: linear-gradient(180deg, rgba(8, 19, 30, 0.94), rgba(5, 13, 20, 0.98));
+  box-shadow:
+    inset 0 0 0 1px rgba(173, 224, 255, 0.04),
+    0 14px 28px rgba(0, 0, 0, 0.24);
+}
+
+.launch-engine-inspector-summary-chip .label {
+  color: #88adc7;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.launch-engine-inspector-summary-chip .value {
+  color: #f2fbff;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.launch-engine-inspector-stage {
+  display: grid;
+  grid-template-columns: minmax(420px, 0.95fr) minmax(320px, 0.8fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.launch-engine-inspector-panel {
+  border-radius: 22px;
+  border: 1px solid rgba(112, 197, 255, 0.18);
+  background:
+    linear-gradient(180deg, rgba(8, 18, 28, 0.92), rgba(4, 10, 16, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(190, 232, 255, 0.04),
+    0 22px 54px rgba(0, 0, 0, 0.28);
+  padding: 18px;
+}
+
+.launch-engine-inspector-panel-heading h3 {
+  margin: 4px 0 0;
+  color: #f2fbff;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 22px;
+  line-height: 1.14;
+  font-weight: 650;
+}
+
+.launch-engine-inspector-cluster-svg {
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  display: block;
+  margin: 4px auto 0;
+}
+
+.launch-engine-inspector-cluster-backdrop {
+  fill: rgba(5, 15, 25, 0.68);
+  stroke: rgba(95, 150, 189, 0.16);
+  stroke-width: 2;
+}
+
+.launch-engine-inspector-cluster-ring {
+  fill: none;
+  stroke-width: 3;
+}
+
+.launch-engine-inspector-cluster-ring-outer {
+  stroke: rgba(91, 146, 181, 0.15);
+}
+
+.launch-engine-inspector-cluster-ring-inner {
+  stroke: rgba(76, 119, 148, 0.12);
+}
+
+.launch-engine-inspector-engine-node {
+  fill: rgba(203, 228, 244, 0.18);
+  stroke: rgba(166, 212, 239, 0.22);
+  stroke-width: 3;
+  opacity: 0.44;
+  cursor: pointer;
+  transition: fill 140ms linear, stroke 140ms linear, opacity 140ms linear, filter 140ms linear, transform 140ms ease;
+}
+
+.launch-engine-inspector-engine-node.state-active {
+  fill: rgba(255, 255, 255, 0.98);
+  stroke: rgba(255, 255, 255, 0.96);
+  opacity: 1;
+  filter:
+    drop-shadow(0 0 8px rgba(255, 255, 255, 0.52))
+    drop-shadow(0 0 20px rgba(161, 229, 255, 0.34));
+}
+
+.launch-engine-inspector-engine-node.state-standby,
+.launch-engine-inspector-engine-node.state-idle {
+  fill: rgba(210, 233, 248, 0.18);
+  stroke: rgba(157, 203, 232, 0.16);
+  opacity: 0.42;
+}
+
+.launch-engine-inspector-engine-node.state-out {
+  fill: rgba(255, 126, 126, 0.9);
+  stroke: rgba(255, 201, 188, 0.96);
+  opacity: 0.98;
+  filter:
+    drop-shadow(0 0 8px rgba(255, 120, 120, 0.34))
+    drop-shadow(0 0 20px rgba(255, 82, 82, 0.22));
+}
+
+.launch-engine-inspector-engine-node.selected {
+  stroke: rgba(124, 221, 255, 0.98);
+  stroke-width: 5;
+  filter:
+    drop-shadow(0 0 10px rgba(124, 221, 255, 0.56))
+    drop-shadow(0 0 26px rgba(124, 221, 255, 0.22));
+}
+
+.launch-engine-inspector-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 8px;
+}
+
+.launch-engine-inspector-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #9fc0d5;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.launch-engine-inspector-legend-item i {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.launch-engine-inspector-legend-item.state-active i {
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 0 12px rgba(161, 229, 255, 0.38);
+}
+
+.launch-engine-inspector-legend-item.state-standby i {
+  background: rgba(210, 233, 248, 0.22);
+  border: 1px solid rgba(157, 203, 232, 0.16);
+}
+
+.launch-engine-inspector-legend-item.state-out i {
+  background: rgba(255, 126, 126, 0.88);
+  box-shadow: 0 0 12px rgba(255, 82, 82, 0.2);
+}
+
+.launch-engine-inspector-legend-item.state-selected i {
+  background: transparent;
+  border: 2px solid rgba(124, 221, 255, 0.94);
+  box-shadow: 0 0 12px rgba(124, 221, 255, 0.22);
+}
+
+.launch-engine-inspector-engine-status {
+  margin: 4px 0 0;
+  color: #b9d8ed;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.launch-engine-inspector-engine-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.launch-engine-inspector-metric {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 13px;
+  border: 1px solid rgba(105, 170, 212, 0.16);
+  background: linear-gradient(180deg, rgba(9, 18, 27, 0.92), rgba(5, 11, 17, 0.98));
+}
+
+.launch-engine-inspector-metric .label {
+  display: block;
+  color: #87adc6;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.launch-engine-inspector-metric .value {
+  display: block;
+  margin-top: 4px;
+  color: #f0fbff;
+  font-family: "IBM Plex Mono", "Menlo", monospace;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .mission-control-screen {
@@ -2065,8 +2430,46 @@ body {
   .launch-booster-engine-hud {
     right: 12px;
     bottom: 12px;
-    width: 148px;
-    height: 148px;
+    width: 168px;
+    min-height: 206px;
+  }
+
+  .launch-booster-engine-hud-readouts {
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .launch-booster-engine-hud-metric {
+    padding: 6px 8px 8px;
+  }
+
+  .launch-booster-engine-hud-metric-label {
+    font-size: 9px;
+  }
+
+  .launch-booster-engine-hud-metric-value {
+    font-size: 12px;
+  }
+
+  .launch-engine-inspector-shell {
+    padding: 12px;
+  }
+
+  .launch-engine-inspector-header-row {
+    grid-template-columns: 1fr;
+  }
+
+  .launch-engine-inspector-back-button {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .launch-engine-inspector-stage {
+    grid-template-columns: 1fr;
+  }
+
+  .launch-engine-inspector-engine-metrics {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260421d" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260421f" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -248,7 +248,61 @@
         </main>
       </div>
     </section>
-    <aside id="launch-booster-engine-hud" class="launch-booster-engine-hud" aria-hidden="true">
+    <section id="launch-engine-inspector-screen" class="launch-engine-inspector-screen" aria-hidden="true">
+      <div class="launch-engine-inspector-shell">
+        <header class="launch-engine-inspector-header">
+          <div class="launch-engine-inspector-header-row">
+            <button id="launch-engine-inspector-back-button" class="launch-engine-inspector-back-button" type="button">Return To Flight View</button>
+            <div class="launch-engine-inspector-header-copy">
+              <p class="launch-engine-inspector-kicker">Booster Propulsion</p>
+              <h2 class="launch-engine-inspector-title">Raptor Engine Inspector</h2>
+              <p id="launch-engine-inspector-subtitle" class="launch-engine-inspector-subtitle">Awaiting live engine telemetry.</p>
+            </div>
+          </div>
+          <div id="launch-engine-inspector-summary" class="launch-engine-inspector-summary" aria-live="polite"></div>
+        </header>
+        <main class="launch-engine-inspector-stage">
+          <section class="launch-engine-inspector-panel launch-engine-inspector-cluster-panel">
+            <div class="launch-engine-inspector-panel-header">
+              <div class="launch-engine-inspector-panel-heading">
+                <p class="launch-engine-inspector-panel-kicker">33 Engine Layout</p>
+                <h3>Live Cluster Map</h3>
+              </div>
+            </div>
+            <svg class="launch-engine-inspector-cluster-svg" viewBox="0 0 420 420" role="presentation" focusable="false">
+              <circle class="launch-engine-inspector-cluster-backdrop" cx="210" cy="210" r="180" />
+              <circle class="launch-engine-inspector-cluster-ring launch-engine-inspector-cluster-ring-outer" cx="210" cy="210" r="166" />
+              <circle class="launch-engine-inspector-cluster-ring launch-engine-inspector-cluster-ring-inner" cx="210" cy="210" r="144" />
+              <g id="launch-engine-inspector-cluster"></g>
+            </svg>
+            <div class="launch-engine-inspector-legend" aria-hidden="true">
+              <span class="launch-engine-inspector-legend-item state-active"><i></i>Lit</span>
+              <span class="launch-engine-inspector-legend-item state-standby"><i></i>Standby</span>
+              <span class="launch-engine-inspector-legend-item state-out"><i></i>Out</span>
+              <span class="launch-engine-inspector-legend-item state-selected"><i></i>Selected</span>
+            </div>
+          </section>
+          <aside class="launch-engine-inspector-panel launch-engine-inspector-detail-panel">
+            <div class="launch-engine-inspector-panel-header">
+              <div class="launch-engine-inspector-panel-heading">
+                <p class="launch-engine-inspector-panel-kicker">Selected Engine</p>
+                <h3 id="launch-engine-inspector-engine-title">Engine 1</h3>
+              </div>
+            </div>
+            <p id="launch-engine-inspector-engine-status" class="launch-engine-inspector-engine-status">Awaiting telemetry.</p>
+            <div id="launch-engine-inspector-engine-metrics" class="launch-engine-inspector-engine-metrics"></div>
+          </aside>
+        </main>
+      </div>
+    </section>
+    <aside
+      id="launch-booster-engine-hud"
+      class="launch-booster-engine-hud"
+      aria-hidden="true"
+      role="button"
+      tabindex="0"
+      aria-label="Open booster engine inspector"
+    >
       <svg class="launch-booster-engine-hud-svg" viewBox="0 0 176 176" role="presentation" focusable="false">
         <circle class="launch-booster-engine-hud-backdrop" cx="88" cy="88" r="80" />
         <circle class="launch-booster-engine-hud-ring launch-booster-engine-hud-ring-outer" cx="88" cy="88" r="74" />
@@ -257,7 +311,17 @@
         <circle id="launch-booster-engine-hud-fuel-arc" class="launch-booster-engine-hud-arc launch-booster-engine-hud-arc-primary" cx="88" cy="88" r="77" />
         <g id="launch-booster-engine-hud-cluster"></g>
       </svg>
+      <div class="launch-booster-engine-hud-readouts" aria-hidden="true">
+        <div class="launch-booster-engine-hud-metric ignition">
+          <span class="launch-booster-engine-hud-metric-label">Ignition</span>
+          <strong id="launch-booster-engine-hud-ignition-value" class="launch-booster-engine-hud-metric-value">Standby</strong>
+        </div>
+        <div class="launch-booster-engine-hud-metric chamber">
+          <span class="launch-booster-engine-hud-metric-label">Chamber Avg</span>
+          <strong id="launch-booster-engine-hud-chamber-value" class="launch-booster-engine-hud-metric-value">0.0 MPa</strong>
+        </div>
+      </div>
     </aside>
-    <script type="module" src="/static/js/app.js?v=20260421g"></script>
+    <script type="module" src="/static/js/app.js?v=20260421m"></script>
   </body>
 </html>

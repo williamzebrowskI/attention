@@ -3,11 +3,11 @@ import {
   BOOSTER_THRUSTER_LAYOUT,
   STARSHIP_THRUSTER_LAYOUT,
 } from "./thrusterLayout.js";
-import { createSuperHeavyEngineDescriptors } from "./launchEngineLayout.js";
 import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
 } from "./launchAtmosphereEffects.js?v=20260421a";
+import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260421a";
 
 /**
  * Inline dimensions (km) — your values kept as-is.
@@ -35,11 +35,7 @@ const STARSHIP_NAV_BEACON_PERIOD_SEC = 2.4;
 const STARSHIP_NAV_BEACON_MIN_ALPHA = 0.12;
 const STARSHIP_NAV_BEACON_MAX_ALPHA = 0.98;
 
-const BOOSTER_MAIN_PLUME_SIZE_SCALE = 0.5;
 const BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE = 0.72;
-
-const STARSHIP_MAIN_PLUME_SIZE_SCALE = 0.5;
-const STARSHIP_MAIN_PLUME_BRIGHTNESS_SCALE = 0.68;
 
 const BOOSTER_SEA_LEVEL_PRESSURE_PA = 101_325;
 const BOOSTER_RCS_Q_HALF_EFFECT_PA = 45_000;
@@ -287,6 +283,13 @@ function createSuperHeavyEngineOffsets(radius) {
 
 // -------------------- Booster: geometry + engines (perfect exit plane returned) --------------------
 function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight) {
+  return addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
+    stainless,
+    darkSteel,
+    radius,
+    boosterHeight,
+  });
+
   // Body
   const boosterBody = new THREE.Mesh(
     new THREE.CylinderGeometry(radius, radius, boosterHeight, 48, 1, false),
@@ -549,41 +552,17 @@ function addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, r
   const mountY = (-0.5 * boosterHeight) + (engineSkirtHeight * 0.06);
   const engineExitY = mountY - (bellHeight * 0.95);
 
-  const axisUp = new THREE.Vector3(0, 1, 0); // bell points upward into the vehicle
-
-  // Avoid mutating the shared darkSteel material: nozzle interiors need to be double-sided,
-  // but other booster parts render better as front-sided at true scale.
-  const bellMaterial = darkSteel.clone();
-  enforceSolidOpaqueMaterial(THREE, bellMaterial);
-  bellMaterial.side = THREE.DoubleSide;
-  bellMaterial.needsUpdate = true;
-
-  for (const offset of engineOffsets) {
-    const exitAnchor = new THREE.Vector3(offset.x, engineExitY, offset.z);
-
-    const bell = makeBaseAnchoredNozzleBell(THREE, {
-      radius: bellRadius,
-      height: bellHeight,
-      material: bellMaterial,
-      exitAnchor,
-      axisUp,
-      radialSegments: 12,
-      renderOrder: 8,
-    });
-    boosterGroup.add(bell);
-
-    // Interior throat (optional)
-    const innerH = bellHeight * 0.28;
-    const innerGeom = new THREE.CylinderGeometry(bellRadius * 0.42, bellRadius * 0.33, innerH, 8, 1, true);
-    innerGeom.translate(0, innerH * 0.5, 0); // bottom at exit plane
-
-    const nozzleInterior = new THREE.Mesh(innerGeom, bellMaterial);
-    nozzleInterior.position.set(offset.x, engineExitY + (bellHeight * 0.18), offset.z);
-    boosterGroup.add(nozzleInterior);
-  }
+  const engineVisualGroup = addRaptorReplicaCluster(THREE, boosterGroup, {
+    offsets: engineOffsets,
+    exitY: engineExitY,
+    vehicleRadius: radius,
+    darkSteel,
+    stainless,
+  });
 
   return {
     engineOffsets,
+    engineVisualGroup,
     engineExitY,
     bellRadius,
     bellHeight,
@@ -601,7 +580,7 @@ function createEnginePlumeCluster(THREE, stageGroup, options = {}) {
   const anchorY = Number(options.anchorY) || 0;
   const plumeLength = Math.max(1e-12, Number(options.plumeLength) || 1e-6);
   const plumeRadius = Math.max(1e-12, Number(options.plumeRadius) || 1e-6);
-  const glowRadius = Math.max(plumeRadius * 0.75, Number(options.glowRadius) || plumeRadius * 0.9);
+  const nozzleRadius = Math.max(1e-12, Number(options.nozzleRadius) || (plumeRadius * 0.84));
   const radialSegments = Math.max(20, Number(options.radialSegments) || 36);
 
   const outerColor = new THREE.Color(options.colorHex || BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX);
@@ -632,58 +611,48 @@ function createEnginePlumeCluster(THREE, stageGroup, options = {}) {
     toneMapped: false,
   });
 
-  const glowTemplateMaterial = new THREE.MeshBasicMaterial({
-    color: outerColor,
-    transparent: true,
-    opacity: 0,
-    depthWrite: false,
-    depthTest: true,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-  });
-
   const entries = [];
+  const plumeOuterLength = plumeLength * 1.04;
+  const plumeCoreLength = plumeLength * 0.88;
+  const plumeOuterGeom = new THREE.CylinderGeometry(
+    nozzleRadius * 0.98,
+    Math.max(nozzleRadius * 1.08, plumeRadius * 1.02),
+    plumeOuterLength,
+    radialSegments,
+    1,
+    true,
+  );
+  plumeOuterGeom.translate(0, -(plumeOuterLength * 0.5), 0);
+  const plumeCoreGeom = new THREE.CylinderGeometry(
+    nozzleRadius * 0.48,
+    Math.max(nozzleRadius * 0.56, plumeRadius * 0.34),
+    plumeCoreLength,
+    radialSegments,
+    1,
+    true,
+  );
+  plumeCoreGeom.translate(0, -(plumeCoreLength * 0.5), 0);
 
   for (const offset of offsets) {
     const anchor = new THREE.Vector3(Number(offset?.x) || 0, anchorY, Number(offset?.z) || 0);
 
-    const plumeOuter = makeTipAnchoredExhaustCone(THREE, {
-      radius: plumeRadius * 1.05,
-      length: plumeLength * 1.04,
-      material: plumeTemplateMaterial.clone(),
-      anchor,
-      direction: new THREE.Vector3(0, -1, 0),
-      radialSegments,
-      renderOrder: 24,
-    });
-    const plumeCore = makeTipAnchoredExhaustCone(THREE, {
-      radius: plumeRadius * 0.62,
-      length: plumeLength * 0.86,
-      material: coreTemplateMaterial.clone(),
-      anchor,
-      direction: new THREE.Vector3(0, -1, 0),
-      radialSegments,
-      renderOrder: 25,
-    });
-
-    const glow = new THREE.Mesh(new THREE.SphereGeometry(glowRadius, 12, 12), glowTemplateMaterial.clone());
-    glow.position.copy(anchor);
-    glow.renderOrder = 26;
+    const plumeOuter = new THREE.Mesh(plumeOuterGeom, plumeTemplateMaterial.clone());
+    plumeOuter.position.copy(anchor);
+    plumeOuter.renderOrder = 24;
+    const plumeCore = new THREE.Mesh(plumeCoreGeom, coreTemplateMaterial.clone());
+    plumeCore.position.copy(anchor);
+    plumeCore.renderOrder = 25;
 
     cluster.add(plumeOuter);
     cluster.add(plumeCore);
-    cluster.add(glow);
     entries.push({
       plume: plumeOuter,
       plumeOuter,
       plumeCore,
-      glow,
       outerBaseColor: outerColor.clone(),
       outerHotColor: new THREE.Color(0xfff7ea),
       coreBaseColor: coreColor.clone(),
       coreHotColor: new THREE.Color(0xffffff),
-      glowBaseColor: outerColor.clone(),
-      glowHotColor: new THREE.Color(0xdeefff),
     });
   }
 
@@ -928,11 +897,8 @@ function setEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, optio
   const brightnessScale = (0.86 + (vacuumExpansion * 0.14)) * phaseScale;
 
   const plumeOpacity = (0.34 + (t * 0.56)) * pulse * brightnessScale;
-  const glowOpacity = (0.42 + (t * 0.52)) * pulse * brightnessScale;
-
   const stretch = (0.82 + (t * 2.1)) * expansionScale;
-  const radiusScale = (0.9 + (t * 0.5)) * (0.92 + (vacuumExpansion * 0.34));
-  const glowScale = (0.94 + (t * 0.76)) * (0.92 + (vacuumExpansion * 0.25));
+  const radiusScale = (0.98 + (t * 0.08)) * (0.96 + (vacuumExpansion * 0.16));
   const nowSec = Date.now() / 1000;
   const activeEntryIndexSet = plumeState.activeEntryIndexSet instanceof Set
     ? plumeState.activeEntryIndexSet
@@ -1004,9 +970,9 @@ function setEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, optio
     // TIP-ANCHORED cones: scaling preserves the tip location perfectly.
     if (entry.plumeOuter?.scale) {
       entry.plumeOuter.scale.set(
-        radiusScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * (0.82 + (0.28 * chamberNorm)),
-        stretch * BOOSTER_MAIN_PLUME_SIZE_SCALE * turbulence * (0.84 + (0.42 * chamberNorm)),
-        radiusScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * (0.82 + (0.28 * chamberNorm)),
+        radiusScale * (0.96 + (0.08 * chamberNorm)),
+        stretch * turbulence * (0.9 + (0.28 * chamberNorm)),
+        radiusScale * (0.96 + (0.08 * chamberNorm)),
       );
     }
     if (entry.plumeOuter?.material && !Array.isArray(entry.plumeOuter.material)) {
@@ -1021,9 +987,9 @@ function setEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, optio
     }
     if (entry.plumeCore?.scale) {
       entry.plumeCore.scale.set(
-        radiusScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * 0.62 * (0.86 + (0.24 * chamberNorm)),
-        stretch * BOOSTER_MAIN_PLUME_SIZE_SCALE * turbulence * 0.9 * (0.86 + (0.34 * chamberNorm)),
-        radiusScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * 0.62 * (0.86 + (0.24 * chamberNorm)),
+        radiusScale * 0.74 * (0.92 + (0.1 * chamberNorm)),
+        stretch * turbulence * 0.86 * (0.92 + (0.24 * chamberNorm)),
+        radiusScale * 0.74 * (0.92 + (0.1 * chamberNorm)),
       );
     }
     if (entry.plumeCore?.material && !Array.isArray(entry.plumeCore.material)) {
@@ -1037,23 +1003,6 @@ function setEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, optio
       );
     }
 
-    if (entry.glow?.scale) {
-      entry.glow.scale.set(
-        glowScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * (0.88 + (0.26 * chamberNorm)),
-        glowScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * (0.88 + (0.26 * chamberNorm)),
-        glowScale * BOOSTER_MAIN_PLUME_SIZE_SCALE * (0.88 + (0.26 * chamberNorm)),
-      );
-    }
-    if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
-      if (entry.glowBaseColor && entry.glowHotColor) {
-        entry.glow.material.color.copy(entry.glowBaseColor).lerp(entry.glowHotColor, heatBlend);
-      }
-      entry.glow.material.opacity = clamp(
-        glowOpacity * BOOSTER_MAIN_PLUME_BRIGHTNESS_SCALE * 0.95 * flicker * opacityScale,
-        0,
-        1,
-      );
-    }
   }
 }
 
@@ -1206,9 +1155,9 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
   const mainEnginePlume = createEnginePlumeCluster(THREE, boosterGroup, {
     offsets: boosterVisual.engineOffsets,
     anchorY: boosterVisual.engineExitY, // PERFECT: exact nozzle exit plane
-    plumeLength: clamp(boosterHeight * 0.058, radius * 0.2, boosterHeight * 0.12),
-    plumeRadius: clamp(radius * 0.056, radius * 0.022, radius * 0.088),
-    glowRadius: clamp(radius * 0.042, radius * 0.018, radius * 0.064),
+    plumeLength: clamp(boosterHeight * 0.052, radius * 0.18, boosterHeight * 0.1),
+    plumeRadius: clamp(boosterVisual.bellRadius * 1.18, boosterVisual.bellRadius * 1.04, boosterVisual.bellRadius * 1.28),
+    nozzleRadius: clamp(boosterVisual.bellRadius * 0.96, boosterVisual.bellRadius * 0.88, boosterVisual.bellRadius),
     colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
   });
 
@@ -1396,11 +1345,19 @@ function addInlineStarshipEngines(THREE, shipGroup, material, radius, shipHeight
   // Keep “offsets” in case you want it elsewhere
   void offsets;
 
-  return { vacExitY, seaExitY, vacOffsets, seaOffsets };
+  return {
+    vacExitY,
+    seaExitY,
+    vacOffsets,
+    seaOffsets,
+    vacBellRadius: vacR,
+    seaBellRadius: seaR,
+  };
 }
 
-export function createInlineStarshipStackVisual(THREE, distanceScale) {
+export function createInlineStarshipStackVisual(THREE, distanceScale, options = {}) {
   const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
+  const externalBoosterVisualActive = options?.externalBoosterVisualActive === true;
 
   const radius = dims.diameterKm * 0.5 * distanceScale;
   const boosterHeight = dims.boosterHeightKm * distanceScale;
@@ -1445,42 +1402,54 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
   const root = new THREE.Group();
 
   // Groups
-  const boosterGroup = new THREE.Group();
+  const boosterGroup = externalBoosterVisualActive ? null : new THREE.Group();
   const shipGroup = new THREE.Group();
 
   const fullShipCenterY = baseY + boosterHeight + (0.5 * shipHeight);
   const detachedShipCenterY = 0;
   const fullBoosterCenterY = baseY + (0.5 * boosterHeight);
 
-  boosterGroup.position.y = fullBoosterCenterY;
+  if (boosterGroup) {
+    boosterGroup.position.y = fullBoosterCenterY;
+  }
   shipGroup.position.y = fullShipCenterY;
 
-  root.add(boosterGroup);
+  if (boosterGroup) {
+    root.add(boosterGroup);
+  }
   root.add(shipGroup);
 
   // Booster (returns exact engineExitY)
-  const boosterVisual = addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight);
-  const boosterFuelVisual = createBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight);
+  const boosterVisual = boosterGroup
+    ? addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight)
+    : null;
+  const boosterFuelVisual = boosterGroup
+    ? createBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight)
+    : null;
 
   // Booster plumes + RCS
-  const boosterMainEnginePlume = createEnginePlumeCluster(THREE, boosterGroup, {
-    offsets: boosterVisual.engineOffsets,
-    anchorY: boosterVisual.engineExitY,
-    plumeLength: clamp(boosterHeight * 0.058, radius * 0.2, boosterHeight * 0.12),
-    plumeRadius: clamp(radius * 0.056, radius * 0.022, radius * 0.088),
-    glowRadius: clamp(radius * 0.042, radius * 0.018, radius * 0.064),
-    colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
-  });
+  const boosterMainEnginePlume = boosterGroup && boosterVisual
+    ? createEnginePlumeCluster(THREE, boosterGroup, {
+      offsets: boosterVisual.engineOffsets,
+      anchorY: boosterVisual.engineExitY,
+      plumeLength: clamp(boosterHeight * 0.052, radius * 0.18, boosterHeight * 0.1),
+      plumeRadius: clamp(boosterVisual.bellRadius * 1.18, boosterVisual.bellRadius * 1.04, boosterVisual.bellRadius * 1.28),
+      nozzleRadius: clamp(boosterVisual.bellRadius * 0.96, boosterVisual.bellRadius * 0.88, boosterVisual.bellRadius),
+      colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
+    })
+    : null;
 
-  const boosterRcsJets = createRcsJetVisuals(
-    THREE,
-    boosterGroup,
-    radius,
-    boosterHeight,
-    BOOSTER_THRUSTER_LAYOUT,
-    BOOSTER_RCS_JET_COLOR_HEX,
-    new THREE.MeshStandardMaterial({ color: new THREE.Color(0x6a727f), roughness: 0.6, metalness: 0.52 }),
-  );
+  const boosterRcsJets = boosterGroup
+    ? createRcsJetVisuals(
+      THREE,
+      boosterGroup,
+      radius,
+      boosterHeight,
+      BOOSTER_THRUSTER_LAYOUT,
+      BOOSTER_RCS_JET_COLOR_HEX,
+      new THREE.MeshStandardMaterial({ color: new THREE.Color(0x6a727f), roughness: 0.6, metalness: 0.52 }),
+    )
+    : null;
 
   // Ship hull (kept simple: cylinder + cone)
   const shipBody = new THREE.Mesh(
@@ -1545,17 +1514,17 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
     createEnginePlumeCluster(THREE, shipGroup, {
       offsets: shipEngines.vacOffsets,
       anchorY: shipEngines.vacExitY,
-      plumeLength: clamp(shipHeight * 0.16, radius * 0.5, shipHeight * 0.28),
-      plumeRadius: clamp(radius * 0.13, radius * 0.06, radius * 0.18),
-      glowRadius: clamp(radius * 0.1, radius * 0.05, radius * 0.14),
+      plumeLength: clamp(shipHeight * 0.15, radius * 0.44, shipHeight * 0.24),
+      plumeRadius: clamp(shipEngines.vacBellRadius * 1.22, radius * 0.06, radius * 0.18),
+      nozzleRadius: clamp(shipEngines.vacBellRadius * 0.96, radius * 0.05, radius * 0.17),
       colorHex: STARSHIP_MAIN_ENGINE_PLUME_COLOR_HEX,
     }),
     createEnginePlumeCluster(THREE, shipGroup, {
       offsets: shipEngines.seaOffsets,
       anchorY: shipEngines.seaExitY,
-      plumeLength: clamp(shipHeight * 0.12, radius * 0.38, shipHeight * 0.22),
-      plumeRadius: clamp(radius * 0.1, radius * 0.045, radius * 0.15),
-      glowRadius: clamp(radius * 0.085, radius * 0.04, radius * 0.12),
+      plumeLength: clamp(shipHeight * 0.115, radius * 0.34, shipHeight * 0.2),
+      plumeRadius: clamp(shipEngines.seaBellRadius * 1.18, radius * 0.045, radius * 0.15),
+      nozzleRadius: clamp(shipEngines.seaBellRadius * 0.96, radius * 0.04, radius * 0.13),
       colorHex: STARSHIP_MAIN_ENGINE_PLUME_COLOR_HEX,
     }),
   ];
@@ -1579,6 +1548,7 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
     materials: [stainless, darkSteel, nozzleMat, heatShieldMat],
     state: {
       distanceScale,
+      externalBoosterVisualActive,
       boosterGroup,
       shipGroup,
       fullBoosterCenterY,
@@ -1613,6 +1583,8 @@ export function createInlineStarshipStackVisual(THREE, distanceScale) {
 
 export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot = null) {
   if (!stageState?.shipGroup) return;
+  const externalBoosterVisualActive = Boolean(snapshot?.externalBoosterVisualActive)
+    || Boolean(stageState?.externalBoosterVisualActive);
 
   const stageTwoActive = Number.isFinite(stageIndex) && stageIndex >= 1;
   const snapshotBodyId = String(snapshot?.bodyId || "");
@@ -1631,7 +1603,7 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
   const hotstageBoosterOffsetScene = Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0) * distanceScale;
 
   if (stageState.boosterGroup) {
-    stageState.boosterGroup.visible = !detached || hotstageActive;
+    stageState.boosterGroup.visible = !externalBoosterVisualActive && (!detached || hotstageActive);
     if (Number.isFinite(stageState.fullBoosterCenterY)) {
       stageState.boosterGroup.position.y = Number(stageState.fullBoosterCenterY) - hotstageBoosterOffsetScene;
     }

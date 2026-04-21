@@ -1346,6 +1346,8 @@ function computeBoosterRcsAngularControlState({
   throttle = 0,
   massKg = 0,
   massModel = null,
+  phase = "",
+  guidanceMode = "",
 }) {
   const errorRad = Math.hypot(
     finiteNumber(controlErrorsBody?.pitchErrorRad, 0),
@@ -1372,8 +1374,15 @@ function computeBoosterRcsAngularControlState({
   }
   const leverArmM = Math.max(1, boosterBodyLengthMeters() * 0.46);
   const maxLinearAccelMS2 = Math.max(0, Number(LAUNCH_RCS_CONFIG.maxAccelerationKmS2) || 0) * 1000;
-  const largeAngleBoost = clamp(errorDeg / 18, 1, 9);
-  const maxAngularAccelerationRadS2 = ((maxLinearAccelMS2 * effectiveAuthority) / leverArmM) * 8.5 * largeAngleBoost;
+  const modeText = `${String(phase || "")} ${String(guidanceMode || "")}`.toLowerCase();
+  const postSeparationTurnMode = /(separation-flip|separation-coast|boostback)/.test(modeText);
+  const largeAngleBoost = clamp(errorDeg / 18, 1, postSeparationTurnMode ? 18 : 9);
+  const postSeparationAuthorityBoost = postSeparationTurnMode ? 8.5 : 1;
+  const maxAngularAccelerationRadS2 =
+    ((maxLinearAccelMS2 * effectiveAuthority) / leverArmM)
+    * 8.5
+    * largeAngleBoost
+    * postSeparationAuthorityBoost;
   const omegaBody = {
     x: finiteNumber(omegaBodyRadS?.x, 0),
     y: finiteNumber(omegaBodyRadS?.y, 0),
@@ -6060,7 +6069,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       altitudeKm,
       dynamicPressurePa,
     });
-    const guidanceBoosterState = navigationSolution?.estimatedBoosterState || boosterState;
+    const useNavigationGuidanceState =
+      Boolean(navigationSolution?.towerRelativeActive)
+      || altitudeKm <= 8;
+    const guidanceBoosterState = useNavigationGuidanceState
+      ? (navigationSolution?.estimatedBoosterState || boosterState)
+      : boosterState;
     const guidanceRelPos = subtract(guidanceBoosterState.position, earthState.position);
     const guidanceRelVel = subtract(
       guidanceBoosterState.velocity || { x: 0, y: 0, z: 0 },
@@ -6313,6 +6327,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       throttle: requestedThrottle,
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
+      phase: command.phase || currentBoosterCommandPhase(),
+      guidanceMode: command.guidanceMode || runtime.booster.guidanceMode,
     }), attitudeResponseScale);
 
     const aeroPreview = computeAerodynamicResponse({
@@ -8301,6 +8317,15 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         boosterExhaustTemperatureKByIndex: Array.isArray(runtime.booster.lastStep?.exhaustTemperatureKByIndex)
           ? [...runtime.booster.lastStep.exhaustTemperatureKByIndex]
           : [],
+        boosterCombustionEfficiencyByIndex: Array.isArray(runtime.booster.lastStep?.combustionEfficiencyByIndex)
+          ? [...runtime.booster.lastStep.combustionEfficiencyByIndex]
+          : [],
+        boosterTurbopumpNormByIndex: Array.isArray(runtime.booster.lastStep?.turbopumpNormByIndex)
+          ? [...runtime.booster.lastStep.turbopumpNormByIndex]
+          : [],
+        boosterEngineThrustNByIndex: Array.isArray(runtime.booster.lastStep?.engineThrustNByIndex)
+          ? [...runtime.booster.lastStep.engineThrustNByIndex]
+          : [],
         boosterAvgChamberPressurePa: Number(runtime.booster.lastStep?.avgChamberPressurePa) || 0,
         boosterMaxChamberPressurePa: Number(runtime.booster.lastStep?.maxChamberPressurePa) || 0,
         boosterAvgCombustionEfficiency: Number(runtime.booster.lastStep?.avgCombustionEfficiency) || 0,
@@ -8573,6 +8598,15 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterExhaustTemperatureKByIndex: Array.isArray(runtime.booster.telemetry?.exhaustTemperatureKByIndex)
         ? [...runtime.booster.telemetry.exhaustTemperatureKByIndex]
         : (Array.isArray(runtime.booster.lastStep?.exhaustTemperatureKByIndex) ? [...runtime.booster.lastStep.exhaustTemperatureKByIndex] : []),
+      boosterCombustionEfficiencyByIndex: Array.isArray(runtime.booster.telemetry?.combustionEfficiencyByIndex)
+        ? [...runtime.booster.telemetry.combustionEfficiencyByIndex]
+        : (Array.isArray(runtime.booster.lastStep?.combustionEfficiencyByIndex) ? [...runtime.booster.lastStep.combustionEfficiencyByIndex] : []),
+      boosterTurbopumpNormByIndex: Array.isArray(runtime.booster.telemetry?.turbopumpNormByIndex)
+        ? [...runtime.booster.telemetry.turbopumpNormByIndex]
+        : (Array.isArray(runtime.booster.lastStep?.turbopumpNormByIndex) ? [...runtime.booster.lastStep.turbopumpNormByIndex] : []),
+      boosterEngineThrustNByIndex: Array.isArray(runtime.booster.telemetry?.engineThrustNByIndex)
+        ? [...runtime.booster.telemetry.engineThrustNByIndex]
+        : (Array.isArray(runtime.booster.lastStep?.engineThrustNByIndex) ? [...runtime.booster.lastStep.engineThrustNByIndex] : []),
       boosterAvgChamberPressurePa: Number(runtime.booster.telemetry?.avgChamberPressurePa)
         || Number(runtime.booster.lastStep?.avgChamberPressurePa)
         || 0,

@@ -22,6 +22,95 @@ function resolveGridFinAuthority({
   return clamp(qBuild * qSaturation * Math.max(altitudeWindow, speedWindow * 0.8), 0, 1);
 }
 
+function resolveBoostbackInterceptDemand({
+  catchTotalRangeKm = 0,
+  catchLateralRangeKm = 0,
+  launchSiteLateralRangeKm = 0,
+  launchSiteLateralClosingSpeedKmS = 0,
+  tangentialSpeedKmS = 0,
+  timeToGroundSec = 0,
+}) {
+  const passiveLateralRecoveryKm = Math.max(0, launchSiteLateralClosingSpeedKmS) * Math.max(0, timeToGroundSec);
+  const unrecoveredCatchLateralKm = Math.max(0, catchLateralRangeKm - passiveLateralRecoveryKm);
+  const unrecoveredSiteLateralKm = Math.max(0, launchSiteLateralRangeKm - passiveLateralRecoveryKm);
+  const lateralMissNorm = clamp(
+    Math.max(unrecoveredCatchLateralKm, unrecoveredSiteLateralKm) / 42,
+    0,
+    1,
+  );
+  const catchRangeNorm = clamp((catchTotalRangeKm - 24) / 90, 0, 1);
+  const tangentialNorm = clamp((tangentialSpeedKmS - 0.9) / 2.1, 0, 1);
+  const demandNorm = Math.max(
+    lateralMissNorm,
+    catchRangeNorm,
+    tangentialNorm * 0.9,
+  );
+  return {
+    demandNorm,
+    lateralMissNorm,
+    catchRangeNorm,
+    tangentialNorm,
+    ignitionAlignmentMin: clamp(
+      0.34 + (0.14 * lateralMissNorm) + (0.08 * tangentialNorm),
+      0.34,
+      0.62,
+    ),
+  };
+}
+
+function resolveAeroCrossrangeDemand({
+  altitudeKm = 0,
+  dynamicPressurePa = 0,
+  gridFinAuthority = 0,
+  launchSiteLateralRangeKm = 0,
+  launchSiteLateralClosingSpeedKmS = 0,
+  catchLateralRangeKm = 0,
+  catchLateralSpeedKmS = 0,
+  desiredLateralClosingKmS = 0,
+}) {
+  const siteLateralNorm = clamp(launchSiteLateralRangeKm / 18, 0, 1);
+  const catchLateralNorm = clamp(catchLateralRangeKm / 18, 0, 1);
+  const desiredClosingKmS = Math.max(0.04, Number(desiredLateralClosingKmS) || 0);
+  const closingNeedNorm = clamp(
+    (desiredClosingKmS - launchSiteLateralClosingSpeedKmS) / Math.max(desiredClosingKmS, 0.08),
+    0,
+    1,
+  );
+  const overClosingNorm = clamp(
+    (launchSiteLateralClosingSpeedKmS - ((desiredClosingKmS * 1.8) + 0.03)) / Math.max(desiredClosingKmS, 0.08),
+    0,
+    1,
+  );
+  const catchLateralSpeedNorm = clamp(catchLateralSpeedKmS / 0.18, 0, 1);
+  const qNorm = clamp((dynamicPressurePa - 3_000) / 20_000, 0, 1);
+  const altitudeNorm = clamp((74 - altitudeKm) / 56, 0, 1);
+  const aeroCorrectionNorm = clamp(
+    Math.max(
+      Number(gridFinAuthority) || 0,
+      (0.74 * qNorm) + (0.18 * altitudeNorm),
+    ),
+    0,
+    1,
+  );
+  const crossrangeDemandNorm = Math.max(
+    catchLateralNorm,
+    siteLateralNorm * 0.85,
+    closingNeedNorm,
+    catchLateralSpeedNorm * 0.72,
+    overClosingNorm * 0.42,
+  );
+  return {
+    siteLateralNorm,
+    catchLateralNorm,
+    closingNeedNorm,
+    overClosingNorm,
+    catchLateralSpeedNorm,
+    aeroCorrectionNorm,
+    crossrangeDemandNorm,
+    targetingActive: aeroCorrectionNorm > 0.06 && crossrangeDemandNorm > 0.04,
+  };
+}
+
 export function computeBoosterRecoveryCommand(input = {}) {
   const currentPhase = String(input.currentPhase || "").toLowerCase();
   const altitudeKm = Math.max(0, Number(input.altitudeKm) || 0);
@@ -82,9 +171,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
   );
 
   const separationFlipMinSec = 0.9;
-  const separationFlipBurnReadySec = 6.5;
-  const separationFlipMaxSec = 15.0;
-  const separationCoastMaxSec = 12.0;
+  const separationFlipSettleSec = 2.6;
+  const boostbackMinimumIgnitionSec = 2.8;
+  const boostbackAlignmentGraceSec = 4.2;
   const entryBurnUpperKm = 74;
   const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
@@ -113,6 +202,24 @@ export function computeBoosterRecoveryCommand(input = {}) {
     clamp((tangentialSpeedKmS - 0.95) / 2.6, 0, 1),
     lateralClosingNeedNorm,
   );
+  const boostbackInterceptDemand = resolveBoostbackInterceptDemand({
+    catchTotalRangeKm,
+    catchLateralRangeKm,
+    launchSiteLateralRangeKm,
+    launchSiteLateralClosingSpeedKmS,
+    tangentialSpeedKmS,
+    timeToGroundSec,
+  });
+  const aeroCrossrangeDemand = resolveAeroCrossrangeDemand({
+    altitudeKm,
+    dynamicPressurePa,
+    gridFinAuthority,
+    launchSiteLateralRangeKm,
+    launchSiteLateralClosingSpeedKmS,
+    catchLateralRangeKm,
+    catchLateralSpeedKmS,
+    desiredLateralClosingKmS,
+  });
 
   if (altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.025 && tangentialSpeedKmS < 0.02) {
     return {
@@ -130,46 +237,46 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const flipComplete = flipAlignment >= 0.82;
   const attitudeStillMostlyUp = bodyUpAlignment > 0.35;
   const flipPhaseProgress = clamp(
-    (elapsedSec - separationFlipMinSec) / Math.max(separationFlipMaxSec - separationFlipMinSec, 0.1),
-    0,
-    1,
-  );
-  const coastPhaseProgress = clamp(
-    (elapsedSec - separationFlipBurnReadySec) / Math.max(separationCoastMaxSec - separationFlipBurnReadySec, 0.1),
+    (elapsedSec - separationFlipMinSec) / Math.max(separationFlipSettleSec - separationFlipMinSec, 0.1),
     0,
     1,
   );
   const boostbackDemand =
-    altitudeKm > 46
+    altitudeKm > 38
     && hasBoostbackBudget
     && (
-      tangentialSpeedKmS > 1.05
+      boostbackInterceptDemand.demandNorm > 0.18
       || farFromLaunchSite
       || returnEnergyNorm > 0.2
     );
-  const boostbackIgnitionEligible = boostbackDemand && (
-    elapsedSec >= separationCoastMaxSec
-    || (
-      elapsedSec >= separationFlipBurnReadySec
-      && (
-        flipAlignment >= 0.54
-        || bodyRetrogradeAlignment >= 0.42
-      )
-    )
-  );
+  const boostbackSettledIgnitionEligible = boostbackDemand
+    && elapsedSec >= boostbackMinimumIgnitionSec
+    && (
+      flipAlignment >= boostbackInterceptDemand.ignitionAlignmentMin
+      || bodyRetrogradeAlignment >= Math.max(0.28, boostbackInterceptDemand.ignitionAlignmentMin - 0.08)
+    );
+  const boostbackRollingIgnitionEligible = boostbackDemand
+    && elapsedSec >= boostbackAlignmentGraceSec
+    && (
+      flipAlignment >= Math.max(0.18, boostbackInterceptDemand.ignitionAlignmentMin - 0.18)
+      || bodyRetrogradeAlignment >= Math.max(0.14, boostbackInterceptDemand.ignitionAlignmentMin - 0.22)
+    );
+  const boostbackIgnitionEligible =
+    boostbackSettledIgnitionEligible
+    || boostbackRollingIgnitionEligible;
 
   if (
     separationPhaseActive
     && (
     elapsedSec < separationFlipMinSec
     || (
-      elapsedSec < separationFlipMaxSec
+      elapsedSec < separationFlipSettleSec
       && !boostbackIgnitionEligible
       && (!flipComplete || attitudeStillMostlyUp)
     )
     )
   ) {
-    const settleBlend = clamp((elapsedSec - 1.8) / Math.max(separationFlipMaxSec - 1.8, 0.1), 0, 1);
+    const settleBlend = clamp((elapsedSec - 1.2) / Math.max(separationFlipSettleSec - 1.2, 0.1), 0, 1);
     return {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
@@ -196,16 +303,20 @@ export function computeBoosterRecoveryCommand(input = {}) {
     separationPhaseActive
     && !boostbackIgnitionEligible
     && (
-    (
-      elapsedSec < separationCoastMaxSec
-    )
-    && altitudeKm > 52
+    altitudeKm > 48
     && (
-      downwardSpeedKmS < 0.28
-      || radialSpeedKmS > -0.04
+      catchTotalRangeKm > 6
+      || launchSiteLateralRangeKm > 4
+      || downwardSpeedKmS < 0.32
+      || radialSpeedKmS > -0.06
     )
     )
   ) {
+    const coastPhaseProgress = clamp(
+      (elapsedSec - separationFlipSettleSec) / 4.2,
+      0,
+      1,
+    );
     return {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
@@ -228,22 +339,34 @@ export function computeBoosterRecoveryCommand(input = {}) {
       boostbackIgnitionEligible
       || (
         currentPhase === "boostback"
-        && altitudeKm > 38
+        && altitudeKm > 34
         && hasBoostbackBudget
         && (
-          tangentialSpeedKmS > 0.55
+          boostbackInterceptDemand.demandNorm > 0.06
+          || tangentialSpeedKmS > 0.55
           || launchSiteLateralRangeKm > 8
           || lateralClosingNeedNorm > 0.10
         )
       )
     )
   ) {
-    const tangentialScale = clamp((tangentialSpeedKmS - 1.05) / 2.8, 0, 1);
-    const rtlsDemand = Math.max(returnEnergyNorm, closingDeficitNorm);
-    const flipIgnitionBlend = clamp((Math.max(flipAlignment, bodyRetrogradeAlignment) - 0.40) / 0.35, 0, 1);
+    const tangentialScale = boostbackInterceptDemand.tangentialNorm;
+    const rtlsDemand = Math.max(
+      returnEnergyNorm,
+      closingDeficitNorm,
+      boostbackInterceptDemand.demandNorm,
+    );
+    const flipIgnitionBlend = clamp(
+      (
+        Math.max(flipAlignment, bodyRetrogradeAlignment)
+        - (boostbackInterceptDemand.ignitionAlignmentMin - 0.12)
+      ) / 0.30,
+      0,
+      1,
+    );
     const ignitionBlend = clamp(
       Math.max(
-        (elapsedSec - 5.5) / Math.max(separationCoastMaxSec - 5.5, 0.1),
+        (elapsedSec - boostbackMinimumIgnitionSec) / Math.max(boostbackAlignmentGraceSec - boostbackMinimumIgnitionSec, 0.1),
         flipIgnitionBlend,
       ),
       0,
@@ -258,17 +381,23 @@ export function computeBoosterRecoveryCommand(input = {}) {
         attitudeTargetBlend: 0.42 + (0.40 * ignitionBlend),
         angularDampingPerS: 0.10 + (0.08 * ignitionBlend),
         maxBodyRateDegS: 11.4 + (2.6 * ignitionBlend),
+        siteTargetingEnabled: false,
+        qAlphaSteeringEnabled: false,
         throttle: clamp(
-          0.26
-            + (0.18 * tangentialScale)
-            + (0.18 * rtlsDemand)
-            + (0.22 * ignitionBlend),
-          0.24,
-          0.84,
+          0.28
+            + (0.14 * tangentialScale)
+            + (0.20 * rtlsDemand)
+            + (0.18 * ignitionBlend),
+          0.26,
+          0.86,
         ),
-      directionMix: { up: 0.08, retrograde: 1.0, antiTangent: 0.76 },
-      siteVectorWeight: clamp(0.52 + (0.34 * rtlsDemand), 0.42, 0.90),
-      siteVelocityWeight: clamp(0.34 + (0.24 * rtlsDemand), 0.24, 0.66),
+        directionMix: {
+        up: 0.04,
+        retrograde: 1.0,
+        antiTangent: clamp(0.14 + (0.14 * boostbackInterceptDemand.lateralMissNorm), 0.12, 0.32),
+      },
+      siteVectorWeight: 0,
+      siteVelocityWeight: 0,
     };
   }
 
@@ -294,9 +423,27 @@ export function computeBoosterRecoveryCommand(input = {}) {
         attitudeResponseScale: 0.52 + (0.16 * entryAlignNeedNorm),
         angularDampingPerS: 0.54 + (0.18 * entryAlignNeedNorm),
         maxBodyRateDegS: 7.0,
-        siteTargetingEnabled: false,
+        siteTargetingEnabled: Boolean(aeroCrossrangeDemand.targetingActive && gridFinAuthority > 0.08),
         throttle: 0,
-        directionMix: { up: 0.06, retrograde: 1.0, antiTangent: 0.18 },
+        directionMix: {
+          up: 0.06,
+          retrograde: 1.0,
+          antiTangent: clamp(
+            0.12 + (0.12 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+            0.12,
+            0.28,
+          ),
+        },
+        siteVectorWeight: clamp(
+          0.08 + (0.22 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.08,
+          0.28,
+        ),
+        siteVelocityWeight: clamp(
+          0.06 + (0.18 * aeroCrossrangeDemand.closingNeedNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.06,
+          0.22,
+        ),
       };
     }
   }
@@ -313,9 +460,27 @@ export function computeBoosterRecoveryCommand(input = {}) {
         attitudeTargetBlend: 0.36,
         angularDampingPerS: 0.58,
         maxBodyRateDegS: 6.5,
-        siteTargetingEnabled: false,
+        siteTargetingEnabled: aeroCrossrangeDemand.targetingActive,
         throttle: 0,
-        directionMix: { up: 0.44, retrograde: 0.12, antiTangent: 0.26 },
+        directionMix: {
+          up: 0.34 - (0.10 * aeroCrossrangeDemand.aeroCorrectionNorm),
+          retrograde: 0.16 + (0.12 * aeroCrossrangeDemand.aeroCorrectionNorm),
+          antiTangent: clamp(
+            0.20 + (0.28 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+            0.20,
+            0.48,
+          ),
+        },
+        siteVectorWeight: clamp(
+          0.16 + (0.44 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.14,
+          0.62,
+        ),
+        siteVelocityWeight: clamp(
+          0.10 + (0.30 * aeroCrossrangeDemand.closingNeedNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.08,
+          0.42,
+        ),
       };
     }
     const entryInterfaceNorm = Math.max(
@@ -332,9 +497,26 @@ export function computeBoosterRecoveryCommand(input = {}) {
         angularDampingPerS: 0.64,
         maxBodyRateDegS: 7.5,
         throttle: clamp(0.30 + (0.44 * entryInterfaceNorm), 0.28, 0.82),
-        directionMix: { up: 0.82, retrograde: 0.34, antiTangent: 0.66 },
-        siteVectorWeight: clamp(0.18 + (0.34 * gridFinAuthority) + (0.14 * lateralErrorNorm), 0.18, 0.68),
-        siteVelocityWeight: clamp(0.14 + (0.26 * gridFinAuthority) + (0.12 * lateralClosingNeedNorm), 0.12, 0.56),
+        directionMix: {
+          up: 0.78,
+          retrograde: 0.40,
+          antiTangent: clamp(
+            0.18 + (0.22 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+            0.18,
+            0.40,
+          ),
+        },
+        siteTargetingEnabled: aeroCrossrangeDemand.targetingActive,
+        siteVectorWeight: clamp(
+          0.10 + (0.22 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.10,
+          0.34,
+        ),
+        siteVelocityWeight: clamp(
+          0.08 + (0.18 * aeroCrossrangeDemand.closingNeedNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.08,
+          0.26,
+        ),
       };
     }
     return {
@@ -345,9 +527,26 @@ export function computeBoosterRecoveryCommand(input = {}) {
       angularDampingPerS: 0.52,
       maxBodyRateDegS: 7.0,
       throttle: 0,
-      directionMix: { up: 0.22, retrograde: 0.18, antiTangent: 0.48 },
-      siteVectorWeight: clamp(0.14 + (0.42 * gridFinAuthority) + (0.10 * lateralErrorNorm), 0.12, 0.60),
-      siteVelocityWeight: clamp(0.12 + (0.30 * gridFinAuthority) + (0.10 * lateralClosingNeedNorm), 0.10, 0.46),
+      directionMix: {
+        up: 0.18,
+        retrograde: 0.20 + (0.10 * aeroCrossrangeDemand.aeroCorrectionNorm),
+        antiTangent: clamp(
+          0.22 + (0.36 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.22,
+          0.58,
+        ),
+      },
+      siteTargetingEnabled: aeroCrossrangeDemand.targetingActive,
+      siteVectorWeight: clamp(
+        0.18 + (0.50 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+        0.14,
+        0.72,
+      ),
+      siteVelocityWeight: clamp(
+        0.12 + (0.34 * aeroCrossrangeDemand.closingNeedNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+        0.10,
+        0.48,
+      ),
     };
   }
 
@@ -360,9 +559,26 @@ export function computeBoosterRecoveryCommand(input = {}) {
       angularDampingPerS: 0.48,
       maxBodyRateDegS: 6.5,
       throttle: 0,
-      directionMix: { up: 0.18, retrograde: 0.16, antiTangent: 0.56 },
-      siteVectorWeight: clamp(0.10 + (0.48 * gridFinAuthority) + (0.16 * lateralErrorNorm), 0.10, 0.76),
-      siteVelocityWeight: clamp(0.08 + (0.34 * gridFinAuthority) + (0.14 * lateralClosingNeedNorm), 0.08, 0.54),
+      directionMix: {
+        up: 0.14,
+        retrograde: 0.18 + (0.10 * aeroCrossrangeDemand.aeroCorrectionNorm),
+        antiTangent: clamp(
+          0.28 + (0.34 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+          0.28,
+          0.62,
+        ),
+      },
+      siteTargetingEnabled: aeroCrossrangeDemand.targetingActive,
+      siteVectorWeight: clamp(
+        0.22 + (0.62 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+        0.18,
+        0.82,
+      ),
+      siteVelocityWeight: clamp(
+        0.14 + (0.46 * aeroCrossrangeDemand.closingNeedNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
+        0.12,
+        0.62,
+      ),
     };
   }
 

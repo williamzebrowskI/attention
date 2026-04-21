@@ -154,6 +154,16 @@ const missionControlViewBoosterButton = document.getElementById("mission-control
 const launchBoosterEngineHudNode = document.getElementById("launch-booster-engine-hud");
 const launchBoosterEngineHudClusterNode = document.getElementById("launch-booster-engine-hud-cluster");
 const launchBoosterEngineHudFuelArcNode = document.getElementById("launch-booster-engine-hud-fuel-arc");
+const launchBoosterEngineHudIgnitionValueNode = document.getElementById("launch-booster-engine-hud-ignition-value");
+const launchBoosterEngineHudChamberValueNode = document.getElementById("launch-booster-engine-hud-chamber-value");
+const launchEngineInspectorScreenNode = document.getElementById("launch-engine-inspector-screen");
+const launchEngineInspectorBackButton = document.getElementById("launch-engine-inspector-back-button");
+const launchEngineInspectorSubtitleNode = document.getElementById("launch-engine-inspector-subtitle");
+const launchEngineInspectorSummaryNode = document.getElementById("launch-engine-inspector-summary");
+const launchEngineInspectorClusterNode = document.getElementById("launch-engine-inspector-cluster");
+const launchEngineInspectorEngineTitleNode = document.getElementById("launch-engine-inspector-engine-title");
+const launchEngineInspectorEngineStatusNode = document.getElementById("launch-engine-inspector-engine-status");
+const launchEngineInspectorEngineMetricsNode = document.getElementById("launch-engine-inspector-engine-metrics");
 let launchStatusNode = document.getElementById("launch-status");
 let launchDebugNode = document.getElementById("launch-debug");
 let launchEventLogNode = document.getElementById("launch-event-log");
@@ -189,6 +199,9 @@ const LAUNCH_ENGINE_HUD_CLUSTER_CENTER_Y = 88;
 const LAUNCH_ENGINE_HUD_CLUSTER_RADIUS_PX = 56;
 const LAUNCH_ENGINE_HUD_FUEL_ARC_RADIUS_PX = 77;
 const LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE = 2 * Math.PI * LAUNCH_ENGINE_HUD_FUEL_ARC_RADIUS_PX;
+const LAUNCH_ENGINE_INSPECTOR_CLUSTER_CENTER_X = 210;
+const LAUNCH_ENGINE_INSPECTOR_CLUSTER_CENTER_Y = 210;
+const LAUNCH_ENGINE_INSPECTOR_CLUSTER_RADIUS_PX = 132;
 const LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES = createSuperHeavyEngineDescriptors(1, 0);
 const LAUNCH_ENGINE_HUD_SUPER_HEAVY_ACTIVATION_ORDER = superHeavyEngineActivationOrder(
   LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES,
@@ -201,7 +214,12 @@ const LAUNCH_ENGINE_HUD_SUPER_HEAVY_MAX_RADIUS = LAUNCH_ENGINE_HUD_SUPER_HEAVY_E
   1,
 );
 const launchBoosterEngineHudNodes = [];
+const launchEngineInspectorNodes = [];
+let launchEngineInspectorOpen = false;
+let launchEngineInspectorSelectedIndex = 0;
+let lastLaunchEngineInspectorSnapshot = null;
 initializeLaunchBoosterEngineHud();
+initializeLaunchEngineInspector();
 const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
 const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
 const LEGEND_SECTION_COLLAPSED_STORAGE_KEY_PREFIX = "galaxy_legend_section_collapsed_";
@@ -289,7 +307,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260421g";
+const FRONTEND_MODULE_VERSION = "20260421m";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -2153,8 +2171,8 @@ async function loadLaunchFeatureModules() {
   createStarshipStackVisualFn = visualsModule?.createStarshipStackVisual || null;
   starshipPhysicalRenderRadiusSceneFn = visualsModule?.starshipPhysicalRenderRadiusScene || null;
   if (!createStarshipStackVisualFn) {
-    createStarshipStackVisualFn = async (THREE, distanceScale) => (
-      createInlineStarshipStackVisual(THREE, distanceScale)
+    createStarshipStackVisualFn = async (THREE, distanceScale, options = {}) => (
+      createInlineStarshipStackVisual(THREE, distanceScale, options)
     );
   }
   if (!applyStarshipVisualStageFn) {
@@ -4118,6 +4136,280 @@ function initializeLaunchBoosterEngineHud() {
   }
 }
 
+function initializeLaunchEngineInspector() {
+  if (launchEngineInspectorClusterNode && launchEngineInspectorNodes.length <= 0 && typeof document?.createElementNS === "function") {
+    for (let i = 0; i < LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length; i += 1) {
+      const descriptor = LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES[i];
+      const circle = document.createElementNS(LAUNCH_ENGINE_HUD_SVG_NS, "circle");
+      const normalizedX = ((Number(descriptor?.x) || 0) / LAUNCH_ENGINE_HUD_SUPER_HEAVY_MAX_RADIUS);
+      const normalizedY = ((Number(descriptor?.z) || 0) / LAUNCH_ENGINE_HUD_SUPER_HEAVY_MAX_RADIUS);
+      let radiusPx = 12;
+      if (descriptor?.ring === "mid") {
+        radiusPx = 14;
+      } else if (descriptor?.ring === "core") {
+        radiusPx = 16;
+      }
+      circle.setAttribute("class", "launch-engine-inspector-engine-node state-idle");
+      circle.setAttribute(
+        "cx",
+        String(LAUNCH_ENGINE_INSPECTOR_CLUSTER_CENTER_X + (normalizedX * LAUNCH_ENGINE_INSPECTOR_CLUSTER_RADIUS_PX)),
+      );
+      circle.setAttribute(
+        "cy",
+        String(LAUNCH_ENGINE_INSPECTOR_CLUSTER_CENTER_Y + (normalizedY * LAUNCH_ENGINE_INSPECTOR_CLUSTER_RADIUS_PX)),
+      );
+      circle.setAttribute("r", String(radiusPx));
+      circle.setAttribute("data-engine-index", String(i));
+      circle.setAttribute("tabindex", "0");
+      circle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        launchEngineInspectorSelectedIndex = i;
+        updateLaunchEngineInspector(lastLaunchEngineInspectorSnapshot);
+      });
+      circle.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          launchEngineInspectorSelectedIndex = i;
+          updateLaunchEngineInspector(lastLaunchEngineInspectorSnapshot);
+        }
+      });
+      launchEngineInspectorClusterNode.appendChild(circle);
+      launchEngineInspectorNodes.push(circle);
+    }
+  }
+  if (launchBoosterEngineHudNode) {
+    launchBoosterEngineHudNode.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openLaunchEngineInspector();
+    });
+    launchBoosterEngineHudNode.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        openLaunchEngineInspector();
+      }
+    });
+  }
+  if (launchEngineInspectorBackButton) {
+    launchEngineInspectorBackButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeLaunchEngineInspector();
+    });
+  }
+  if (launchEngineInspectorScreenNode) {
+    launchEngineInspectorScreenNode.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeLaunchEngineInspector();
+      }
+    });
+  }
+}
+
+function resolveLaunchBoosterEngineInspectorTelemetry(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return { available: false };
+  }
+  const boosterAttached = Boolean(snapshot.boosterAttached) && !Boolean(snapshot.boosterActive);
+  const attachedStageZero = boosterAttached && Number(snapshot.stageIndex) <= 0 && (
+    Array.isArray(snapshot.activeEngineIndices)
+    || launchEngineHudFiniteInteger(snapshot.desiredEngineCount, 0) > 0
+    || Math.abs(Number(snapshot.thrustN) || 0) > 1
+    || String(snapshot.phase || "").trim().length > 0
+  );
+  if (attachedStageZero) {
+    return {
+      available: true,
+      sourceLabel: "Attached booster",
+      phaseLabel: String(snapshot.boosterPhase || snapshot.phase || "Attached").trim() || "Attached",
+      fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
+      activeIndices: Array.isArray(snapshot.activeEngineIndices) ? snapshot.activeEngineIndices : [],
+      flamePresentIndices: Array.isArray(snapshot.flamePresentIndices) ? snapshot.flamePresentIndices : [],
+      failedIndices: Array.isArray(snapshot.failedEngineIndices) ? snapshot.failedEngineIndices : [],
+      faultedIndices: Array.isArray(snapshot.faultedEngineIndices) ? snapshot.faultedEngineIndices : [],
+      activeCount: launchEngineHudFiniteInteger(snapshot.activeEngineCount, 0),
+      desiredCount: launchEngineHudFiniteInteger(snapshot.desiredEngineCount, 0),
+      chamberPressurePaByIndex: Array.isArray(snapshot.chamberPressurePaByIndex) ? snapshot.chamberPressurePaByIndex : [],
+      exhaustTemperatureKByIndex: Array.isArray(snapshot.exhaustTemperatureKByIndex) ? snapshot.exhaustTemperatureKByIndex : [],
+      combustionEfficiencyByIndex: Array.isArray(snapshot.combustionEfficiencyByIndex) ? snapshot.combustionEfficiencyByIndex : [],
+      turbopumpNormByIndex: Array.isArray(snapshot.turbopumpNormByIndex) ? snapshot.turbopumpNormByIndex : [],
+      engineThrustNByIndex: Array.isArray(snapshot.engineThrustNByIndex) ? snapshot.engineThrustNByIndex : [],
+      avgChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.avgChamberPressurePa),
+      maxChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.maxChamberPressurePa),
+      avgCombustionEfficiency: launchEngineHudFiniteNumberOrNull(snapshot.avgCombustionEfficiency),
+      avgTurbopumpNorm: launchEngineHudFiniteNumberOrNull(snapshot.avgTurbopumpNorm),
+      maxExhaustTemperatureK: launchEngineHudFiniteNumberOrNull(snapshot.maxExhaustTemperatureK),
+    };
+  }
+  const boosterTelemetryAvailable = (
+    Array.isArray(snapshot.boosterActiveEngineIndices)
+    || launchEngineHudFiniteInteger(snapshot.boosterDesiredEngineCount, 0) > 0
+    || Math.abs(Number(snapshot.boosterThrustN) || 0) > 1
+    || String(snapshot.boosterPhase || "").trim().length > 0
+    || Boolean(snapshot.boosterActive)
+    || Boolean(snapshot.boosterLanded)
+  );
+  if (!boosterTelemetryAvailable) {
+    return { available: false };
+  }
+  return {
+    available: true,
+    sourceLabel: snapshot.boosterActive ? "Booster recovery" : "Booster telemetry",
+    phaseLabel: String(snapshot.boosterPhase || "Booster").trim() || "Booster",
+    fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
+    activeIndices: Array.isArray(snapshot.boosterActiveEngineIndices) ? snapshot.boosterActiveEngineIndices : [],
+    flamePresentIndices: Array.isArray(snapshot.boosterFlamePresentIndices) ? snapshot.boosterFlamePresentIndices : [],
+    failedIndices: Array.isArray(snapshot.boosterFailedEngineIndices) ? snapshot.boosterFailedEngineIndices : [],
+    faultedIndices: Array.isArray(snapshot.boosterFaultedEngineIndices) ? snapshot.boosterFaultedEngineIndices : [],
+    activeCount: launchEngineHudFiniteInteger(snapshot.boosterActiveEngineCount, 0),
+    desiredCount: launchEngineHudFiniteInteger(snapshot.boosterDesiredEngineCount, 0),
+    chamberPressurePaByIndex: Array.isArray(snapshot.boosterChamberPressurePaByIndex) ? snapshot.boosterChamberPressurePaByIndex : [],
+    exhaustTemperatureKByIndex: Array.isArray(snapshot.boosterExhaustTemperatureKByIndex) ? snapshot.boosterExhaustTemperatureKByIndex : [],
+    combustionEfficiencyByIndex: Array.isArray(snapshot.boosterCombustionEfficiencyByIndex) ? snapshot.boosterCombustionEfficiencyByIndex : [],
+    turbopumpNormByIndex: Array.isArray(snapshot.boosterTurbopumpNormByIndex) ? snapshot.boosterTurbopumpNormByIndex : [],
+    engineThrustNByIndex: Array.isArray(snapshot.boosterEngineThrustNByIndex) ? snapshot.boosterEngineThrustNByIndex : [],
+    avgChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.boosterAvgChamberPressurePa),
+    maxChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.boosterMaxChamberPressurePa),
+    avgCombustionEfficiency: launchEngineHudFiniteNumberOrNull(snapshot.boosterAvgCombustionEfficiency),
+    avgTurbopumpNorm: launchEngineHudFiniteNumberOrNull(snapshot.boosterAvgTurbopumpNorm),
+    maxExhaustTemperatureK: launchEngineHudFiniteNumberOrNull(snapshot.boosterMaxExhaustTemperatureK),
+  };
+}
+
+function openLaunchEngineInspector() {
+  const telemetry = resolveLaunchBoosterEngineInspectorTelemetry(lastLaunchEngineInspectorSnapshot);
+  if (!launchEngineInspectorScreenNode || !telemetry.available) {
+    return;
+  }
+  launchEngineInspectorOpen = true;
+  launchEngineInspectorScreenNode.classList.add("visible");
+  launchEngineInspectorScreenNode.setAttribute("aria-hidden", "false");
+  updateLaunchEngineInspector(lastLaunchEngineInspectorSnapshot);
+}
+
+function closeLaunchEngineInspector() {
+  launchEngineInspectorOpen = false;
+  if (!launchEngineInspectorScreenNode) {
+    return;
+  }
+  launchEngineInspectorScreenNode.classList.remove("visible");
+  launchEngineInspectorScreenNode.setAttribute("aria-hidden", "true");
+}
+
+function launchEngineInspectorMetric(label, value) {
+  return [
+    '<article class="launch-engine-inspector-metric">',
+    `<span class="label">${escapeHtml(label)}</span>`,
+    `<strong class="value">${escapeHtml(value)}</strong>`,
+    "</article>",
+  ].join("");
+}
+
+function updateLaunchEngineInspector(snapshot) {
+  lastLaunchEngineInspectorSnapshot = snapshot || null;
+  if (!launchEngineInspectorOpen) {
+    return;
+  }
+  const telemetry = resolveLaunchBoosterEngineInspectorTelemetry(snapshot);
+  if (!launchEngineInspectorScreenNode || !telemetry.available) {
+    closeLaunchEngineInspector();
+    return;
+  }
+  const explicitActiveIndices = normalizeLaunchEngineHudIndexArray(
+    Array.isArray(telemetry.flamePresentIndices) && telemetry.flamePresentIndices.length > 0
+      ? telemetry.flamePresentIndices
+      : telemetry.activeIndices,
+    LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length,
+  );
+  const selection = resolveActiveEngineSelection({
+    descriptors: LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES,
+    activationOrder: LAUNCH_ENGINE_HUD_SUPER_HEAVY_ACTIVATION_ORDER,
+    desiredEngineCount: telemetry.desiredCount,
+  });
+  const fallbackActiveIndices = explicitActiveIndices.length <= 0 && telemetry.activeCount > 0
+    ? selection.activeIndices.slice(0, Math.min(telemetry.activeCount, selection.activeIndices.length))
+    : [];
+  const activeSet = new Set(explicitActiveIndices.length > 0 ? explicitActiveIndices : fallbackActiveIndices);
+  const faultedSet = new Set(normalizeLaunchEngineHudIndexArray([
+    ...(Array.isArray(telemetry.failedIndices) ? telemetry.failedIndices : []),
+    ...(Array.isArray(telemetry.faultedIndices) ? telemetry.faultedIndices : []),
+  ], LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length));
+  const outSet = new Set(selection.desiredIndices.filter((index) => !activeSet.has(index)));
+  for (const index of faultedSet) {
+    outSet.add(index);
+  }
+  launchEngineInspectorSelectedIndex = clamp(
+    Math.round(Number(launchEngineInspectorSelectedIndex) || 0),
+    0,
+    Math.max(0, LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length - 1),
+  );
+  const descriptor = LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES[launchEngineInspectorSelectedIndex] || LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES[0];
+  const engineId = String(descriptor?.id || `engine_${launchEngineInspectorSelectedIndex + 1}`);
+  const stateLabel = outSet.has(launchEngineInspectorSelectedIndex)
+    ? "Out"
+    : (activeSet.has(launchEngineInspectorSelectedIndex) ? "Lit" : "Standby");
+  const chamberPressurePa = Number(telemetry.chamberPressurePaByIndex?.[launchEngineInspectorSelectedIndex]);
+  const exhaustTemperatureK = Number(telemetry.exhaustTemperatureKByIndex?.[launchEngineInspectorSelectedIndex]);
+  const combustionEfficiency = Number(telemetry.combustionEfficiencyByIndex?.[launchEngineInspectorSelectedIndex]);
+  const turbopumpNorm = Number(telemetry.turbopumpNormByIndex?.[launchEngineInspectorSelectedIndex]);
+  const engineThrustN = Number(telemetry.engineThrustNByIndex?.[launchEngineInspectorSelectedIndex]);
+  const flamePresent = Array.isArray(telemetry.flamePresentIndices)
+    && telemetry.flamePresentIndices.includes(launchEngineInspectorSelectedIndex);
+
+  if (launchEngineInspectorSubtitleNode) {
+    launchEngineInspectorSubtitleNode.textContent = `${telemetry.sourceLabel} | ${telemetry.phaseLabel} | Select any engine to inspect its live chamber state.`;
+  }
+  if (launchEngineInspectorSummaryNode) {
+    const avgChamberPressurePa = Number.isFinite(telemetry.avgChamberPressurePa)
+      ? telemetry.avgChamberPressurePa
+      : telemetry.maxChamberPressurePa;
+    launchEngineInspectorSummaryNode.innerHTML = [
+      `<article class="launch-engine-inspector-summary-chip"><span class="label">Lit Engines</span><strong class="value">${activeSet.size}/${Math.max(0, telemetry.desiredCount || activeSet.size)}</strong></article>`,
+      `<article class="launch-engine-inspector-summary-chip"><span class="label">Out</span><strong class="value">${outSet.size}</strong></article>`,
+      `<article class="launch-engine-inspector-summary-chip"><span class="label">Fuel</span><strong class="value">${Number.isFinite(Number(telemetry.fuelFraction)) ? `${formatNumber(Number(telemetry.fuelFraction) * 100, 1)}%` : "n/a"}</strong></article>`,
+      `<article class="launch-engine-inspector-summary-chip"><span class="label">Chamber Avg</span><strong class="value">${Number.isFinite(avgChamberPressurePa) ? `${formatNumber(avgChamberPressurePa / 1_000_000, 1)} MPa` : "n/a"}</strong></article>`,
+    ].join("");
+  }
+  for (let i = 0; i < launchEngineInspectorNodes.length; i += 1) {
+    const node = launchEngineInspectorNodes[i];
+    const stateClass = outSet.has(i)
+      ? "state-out"
+      : (activeSet.has(i) ? "state-active" : "state-standby");
+    node.classList.remove("state-active", "state-standby", "state-out", "state-idle", "selected");
+    node.classList.add(stateClass);
+    if (i === launchEngineInspectorSelectedIndex) {
+      node.classList.add("selected");
+    }
+    const nodeStateLabel = outSet.has(i) ? "out" : (activeSet.has(i) ? "lit" : "standby");
+    node.setAttribute("aria-label", `${String(LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES[i]?.id || `engine_${i + 1}`)} ${nodeStateLabel}`);
+    node.setAttribute("title", `${String(LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES[i]?.id || `engine_${i + 1}`)} ${nodeStateLabel}`);
+  }
+  if (launchEngineInspectorEngineTitleNode) {
+    launchEngineInspectorEngineTitleNode.textContent = `${engineId.toUpperCase()} · ${String(descriptor?.ring || "ring").toUpperCase()}`;
+  }
+  if (launchEngineInspectorEngineStatusNode) {
+    launchEngineInspectorEngineStatusNode.textContent = `${stateLabel} | Flame ${flamePresent ? "present" : "off"} | Selected engine ${launchEngineInspectorSelectedIndex + 1} of ${LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length}`;
+  }
+  if (launchEngineInspectorEngineMetricsNode) {
+    launchEngineInspectorEngineMetricsNode.innerHTML = [
+      launchEngineInspectorMetric("Engine ID", engineId),
+      launchEngineInspectorMetric("Ring", String(descriptor?.ring || "outer")),
+      launchEngineInspectorMetric("State", stateLabel),
+      launchEngineInspectorMetric("Flame", flamePresent ? "Present" : "Off"),
+      launchEngineInspectorMetric("Chamber", Number.isFinite(chamberPressurePa) ? `${formatNumber(chamberPressurePa / 1_000_000, 2)} MPa` : "n/a"),
+      launchEngineInspectorMetric("Exhaust", Number.isFinite(exhaustTemperatureK) ? `${formatNumber(exhaustTemperatureK, 0)} K` : "n/a"),
+      launchEngineInspectorMetric("Thrust", Number.isFinite(engineThrustN) ? `${formatNumber(engineThrustN / 1_000, 0)} kN` : "n/a"),
+      launchEngineInspectorMetric("Combustion", Number.isFinite(combustionEfficiency) ? `${formatNumber(combustionEfficiency * 100, 1)}%` : "n/a"),
+      launchEngineInspectorMetric("Turbopump", Number.isFinite(turbopumpNorm) ? `${formatNumber(turbopumpNorm * 100, 1)}%` : "n/a"),
+      launchEngineInspectorMetric("Layout Slot", `${launchEngineInspectorSelectedIndex + 1}/33`),
+    ].join("");
+  }
+}
+
 function resolveLaunchBoosterEngineHudTelemetry(snapshot) {
   if (!snapshot || typeof snapshot !== "object") {
     return {
@@ -4130,6 +4422,8 @@ function resolveLaunchBoosterEngineHudTelemetry(snapshot) {
       flamePresentIndices: [],
       failedIndices: [],
       faultedIndices: [],
+      avgChamberPressurePa: null,
+      maxChamberPressurePa: null,
       activeCount: 0,
       desiredCount: 0,
     };
@@ -4159,6 +4453,8 @@ function resolveLaunchBoosterEngineHudTelemetry(snapshot) {
       flamePresentIndices,
       failedIndices: Array.isArray(snapshot.failedEngineIndices) ? snapshot.failedEngineIndices : [],
       faultedIndices: Array.isArray(snapshot.faultedEngineIndices) ? snapshot.faultedEngineIndices : [],
+      avgChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.avgChamberPressurePa),
+      maxChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.maxChamberPressurePa),
       activeCount,
       desiredCount,
     };
@@ -4202,6 +4498,8 @@ function resolveLaunchBoosterEngineHudTelemetry(snapshot) {
       faultedIndices: Array.isArray(snapshot.boosterFaultedEngineIndices)
         ? snapshot.boosterFaultedEngineIndices
         : [],
+      avgChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.boosterAvgChamberPressurePa),
+      maxChamberPressurePa: launchEngineHudFiniteNumberOrNull(snapshot.boosterMaxChamberPressurePa),
       activeCount: boosterActiveCount,
       desiredCount: boosterDesiredCount,
     };
@@ -4217,6 +4515,8 @@ function resolveLaunchBoosterEngineHudTelemetry(snapshot) {
       flamePresentIndices: [],
       failedIndices: [],
       faultedIndices: [],
+      avgChamberPressurePa: null,
+      maxChamberPressurePa: null,
       activeCount: 0,
       desiredCount: 0,
     };
@@ -4229,13 +4529,28 @@ function updateLaunchBoosterEngineHud(snapshot) {
   const missionControlVisible = Boolean(missionControlScreenNode?.classList?.contains("visible"));
   const telemetry = !missionControlVisible
     ? resolveLaunchBoosterEngineHudTelemetry(snapshot)
-    : { available: false, activeIndices: [], activeCount: 0, desiredCount: 0, throttle: null, thrustN: null };
+    : {
+      available: false,
+      activeIndices: [],
+      activeCount: 0,
+      desiredCount: 0,
+      throttle: null,
+      thrustN: null,
+      avgChamberPressurePa: null,
+      maxChamberPressurePa: null,
+    };
   const visible = Boolean(telemetry.available);
   launchBoosterEngineHudNode.classList.toggle("visible", visible);
   launchBoosterEngineHudNode.setAttribute("aria-hidden", visible ? "false" : "true");
   if (!visible) {
     launchBoosterEngineHudNode.classList.remove("engines-hot");
     launchBoosterEngineHudNode.removeAttribute("title");
+    if (launchBoosterEngineHudIgnitionValueNode) {
+      launchBoosterEngineHudIgnitionValueNode.textContent = "Standby";
+    }
+    if (launchBoosterEngineHudChamberValueNode) {
+      launchBoosterEngineHudChamberValueNode.textContent = "0.0 MPa";
+    }
     if (launchBoosterEngineHudFuelArcNode) {
       launchBoosterEngineHudFuelArcNode.style.strokeDasharray = `0 ${LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE.toFixed(2)}`;
     }
@@ -4281,8 +4596,20 @@ function updateLaunchBoosterEngineHud(snapshot) {
     const visibleLength = LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE * fuelFraction;
     launchBoosterEngineHudFuelArcNode.style.strokeDasharray = `${visibleLength.toFixed(2)} ${LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE.toFixed(2)}`;
   }
+  const ignitionCount = activeSet.size;
+  const chamberPressurePa = Number.isFinite(telemetry.avgChamberPressurePa)
+    ? telemetry.avgChamberPressurePa
+    : telemetry.maxChamberPressurePa;
+  if (launchBoosterEngineHudIgnitionValueNode) {
+    launchBoosterEngineHudIgnitionValueNode.textContent = `${ignitionCount}/${Math.max(0, telemetry.desiredCount || activeSet.size)} lit`;
+  }
+  if (launchBoosterEngineHudChamberValueNode) {
+    launchBoosterEngineHudChamberValueNode.textContent = Number.isFinite(chamberPressurePa) && chamberPressurePa > 0
+      ? `${formatNumber(chamberPressurePa / 1_000_000, 1)} MPa`
+      : "0.0 MPa";
+  }
   launchBoosterEngineHudNode.classList.toggle("engines-hot", enginesHot);
-  launchBoosterEngineHudNode.title = `${String(telemetry.phaseLabel || "Booster").trim() || "Booster"} | ${activeSet.size}/${LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length} active | ${outSet.size} out | Fuel ${(fuelFraction * 100).toFixed(1)}%`;
+  launchBoosterEngineHudNode.title = `${String(telemetry.phaseLabel || "Booster").trim() || "Booster"} | ${activeSet.size}/${LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length} active | ${outSet.size} out | Chamber ${Number.isFinite(chamberPressurePa) ? `${formatNumber(chamberPressurePa / 1_000_000, 1)} MPa` : "n/a"} | Fuel ${(fuelFraction * 100).toFixed(1)}%`;
 
   for (let i = 0; i < launchBoosterEngineHudNodes.length; i += 1) {
     const node = launchBoosterEngineHudNodes[i];
@@ -5816,6 +6143,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   if (!launchController) {
     launchStatusNode.textContent = fallbackLine || availabilityReason || "Launch controller unavailable.";
     updateLaunchBoosterEngineHud(null);
+    updateLaunchEngineInspector(null);
     updateLaunchMissionControlPanel(null, false);
     missionControlScreenController.render(
       null,
@@ -5842,6 +6170,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
     updateLaunchBoosterEngineHud(null);
+    updateLaunchEngineInspector(null);
     updateLaunchMissionControlPanel(null, launchActive);
     missionControlScreenController.render(
       null,
@@ -5860,6 +6189,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(earthRelativeSpeedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
     updateLaunchBoosterEngineHud(snapshot);
+    updateLaunchEngineInspector(snapshot);
     updateLaunchMissionControlPanel(snapshot, launchActive);
     missionControlScreenController.render(
       snapshot,
@@ -5873,6 +6203,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     return;
   }
   updateLaunchBoosterEngineHud(snapshot);
+  updateLaunchEngineInspector(snapshot);
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
   const throttlePct = Number.isFinite(snapshot.throttle) ? snapshot.throttle * 100 : 0;
   const guidanceLine = snapshot.guidanceDisplayMode || snapshot.autopilotMode || snapshot.guidanceMode || "guidance";
@@ -6409,11 +6740,13 @@ function updateLaunchVehicleVisuals(nowMs = Date.now()) {
   }
   const snapshot = launchController?.statusSnapshot() || null;
   updateLaunchTrajectoryPath(snapshot);
-  applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex, snapshot);
-  const stackBoosterVisible = Number(snapshot?.stageIndex) <= 0;
+  const stackSnapshot = snapshot
+    ? { ...snapshot, externalBoosterVisualActive: true }
+    : { externalBoosterVisualActive: true };
+  applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex, stackSnapshot);
   applyInlineBoosterFuelVisuals(visual.launchStackState, {
-    enabled: boosterFuelViewEnabled && stackBoosterVisible,
-    fuelFraction: stackBoosterVisible ? 1 : 0,
+    enabled: false,
+    fuelFraction: 0,
   });
 
   const velocityKmS = runtimeVelocityKmSOrLiveById(LAUNCH_BODY_ID);
@@ -6810,18 +7143,42 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   const effectNowMs = nowMs;
   const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
   const effectSceneParent = visual.root?.parent || null;
+  applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
+  applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
+    enabled: boosterFuelViewEnabled,
+    fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
+  });
+  const stackedLaunchVisual = bodyVisuals.get(LAUNCH_BODY_ID) || null;
   if (boosterAttached) {
-    if (visual.root) {
-      visual.root.visible = false;
+    if (visual.root && stackedLaunchVisual?.root?.visible) {
+      const stackState = stackedLaunchVisual.launchStackState || null;
+      const stackTilt = stackedLaunchVisual.tiltGroup?.quaternion || null;
+      const stackSpin = stackedLaunchVisual.spinGroup?.quaternion || null;
+      if (stackState && stackTilt) {
+        const hotstageBoosterOffsetScene = Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0)
+          * (Number(stackState.distanceScale) || DISTANCE_SCALE || 1);
+        const localBoosterCenterY = Number.isFinite(Number(stackState.fullBoosterCenterY))
+          ? (Number(stackState.fullBoosterCenterY) - hotstageBoosterOffsetScene)
+          : 0;
+        const attachedOffsetScene = new THREE_NS.Vector3(0, localBoosterCenterY, 0)
+          .applyQuaternion(stackTilt);
+        visual.root.position.copy(stackedLaunchVisual.root.position).add(attachedOffsetScene);
+        if (visual.tiltGroup?.quaternion) {
+          visual.tiltGroup.quaternion.copy(stackTilt);
+        }
+        if (visual.spinGroup?.quaternion && stackSpin) {
+          visual.spinGroup.quaternion.copy(stackSpin);
+        }
+      } else {
+        visual.root.position.copy(stackedLaunchVisual.root.position);
+      }
+      visual.root.visible = true;
     }
     visual.userData = visual.userData || {};
-    visual.userData.boosterWasVisible = false;
-    visual.userData.boosterVisibleAtMs = null;
-    applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
-    applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
-      enabled: false,
-      fuelFraction: 0,
-    });
+    visual.userData.boosterWasVisible = true;
+    if (!Number.isFinite(Number(visual.userData.boosterVisibleAtMs))) {
+      visual.userData.boosterVisibleAtMs = effectNowMs;
+    }
     applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
       sceneParent: effectSceneParent,
       nowMs: effectNowMs,
@@ -6833,11 +7190,7 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
     applyReentryHeatToVisual(visual, 0, true);
     return;
   }
-  applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
-  applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
-    enabled: boosterFuelViewEnabled,
-    fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
-  });
+  const atmosphereBodyVisible = true;
   if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
     visual.userData = visual.userData || {};
     visual.userData.boosterWasVisible = false;
@@ -6981,7 +7334,6 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
     if (visualVerticalHold) {
       visual.tiltGroup.quaternion.copy(targetQuaternion);
     } else if (boosterBecameVisible) {
-      const stackedLaunchVisual = bodyVisuals.get(LAUNCH_BODY_ID);
       if (stackedLaunchVisual?.tiltGroup?.quaternion) {
         visual.tiltGroup.quaternion.copy(stackedLaunchVisual.tiltGroup.quaternion);
       } else {
@@ -6990,13 +7342,14 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
       applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
         sceneParent: effectSceneParent,
         nowMs: effectNowMs,
-        bodyVisible: true,
+        bodyVisible: atmosphereBodyVisible,
         bodyWorldPosition: visual.root.getWorldPosition(new THREE_NS.Vector3()),
         earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
         earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
         renderRadiusScene: visual.renderRadius,
       });
-      const heatEligibleImmediate = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
+      const heatEligibleImmediate = atmosphereBodyVisible
+        && reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
       if (!heatEligibleImmediate) {
         applyReentryHeatToVisual(visual, 0, true);
       }
@@ -7036,7 +7389,7 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
     sceneParent: effectSceneParent,
     nowMs: effectNowMs,
-    bodyVisible: true,
+    bodyVisible: atmosphereBodyVisible,
     bodyWorldPosition: effectWorldPosition,
     bodyAtmosphereVelocityScene,
     earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
@@ -7044,7 +7397,8 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
     upDirectionScene: upScene || targetDirection || defaultAxis,
     renderRadiusScene: visual.renderRadius,
   });
-  const heatEligible = reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
+  const heatEligible = atmosphereBodyVisible
+    && reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
   if (!heatEligible) {
     applyReentryHeatToVisual(visual, 0, true);
   } else {
@@ -7510,16 +7864,19 @@ async function createSpacecraftVisual(body) {
   if (isLaunchBooster) {
     stack = createInlineBoosterVisual(THREE_NS, DISTANCE_SCALE);
   } else {
+    const stackOptions = isLaunchVehicle
+      ? { externalBoosterVisualActive: true }
+      : undefined;
     if (createStarshipStackVisualFn) {
       try {
-        stack = await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE);
+        stack = await createStarshipStackVisualFn(THREE_NS, DISTANCE_SCALE, stackOptions);
       } catch (error) {
         console.warn("[launch] Starship visual stack creation failed, using inline fallback.", error);
         stack = null;
       }
     }
     if (!stack?.root) {
-      stack = createInlineStarshipStackVisual(THREE_NS, DISTANCE_SCALE);
+      stack = createInlineStarshipStackVisual(THREE_NS, DISTANCE_SCALE, stackOptions);
     }
   }
   if (stack?.root) {
@@ -7546,8 +7903,11 @@ async function createSpacecraftVisual(body) {
     const initialSnapshot = typeof launchController?.statusSnapshotForBody === "function"
       ? (launchController.statusSnapshotForBody(nBodyState, body?.id, Date.now()) || null)
       : null;
-    const initialStageIndex = resolveFleetVisualStageIndex(body?.id, initialSnapshot);
-    applyStarshipVisualStageFn?.(stack.state, initialStageIndex, initialSnapshot);
+    const stageSnapshot = isLaunchVehicle
+      ? { ...(initialSnapshot || {}), externalBoosterVisualActive: true }
+      : initialSnapshot;
+    const initialStageIndex = resolveFleetVisualStageIndex(body?.id, stageSnapshot);
+    applyStarshipVisualStageFn?.(stack.state, initialStageIndex, stageSnapshot);
   }
 
   const lod = {
