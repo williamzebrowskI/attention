@@ -7,37 +7,19 @@ import {
   normalize,
   scale,
   subtract,
-} from "../navigationMath.js";
-import { orbitalStateFromRelative } from "../../launch/launchGuidance.js";
-import { computeOblateGravityPerturbationKmS2 } from "../../dynamics/oblateGravityPerturbation.js";
-import { computeLunarMasconAccelerationKmS2 } from "../../dynamics/lunarMasconModel.js";
-import { earthConventionalGravityModel } from "../../dynamics/earthGravityModel.js";
-import {
-  computeSolarRadiationAccelerationKmS2,
-  computeSolarShadowTransmittance,
-} from "../../dynamics/solarRadiationPressure.js";
-import {
-  buildMoonGuidanceSourceModel as buildMoonGuidanceSourceModelRuntime,
-  cloneMoonGuidanceSourceModelForCache as cloneMoonGuidanceSourceModelForCacheRuntime,
-  createLunarSourceDescriptor,
-  burnDurationForDeltaVSec as burnDurationForDeltaVSecRuntime,
-  computeMoonGuidanceAccelerationKmS2 as computeMoonGuidanceAccelerationKmS2Runtime,
-  estimateBPlaneErrorKm as estimateBPlaneErrorKmRuntime,
-  propagateMoonGuidanceState as propagateMoonGuidanceStateRuntime,
-  restoreMoonGuidanceSourceModelFromCache as restoreMoonGuidanceSourceModelFromCacheRuntime,
-  sampleMoonGuidanceSourceModelAtTimeSec as sampleMoonGuidanceSourceModelAtTimeSecRuntime,
-} from "../../runtime/index.js";
+} from "../navigation_system/navigationMath.js";
+import { earthConventionalGravityModel } from "../dynamics/earthGravityModel.js";
 
-const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
 const DEFAULT_EARTH_MASS_KG = 5.97237e24;
 const DEFAULT_MOON_MASS_KG = 7.342e22;
 const DEFAULT_SUN_MASS_KG = 1.98847e30;
 const DEFAULT_EARTH_RADIUS_KM = 6371.0084;
 const DEFAULT_MOON_RADIUS_KM = 1737.4;
 const DEFAULT_SUN_RADIUS_KM = 696340;
-const STANDARD_GRAVITY_M_S2 = 9.80665;
-const DEFAULT_EARTH_MU_KM3_S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * DEFAULT_EARTH_MASS_KG;
-const DEFAULT_MOON_MU_KM3_S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * DEFAULT_MOON_MASS_KG;
+const DEFAULT_SOURCE_EPHEMERIS_STEP_SEC = 1800;
+const DEFAULT_SOURCE_EPHEMERIS_MARGIN_SEC = 3600;
+const DEFAULT_MOON_STEP_SEC = 90;
+const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
 const DEFAULT_EARTH_J2 = earthConventionalGravityModel(Date.UTC(2000, 0, 1, 12, 0, 0, 0)).j2;
 const DEFAULT_EARTH_J3 = earthConventionalGravityModel(Date.UTC(2000, 0, 1, 12, 0, 0, 0)).j3;
 const DEFAULT_EARTH_J4 = earthConventionalGravityModel(Date.UTC(2000, 0, 1, 12, 0, 0, 0)).j4;
@@ -45,9 +27,6 @@ const DEFAULT_EARTH_J5 = earthConventionalGravityModel(Date.UTC(2000, 0, 1, 12, 
 const DEFAULT_EARTH_J6 = 5.40681239107e-7;
 const DEFAULT_MOON_J2 = 2.034e-4;
 const DEFAULT_MOON_C22 = 2.241e-5;
-const DEFAULT_MOON_STEP_SEC = 90;
-const DEFAULT_SOURCE_EPHEMERIS_STEP_SEC = 1800;
-const DEFAULT_SOURCE_EPHEMERIS_MARGIN_SEC = 3600;
 
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
@@ -83,95 +62,6 @@ function rotateAroundAxis(vector, axis, angleRad) {
   );
 }
 
-function stateVector(positionKm, velocityKmS, massKg = Number.NaN, minMassKg = Number.NaN) {
-  const resolvedMassKg = Number.isFinite(Number(massKg))
-    ? Number(massKg)
-    : Number.NaN;
-  return {
-    positionKm: finiteVector(positionKm) ? { ...positionKm } : { x: 0, y: 0, z: 0 },
-    velocityKmS: finiteVector(velocityKmS) ? { ...velocityKmS } : { x: 0, y: 0, z: 0 },
-    massKg: Number.isFinite(resolvedMassKg)
-      ? Math.max(
-        Number.isFinite(Number(minMassKg)) ? Number(minMassKg) : 0,
-        resolvedMassKg,
-      )
-      : Number.NaN,
-  };
-}
-
-function interpolateSeaToVac(vacuumValue, seaLevelValue, pressurePa = 0) {
-  const vac = Math.max(0, finiteNumber(vacuumValue, 0));
-  const sea = Math.max(0, finiteNumber(seaLevelValue, vac));
-  const clampedPressurePa = clamp(finiteNumber(pressurePa, 0), 0, 101325);
-  const blend = 1 - (clampedPressurePa / 101325);
-  return sea + ((vac - sea) * blend);
-}
-
-function resolveSpacecraftDryMassKg(spacecraft = null) {
-  if (!spacecraft || typeof spacecraft !== "object") {
-    return Number.NaN;
-  }
-  const massKg = finiteNumber(spacecraft.massKg, Number.NaN);
-  const propellantMassKg = Math.max(0, finiteNumber(spacecraft.propellantMassKg, Number.NaN));
-  const dryMassKg = finiteNumber(spacecraft.dryMassKg, Number.NaN);
-  if (Number.isFinite(dryMassKg) && dryMassKg > 0) {
-    return dryMassKg;
-  }
-  if (Number.isFinite(massKg) && Number.isFinite(propellantMassKg)) {
-    return Math.max(1, massKg - propellantMassKg);
-  }
-  return Number.NaN;
-}
-
-function resolveBurnSample({
-  sampleState = null,
-  burnCommand = null,
-  spacecraft = null,
-  sampleTimeSec = 0,
-} = {}) {
-  const zero = {
-    accelerationKmS2: { x: 0, y: 0, z: 0 },
-    massFlowKgS: 0,
-  };
-  if (!burnCommand || sampleTimeSec >= Math.max(0, finiteNumber(burnCommand.burnDurationSec, 0))) {
-    return zero;
-  }
-  const throttle = clamp(finiteNumber(burnCommand.throttle, 0), 0, 1);
-  if (!(throttle > 1e-9)) {
-    return zero;
-  }
-  const currentMassKg = Math.max(1, finiteNumber(sampleState?.massKg, spacecraft?.massKg));
-  const dryMassKg = Math.max(1, finiteNumber(resolveSpacecraftDryMassKg(spacecraft), 1));
-  if (!(currentMassKg > dryMassKg + 1e-9)) {
-    return zero;
-  }
-  const pressurePa = Math.max(0, finiteNumber(spacecraft?.ambientPressurePa, 0));
-  const thrustPerThrottleN = interpolateSeaToVac(
-    finiteNumber(spacecraft?.thrustVacuumN, 0),
-    finiteNumber(spacecraft?.thrustSeaLevelN, spacecraft?.thrustVacuumN),
-    pressurePa,
-  );
-  const ispS = interpolateSeaToVac(
-    finiteNumber(spacecraft?.ispVacuumS, 0),
-    finiteNumber(spacecraft?.ispSeaLevelS, spacecraft?.ispVacuumS),
-    pressurePa,
-  );
-  if (!(thrustPerThrottleN > 0) || !(ispS > 0)) {
-    const accelAtThrottle1 = Math.max(0, finiteNumber(burnCommand.accelAtThrottle1KmS2, 0));
-    const direction = normalize(burnCommand.direction, { x: 0, y: 1, z: 0 });
-    return {
-      accelerationKmS2: scale(direction, throttle * accelAtThrottle1),
-      massFlowKgS: 0,
-    };
-  }
-  const thrustN = thrustPerThrottleN * throttle;
-  const direction = normalize(burnCommand.direction, { x: 0, y: 1, z: 0 });
-  return {
-    accelerationKmS2: scale(direction, (thrustN / currentMassKg) / 1000),
-    massFlowKgS: Math.max(0, thrustN / (ispS * STANDARD_GRAVITY_M_S2)),
-  };
-}
-
 function pointMassAccelerationKmS2(targetPosKm, sourcePosKm, sourceMassKg) {
   if (!finiteVector(targetPosKm) || !finiteVector(sourcePosKm)) {
     return { x: 0, y: 0, z: 0 };
@@ -185,21 +75,6 @@ function pointMassAccelerationKmS2(targetPosKm, sourcePosKm, sourceMassKg) {
   const muKm3S2 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * massKg;
   const scaleFactor = -muKm3S2 / (radiusKm * radiusKm * radiusKm);
   return scale(rel, scaleFactor);
-}
-
-function thirdBodyDifferentialAccelerationKmS2({
-  targetPosKm = null,
-  sourcePosKm = null,
-  sourceMassKg = 0,
-  frameOriginPosKm = null,
-} = {}) {
-  const targetAccel = pointMassAccelerationKmS2(targetPosKm, sourcePosKm, sourceMassKg);
-  const originAccel = pointMassAccelerationKmS2(
-    finiteVector(frameOriginPosKm) ? frameOriginPosKm : { x: 0, y: 0, z: 0 },
-    sourcePosKm,
-    sourceMassKg,
-  );
-  return subtract(targetAccel, originAccel);
 }
 
 function defaultAxesForSource(sourceId, positionKm = null, velocityKmS = null) {
@@ -220,7 +95,7 @@ function defaultAxesForSource(sourceId, positionKm = null, velocityKmS = null) {
   };
 }
 
-function sourceDescriptor({
+export function createLunarSourceDescriptor({
   id,
   positionKm,
   velocityKmS,
@@ -239,29 +114,29 @@ function sourceDescriptor({
   harmonicTerms = null,
   axes = null,
 } = {}) {
-  return createLunarSourceDescriptor({
-    id,
-    positionKm,
-    velocityKmS,
-    massKg,
-    radiusKm,
-    referenceRadiusKm,
-    j2,
-    j3,
-    j4,
-    j5,
-    j6,
-    c21,
-    s21,
-    c22,
-    s22,
-    harmonicTerms,
+  return {
+    id: String(id || ""),
+    positionKm: finiteVector(positionKm) ? { ...positionKm } : { x: 0, y: 0, z: 0 },
+    velocityKmS: finiteVector(velocityKmS) ? { ...velocityKmS } : { x: 0, y: 0, z: 0 },
+    massKg: Math.max(0, finiteNumber(massKg, 0)),
+    radiusKm: Math.max(1, finiteNumber(radiusKm, 1)),
+    referenceRadiusKm: Math.max(1, finiteNumber(referenceRadiusKm, radiusKm)),
+    j2: finiteNumber(j2, 0),
+    j3: finiteNumber(j3, 0),
+    j4: finiteNumber(j4, 0),
+    j5: finiteNumber(j5, 0),
+    j6: finiteNumber(j6, 0),
+    c21: finiteNumber(c21, 0),
+    s21: finiteNumber(s21, 0),
+    c22: finiteNumber(c22, 0),
+    s22: finiteNumber(s22, 0),
+    harmonicTerms: Array.isArray(harmonicTerms) ? harmonicTerms.map((term) => ({ ...term })) : null,
     axes: axes || defaultAxesForSource(id, positionKm, velocityKmS),
-  });
+  };
 }
 
 function cloneSourceDescriptor(source) {
-  return source ? sourceDescriptor(source) : null;
+  return source ? createLunarSourceDescriptor(source) : null;
 }
 
 function cloneSourceEphemerisSample(sample = null) {
@@ -330,7 +205,7 @@ function absoluteSourceStateDescriptor(source = null) {
   if (!source || typeof source !== "object") {
     return null;
   }
-  return sourceDescriptor({
+  return createLunarSourceDescriptor({
     ...source,
     positionKm: source.positionKm,
     velocityKmS: source.velocityKmS,
@@ -350,7 +225,7 @@ function sourceDescriptorRelativeToEarth(source = null, earthSource = null, temp
   const velocityKmS = String(source.id || "") === "earth"
     ? { x: 0, y: 0, z: 0 }
     : subtract(source.velocityKmS, earthVelocityKmS);
-  return sourceDescriptor({
+  return createLunarSourceDescriptor({
     ...(template || source),
     id: String(source.id || template?.id || ""),
     positionKm,
@@ -571,7 +446,7 @@ function interpolateSourceDescriptorAtElapsedSec(sampleA, sampleB, elapsedSec = 
     normalizedTime,
     spanSec,
   );
-  return sourceDescriptor({
+  return createLunarSourceDescriptor({
     ...(fallback || first),
     id: String(first.id || fallback?.id || sourceId),
     positionKm,
@@ -586,7 +461,7 @@ function propagateMovingSourceDescriptor(source, elapsedSec = 0) {
   }
   const timeSec = finiteNumber(elapsedSec, 0);
   if (String(source.id || "") === "earth" || Math.abs(timeSec) <= 1e-9) {
-    return sourceDescriptor({
+    return createLunarSourceDescriptor({
       ...source,
       axes: defaultAxesForSource(source.id, source.positionKm, source.velocityKmS),
     });
@@ -602,7 +477,7 @@ function propagateMovingSourceDescriptor(source, elapsedSec = 0) {
   ));
   if (angularMomentumMag <= 1e-9 || tangentialSpeedKmS <= 1e-9) {
     const propagatedPositionKm = add(positionKm, scale(velocityKmS, timeSec));
-    return sourceDescriptor({
+    return createLunarSourceDescriptor({
       ...source,
       positionKm: propagatedPositionKm,
       velocityKmS,
@@ -614,7 +489,7 @@ function propagateMovingSourceDescriptor(source, elapsedSec = 0) {
   const angleRad = angularSpeedRadS * timeSec;
   const propagatedPositionKm = rotateAroundAxis(positionKm, planeNormal, angleRad);
   const propagatedVelocityKmS = rotateAroundAxis(velocityKmS, planeNormal, angleRad);
-  return sourceDescriptor({
+  return createLunarSourceDescriptor({
     ...source,
     positionKm: propagatedPositionKm,
     velocityKmS: propagatedVelocityKmS,
@@ -699,19 +574,101 @@ export function buildMoonGuidanceSourceModel({
   metrics = {},
   plannerConfig = {},
 } = {}) {
-  return buildMoonGuidanceSourceModelRuntime({
-    targetVectors,
-    metrics,
-    plannerConfig,
+  const earthGravity = earthConventionalGravityModel(
+    Number.isFinite(Number(metrics?.timestampMs)) ? Number(metrics.timestampMs) : Date.now(),
+    {
+      xpArcsec: finiteNumber(metrics.earthXpArcsec, 0),
+      ypArcsec: finiteNumber(metrics.earthYpArcsec, 0),
+    },
+  );
+  const earth = createLunarSourceDescriptor({
+    id: "earth",
+    positionKm: { x: 0, y: 0, z: 0 },
+    velocityKmS: { x: 0, y: 0, z: 0 },
+    massKg: finiteNumber(metrics.earthMassKg, DEFAULT_EARTH_MASS_KG),
+    radiusKm: finiteNumber(metrics.earthRadiusKm, DEFAULT_EARTH_RADIUS_KM),
+    referenceRadiusKm: finiteNumber(metrics.earthReferenceRadiusKm, earthGravity.equatorialRadiusKm),
+    j2: finiteNumber(metrics.earthJ2, earthGravity.j2 || DEFAULT_EARTH_J2),
+    j3: finiteNumber(metrics.earthJ3, earthGravity.j3 || DEFAULT_EARTH_J3),
+    j4: finiteNumber(metrics.earthJ4, earthGravity.j4 || DEFAULT_EARTH_J4),
+    j5: finiteNumber(metrics.earthJ5, earthGravity.j5 || DEFAULT_EARTH_J5),
+    j6: finiteNumber(metrics.earthJ6, earthGravity.j6 || DEFAULT_EARTH_J6),
+    c21: finiteNumber(metrics.earthC21, earthGravity.c21),
+    s21: finiteNumber(metrics.earthS21, earthGravity.s21),
+    c22: finiteNumber(metrics.earthC22, earthGravity.c22),
+    s22: finiteNumber(metrics.earthS22, earthGravity.s22),
+    harmonicTerms: Array.isArray(earthGravity.harmonics) ? earthGravity.harmonics : null,
   });
+  const moon = createLunarSourceDescriptor({
+    id: "moon",
+    positionKm: targetVectors.moonEarthPositionKm,
+    velocityKmS: targetVectors.moonEarthVelocityKmS,
+    massKg: finiteNumber(metrics.moonMassKg, DEFAULT_MOON_MASS_KG),
+    radiusKm: finiteNumber(metrics.moonRadiusKm, DEFAULT_MOON_RADIUS_KM),
+    referenceRadiusKm: finiteNumber(metrics.moonReferenceRadiusKm, metrics.moonRadiusKm ?? DEFAULT_MOON_RADIUS_KM),
+    j2: finiteNumber(metrics.moonJ2, DEFAULT_MOON_J2),
+    c22: finiteNumber(metrics.moonC22, DEFAULT_MOON_C22),
+    axes: defaultAxesForSource("moon", targetVectors.moonEarthPositionKm, targetVectors.moonEarthVelocityKmS),
+  });
+  const sun = finiteVector(targetVectors.sunEarthPositionKm)
+    ? createLunarSourceDescriptor({
+      id: "sun",
+      positionKm: targetVectors.sunEarthPositionKm,
+      velocityKmS: targetVectors.sunEarthVelocityKmS,
+      massKg: finiteNumber(metrics.sunMassKg, DEFAULT_SUN_MASS_KG),
+      radiusKm: finiteNumber(metrics.sunRadiusKm, DEFAULT_SUN_RADIUS_KM),
+    })
+    : null;
+  return {
+    frame: "earth-centered-inertial",
+    stepSec: Math.max(15, finiteNumber(plannerConfig.moonClosedLoopPropagationStepSec, DEFAULT_MOON_STEP_SEC)),
+    sourceEphemerisStepSec: Math.max(
+      60,
+      finiteNumber(
+        plannerConfig.moonSourceEphemerisStepSec,
+        Math.max(
+          300,
+          Math.min(
+            3600,
+            Math.max(
+              DEFAULT_SOURCE_EPHEMERIS_STEP_SEC,
+              finiteNumber(plannerConfig.moonClosedLoopPropagationStepSec, DEFAULT_MOON_STEP_SEC) * 10,
+            ),
+          ),
+        ),
+      ),
+    ),
+    sourceEphemerisMarginSec: Math.max(
+      DEFAULT_SOURCE_EPHEMERIS_MARGIN_SEC,
+      finiteNumber(plannerConfig.moonSourceEphemerisMarginSec, DEFAULT_SOURCE_EPHEMERIS_MARGIN_SEC),
+    ),
+    earth,
+    moon,
+    sun,
+  };
 }
 
-export function sampleMoonGuidanceSourceModelAtTimeSec(sources = null, elapsedSec = 0) {
-  return sampleMoonGuidanceSourceModelAtTimeSecRuntime(sources, elapsedSec);
+export function sampleMoonGuidanceSourceModelAtTimeSec(sources = null, elapsedSec = 0, cache = null) {
+  return sourceModelAtTimeSec(sources, elapsedSec, cache);
 }
 
 export function cloneMoonGuidanceSourceModelForCache(sources = null) {
-  return cloneMoonGuidanceSourceModelForCacheRuntime(sources);
+  if (!sources || typeof sources !== "object") {
+    return null;
+  }
+  return {
+    frame: String(sources.frame || "earth-centered-inertial"),
+    stepSec: Math.max(5, finiteNumber(sources.stepSec, DEFAULT_MOON_STEP_SEC)),
+    sourceEphemerisStepSec: sourceEphemerisStepSecForSources(sources),
+    sourceEphemerisMarginSec: sourceEphemerisMarginSecForSources(
+      sources,
+      sourceEphemerisStepSecForSources(sources),
+    ),
+    earth: cloneSourceDescriptor(sources.earth),
+    moon: cloneSourceDescriptor(sources.moon),
+    sun: cloneSourceDescriptor(sources.sun),
+    ephemeris: cloneSourceEphemeris(sources.ephemeris),
+  };
 }
 
 export function restoreMoonGuidanceSourceModelFromCache({
@@ -722,173 +679,91 @@ export function restoreMoonGuidanceSourceModelFromCache({
   positionToleranceKm = 2500,
   velocityToleranceKmS = 0.05,
 } = {}) {
-  return restoreMoonGuidanceSourceModelFromCacheRuntime({
-    sources,
-    cachedSources,
-    timestampSec,
-    cachedTimestampSec,
-    positionToleranceKm,
-    velocityToleranceKmS,
-  });
-}
-
-export function computeMoonGuidanceAccelerationKmS2({
-  positionKm = null,
-  velocityKmS = null,
-  sources = null,
-  spacecraft = null,
-  spacecraftMassKg = Number.NaN,
-  controlAccelerationKmS2 = null,
-} = {}) {
-  return computeMoonGuidanceAccelerationKmS2Runtime({
-    positionKm,
-    velocityKmS,
-    sources,
-    spacecraft,
-    spacecraftMassKg,
-    controlAccelerationKmS2,
-  });
-}
-
-function rk4Step(state, dtSec, sources, spacecraft, burnCommand = null, elapsedSec = 0, sourceCache = null) {
-  const dt = Math.max(0, Number(dtSec) || 0);
-  if (!(dt > 0)) {
-    return stateVector(state.positionKm, state.velocityKmS, state.massKg, resolveSpacecraftDryMassKg(spacecraft));
+  if (!sources || typeof sources !== "object" || !cachedSources || typeof cachedSources !== "object") {
+    return false;
   }
-  const derivative = (sampleState, sampleTimeSec) => {
-    const dynamicSources = sourceModelAtTimeSec(sources, sampleTimeSec, sourceCache);
-    const burnSample = resolveBurnSample({
-      sampleState,
-      burnCommand,
-      spacecraft,
-      sampleTimeSec,
-    });
-    return {
-      dPosition: sampleState.velocityKmS,
-      dVelocity: computeMoonGuidanceAccelerationKmS2({
-        positionKm: sampleState.positionKm,
-        velocityKmS: sampleState.velocityKmS,
-        sources: dynamicSources,
-        spacecraft,
-        spacecraftMassKg: sampleState.massKg,
-        controlAccelerationKmS2: burnSample.accelerationKmS2,
-      }),
-      dMassKg: -burnSample.massFlowKgS,
-    };
-  };
-  const minMassKg = resolveSpacecraftDryMassKg(spacecraft);
-
-  const k1 = derivative(state, elapsedSec);
-  const k2State = stateVector(
-    add(state.positionKm, scale(k1.dPosition, dt * 0.5)),
-    add(state.velocityKmS, scale(k1.dVelocity, dt * 0.5)),
-    finiteNumber(state.massKg, spacecraft?.massKg) + (k1.dMassKg * dt * 0.5),
-    minMassKg,
-  );
-  const k2 = derivative(k2State, elapsedSec + (dt * 0.5));
-  const k3State = stateVector(
-    add(state.positionKm, scale(k2.dPosition, dt * 0.5)),
-    add(state.velocityKmS, scale(k2.dVelocity, dt * 0.5)),
-    finiteNumber(state.massKg, spacecraft?.massKg) + (k2.dMassKg * dt * 0.5),
-    minMassKg,
-  );
-  const k3 = derivative(k3State, elapsedSec + (dt * 0.5));
-  const k4State = stateVector(
-    add(state.positionKm, scale(k3.dPosition, dt)),
-    add(state.velocityKmS, scale(k3.dVelocity, dt)),
-    finiteNumber(state.massKg, spacecraft?.massKg) + (k3.dMassKg * dt),
-    minMassKg,
-  );
-  const k4 = derivative(k4State, elapsedSec + dt);
-
-  const weightedPosition = add(
-    add(scale(k1.dPosition, 1), scale(k2.dPosition, 2)),
-    add(scale(k3.dPosition, 2), scale(k4.dPosition, 1)),
-  );
-  const weightedVelocity = add(
-    add(scale(k1.dVelocity, 1), scale(k2.dVelocity, 2)),
-    add(scale(k3.dVelocity, 2), scale(k4.dVelocity, 1)),
-  );
-  return stateVector(
-    add(state.positionKm, scale(weightedPosition, dt / 6)),
-    add(state.velocityKmS, scale(weightedVelocity, dt / 6)),
-    finiteNumber(state.massKg, spacecraft?.massKg) + (((k1.dMassKg + (2 * k2.dMassKg) + (2 * k3.dMassKg) + k4.dMassKg) * dt) / 6),
-    minMassKg,
-  );
-}
-
-export function propagateMoonGuidanceState({
-  initialState = null,
-  durationSec = 0,
-  stepSec = DEFAULT_MOON_STEP_SEC,
-  sources = null,
-  spacecraft = null,
-  burnCommand = null,
-} = {}) {
-  return propagateMoonGuidanceStateRuntime({
-    initialState,
-    durationSec,
-    stepSec,
-    sources,
-    spacecraft,
-    burnCommand,
-  });
-}
-
-export function estimateBPlaneErrorKm({
-  relativePositionKm = null,
-  relativeVelocityKmS = null,
-  targetPeriluneAltitudeKm = 120,
-  bodyRadiusKm = DEFAULT_MOON_RADIUS_KM,
-  bodyMuKm3S2 = DEFAULT_MOON_MU_KM3_S2,
-} = {}) {
-  return estimateBPlaneErrorKmRuntime({
-    relativePositionKm,
-    relativeVelocityKmS,
-    targetPeriluneAltitudeKm,
-    bodyRadiusKm,
-    bodyMuKm3S2,
-  });
-}
-
-export function burnDurationForDeltaVSec(deltaVNeedKmS, accelAtThrottle1KmS2, throttle = 1, spacecraft = null) {
-  return burnDurationForDeltaVSecRuntime(deltaVNeedKmS, accelAtThrottle1KmS2, throttle, spacecraft);
-}
-
-function burnDurationForDeltaVSecWithSpacecraft(deltaVNeedKmS, accelAtThrottle1KmS2, throttle = 1, spacecraft = null) {
-  const accel = Math.max(1e-8, finiteNumber(accelAtThrottle1KmS2, 0) * clamp(Number(throttle) || 0, 0, 1));
-  const dv = Math.max(0, finiteNumber(deltaVNeedKmS, 0));
-  const pressurePa = Math.max(0, finiteNumber(spacecraft?.ambientPressurePa, 0));
-  const thrustPerThrottleN = interpolateSeaToVac(
-    finiteNumber(spacecraft?.thrustVacuumN, 0),
-    finiteNumber(spacecraft?.thrustSeaLevelN, spacecraft?.thrustVacuumN),
-    pressurePa,
-  );
-  const ispS = interpolateSeaToVac(
-    finiteNumber(spacecraft?.ispVacuumS, 0),
-    finiteNumber(spacecraft?.ispSeaLevelS, spacecraft?.ispVacuumS),
-    pressurePa,
-  );
-  const throttleClamped = clamp(Number(throttle) || 0, 0, 1);
-  const thrustN = thrustPerThrottleN * throttleClamped;
-  const initialMassKg = Math.max(1, finiteNumber(spacecraft?.massKg, Number.NaN));
-  const dryMassKg = Math.max(1, finiteNumber(resolveSpacecraftDryMassKg(spacecraft), Number.NaN));
-  if (
-    Number.isFinite(initialMassKg)
-    && Number.isFinite(dryMassKg)
-    && initialMassKg > dryMassKg
-    && thrustN > 0
-    && ispS > 0
-  ) {
-    const exhaustVelocityMS = ispS * STANDARD_GRAVITY_M_S2;
-    const dvMS = dv * 1000;
-    const targetFinalMassKg = initialMassKg / Math.exp(dvMS / exhaustVelocityMS);
-    const boundedFinalMassKg = Math.max(dryMassKg, targetFinalMassKg);
-    const propellantUseKg = Math.max(0, initialMassKg - boundedFinalMassKg);
-    const massFlowKgS = thrustN / exhaustVelocityMS;
-    if (massFlowKgS > 0) {
-      return propellantUseKg / massFlowKgS;
+  if (!cachedSources.ephemeris || !Array.isArray(cachedSources.ephemeris.samples) || !cachedSources.ephemeris.samples.length) {
+    return false;
+  }
+  const nowSec = Number(timestampSec);
+  const cacheSec = Number(cachedTimestampSec);
+  if (!Number.isFinite(nowSec) || !Number.isFinite(cacheSec)) {
+    return false;
+  }
+  const elapsedSec = nowSec - cacheSec;
+  if (!(elapsedSec >= 0)) {
+    return false;
+  }
+  const sampled = sampleMoonGuidanceSourceModelAtTimeSec(cachedSources, elapsedSec);
+  if (!sampled) {
+    return false;
+  }
+  for (const sourceId of ["moon", "sun"]) {
+    const currentSource = sources[sourceId];
+    const cachedSource = sampled[sourceId];
+    if (!currentSource || !cachedSource) {
+      continue;
+    }
+    const positionErrorKm = length(subtract(
+      currentSource.positionKm || { x: 0, y: 0, z: 0 },
+      cachedSource.positionKm || { x: 0, y: 0, z: 0 },
+    ));
+    const velocityErrorKmS = length(subtract(
+      currentSource.velocityKmS || { x: 0, y: 0, z: 0 },
+      cachedSource.velocityKmS || { x: 0, y: 0, z: 0 },
+    ));
+    if (positionErrorKm > Math.max(1, finiteNumber(positionToleranceKm, 2500))) {
+      return false;
+    }
+    if (velocityErrorKmS > Math.max(1e-4, finiteNumber(velocityToleranceKmS, 0.05))) {
+      return false;
     }
   }
-  return dv / accel;
+
+  const cachedEphemeris = ensureSourceEphemerisCoverage(cachedSources, elapsedSec);
+  if (!cachedEphemeris || !Array.isArray(cachedEphemeris.samples) || !cachedEphemeris.samples.length) {
+    return false;
+  }
+  const shiftedSamples = [
+    {
+      elapsedSec: 0,
+      earth: cloneSourceDescriptor(sampled.earth),
+      moon: cloneSourceDescriptor(sampled.moon),
+      sun: cloneSourceDescriptor(sampled.sun),
+    },
+  ];
+  for (const sample of cachedEphemeris.samples) {
+    const sampleElapsedSec = finiteNumber(sample?.elapsedSec, Number.NaN);
+    if (!Number.isFinite(sampleElapsedSec) || sampleElapsedSec <= (elapsedSec + 1e-6)) {
+      continue;
+    }
+    shiftedSamples.push({
+      elapsedSec: sampleElapsedSec - elapsedSec,
+      earth: cloneSourceDescriptor(sample.earth),
+      moon: cloneSourceDescriptor(sample.moon),
+      sun: cloneSourceDescriptor(sample.sun),
+    });
+  }
+  sources.earth = cloneSourceDescriptor(sampled.earth || sources.earth);
+  sources.moon = cloneSourceDescriptor(sampled.moon || sources.moon);
+  sources.sun = cloneSourceDescriptor(sampled.sun || sources.sun);
+  sources.ephemeris = {
+    stepSec: Math.max(60, finiteNumber(cachedEphemeris.stepSec, sourceEphemerisStepSecForSources(cachedSources))),
+    marginSec: Math.max(60, finiteNumber(cachedEphemeris.marginSec, sourceEphemerisMarginSecForSources(cachedSources))),
+    horizonSec: Math.max(0, finiteNumber(cachedEphemeris.horizonSec, 0) - elapsedSec),
+    absoluteBodies: cachedEphemeris.absoluteBodies
+      ? {
+        earth: cloneSourceDescriptor(cachedEphemeris.absoluteBodies.earth),
+        moon: cloneSourceDescriptor(cachedEphemeris.absoluteBodies.moon),
+        sun: cloneSourceDescriptor(cachedEphemeris.absoluteBodies.sun),
+      }
+      : null,
+    samples: shiftedSamples,
+  };
+  sources.sourceEphemerisStepSec = sourceEphemerisStepSecForSources(cachedSources);
+  sources.sourceEphemerisMarginSec = sourceEphemerisMarginSecForSources(
+    cachedSources,
+    sourceEphemerisStepSecForSources(cachedSources),
+  );
+  return true;
 }

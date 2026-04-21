@@ -962,6 +962,14 @@ export function computeAutopilotCommand({
       targetAltitudeSafe * 0.55,
     );
     const highOrbitPeriGuideKm = targetAltitudeSafe * 0.52;
+    const highOrbitInitialClimbAltitudeKm = Math.max(
+      config.circularizationMinAltitudeKm,
+      targetAltitudeSafe * 0.28,
+    );
+    const highOrbitInitialApoGuideKm = Math.max(
+      targetAltitudeSafe * 0.35,
+      140,
+    );
     const highOrbitDirectInsertionActive = highOrbitTargetActive
       && (
         !apoDefined
@@ -971,6 +979,12 @@ export function computeAutopilotCommand({
         orbital.altitudeKm < highOrbitInsertionAltitudeKm
         || !periDefined
         || periapsisKm < highOrbitPeriGuideKm
+      );
+    const highOrbitInitialClimbActive = highOrbitTargetActive
+      && orbital.altitudeKm < highOrbitInitialClimbAltitudeKm
+      && (
+        !apoDefined
+        || apoapsisKm < highOrbitInitialApoGuideKm
       );
     const radialBias = highOrbitDirectInsertionActive
       ? (() => {
@@ -1019,9 +1033,64 @@ export function computeAutopilotCommand({
     );
     throttle = clamp(
       0.84 + clamp((apoDeficitKm / targetAltitudeSafe) * 0.28, -0.10, 0.14),
-      0.72,
-      config.ascentMaxThrottle,
-    );
+        0.72,
+        config.ascentMaxThrottle,
+      );
+    if (highOrbitInitialClimbActive) {
+      const climbAltitudeProgress = clamp(
+        orbital.altitudeKm / Math.max(highOrbitInitialClimbAltitudeKm, 1),
+        0,
+        1,
+      );
+      const apoProgress = apoDefined
+        ? clamp(apoapsisKm / Math.max(highOrbitInitialApoGuideKm, 1), 0, 1)
+        : 0;
+      const climbProgress = Math.max(climbAltitudeProgress, apoProgress);
+      const minimumClimbWeight = clamp(
+        0.74 - (climbProgress * 0.16),
+        0.58,
+        0.74,
+      );
+      const targetRadialSpeedKmS = clamp(
+        0.62 - (climbProgress * 0.16),
+        0.42,
+        0.62,
+      );
+      const radialSpeedDeficit = Math.max(0, targetRadialSpeedKmS - radialSpeedKmS);
+      const climbBias = clamp(
+        0.30
+          + (radialSpeedDeficit * 0.9)
+          + ((1 - apoProgress) * 0.18)
+          + ((1 - climbAltitudeProgress) * 0.12),
+        0.30,
+        0.68,
+      );
+      direction = normalize(
+        add(scale(direction, 1), scale(up, climbBias)),
+        up,
+      );
+      if (dot(direction, up) < minimumClimbWeight) {
+        direction = limitDirectionAngle({
+          desiredDirection: direction,
+          referenceDirection: up,
+          maxAngleRad: Math.acos(clamp(minimumClimbWeight, -1, 1)),
+          fallback: up,
+        }).direction;
+      }
+      const climbThrottle = clamp(
+        0.90
+          + (radialSpeedDeficit * 0.16)
+          + ((1 - apoProgress) * 0.06),
+        0.90,
+        1.0,
+      );
+      return finalizeCommand({
+        phase: "powered",
+        throttle: climbThrottle,
+        direction,
+        mode: "autopilot-high-orbit-climb",
+      });
+    }
     if (highOrbitDirectInsertionActive) {
       const highOrbitInsertionThrottle = clamp(
         0.36 + (

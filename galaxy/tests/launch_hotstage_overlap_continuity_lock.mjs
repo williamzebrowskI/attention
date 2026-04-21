@@ -2,6 +2,7 @@ import { createLaunchController } from "../app/static/js/physics/launch/launchCo
 import {
   LAUNCH_BODY_ID,
   LAUNCH_BOOSTER_BODY_ID,
+  STARSHIP_STACK_DIMENSIONS_KM,
 } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 
@@ -38,6 +39,14 @@ function dot(a, b) {
 
 function length(vector) {
   return Math.sqrt(dot(vector, vector));
+}
+
+function normalize(vector, fallback = { x: 0, y: 0, z: 1 }) {
+  const magnitude = length(vector);
+  if (!(magnitude > 1e-12)) {
+    return { ...fallback };
+  }
+  return scale(vector, 1 / magnitude);
 }
 
 function gravityAccelerationKmS2(bodyState, earthState) {
@@ -84,8 +93,8 @@ function makeState() {
   };
 }
 
-function main() {
-  const controller = createLaunchController({
+function createHarness(onEvent = null) {
+  return createLaunchController({
     getEarthRadiusKm: () => EARTH_RADIUS_KM,
     getEarthMassKg: () => EARTH_MASS_KG,
     getBodyRadiusKm: (id) => (String(id) === "moon" ? MOON_RADIUS_KM : EARTH_RADIUS_KM),
@@ -94,6 +103,16 @@ function main() {
     sampleEarthAtmosphere,
     windSeed: 1,
     gravitationalConstantKm3PerKgS2: G_KM3_KG_S2,
+    onEvent,
+  });
+}
+
+function main() {
+  let detachEvent = null;
+  const controller = createHarness((event) => {
+    if (event?.name === "stage_separation_booster_detached") {
+      detachEvent = event;
+    }
   });
 
   const state = makeState();
@@ -108,6 +127,8 @@ function main() {
   let maxGapKm = 0;
   let maxShipOffsetKm = 0;
   let maxBoosterOffsetKm = 0;
+  let persistentBoosterRef = null;
+  let boosterSeenAttached = false;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -123,6 +144,14 @@ function main() {
     controller.finalizeStep(state, DT_SEC, nowMs);
     nowMs += DT_SEC * 1000;
     const snapshot = controller.statusSnapshot(state);
+    const attachedBooster = state.dynamicBodies.get(LAUNCH_BOOSTER_BODY_ID) || null;
+
+    if (!snapshot?.boosterActive && attachedBooster) {
+      boosterSeenAttached = true;
+      if (!persistentBoosterRef) {
+        persistentBoosterRef = attachedBooster;
+      }
+    }
 
     if (snapshot?.hotstageActive) {
       overlapSeen = true;
@@ -142,6 +171,37 @@ function main() {
     }
 
     if (snapshot?.boosterActive) {
+      const separationAxis = normalize(detachEvent?.separationAxisWorldKm, null);
+      const expectedDetachDistanceKm = (
+        0.5 * STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm
+        + 0.5 * STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm
+        + (Number(detachEvent?.hotstageDisplayedGapKm) || 0)
+      );
+      assert(separationAxis, "launch_hotstage_overlap_continuity: missing detach separation axis");
+      assert(
+        Number.isFinite(expectedDetachDistanceKm) && expectedDetachDistanceKm > 0,
+        "launch_hotstage_overlap_continuity: missing expected detach distance",
+      );
+      const liveShip = state.dynamicBodies.get(LAUNCH_BODY_ID);
+      const liveBooster = state.dynamicBodies.get(LAUNCH_BOOSTER_BODY_ID);
+      assert(liveShip && liveBooster, "launch_hotstage_overlap_continuity: detached bodies unavailable");
+      assert(boosterSeenAttached, "launch_hotstage_overlap_continuity: booster body never existed before detach");
+      assert(
+        persistentBoosterRef && liveBooster === persistentBoosterRef,
+        "launch_hotstage_overlap_continuity: booster body was replaced at detach instead of being released",
+      );
+      const shipToBooster = subtract(liveBooster.position, liveShip.position);
+      const shipToBoosterDir = normalize(shipToBooster);
+      const detachAxisAlignment = dot(shipToBoosterDir, scale(separationAxis, -1));
+      const detachDistanceKm = length(shipToBooster);
+      assert(
+        detachAxisAlignment >= 0.995,
+        `launch_hotstage_overlap_continuity: detach jumped off-axis with alignment ${detachAxisAlignment}`,
+      );
+      assert(
+        Math.abs(detachDistanceKm - expectedDetachDistanceKm) <= 0.002,
+        `launch_hotstage_overlap_continuity: detach distance ${detachDistanceKm}km diverged from overlap ${expectedDetachDistanceKm}km`,
+      );
       detachSeen = true;
       break;
     }

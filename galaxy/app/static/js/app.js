@@ -12,11 +12,7 @@ import {
   assertOrbitalConfigLock,
 } from "./config/orbitalConfig.js";
 import {
-  fromPerifocalFrame,
-  getMoonOrbitalElements,
-  getOrbitalSpeedRadPerSecond,
   getRotationPeriodHours,
-  inferMeanAnomalyFromRelativeVector,
   normalizeAngle,
   rotateXZ,
   solveKepler,
@@ -29,9 +25,13 @@ import {
   createAtmosphereDynamicsController,
   earthAtmosphereSampleUS1976,
 } from "./physics/atmosphere/atmosphereDynamics.js";
-import { createSpaceWeatherProvider } from "./physics/space_weather/spaceWeatherProvider.js";
-import { createEarthEopProvider } from "./physics/dynamics/earthEopProvider.js";
-import { createLaunchWeatherProvider } from "./physics/launch/launchWeatherProvider.js";
+import { createSpaceWeatherProvider } from "./physics/space_weather/simulatedSpaceWeatherProvider.js";
+import { createEarthEopProvider } from "./physics/dynamics/simulatedEarthEopProvider.js";
+import { createLaunchWeatherProvider } from "./physics/launch/simulatedLaunchWeatherProvider.js";
+import {
+  createInternalEnvironmentForcingSnapshot,
+  normalizeEnvironmentScenario,
+} from "./physics/environment/internalEnvironmentModels.js";
 import {
   LUNAR_MASCON_MODEL_ENABLED,
   computeLunarMasconAccelerationKmS2,
@@ -59,6 +59,14 @@ import {
 } from "./physics/config/oblatenessConfig.js";
 import { RIGID_BODY_PHYSICAL_CONSTANTS } from "./physics/config/rigidBodyConstants.js";
 import {
+  createPhysicsForceModel,
+  createPhysicsIntegrator,
+  createPhysicsLaunchRuntime,
+  createPhysicsStartupRuntime,
+  isPhysicsDrivenBodyId as isPhysicsDrivenBodyIdRuntime,
+  seedPhysicsWorldStateFromSnapshot,
+} from "./physics/runtime/index.js";
+import {
   LAUNCH_AUTOPILOT_CONFIG,
   BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
@@ -80,7 +88,7 @@ import {
 import {
   createLaunchSiteStructureVisual,
   updateLaunchSiteStructureVisual,
-} from "./physics/launch/launchSiteStructures.js?v=20260420p";
+} from "./physics/launch/launchSiteStructures.js?v=20260420ai";
 import { createLaunchTrajectoryPathController } from "./physics/launch/trajectoryPath.js?v=20260420a";
 import {
   MOON_ORBIT_INJECT_ALTITUDE_KM,
@@ -261,7 +269,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420v";
+const FRONTEND_MODULE_VERSION = "20260420am";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -286,8 +294,6 @@ const LAUNCH_PERSISTENCE_STORAGE_KEY = "galaxy_launch_runtime_v1";
 const LAUNCH_PERSISTENCE_SCHEMA_VERSION = 1;
 const LAUNCH_PERSISTENCE_MAX_AGE_MS = 1000 * 60 * 60 * 72;
 const LAUNCH_PERSISTENCE_SAVE_INTERVAL_MS = 1500;
-const ORBIT_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 60;
-const LIVE_VELOCITY_PROPAGATION_MAX_SECONDS = 60 * 60 * 24 * 365;
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
 const GRAVITY_VECTORS_ENABLED = true;
 const GRAVITY_VECTOR_COLOR = 0x63ffd8;
@@ -299,6 +305,7 @@ const N_BODY_ALL_BODIES_MODE = true;
 const N_BODY_STATIC_SOURCE_IDS = new Set();
 const N_BODY_EXCLUDED_IDS = new Set();
 const N_BODY_MAX_FRAME_SECONDS = 20;
+const DYNAMIC_BODY_STABLE_SNAPSHOT_KEY = "__runtimeStableSnapshot";
 const N_BODY_STEP_SECONDS = 2;
 const N_BODY_STEP_SECONDS_LAUNCH_ACTIVE = 0.25;
 const N_BODY_STEP_SECONDS_LAUNCH_COAST = 0.75;
@@ -486,6 +493,15 @@ const SURFACE_OBSERVER_PRESETS = Object.freeze({
     longitudeDeg: DEFAULT_EARTH_LOCATION_COORDS.longitudeDeg,
     altitudeKm: 1.4,
   },
+  launch_pad: {
+    id: "launch_pad",
+    label: "Launch Pad",
+    kind: "launch_pad",
+    bodyId: "earth",
+    latitudeDeg: 0,
+    longitudeDeg: 0,
+    altitudeKm: 0.16,
+  },
   iss: {
     id: "iss",
     label: "ISS",
@@ -535,6 +551,10 @@ const EARTH_SURFACE_CAMERA_CLEARANCE_WHEN_SPACECRAFT_SELECTED_KM = 0.005;
 const BODY_LOCK_EARTH_SURFACE_ASSIST_MAX_RADIUS_FACTOR = 1.14;
 const LAUNCH_BODY_LOCK_SURFACE_ASSIST_MAX_ALTITUDE_KM = 24;
 const LAUNCH_CLOSE_VIEW_PAD_ANCHOR_MAX_ALTITUDE_KM = 2.5;
+const LAUNCH_PAD_VIEW_CAMERA_EAST_OFFSET_KM = 0.09;
+const LAUNCH_PAD_VIEW_CAMERA_NORTH_OFFSET_KM = -0.15;
+const LAUNCH_PAD_VIEW_CAMERA_UP_OFFSET_KM = 0.038;
+const LAUNCH_PAD_VIEW_TARGET_UP_OFFSET_KM = 0.034;
 const TIDAL_TARGET_CONFIG = Object.freeze([
   Object.freeze({ bodyId: "earth", sourceIds: Object.freeze(["moon", "sun"]) }),
   Object.freeze({ bodyId: "moon", sourceIds: Object.freeze(["earth", "sun"]) }),
@@ -589,7 +609,7 @@ function cloneFiniteVectorKm(v) {
 }
 
 function resolveSceneOriginKm(runtimeCoordsKm = runtimeCoordsKmById) {
-  const earthCoords = runtimeCoordsKm?.get("earth") || positionsById.get("earth")?.coordinates_km;
+  const earthCoords = runtimeCoordsKm?.get("earth") || nBodyCoordinatesKmById("earth");
   return cloneFiniteVectorKm(earthCoords) || { x: 0, y: 0, z: 0 };
 }
 
@@ -622,17 +642,6 @@ function finiteBodyState(state) {
     && finiteVectorKm(state.position)
     && finiteVectorKm(state.velocity),
   );
-}
-
-function finiteAccelerationKmS2(value) {
-  if (!finiteVectorKm(value)) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  return {
-    x: Number(value.x),
-    y: Number(value.y),
-    z: Number(value.z),
-  };
 }
 
 function safeNormalizeSceneDirection(vector, fallback) {
@@ -859,17 +868,31 @@ function getSurfaceObserverPreset(presetId = observation.surfacePresetId) {
   };
 }
 
-function updateSurfaceObserverTargetOptionLabel() {
+function syncLaunchPadSurfaceObserverPreset() {
+  const siteName = String(RUNTIME_LAUNCH_SITE?.name || "Launch Pad").trim() || "Launch Pad";
+  surfaceObserverRuntimeOverrides.set("launch_pad", {
+    latitudeDeg: Number(RUNTIME_LAUNCH_SITE?.latitudeDeg) || 0,
+    longitudeDeg: Number(RUNTIME_LAUNCH_SITE?.longitudeDeg) || 0,
+    label: `${siteName} Pad View`,
+    altitudeKm: 0.16,
+  });
+}
+
+function updateSurfaceObserverTargetOptionLabels() {
   if (!surfaceObserverTargetSelect) {
     return;
   }
-  const option = surfaceObserverTargetSelect.querySelector('option[value="my_location"]');
-  if (!option) {
-    return;
+  const liveLocationOption = surfaceObserverTargetSelect.querySelector('option[value="my_location"]');
+  if (liveLocationOption) {
+    liveLocationOption.textContent = earthLocationState.source === "gps"
+      ? "My Location (Live)"
+      : "My Location (Live • Fallback)";
   }
-  option.textContent = earthLocationState.source === "gps"
-    ? "My Location (Live)"
-    : "My Location (Live • Fallback)";
+  const launchPadOption = surfaceObserverTargetSelect.querySelector('option[value="launch_pad"]');
+  const launchPadPreset = getSurfaceObserverPreset("launch_pad");
+  if (launchPadOption && launchPadPreset) {
+    launchPadOption.textContent = String(launchPadPreset.label || "Launch Pad");
+  }
 }
 
 function updateEarthLocationMarkerPosition() {
@@ -1026,7 +1049,7 @@ function setLiveEarthLocation(latitudeDeg, longitudeDeg, source = "gps", accurac
     label,
     altitudeKm: 1.4,
   });
-  updateSurfaceObserverTargetOptionLabel();
+  updateSurfaceObserverTargetOptionLabels();
   updateEarthLocationMarkerPosition();
   updateObservationStatus();
 }
@@ -1319,6 +1342,7 @@ let legendPlanetAccordionStateById = new Map();
 let legendVehicleViewButtonsByKey = {
   starship: null,
   booster: null,
+  pad: null,
 };
 let legendLaunchMissionSelect = null;
 let stagedLaunchMissionId = "";
@@ -1338,7 +1362,6 @@ let selectedId = null;
 let detailBodyId = null;
 let textureCache = new Map();
 let photorealRetryCount = new Map();
-let orbitalStateById = new Map();
 let runtimeCoordsKmById = new Map();
 let lastSceneOriginKm = null;
 let launchSiteStructureVisual = null;
@@ -1373,7 +1396,6 @@ let reconnectTimer = null;
 let lastFrameTimestampMs = 0;
 let lastInfoRenderMs = 0;
 let lastLaunchStatusRenderMs = 0;
-let lastNBodyBacklogWarnMs = 0;
 let lastNBodyNumericWarnMs = 0;
 let lastAnimationLoopErrorMs = 0;
 let latestSolarTimestampMs = Date.now();
@@ -1405,6 +1427,22 @@ const refuelTransferVisualController = createRefuelTransferVisualController({
   getLaunchBodyId: () => LAUNCH_BODY_ID,
   clampValue: clamp,
 });
+const physicsLaunchRuntime = createPhysicsLaunchRuntime({
+  getLaunchFeatureEnabled: () => launchFeatureEnabled,
+  getLaunchController: () => launchController,
+  onWorldStateMutated: (state) => {
+    rememberAllDynamicBodyStableSnapshots(state);
+  },
+});
+const physicsStartupRuntime = createPhysicsStartupRuntime({
+  getNBodyAllBodiesMode: () => N_BODY_ALL_BODIES_MODE,
+  parseTimestampMs,
+  seedWorldStateFromSnapshot: seedPhysicsWorldStateFromSnapshot,
+  launchRuntime: physicsLaunchRuntime,
+  onWorldStateSeeded: (state) => {
+    rememberAllDynamicBodyStableSnapshots(state);
+  },
+});
 const launchVehicleDeleteController = createLaunchVehicleDeleteController({
   launchDeleteButton,
   getLaunchController: () => launchController,
@@ -1421,7 +1459,6 @@ const launchVehicleDeleteController = createLaunchVehicleDeleteController({
   getRuntimeCoordsKmById: () => runtimeCoordsKmById,
   getBodyVisuals: () => bodyVisuals,
   getOrbitVisuals: () => orbitVisuals,
-  getOrbitalStateById: () => orbitalStateById,
   getIlluminationById: () => illuminationById,
   getGravityById: () => gravityById,
   getPrimeMeridianSpinOffsetRadById: () => primeMeridianSpinOffsetRadById,
@@ -1441,6 +1478,9 @@ const launchVehicleDeleteController = createLaunchVehicleDeleteController({
   appendLaunchLogEntry,
   updateLaunchStatusPanel,
   updateLaunchControls,
+  removeVehicleById: (bodyId, nowMs = Date.now()) => (
+    physicsLaunchRuntime.removeVehicleById(nBodyState, bodyId, nowMs)
+  ),
   isDeletableVehicleId: isFleetSpacecraftVisualId,
 });
 
@@ -1950,9 +1990,7 @@ function setupSpaceWeatherProvider() {
   }
   spaceWeatherProvider = createSpaceWeatherProvider({
     refreshIntervalMs: SPACE_WEATHER_REFRESH_INTERVAL_MS,
-    onError: (error) => {
-      console.warn("[space-weather] Using cached/default values:", error);
-    },
+    scenario: normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate"),
   });
   spaceWeatherProvider.start();
 }
@@ -1963,9 +2001,7 @@ async function setupEarthEopProvider() {
   }
   earthEopProvider = createEarthEopProvider({
     refreshIntervalMs: EARTH_EOP_REFRESH_INTERVAL_MS,
-    onError: (error) => {
-      console.warn("[earth-eop] Refresh failed; using cached or analytic Earth orientation fallback:", error);
-    },
+    scenario: normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate"),
   });
   setEarthOrientationRuntimeProvider((timestampMs) => (
     earthEopProvider?.sampleOrientation?.(timestampMs) || null
@@ -1980,14 +2016,12 @@ function setupLaunchWeatherProvider() {
   }
   launchWeatherProvider = createLaunchWeatherProvider({
     refreshIntervalMs: LAUNCH_WEATHER_REFRESH_INTERVAL_MS,
+    scenario: normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate"),
     locationProvider: () => ({
       latitudeDeg: Number(RUNTIME_LAUNCH_SITE?.latitudeDeg),
       longitudeDeg: Number(RUNTIME_LAUNCH_SITE?.longitudeDeg),
       siteName: String(RUNTIME_LAUNCH_SITE?.name || "").trim(),
     }),
-    onError: (error) => {
-      console.warn("[launch-weather] Refresh failed; using cached/default launch-site weather:", error);
-    },
   });
   launchWeatherProvider.start();
 }
@@ -2162,18 +2196,22 @@ async function loadRuntimeConfig() {
     const launchSite = payload?.launch_site;
     if (launchSite && typeof launchSite === "object") {
       setRuntimeLaunchSite(launchSite);
+      syncLaunchPadSurfaceObserverPreset();
+      updateSurfaceObserverTargetOptionLabels();
     }
     const forcing = payload?.environment_forcing;
     if (forcing && typeof forcing === "object") {
-      environmentForcingSnapshot = {
-        mode: String(forcing.mode || "").trim(),
-        scenario: String(forcing.scenario || "").trim(),
-        updatedAtUtc: String(forcing.updated_at_utc || "").trim(),
-        profile: forcing.profile && typeof forcing.profile === "object" ? { ...forcing.profile } : null,
-      };
+      const updatedAtMs = Date.parse(String(forcing.updated_at_utc || "").trim());
+      environmentForcingSnapshot = createInternalEnvironmentForcingSnapshot(
+        normalizeEnvironmentScenario(forcing.scenario || "moderate"),
+        Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now(),
+      );
     }
   } catch (error) {
     console.warn("[solar-system] Using default runtime config:", error);
+  }
+  if (!environmentForcingSnapshot) {
+    environmentForcingSnapshot = createInternalEnvironmentForcingSnapshot("moderate", Date.now());
   }
   if (!launchFeatureEnabled) {
     launchControlButton?.remove();
@@ -2192,36 +2230,37 @@ function currentEnvironmentForcingSnapshot() {
 }
 
 async function setEnvironmentForcingScenario(scenario = "moderate", forceRefresh = true) {
-  const scenarioLabel = String(scenario || "").trim().toLowerCase();
-  if (!scenarioLabel) {
-    throw new Error("scenario is required");
-  }
-  const query = new URLSearchParams({
-    scenario: scenarioLabel,
-    force_refresh: forceRefresh ? "true" : "false",
-  });
-  const response = await fetch(`/api/environment-forcing?${query.toString()}`, {
-    method: "POST",
-    cache: "no-store",
-  });
-  if (!response.ok) {
-    const message = `environment forcing update failed (${response.status})`;
-    throw new Error(message);
-  }
-  const payload = await response.json();
-  environmentForcingSnapshot = {
-    mode: String(environmentForcingSnapshot?.mode || "simulated").trim() || "simulated",
-    scenario: String(payload?.scenario || scenarioLabel).trim(),
-    updatedAtUtc: String(payload?.updated_at_utc || "").trim(),
-    profile: payload?.profile && typeof payload.profile === "object" ? { ...payload.profile } : null,
-  };
-  try {
-    await Promise.all([
-      spaceWeatherProvider?.refresh?.(),
-      earthEopProvider?.refresh?.(),
-    ]);
-  } catch (error) {
-    console.warn("[environment-forcing] refresh after scenario change failed:", error);
+  const scenarioLabel = normalizeEnvironmentScenario(scenario);
+  const previousScenario = normalizeEnvironmentScenario(environmentForcingSnapshot?.scenario || "moderate");
+  environmentForcingSnapshot = createInternalEnvironmentForcingSnapshot(scenarioLabel, Date.now());
+  if (forceRefresh || scenarioLabel !== previousScenario) {
+    const refreshTasks = [];
+    if (spaceWeatherProvider) {
+      refreshTasks.push(
+        typeof spaceWeatherProvider.setScenario === "function"
+          ? spaceWeatherProvider.setScenario(scenarioLabel)
+          : spaceWeatherProvider.refresh?.(),
+      );
+    }
+    if (earthEopProvider) {
+      refreshTasks.push(
+        typeof earthEopProvider.setScenario === "function"
+          ? earthEopProvider.setScenario(scenarioLabel)
+          : earthEopProvider.refresh?.(),
+      );
+    }
+    if (launchWeatherProvider) {
+      refreshTasks.push(
+        typeof launchWeatherProvider.setScenario === "function"
+          ? launchWeatherProvider.setScenario(scenarioLabel)
+          : launchWeatherProvider.refresh?.(),
+      );
+    }
+    try {
+      await Promise.all(refreshTasks);
+    } catch (error) {
+      console.warn("[environment-forcing] refresh after scenario change failed:", error);
+    }
   }
   updateInfoOverlay();
   return currentEnvironmentForcingSnapshot();
@@ -2315,8 +2354,8 @@ async function synchronizeLaunchRuntimeArtifacts(nowMs = Date.now()) {
     return;
   }
 
-  if (Array.isArray(bodies) && bodies.length > 0 && typeof launchController.ensureCatalogBodies === "function") {
-    const mergedCatalog = launchController.ensureCatalogBodies(bodies) || bodies;
+  if (Array.isArray(bodies) && bodies.length > 0) {
+    const mergedCatalog = physicsLaunchRuntime.ensureCatalogBodies(bodies) || bodies;
     for (const bodyId of [LAUNCH_BODY_ID, LAUNCH_BOOSTER_BODY_ID]) {
       const bodyMeta = mergedCatalog.find((body) => String(body?.id || "") === String(bodyId || ""));
       if (!bodyMeta) {
@@ -2328,15 +2367,14 @@ async function synchronizeLaunchRuntimeArtifacts(nowMs = Date.now()) {
 
   if (positionsById?.size > 0 && !positionsById.has(LAUNCH_BODY_ID)) {
     const entriesById = new Map(positionsById);
-    launchController.injectStartupEntry?.(entriesById, nowMs);
+    physicsLaunchRuntime.injectStartupEntry(entriesById, nowMs);
     if (entriesById.has(LAUNCH_BODY_ID)) {
       positionsById = entriesById;
     }
   }
 
   if (nBodyState?.initialized) {
-    launchController.ensureRocketInNBody?.(nBodyState, nowMs);
-    launchController.resetToPad?.(nBodyState, nowMs, { clearFleetVehicles: true });
+    physicsLaunchRuntime.synchronizeManagedBodies(nBodyState, nowMs, { clearFleetVehicles: true });
     runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
     applyScenePositions(runtimeCoordsKmById, nowMs);
   }
@@ -2385,7 +2423,9 @@ async function ensureLaunchRuntimeReady() {
 
   if (!nBodyState?.initialized) {
     if (positionsById?.size > 0 && Array.isArray(bodies) && bodies.length > 0) {
-      initializeNBodyFromSnapshot(Date.now());
+      nBodyState = physicsStartupRuntime.seedWorldFromEntries(
+        physicsStartupSeedOptions(positionsById, Date.now()),
+      );
     }
     if (!nBodyState?.initialized) {
       try {
@@ -2579,7 +2619,7 @@ function setupScene(THREE) {
     getBodyVisual: (bodyId) => bodyVisuals.get(bodyId),
     getCoordinatesKm: (bodyId) => runtimeCoordsOrLiveById(bodyId),
     getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
-    getLiveVelocityKmS: (bodyId) => liveVelocityForBody(bodyId),
+    getLiveVelocityKmS: (bodyId) => runtimeVelocityKmSOrLiveById(bodyId),
     gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
     distanceScale: DISTANCE_SCALE,
     minBodyRadiusScene: ORBIT_MIN_DISTANCE_ABSOLUTE * 2.5,
@@ -2647,9 +2687,7 @@ async function loadBodyCatalog() {
 
   const payload = await response.json();
   const catalogBodies = payload.bodies || [];
-  bodies = launchFeatureEnabled
-    ? (launchController?.ensureCatalogBodies(catalogBodies) || catalogBodies)
-    : catalogBodies;
+  bodies = physicsLaunchRuntime.ensureCatalogBodies(catalogBodies) || catalogBodies;
   metaById = new Map(bodies.map((body) => [body.id, body]));
   gravityArrowFocusBodyId = null;
   gravityArrowsLegendActivated = false;
@@ -3253,7 +3291,7 @@ function hasVisibleBodyState(bodyId) {
 }
 
 function launchVehicleViewState() {
-  return computeLaunchVehicleViewState({
+  const viewState = computeLaunchVehicleViewState({
     inBodyLock: observation.mode === OBSERVATION_MODES.BODY_LOCK,
     selectedId,
     launchBodyId: LAUNCH_BODY_ID,
@@ -3262,6 +3300,28 @@ function launchVehicleViewState() {
     starshipAvailable: hasVisibleBodyState(LAUNCH_BODY_ID),
     boosterDetachedAvailable: hasVisibleBodyState(LAUNCH_BOOSTER_BODY_ID),
   });
+  const padActive = observation.mode === OBSERVATION_MODES.SURFACE
+    && observation.surfacePresetId === "launch_pad";
+  return {
+    ...viewState,
+    padViewAvailable: Boolean(launchFeatureEnabled && metaById.has("earth")),
+    padActive,
+    statusLine: padActive
+      ? `Pad view active. Camera anchored at ${String(RUNTIME_LAUNCH_SITE?.name || "launch pad").trim() || "launch pad"}.`
+      : viewState.statusLine,
+  };
+}
+
+function focusLegendPadView() {
+  syncLaunchPadSurfaceObserverPreset();
+  setSurfaceObserverPreset("launch_pad");
+  if (observation.mode !== OBSERVATION_MODES.SURFACE) {
+    setObservationMode(OBSERVATION_MODES.SURFACE);
+  } else {
+    updateObservationStatus();
+  }
+  updateLaunchControls();
+  updateLegendVehicleViewButtons();
 }
 
 function focusLegendVehicleView(viewMode = "starship") {
@@ -3331,6 +3391,19 @@ function createLegendVehicleViewPanel() {
   });
   row.appendChild(boosterButton);
   legendVehicleViewButtonsByKey.booster = boosterButton;
+
+  const padButton = document.createElement("button");
+  padButton.type = "button";
+  padButton.className = "legend-vehicle-view-button";
+  padButton.textContent = "Pad View";
+  padButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    markLegendInteractionGuard();
+    focusLegendPadView();
+  });
+  row.appendChild(padButton);
+  legendVehicleViewButtonsByKey.pad = padButton;
 
   panel.appendChild(row);
   const missionLabel = document.createElement("label");
@@ -4050,6 +4123,13 @@ function updateLegendVehicleViewButtons() {
     boosterButton.disabled = !viewState.boosterViewAvailable;
     boosterButton.classList.toggle("on", viewState.boosterActive);
     boosterButton.setAttribute("aria-pressed", viewState.boosterActive ? "true" : "false");
+  }
+
+  const padButton = legendVehicleViewButtonsByKey.pad;
+  if (padButton) {
+    padButton.disabled = !viewState.padViewAvailable;
+    padButton.classList.toggle("on", Boolean(viewState.padActive));
+    padButton.setAttribute("aria-pressed", viewState.padActive ? "true" : "false");
   }
   updateLegendBoosterFuelToggle();
   updateLegendTrajectoryToggle();
@@ -4838,7 +4918,7 @@ function missionLaunchRejectLabel(reason) {
 function isAsyncMoonOrbitInjectLaunch(missionId, launchMode) {
   return String(missionId || "").trim().toLowerCase() === "moon_orbit_return"
     && String(launchMode || "").trim().toLowerCase() === "orbit_inject"
-    && typeof launchController?.launchMissionShipAsync === "function";
+    && Boolean(launchController);
 }
 
 const MOON_ORBIT_INJECT_PENDING_LOG_INTERVAL_MS = 5000;
@@ -5117,7 +5197,7 @@ async function beginMoonOrbitInjectBrowserLaunch(state, missionId, launchMode, l
       key,
     });
     updateLaunchStatusPanel(true, "Moon direct inject route ready. Launching...");
-    return launchController.launchMissionShipAsync(
+    return physicsLaunchRuntime.launchMissionShipAsync(
       state,
       missionId,
       Date.now(),
@@ -5153,7 +5233,7 @@ async function requestMissionShipLaunch(state, missionId, launchMode, launchOpti
     }
     updateLaunchStatusPanel(true, "Computing best Moon inject window...");
     try {
-      let launchResult = await launchController.launchMissionShipAsync(state, missionId, Date.now(), options);
+      let launchResult = await physicsLaunchRuntime.launchMissionShipAsync(state, missionId, Date.now(), options);
       const launchReason = String(launchResult?.reason || "").trim().toLowerCase();
       if (
         !launchResult?.accepted
@@ -5181,7 +5261,7 @@ async function requestMissionShipLaunch(state, missionId, launchMode, launchOpti
           };
         }
         updateLaunchStatusPanel(true, "Moon direct inject route ready. Launching...");
-        launchResult = await launchController.launchMissionShipAsync(
+        launchResult = await physicsLaunchRuntime.launchMissionShipAsync(
           state,
           missionId,
           Date.now(),
@@ -5201,7 +5281,7 @@ async function requestMissionShipLaunch(state, missionId, launchMode, launchOpti
       };
     }
   }
-  return launchController.launchMissionShip?.(state, missionId, Date.now(), options);
+  return physicsLaunchRuntime.launchMissionShip(state, missionId, Date.now(), options);
 }
 
 function warmSelectedMissionLaunchSolve() {
@@ -5336,7 +5416,7 @@ function setupLaunchControls() {
           && String(launchResult?.vehicleRole || "").toLowerCase() === "tanker"
         ) {
           if (launchResult?.shipId) {
-            launchController.removeVehicleById?.(nBodyState, launchResult.shipId, Date.now());
+            physicsLaunchRuntime.removeVehicleById(nBodyState, launchResult.shipId, Date.now());
           }
           launchResult = await requestMissionShipLaunch(
             nBodyState,
@@ -5367,7 +5447,7 @@ function setupLaunchControls() {
           && String(launchResult?.vehicleRole || "").toLowerCase() === "tanker"
         ) {
           if (launchResult?.shipId) {
-            launchController.removeVehicleById?.(nBodyState, launchResult.shipId, Date.now());
+            physicsLaunchRuntime.removeVehicleById(nBodyState, launchResult.shipId, Date.now());
           }
           launchResult = await requestMissionShipLaunch(
             nBodyState,
@@ -5418,7 +5498,7 @@ function setupLaunchControls() {
       if (selectedMissionId) {
         launchController.setMissionProfile?.(selectedMissionId);
       }
-      const started = launchController.startLaunch(nBodyState, Date.now());
+      const started = physicsLaunchRuntime.startLaunch(nBodyState, Date.now());
       if (started) {
         resetLaunchTrajectoryPath();
         syncRuntimeScenePositionsNow(Date.now());
@@ -5458,7 +5538,7 @@ function setupLaunchControls() {
         updateLaunchStatusPanel(true, launchRuntimeReady.reason || "Reset unavailable.");
         return;
       }
-      launchController.resetToPad(nBodyState, Date.now(), { clearFleetVehicles: true });
+      physicsLaunchRuntime.resetToPad(nBodyState, Date.now(), { clearFleetVehicles: true });
       resetLaunchTrajectoryPath();
       if (observation.mode !== OBSERVATION_MODES.BODY_LOCK) {
         setObservationMode(OBSERVATION_MODES.BODY_LOCK);
@@ -5484,7 +5564,7 @@ function setupLaunchControls() {
         return;
       }
       const tankerLaunchMode = selectedTankerLaunchMode();
-      const launchResult = launchController.launchRefuelTanker?.(
+      const launchResult = physicsLaunchRuntime.launchRefuelTanker(
         nBodyState,
         Date.now(),
         { mode: tankerLaunchMode },
@@ -6485,6 +6565,48 @@ function launchVisualVerticalHoldActive(snapshot, bodyId = LAUNCH_BODY_ID) {
   );
 }
 
+function attachedBoosterVisualSnapshot(snapshot = null) {
+  if (!snapshot) {
+    return null;
+  }
+  const boosterAttached = Boolean(snapshot.boosterAttached) && !Boolean(snapshot.boosterActive);
+  if (!boosterAttached) {
+    return snapshot;
+  }
+  const stage0Active = Number(snapshot.stageIndex) <= 0;
+  return {
+    ...snapshot,
+    boosterPhase: stage0Active ? "attached-ascent" : "attached",
+    boosterGuidanceMode: String(snapshot.guidanceMode || snapshot.boosterGuidanceMode || "attached"),
+    boosterThrottle: stage0Active ? (Number(snapshot.throttle) || 0) : 0,
+    boosterThrustN: stage0Active ? (Number(snapshot.thrustN) || 0) : 0,
+    boosterPressurePa: Number.isFinite(Number(snapshot.boosterPressurePa))
+      ? Number(snapshot.boosterPressurePa)
+      : Number(snapshot.pressurePa),
+    boosterDensityKgM3: Number.isFinite(Number(snapshot.boosterDensityKgM3))
+      ? Number(snapshot.boosterDensityKgM3)
+      : Number(snapshot.densityKgM3),
+    boosterDynamicPressurePa: Number.isFinite(Number(snapshot.boosterDynamicPressurePa))
+      ? Number(snapshot.boosterDynamicPressurePa)
+      : Number(snapshot.dynamicPressurePa),
+    boosterRcsActive: Boolean(snapshot.boosterRcsActive),
+    boosterRcsErrorDeg: Number(snapshot.boosterRcsErrorDeg) || 0,
+    boosterRcsAuthority: Number(snapshot.boosterRcsAuthority) || 0,
+    boosterRcsJets: Array.isArray(snapshot.boosterRcsJets)
+      ? [...snapshot.boosterRcsJets]
+      : [],
+    boosterBodyAxisDirectionKm: finiteVectorKm(snapshot.boosterBodyAxisDirectionKm)
+      ? snapshot.boosterBodyAxisDirectionKm
+      : snapshot.bodyAxisDirectionKm,
+    boosterAltitudeKm: Number.isFinite(Number(snapshot.boosterAltitudeKm))
+      ? Number(snapshot.boosterAltitudeKm)
+      : Number(snapshot.altitudeKm),
+    boosterAltitudeAboveTerrainKm: Number.isFinite(Number(snapshot.boosterAltitudeAboveTerrainKm))
+      ? Number(snapshot.boosterAltitudeAboveTerrainKm)
+      : Number(snapshot.altitudeAboveTerrainKm),
+  };
+}
+
 function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   if (!launchFeatureEnabled || !THREE_NS) {
     return;
@@ -6493,7 +6615,9 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   if (!visual) {
     return;
   }
-  const snapshot = launchController?.statusSnapshot() || null;
+  const rawSnapshot = launchController?.statusSnapshot() || null;
+  const snapshot = attachedBoosterVisualSnapshot(rawSnapshot);
+  const boosterAttached = Boolean(snapshot?.boosterAttached) && !Boolean(snapshot?.boosterActive);
   const boosterAtmosphereSnapshot = snapshot
     ? {
         phase: snapshot.boosterPhase,
@@ -6507,6 +6631,29 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   const effectNowMs = nowMs;
   const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
   const effectSceneParent = visual.root?.parent || null;
+  if (boosterAttached) {
+    if (visual.root) {
+      visual.root.visible = false;
+    }
+    visual.userData = visual.userData || {};
+    visual.userData.boosterWasVisible = false;
+    visual.userData.boosterVisibleAtMs = null;
+    applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
+    applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
+      enabled: false,
+      fuelFraction: 0,
+    });
+    applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: false,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
+    applyReentryHeatToVisual(visual, 0, true);
+    return;
+  }
   applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
   applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
     enabled: boosterFuelViewEnabled,
@@ -6958,7 +7105,8 @@ function updateFleetSpacecraftVisuals() {
 }
 
 function setupObservationControls() {
-  updateSurfaceObserverTargetOptionLabel();
+  syncLaunchPadSurfaceObserverPreset();
+  updateSurfaceObserverTargetOptionLabels();
   if (observationModeSelect) {
     observationModeSelect.value = observation.mode;
     observationModeSelect.addEventListener("change", () => {
@@ -9030,36 +9178,44 @@ function disposeOrbitVisual(orbitVisual) {
   }
 }
 
+function physicsStartupSeedOptions(entriesById = positionsById, nowMs = Date.now()) {
+  return {
+    bodies,
+    entriesById,
+    bodyMassKgById,
+    excludedIds: N_BODY_EXCLUDED_IDS,
+    staticSourceIds: N_BODY_STATIC_SOURCE_IDS,
+    nowMs,
+    momentumAnchorId: "sun",
+    launchResetOptions: { clearFleetVehicles: true },
+  };
+}
+
 function updatePositions(payload, source = "runtime") {
   if (HORIZONS_STARTUP_FETCH_ONLY && startupSeedLocked && source !== "startup_seed") {
     return;
   }
-  const entries = payload.bodies || [];
-  const entriesById = new Map(entries.map((body) => [body.id, body]));
-  latestSolarTimestampMs = parseTimestampMs(payload.timestamp_utc);
-  if (launchFeatureEnabled) {
-    launchController?.injectStartupEntry(
-      entriesById,
-      Number.isFinite(latestSolarTimestampMs) ? latestSolarTimestampMs : Date.now(),
-    );
-  }
-  positionsById = entriesById;
+  const nowMs = Date.now();
+  const startupSeed = physicsStartupRuntime.applyStartupPayload(
+    payload,
+    physicsStartupSeedOptions(positionsById, nowMs),
+  );
+  latestSolarTimestampMs = startupSeed.timestampMs;
+  positionsById = startupSeed.entriesById;
   if (!nBodyStartupSnapshotLoaded) {
     gravityArrowFocusBodyId = null;
     gravityArrowsLegendActivated = false;
   }
   nBodyStartupSnapshotLoaded = true;
-  const nowMs = Date.now();
-  initializeNBodyFromSnapshot(nowMs);
+  nBodyState = startupSeed.worldState;
   updateLegendFallbackIndicators();
   updateLegendGravityArrowIndicators();
-  syncOrbitalStateFromSnapshot();
   runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
   applyScenePositions(runtimeCoordsKmById, nowMs);
   updateGravityVectors();
   updatePhysicsOverlays();
   updateSunlightModel();
-  updateOrbitVisualAnchorsAndPhase();
+  updateOrbitVisualAnchorsAndPhase(nowMs, runtimeCoordsKmById);
   if (launchFeatureEnabled) {
     updateLaunchControls();
     updateLaunchStatusPanel(true);
@@ -9070,103 +9226,8 @@ function updatePositions(payload, source = "runtime") {
   }
 }
 
-function parseVectorFromPayload(entry, fieldName) {
-  const value = entry?.[fieldName];
-  const x = Number(value?.x);
-  const y = Number(value?.y);
-  const z = Number(value?.z);
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-    return null;
-  }
-  return { x, y, z };
-}
-
-function neutralizeTotalMomentum(dynamicBodies, anchorId = "sun") {
-  const anchor = dynamicBodies.get(anchorId);
-  if (!anchor || !(anchor.massKg > 0)) {
-    return;
-  }
-
-  let px = 0;
-  let py = 0;
-  let pz = 0;
-  for (const body of dynamicBodies.values()) {
-    px += body.massKg * body.velocity.x;
-    py += body.massKg * body.velocity.y;
-    pz += body.massKg * body.velocity.z;
-  }
-
-  anchor.velocity.x -= px / anchor.massKg;
-  anchor.velocity.y -= py / anchor.massKg;
-  anchor.velocity.z -= pz / anchor.massKg;
-}
-
-function initializeNBodyFromSnapshot(nowMs) {
-  if (!N_BODY_ALL_BODIES_MODE) {
-    nBodyState = null;
-    return;
-  }
-
-  const dynamicBodies = new Map();
-  const staticSources = new Map();
-  for (const body of bodies) {
-    const bodyId = body.id;
-    if (N_BODY_EXCLUDED_IDS.has(bodyId)) {
-      continue;
-    }
-    const entry = positionsById.get(bodyId);
-    const position = parseVectorFromPayload(entry, "coordinates_km");
-    const massKg = bodyMassKgById(bodyId);
-    if (!position || !(massKg > 0)) {
-      continue;
-    }
-    if (N_BODY_STATIC_SOURCE_IDS.has(bodyId)) {
-      staticSources.set(bodyId, {
-        id: bodyId,
-        massKg,
-        position,
-      });
-      continue;
-    }
-    const velocity = parseVectorFromPayload(entry, "coordinates_velocity_km_s");
-    if (!velocity) {
-      continue;
-    }
-    dynamicBodies.set(bodyId, {
-      id: bodyId,
-      massKg,
-      position,
-      velocity,
-    });
-  }
-
-  if (dynamicBodies.size === 0) {
-    nBodyState = null;
-    return;
-  }
-
-  neutralizeTotalMomentum(dynamicBodies, "sun");
-
-  nBodyState = {
-    initialized: true,
-    lastUpdateMs: nowMs,
-    simulationTimeMs: nowMs,
-    integratorAccumulatorSec: 0,
-    dynamicBodies,
-    staticSources,
-  };
-  if (launchFeatureEnabled) {
-    launchController?.ensureRocketInNBody(nBodyState, nowMs);
-    launchController?.resetToPad(nBodyState, nowMs, { clearFleetVehicles: true });
-  }
-}
-
 function isNBodyDrivenBodyId(bodyId) {
-  const state = nBodyState;
-  if (!N_BODY_ALL_BODIES_MODE || !state?.initialized) {
-    return false;
-  }
-  return state.dynamicBodies.has(bodyId) || state.staticSources.has(bodyId);
+  return N_BODY_ALL_BODIES_MODE && isPhysicsDrivenBodyIdRuntime(nBodyState, bodyId);
 }
 
 function fallbackMassKgForBody(bodyId, currentMass) {
@@ -9200,6 +9261,51 @@ function cloneDynamicBodySnapshot(bodyState) {
   };
 }
 
+function dynamicBodyStableSnapshot(bodyState) {
+  const snapshot = bodyState?.[DYNAMIC_BODY_STABLE_SNAPSHOT_KEY];
+  if (
+    !snapshot
+    || !(Number(snapshot.massKg) > 0)
+    || !finiteVectorKm(snapshot.position)
+    || !finiteVectorKm(snapshot.velocity)
+  ) {
+    return null;
+  }
+  return cloneDynamicBodySnapshot({
+    id: bodyState?.id,
+    massKg: snapshot.massKg,
+    position: snapshot.position,
+    velocity: snapshot.velocity,
+  });
+}
+
+function rememberDynamicBodyStableSnapshot(bodyState, snapshotSource = bodyState) {
+  if (!bodyState || !finiteBodyState(snapshotSource)) {
+    return false;
+  }
+  Object.defineProperty(bodyState, DYNAMIC_BODY_STABLE_SNAPSHOT_KEY, {
+    value: cloneDynamicBodySnapshot({
+      id: bodyState.id,
+      massKg: snapshotSource.massKg,
+      position: snapshotSource.position,
+      velocity: snapshotSource.velocity,
+    }),
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+  return true;
+}
+
+function rememberAllDynamicBodyStableSnapshots(state) {
+  if (!(state?.dynamicBodies instanceof Map)) {
+    return;
+  }
+  for (const bodyState of state.dynamicBodies.values()) {
+    rememberDynamicBodyStableSnapshot(bodyState);
+  }
+}
+
 function restoreDynamicBodyFromSnapshot(bodyState, snapshot) {
   if (!bodyState || !snapshot) {
     return;
@@ -9215,6 +9321,7 @@ function restoreDynamicBodyFromSnapshot(bodyState, snapshot) {
     y: Number(snapshot.velocity?.y) || 0,
     z: Number(snapshot.velocity?.z) || 0,
   };
+  rememberDynamicBodyStableSnapshot(bodyState);
 }
 
 function nBodyNumericWarn(message) {
@@ -9232,26 +9339,17 @@ function sanitizeDynamicBodyState(bodyId, bodyState) {
   }
   bodyState.massKg = fallbackMassKgForBody(bodyId, bodyState.massKg);
   if (finiteVectorKm(bodyState.position) && finiteVectorKm(bodyState.velocity)) {
+    rememberDynamicBodyStableSnapshot(bodyState);
     return true;
   }
-  const entry = positionsById.get(bodyId);
-  const fallbackPosition = parseVectorFromPayload(entry, "coordinates_km");
-  const fallbackVelocity = parseVectorFromPayload(entry, "coordinates_velocity_km_s");
-  if (fallbackPosition && fallbackVelocity) {
-    bodyState.position = {
-      x: fallbackPosition.x,
-      y: fallbackPosition.y,
-      z: fallbackPosition.z,
-    };
-    bodyState.velocity = {
-      x: fallbackVelocity.x,
-      y: fallbackVelocity.y,
-      z: fallbackVelocity.z,
-    };
-    return true;
+  const stableSnapshot = dynamicBodyStableSnapshot(bodyState);
+  if (stableSnapshot) {
+    restoreDynamicBodyFromSnapshot(bodyState, stableSnapshot);
+    return false;
   }
   bodyState.position = { x: 0, y: 0, z: 0 };
   bodyState.velocity = { x: 0, y: 0, z: 0 };
+  rememberDynamicBodyStableSnapshot(bodyState);
   return false;
 }
 
@@ -9321,112 +9419,50 @@ function applyNBodyDeltaVelocityKmS(bodyId, deltaVelocityKmS) {
   target.velocity.x += dvx;
   target.velocity.y += dvy;
   target.velocity.z += dvz;
+  rememberDynamicBodyStableSnapshot(target);
 }
 
+const physicsForceModel = createPhysicsForceModel({
+  gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
+  eclipticObliquityDeg: ECLIPTIC_OBLIQUITY_DEG,
+  getMetaById: (bodyId) => metaById.get(bodyId) || null,
+  getBodyRadiusKm: (bodyId) => bodyRadiusKmById(bodyId),
+  getBodyMassKg: (bodyId) => bodyMassKgById(bodyId),
+  getRigidBodyPhysicalConstants: (bodyId) => RIGID_BODY_PHYSICAL_CONSTANTS?.[bodyId] || null,
+  getOblateGravityEnabled: () => OBLATE_GRAVITY_ENABLED,
+  getOblateGravityModel: () => OBLATE_GRAVITY_MODEL,
+  getLunarMasconModelEnabled: () => LUNAR_MASCON_MODEL_ENABLED,
+  getEarthSolidTideEnabled: () => EARTH_SOLID_TIDE_ENABLED,
+  getEarthSolidTideSourceBodyIds: () => EARTH_SOLID_TIDE_SOURCE_BODY_IDS,
+  getSolarRadiationPressureEnabled: () => SOLAR_RADIATION_PRESSURE_ENABLED,
+  getAtmosphereDynamicsController: () => atmosphereDynamicsController,
+  isLaunchFeatureEnabled: () => launchFeatureEnabled,
+  getLaunchController: () => launchController,
+  earthConventionalGravityModel,
+  currentPoleEquatorialDegForBody: (bodyId, timestampMs = Date.now()) => (
+    currentPoleEquatorialDegForBody(bodyId, timestampMs)
+  ),
+  equatorialPoleToEclipticVector,
+  primeMeridianModelForBody,
+  modelTimestampMs,
+  julianDayFromUnixMs,
+  normalizeDegrees,
+  rad,
+  estimateEarthOrientationParameters,
+  applyEarthOrientationToAxes,
+  computeOblateGravityPerturbationKmS2,
+  computeEarthSolidTidePerturbationKmS2,
+  computeLunarMasconAccelerationKmS2,
+  computeSolarShadowTransmittance,
+  computeSolarRadiationAccelerationKmS2,
+});
+
 function oblateModelForBody(bodyId, timestampMs = Date.now(), earthOrientation = null) {
-  if (!OBLATE_GRAVITY_ENABLED) {
-    return null;
-  }
-  const staticModel = OBLATE_GRAVITY_MODEL?.[bodyId] || null;
-  const earthDynamicModel = bodyId === "earth"
-    ? earthConventionalGravityModel(timestampMs, earthOrientation)
-    : null;
-  const model = earthDynamicModel || staticModel;
-  const fallbackRadius = Number(metaById.get(bodyId)?.radius_km);
-  const equatorialRadiusKm = Number(model?.equatorialRadiusKm);
-  const referenceRadiusKm =
-    Number.isFinite(equatorialRadiusKm) && equatorialRadiusKm > 0
-      ? equatorialRadiusKm
-      : (Number.isFinite(fallbackRadius) && fallbackRadius > 0 ? fallbackRadius : null);
-  if (!(referenceRadiusKm > 0)) {
-    return null;
-  }
-
-  const j2 = Number(model?.j2);
-  const j3 = Number(model?.j3);
-  const j4 = Number(model?.j4);
-  const j5 = Number(model?.j5);
-  const j6 = Number(model?.j6);
-  const c21 = Number(model?.c21);
-  const s21 = Number(model?.s21);
-  const c22 = Number(model?.c22);
-  const s22 = Number(model?.s22);
-  const effectiveC21 = Number.isFinite(c21) ? c21 : 0;
-  const effectiveS21 = Number.isFinite(s21) ? s21 : 0;
-  let effectiveC22 = Number.isFinite(c22) ? c22 : 0;
-  let effectiveS22 = Number.isFinite(s22) ? s22 : 0;
-
-  if (!Number.isFinite(c22) || !Number.isFinite(s22)) {
-    const rigidConstants = RIGID_BODY_PHYSICAL_CONSTANTS?.[bodyId];
-    const principalMoments = rigidConstants?.principalMomentsKgKm2;
-    const aMoment = Number(principalMoments?.A);
-    const bMoment = Number(principalMoments?.B);
-    const massKg = Number(metaById.get(bodyId)?.mass_kg);
-    const mr2 = massKg * referenceRadiusKm * referenceRadiusKm;
-    if (
-      Number.isFinite(aMoment) &&
-      Number.isFinite(bMoment) &&
-      Number.isFinite(massKg) &&
-      mr2 > 0
-    ) {
-      // Principal-axis approximation for unmodeled tesseral terms.
-      const derivedC22 = (bMoment - aMoment) / (4 * mr2);
-      if (!Number.isFinite(c22) && Number.isFinite(derivedC22)) {
-        effectiveC22 = derivedC22;
-      }
-      if (!Number.isFinite(s22)) {
-        effectiveS22 = 0;
-      }
-    }
-  }
-
-  const effectiveJ2 = Number.isFinite(j2) ? j2 : 0;
-  const effectiveJ3 = Number.isFinite(j3) ? j3 : 0;
-  const effectiveJ4 = Number.isFinite(j4) ? j4 : 0;
-  const effectiveJ5 = Number.isFinite(j5) ? j5 : 0;
-  const effectiveJ6 = Number.isFinite(j6) ? j6 : 0;
-  const hasNonZeroHarmonic =
-    Math.abs(effectiveJ2) > 1e-20 ||
-    Math.abs(effectiveJ3) > 1e-20 ||
-    Math.abs(effectiveJ4) > 1e-20 ||
-    Math.abs(effectiveJ5) > 1e-20 ||
-    Math.abs(effectiveJ6) > 1e-20 ||
-    Math.abs(effectiveC21) > 1e-20 ||
-    Math.abs(effectiveS21) > 1e-20 ||
-    Math.abs(effectiveC22) > 1e-20 ||
-    Math.abs(effectiveS22) > 1e-20;
-  if (!hasNonZeroHarmonic) {
-    return null;
-  }
-
-  return {
-    source: String(model?.source || ""),
-    j2: effectiveJ2,
-    j3: effectiveJ3,
-    j4: effectiveJ4,
-    j5: effectiveJ5,
-    j6: effectiveJ6,
-    c21: effectiveC21,
-    s21: effectiveS21,
-    c22: effectiveC22,
-    s22: effectiveS22,
-    harmonics: Array.isArray(model?.harmonics)
-      ? model.harmonics.map((term) => ({ ...term }))
-      : null,
-    referenceRadiusKm,
-  };
+  return physicsForceModel.oblateModelForBody(bodyId, timestampMs, earthOrientation);
 }
 
 function sourcePoleUnitVectorEclipticForBody(bodyId, timestampMs = Date.now()) {
-  const pole = currentPoleEquatorialDegForBody(bodyId, timestampMs);
-  if (!pole) {
-    return null;
-  }
-  return equatorialPoleToEclipticVector(
-    Number(pole.raDeg),
-    Number(pole.decDeg),
-    ECLIPTIC_OBLIQUITY_DEG,
-  );
+  return physicsForceModel.sourcePoleUnitVectorEclipticForBody(bodyId, timestampMs);
 }
 
 function dotVector3(a, b) {
@@ -9458,144 +9494,15 @@ function normalizeVector3OrNull(vector) {
 }
 
 function sourceBodyFixedAxesEclipticForBody(bodyId, pole, timestampMs = Date.now()) {
-  const poleUnit = normalizeVector3OrNull(pole);
-  if (!poleUnit) {
-    return null;
-  }
-
-  const buildBaseAxis = (reference) => {
-    const projection = dotVector3(reference, poleUnit);
-    return normalizeVector3OrNull({
-      x: reference.x - (projection * poleUnit.x),
-      y: reference.y - (projection * poleUnit.y),
-      z: reference.z - (projection * poleUnit.z),
-    });
-  };
-
-  let xBase = buildBaseAxis({ x: 1, y: 0, z: 0 });
-  if (!xBase) {
-    xBase = buildBaseAxis({ x: 0, y: 1, z: 0 });
-  }
-  if (!xBase) {
-    return null;
-  }
-  const yBase = normalizeVector3OrNull(crossVector3(poleUnit, xBase));
-  if (!yBase) {
-    return null;
-  }
-
-  const body = metaById.get(bodyId);
-  const spinModel = primeMeridianModelForBody(body);
-  let spinAngleRad = 0;
-  let earthOrientation = null;
-  if (spinModel) {
-    const daysSinceJ2000 = julianDayFromUnixMs(modelTimestampMs(timestampMs)) - 2_451_545.0;
-    spinAngleRad = rad(normalizeDegrees(
-      spinModel.w0Deg + (spinModel.wRateDegPerDay * daysSinceJ2000),
-    ));
-  }
-  if (bodyId === "earth") {
-    earthOrientation = estimateEarthOrientationParameters(timestampMs);
-    spinAngleRad += Number(earthOrientation?.dut1Rad) || 0;
-  }
-
-  const c = Math.cos(spinAngleRad);
-  const s = Math.sin(spinAngleRad);
-  const xAxis = normalizeVector3OrNull({
-    x: (xBase.x * c) + (yBase.x * s),
-    y: (xBase.y * c) + (yBase.y * s),
-    z: (xBase.z * c) + (yBase.z * s),
-  });
-  const yAxis = normalizeVector3OrNull({
-    x: (yBase.x * c) - (xBase.x * s),
-    y: (yBase.y * c) - (xBase.y * s),
-    z: (yBase.z * c) - (xBase.z * s),
-  });
-  if (!xAxis || !yAxis) {
-    return null;
-  }
-  if (bodyId === "earth") {
-    const adjusted = applyEarthOrientationToAxes({
-      xAxis,
-      yAxis,
-      pole: poleUnit,
-      orientation: earthOrientation,
-    });
-    return {
-      xAxis: adjusted?.xAxis || xAxis,
-      yAxis: adjusted?.yAxis || yAxis,
-      pole: adjusted?.pole || poleUnit,
-      earthOrientation: adjusted
-        ? {
-            source: adjusted.orientationSource,
-            dut1Sec: adjusted.dut1Sec,
-            xpArcsec: adjusted.xpArcsec,
-            ypArcsec: adjusted.ypArcsec,
-            precessionLongitudeArcsec: adjusted.precessionLongitudeArcsec,
-            precessionObliquityArcsec: adjusted.precessionObliquityArcsec,
-            nutationLongitudeArcsec: adjusted.nutationLongitudeArcsec,
-            nutationObliquityArcsec: adjusted.nutationObliquityArcsec,
-            lodSec: adjusted.lodSec,
-          }
-        : null,
-    };
-  }
-  return { xAxis, yAxis, pole: poleUnit };
+  return physicsForceModel.sourceBodyFixedAxesEclipticForBody(bodyId, pole, timestampMs);
 }
 
 function buildOblateSourceContextMapFromIds(sourceIds, timestampMs = Date.now()) {
-  const contextById = new Map();
-  if (!OBLATE_GRAVITY_ENABLED && !LUNAR_MASCON_MODEL_ENABLED) {
-    return contextById;
-  }
-  for (const sourceId of sourceIds || []) {
-    if (!sourceId || contextById.has(sourceId)) {
-      continue;
-    }
-    const useLunarMasconAxes = LUNAR_MASCON_MODEL_ENABLED && sourceId === "moon";
-    const pole = sourcePoleUnitVectorEclipticForBody(sourceId, timestampMs);
-    if (!pole) {
-      continue;
-    }
-    const fixedAxes = sourceBodyFixedAxesEclipticForBody(sourceId, pole, timestampMs);
-    const model = oblateModelForBody(sourceId, timestampMs, fixedAxes?.earthOrientation || null);
-    if (!model && !useLunarMasconAxes) {
-      continue;
-    }
-    const fallbackRadiusKm = Number(metaById.get(sourceId)?.radius_km) || 0;
-    const effectivePole = fixedAxes?.pole || pole;
-    contextById.set(sourceId, {
-      j2: Number(model?.j2) || 0,
-      j3: Number(model?.j3) || 0,
-      j4: Number(model?.j4) || 0,
-      j5: Number(model?.j5) || 0,
-      j6: Number(model?.j6) || 0,
-      c21: Number(model?.c21) || 0,
-      s21: Number(model?.s21) || 0,
-      c22: Number(model?.c22) || 0,
-      s22: Number(model?.s22) || 0,
-      harmonics: Array.isArray(model?.harmonics) ? model.harmonics.map((term) => ({ ...term })) : null,
-      referenceRadiusKm: Number(model?.referenceRadiusKm) || fallbackRadiusKm || 1737.4,
-      gravityModelSource: String(model?.source || ""),
-      pole: effectivePole,
-      xAxis: fixedAxes?.xAxis || null,
-      yAxis: fixedAxes?.yAxis || null,
-      earthOrientation: fixedAxes?.earthOrientation || null,
-      lunarMasconEnabled: useLunarMasconAxes,
-    });
-  }
-  return contextById;
+  return physicsForceModel.buildOblateSourceContextMapFromIds(sourceIds, timestampMs);
 }
 
 function buildOblateSourceContextMapForNBody(state, timestampMs = Date.now()) {
-  const sourceIds = [];
-  for (const sourceId of state?.dynamicBodies?.keys?.() || []) {
-    sourceIds.push(sourceId);
-  }
-  for (const sourceId of state?.staticSources?.keys?.() || []) {
-    sourceIds.push(sourceId);
-  }
-  return buildOblateSourceContextMapFromIds(sourceIds, timestampMs);
+  return physicsForceModel.buildOblateSourceContextMapForNBody(state, timestampMs);
 }
 
 function computeGravityAccelerationFromSource(
@@ -9606,311 +9513,58 @@ function computeGravityAccelerationFromSource(
   oblateSourceContextById = null,
   sourceEnvironment = null,
 ) {
-  if (!(sourceMassKg > 0) || !targetPos || !sourcePos) {
-    return { x: 0, y: 0, z: 0 };
-  }
-
-  const rx = targetPos.x - sourcePos.x;
-  const ry = targetPos.y - sourcePos.y;
-  const rz = targetPos.z - sourcePos.z;
-  const radiusSq = (rx * rx) + (ry * ry) + (rz * rz);
-  if (!(radiusSq > 1e-10)) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const radius = Math.sqrt(radiusSq);
-  const invRadius = 1 / radius;
-  const invRadiusCubed = invRadius / radiusSq;
-  const muOverR3 = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * sourceMassKg * invRadiusCubed;
-
-  let ax = -muOverR3 * rx;
-  let ay = -muOverR3 * ry;
-  let az = -muOverR3 * rz;
-
-  const oblate = oblateSourceContextById?.get(sourceId);
-  if (oblate) {
-    const oblatePerturbation = computeOblateGravityPerturbationKmS2({
-      relPosKm: { x: rx, y: ry, z: rz },
-      radiusKm: radius,
-      muOverR3,
-      referenceRadiusKm: Number(oblate.referenceRadiusKm) || 0,
-      pole: oblate.pole,
-      xAxis: oblate.xAxis,
-      yAxis: oblate.yAxis,
-      j2: Number(oblate.j2) || 0,
-      j3: Number(oblate.j3) || 0,
-      j4: Number(oblate.j4) || 0,
-      j5: Number(oblate.j5) || 0,
-      j6: Number(oblate.j6) || 0,
-      c21: Number(oblate.c21) || 0,
-      s21: Number(oblate.s21) || 0,
-      c22: Number(oblate.c22) || 0,
-      s22: Number(oblate.s22) || 0,
-      harmonicTerms: Array.isArray(oblate.harmonics) ? oblate.harmonics : null,
-    });
-    ax += Number(oblatePerturbation.x) || 0;
-    ay += Number(oblatePerturbation.y) || 0;
-    az += Number(oblatePerturbation.z) || 0;
-  }
-
-  if (EARTH_SOLID_TIDE_ENABLED && sourceId === "earth") {
-    const sourceStateLookup = typeof sourceEnvironment?.getBodyState === "function"
-      ? sourceEnvironment.getBodyState
-      : null;
-    const tideRaisingBodies = [];
-    for (const bodyId of EARTH_SOLID_TIDE_SOURCE_BODY_IDS) {
-      const bodyState = sourceStateLookup?.(bodyId);
-      const positionKm = finiteVectorKm(bodyState?.position)
-        ? bodyState.position
-        : (
-          finiteVectorKm(bodyState)
-            ? bodyState
-            : null
-        );
-      const bodyMassKg = Number(bodyState?.massKg) || bodyMassKgById(bodyId);
-      if (!positionKm || !(bodyMassKg > 0)) {
-        continue;
-      }
-      tideRaisingBodies.push({ positionKm, massKg: bodyMassKg });
-    }
-    if (tideRaisingBodies.length > 0) {
-      const earthRadiusKm = Number(oblate?.referenceRadiusKm) || bodyRadiusKmById("earth") || 6378.137;
-      const tidePerturbation = computeEarthSolidTidePerturbationKmS2({
-        targetPosKm: targetPos,
-        earthPosKm: sourcePos,
-        earthRadiusKm,
-        gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
-        tideRaisingBodies,
-      });
-      ax += Number(tidePerturbation.x) || 0;
-      ay += Number(tidePerturbation.y) || 0;
-      az += Number(tidePerturbation.z) || 0;
-    }
-  }
-
-  if (
-    LUNAR_MASCON_MODEL_ENABLED
-    && sourceId === "moon"
-    && oblate?.xAxis
-    && oblate?.yAxis
-    && oblate?.pole
-  ) {
-    const masconAcceleration = computeLunarMasconAccelerationKmS2({
-      targetPosKm: targetPos,
-      moonCenterPosKm: sourcePos,
-      moonMassKg: sourceMassKg,
-      moonRadiusKm: Number(oblate.referenceRadiusKm) || bodyRadiusKmById("moon") || 1737.4,
-      moonAxes: {
-        xAxis: oblate.xAxis,
-        yAxis: oblate.yAxis,
-        pole: oblate.pole,
-      },
-      gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
-    });
-    if (
-      Number.isFinite(masconAcceleration.x)
-      && Number.isFinite(masconAcceleration.y)
-      && Number.isFinite(masconAcceleration.z)
-    ) {
-      ax += masconAcceleration.x;
-      ay += masconAcceleration.y;
-      az += masconAcceleration.z;
-    }
-  }
-
-  return { x: ax, y: ay, z: az };
+  return physicsForceModel.computeGravityAccelerationFromSource(
+    targetPos,
+    sourceId,
+    sourceMassKg,
+    sourcePos,
+    oblateSourceContextById,
+    sourceEnvironment,
+  );
 }
 
 function computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById = null) {
-  const target = state?.dynamicBodies?.get(targetId);
-  if (!target?.position) {
-    return { x: 0, y: 0, z: 0 };
-  }
-
-  let ax = 0;
-  let ay = 0;
-  let az = 0;
-  const targetPos = target.position;
-
-  const sourceEnvironment = {
-    getBodyState: (sourceId) => (
-      state?.dynamicBodies?.get(sourceId)
-      || state?.staticSources?.get(sourceId)
-      || null
-    ),
-  };
-  const addSourceAcceleration = (sourceId, sourceMassKg, sourcePos) => {
-    const contribution = computeGravityAccelerationFromSource(
-      targetPos,
-      sourceId,
-      sourceMassKg,
-      sourcePos,
-      oblateSourceContextById,
-      sourceEnvironment,
-    );
-    ax += contribution.x;
-    ay += contribution.y;
-    az += contribution.z;
-  };
-
-  for (const [sourceId, source] of state.dynamicBodies.entries()) {
-    if (sourceId === targetId) {
-      continue;
-    }
-    addSourceAcceleration(sourceId, source.massKg, source.position);
-  }
-  for (const [sourceId, source] of state.staticSources.entries()) {
-    addSourceAcceleration(sourceId, source.massKg, source.position);
-  }
-
-  return { x: ax, y: ay, z: az };
+  return physicsForceModel.computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById);
 }
 
 function computeNBodySolarRadiationAccelerationForTarget(state, targetId) {
-  if (!SOLAR_RADIATION_PRESSURE_ENABLED) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const targetBody = state?.dynamicBodies?.get(targetId);
-  if (!targetBody?.position) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const targetMeta = metaById.get(targetId) || null;
-  if (String(targetMeta?.body_type || "").trim().toLowerCase() !== "spacecraft") {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const sunState =
-    state?.dynamicBodies?.get("sun")
-    || state?.staticSources?.get("sun")
-    || null;
-  if (!sunState?.position) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const sunRadiusKm = bodyRadiusKmById("sun");
-  if (!(sunRadiusKm > 0)) {
-    return { x: 0, y: 0, z: 0 };
-  }
-
-  const occluders = [];
-  for (const [occluderId, occluderState] of state?.dynamicBodies || []) {
-    if (!occluderState?.position || occluderId === "sun" || occluderId === targetId) {
-      continue;
-    }
-    const radiusKm = bodyRadiusKmById(occluderId);
-    if (!(radiusKm > 0)) {
-      continue;
-    }
-    occluders.push({
-      id: occluderId,
-      positionKm: occluderState.position,
-      radiusKm,
-    });
-  }
-  for (const [occluderId, occluderState] of state?.staticSources || []) {
-    if (!occluderState?.position || occluderId === "sun" || occluderId === targetId) {
-      continue;
-    }
-    const radiusKm = bodyRadiusKmById(occluderId);
-    if (!(radiusKm > 0)) {
-      continue;
-    }
-    occluders.push({
-      id: occluderId,
-      positionKm: occluderState.position,
-      radiusKm,
-    });
-  }
-
-  const shadowTransmittance = computeSolarShadowTransmittance({
-    targetId,
-    targetPosKm: targetBody.position,
-    sunPosKm: sunState.position,
-    sunRadiusKm,
-    occluders,
-  });
-  return computeSolarRadiationAccelerationKmS2({
-    bodyId: targetId,
-    bodyMeta: targetMeta,
-    bodyMassKg: Number(targetBody.massKg) || Number(targetMeta?.mass_kg) || 0,
-    targetPosKm: targetBody.position,
-    sunPosKm: sunState.position,
-    transmittance: shadowTransmittance,
-  });
+  return physicsForceModel.computeNBodySolarRadiationAccelerationForTarget(state, targetId);
 }
 
 function computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceContextById = null, stepNowMs = Date.now()) {
-  const gravity = finiteAccelerationKmS2(
-    computeNBodyAccelerationForTarget(state, targetId, oblateSourceContextById),
+  return physicsForceModel.computeNBodyTotalAccelerationForTarget(
+    state,
+    targetId,
+    oblateSourceContextById,
+    stepNowMs,
   );
-  const atmospheric = finiteAccelerationKmS2(
-    atmosphereDynamicsController?.computeAtmosphericAccelerationKmS2(state, targetId, stepNowMs) || { x: 0, y: 0, z: 0 },
-  );
-  const thrust = launchFeatureEnabled
-    ? finiteAccelerationKmS2(launchController?.externalAccelerationKmS2(targetId) || { x: 0, y: 0, z: 0 })
-    : { x: 0, y: 0, z: 0 };
-  const solarRadiation = finiteAccelerationKmS2(
-    computeNBodySolarRadiationAccelerationForTarget(state, targetId),
-  );
-  const totalX = gravity.x + atmospheric.x + thrust.x + solarRadiation.x;
-  const totalY = gravity.y + atmospheric.y + thrust.y + solarRadiation.y;
-  const totalZ = gravity.z + atmospheric.z + thrust.z + solarRadiation.z;
-  if (!Number.isFinite(totalX) || !Number.isFinite(totalY) || !Number.isFinite(totalZ)) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  return { x: totalX, y: totalY, z: totalZ };
 }
 
-function integrateNBodyStep(state, dtSeconds, stepNowMs = Date.now(), oblateSourceContextByIdInput = null) {
-  const oblateSourceContextById =
-    oblateSourceContextByIdInput || buildOblateSourceContextMapForNBody(state, stepNowMs);
-  if (launchFeatureEnabled) {
-    launchController?.prepareStep(state, dtSeconds, stepNowMs);
-  }
-  const preStepSnapshotsById = new Map();
-  for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-    const valid = sanitizeDynamicBodyState(bodyId, bodyState);
-    preStepSnapshotsById.set(bodyId, cloneDynamicBodySnapshot(bodyState));
-    if (!valid) {
-      nBodyNumericWarn(`reset non-finite state for ${bodyId} from startup/live fallback`);
-    }
-  }
-
-  const accelerationStartById = new Map();
-  for (const bodyId of state.dynamicBodies.keys()) {
-    const accel = computeNBodyTotalAccelerationForTarget(state, bodyId, oblateSourceContextById, stepNowMs);
-    accelerationStartById.set(bodyId, finiteAccelerationKmS2(accel));
-  }
-
-  for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-    const accel = finiteAccelerationKmS2(accelerationStartById.get(bodyId) || { x: 0, y: 0, z: 0 });
-    bodyState.velocity.x += 0.5 * accel.x * dtSeconds;
-    bodyState.velocity.y += 0.5 * accel.y * dtSeconds;
-    bodyState.velocity.z += 0.5 * accel.z * dtSeconds;
-
-    bodyState.position.x += bodyState.velocity.x * dtSeconds;
-    bodyState.position.y += bodyState.velocity.y * dtSeconds;
-    bodyState.position.z += bodyState.velocity.z * dtSeconds;
-  }
-
-  for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-    const accel = finiteAccelerationKmS2(
-      computeNBodyTotalAccelerationForTarget(state, bodyId, oblateSourceContextById, stepNowMs),
+const physicsIntegrator = createPhysicsIntegrator({
+  computeTotalAccelerationForTarget: (state, targetId, oblateSourceContextById, stepNowMs) => (
+    computeNBodyTotalAccelerationForTarget(state, targetId, oblateSourceContextById, stepNowMs)
+  ),
+  buildOblateSourceContextMapForNBody: (state, timestampMs = Date.now()) => (
+    buildOblateSourceContextMapForNBody(state, timestampMs)
+  ),
+  sanitizeDynamicBodyState,
+  cloneDynamicBodySnapshot,
+  restoreDynamicBodyFromSnapshot,
+  isFiniteBodyState: finiteBodyState,
+  onNumericWarning: (message) => {
+    nBodyNumericWarn(message);
+  },
+  onBacklogWarning: ({ remainingSeconds, substeps, stepSeconds }) => {
+    console.warn(
+      `[n-body] backlog queued: ${remainingSeconds.toFixed(3)}s remaining after ${substeps} substeps (step=${stepSeconds}s)`,
     );
-    bodyState.velocity.x += 0.5 * accel.x * dtSeconds;
-    bodyState.velocity.y += 0.5 * accel.y * dtSeconds;
-    bodyState.velocity.z += 0.5 * accel.z * dtSeconds;
-  }
-
-  for (const [bodyId, bodyState] of state.dynamicBodies.entries()) {
-    if (!finiteBodyState(bodyState)) {
-      const fallbackSnapshot = preStepSnapshotsById.get(bodyId);
-      restoreDynamicBodyFromSnapshot(bodyState, fallbackSnapshot);
-      nBodyNumericWarn(`restored unstable integration state for ${bodyId}`);
-    }
-  }
-
-  if (launchFeatureEnabled) {
-    launchController?.finalizeStep(state, dtSeconds, stepNowMs);
-  }
-}
+  },
+  isLaunchFeatureEnabled: () => launchFeatureEnabled,
+  getLaunchController: () => launchController,
+  resolveStepSeconds: (snapshot) => launchStepSecondsFromSnapshot(snapshot),
+  defaultStepSeconds: N_BODY_STEP_SECONDS,
+  maxSubstepsPerFrame: N_BODY_MAX_SUBSTEPS_PER_FRAME,
+});
 
 function launchStepSecondsFromSnapshot(snapshot) {
   const phase = String(snapshot?.phase || "").toLowerCase();
@@ -9935,351 +9589,38 @@ function updateNBodySimulation(nowMs) {
   if (!N_BODY_ALL_BODIES_MODE || !nBodyState?.initialized) {
     return;
   }
-
-  if (!Number.isFinite(nBodyState.lastUpdateMs)) {
-    nBodyState.lastUpdateMs = nowMs;
-    nBodyState.simulationTimeMs = nowMs;
-    nBodyState.integratorAccumulatorSec = 0;
-    return;
-  }
-
-  const elapsedSecondsRaw = (nowMs - nBodyState.lastUpdateMs) / 1000;
-  const elapsedSeconds = Number.isFinite(elapsedSecondsRaw)
-    ? Math.max(0, elapsedSecondsRaw)
-    : 0;
-  nBodyState.lastUpdateMs = nowMs;
-  if (!(elapsedSeconds > 0) && !((Number(nBodyState.integratorAccumulatorSec) || 0) > 1e-9)) {
-    return;
-  }
-
-  if (!Number.isFinite(nBodyState.simulationTimeMs)) {
-    nBodyState.simulationTimeMs = nowMs - (elapsedSeconds * 1000);
-  }
-  if (!Number.isFinite(nBodyState.integratorAccumulatorSec) || nBodyState.integratorAccumulatorSec < 0) {
-    nBodyState.integratorAccumulatorSec = 0;
-  }
-
-  const pendingElapsedSeconds = Math.max(0, Number(nBodyState.integratorAccumulatorSec) || 0) + elapsedSeconds;
-  if (!(pendingElapsedSeconds > 0)) {
-    nBodyState.lastUpdateMs = nowMs;
-    return;
-  }
-
-  const launchActive = launchFeatureEnabled && Boolean(launchController?.isActive?.());
-  const launchSnapshot = launchActive ? (launchController?.statusSnapshot?.() || null) : null;
-  const stepSeconds = launchSnapshot
-    ? launchStepSecondsFromSnapshot(launchSnapshot)
-    : N_BODY_STEP_SECONDS;
-  if (!Number.isFinite(stepSeconds) || !(stepSeconds > 1e-9)) {
-    nBodyNumericWarn(`invalid integration step (${String(stepSeconds)}); skipping frame`);
-    nBodyState.integratorAccumulatorSec = pendingElapsedSeconds;
-    return;
-  }
-  const oblateSourceContextById = buildOblateSourceContextMapForNBody(nBodyState, nowMs);
-  let substeps = 0;
-  let stepNowMs = Number(nBodyState.simulationTimeMs) || nowMs;
-  let remainingSeconds = pendingElapsedSeconds;
-  while (
-    remainingSeconds > 1e-9
-    && substeps < N_BODY_MAX_SUBSTEPS_PER_FRAME
-  ) {
-    const dtSeconds = Math.min(stepSeconds, remainingSeconds);
-    integrateNBodyStep(nBodyState, dtSeconds, stepNowMs, oblateSourceContextById);
-    remainingSeconds -= dtSeconds;
-    stepNowMs += dtSeconds * 1000;
-    substeps += 1;
-  }
-  nBodyState.simulationTimeMs = stepNowMs;
-  nBodyState.integratorAccumulatorSec = Math.max(0, remainingSeconds);
-  if (remainingSeconds > 1e-6) {
-    const now = Date.now();
-    if (now - lastNBodyBacklogWarnMs > 4000) {
-      lastNBodyBacklogWarnMs = now;
-      console.warn(
-        `[n-body] backlog queued: ${remainingSeconds.toFixed(3)}s remaining after ${substeps} substeps (step=${stepSeconds}s)`,
-      );
-    }
-  }
+  physicsIntegrator.stepWorldSimulation(nBodyState, nowMs);
 }
 
-function syncOrbitalStateFromSnapshot() {
-  const previousState = orbitalStateById;
-  const nextState = new Map();
-  const nowMs = Date.now();
-  for (const body of bodies) {
-    if (body.id === "sun") {
+function computeRuntimeCoordinatesKm(_nowMs) {
+  const runtimeCoords = new Map();
+  const worldState = nBodyState;
+  if (!N_BODY_ALL_BODIES_MODE || !worldState?.initialized) {
+    return runtimeCoords;
+  }
+
+  for (const [bodyId, source] of worldState.staticSources.entries()) {
+    if (!finiteVectorKm(source?.position)) {
       continue;
     }
-
-    const parentId = body.parent || "sun";
-    const previous = previousState.get(body.id);
-
-    const useKeplerMoonModel = body.body_type === "moon" && Number(body.semimajor_axis_km) > 0;
-    if (useKeplerMoonModel) {
-      const orbitalSpeed = getOrbitalSpeedRadPerSecond(body, false, ORBIT_TIME_SCALE);
-      const elements = getMoonOrbitalElements(body);
-      if (
-        previous &&
-        previous.mode === "kepler" &&
-        previous.parentId === parentId &&
-        Number.isFinite(previous.aKm) &&
-        previous.aKm > 0 &&
-        Number.isFinite(previous.baseTimestampMs)
-      ) {
-        const elapsedModelSeconds = clamp(
-          ((nowMs - previous.baseTimestampMs) / 1000) * ORBIT_TIME_SCALE,
-          -ORBIT_PROPAGATION_MAX_SECONDS,
-          ORBIT_PROPAGATION_MAX_SECONDS,
-        );
-        nextState.set(body.id, {
-          mode: "kepler",
-          parentId,
-          aKm: elements.aKm,
-          e: elements.e,
-          inclinationRad: elements.inclinationRad,
-          ascendingNodeRad: elements.ascendingNodeRad,
-          argPeriapsisRad: elements.argPeriapsisRad,
-          angularSpeedRadPerSecond: orbitalSpeed,
-          baseMeanAnomalyRad: normalizeAngle(
-            previous.baseMeanAnomalyRad + (previous.angularSpeedRadPerSecond * elapsedModelSeconds),
-          ),
-          baseTimestampMs: nowMs,
-        });
-        continue;
-      }
-
-      const relativeKm = getRelativeVectorKmForBody(body, parentId);
-      let baseMeanAnomaly = normalizeAngle((Number(body.phase) || 0) * Math.PI * 2);
-      const inferredMeanAnomaly = inferMeanAnomalyFromRelativeVector(relativeKm, elements);
-      if (Number.isFinite(inferredMeanAnomaly)) {
-        baseMeanAnomaly = inferredMeanAnomaly;
-      }
-
-      nextState.set(body.id, {
-        mode: "kepler",
-        parentId,
-        aKm: elements.aKm,
-        e: elements.e,
-        inclinationRad: elements.inclinationRad,
-        ascendingNodeRad: elements.ascendingNodeRad,
-        argPeriapsisRad: elements.argPeriapsisRad,
-        angularSpeedRadPerSecond: orbitalSpeed,
-        baseMeanAnomalyRad: baseMeanAnomaly,
-        baseTimestampMs: nowMs,
-      });
-      continue;
-    }
-
-    const orbitalSpeed = getOrbitalSpeedRadPerSecond(body, true, ORBIT_TIME_SCALE);
-    if (
-      previous &&
-      previous.mode !== "kepler" &&
-      previous.parentId === parentId &&
-      Number.isFinite(previous.radiusKmXY) &&
-      previous.radiusKmXY > 0 &&
-      Number.isFinite(previous.baseTimestampMs)
-    ) {
-      const elapsedModelSeconds = clamp(
-        ((nowMs - previous.baseTimestampMs) / 1000) * ORBIT_TIME_SCALE,
-        -ORBIT_PROPAGATION_MAX_SECONDS,
-        ORBIT_PROPAGATION_MAX_SECONDS,
-      );
-      nextState.set(body.id, {
-        mode: "circular",
-        parentId,
-        baseAngleRad: previous.baseAngleRad + (previous.angularSpeedRadPerSecond * elapsedModelSeconds),
-        radiusKmXY: previous.radiusKmXY,
-        relZKm: previous.relZKm,
-        angularSpeedRadPerSecond: orbitalSpeed,
-        baseTimestampMs: nowMs,
-      });
-      continue;
-    }
-
-    const relativeKm = getRelativeVectorKmForBody(body, parentId);
-    const radiusKmXY = Math.hypot(relativeKm.x, relativeKm.y);
-    const fallbackRadius = Number(body.semimajor_axis_km) || Math.hypot(relativeKm.x, relativeKm.y, relativeKm.z);
-    nextState.set(body.id, {
-      mode: "circular",
-      parentId,
-      baseAngleRad: Math.atan2(relativeKm.y, relativeKm.x),
-      radiusKmXY: radiusKmXY > 0 ? radiusKmXY : fallbackRadius,
-      relZKm: relativeKm.z,
-      angularSpeedRadPerSecond: orbitalSpeed,
-      baseTimestampMs: nowMs,
+    runtimeCoords.set(bodyId, {
+      x: Number(source.position.x),
+      y: Number(source.position.y),
+      z: Number(source.position.z),
     });
   }
-  orbitalStateById = nextState;
-}
 
-function getRelativeVectorKmForBody(body, parentId) {
-  const runtimeBody = runtimeCoordsKmById.get(body.id) || null;
-  const runtimeParent = runtimeCoordsKmById.get(parentId) || null;
-  const liveBody = positionsById.get(body.id)?.coordinates_km || null;
-  const liveParent = positionsById.get(parentId)?.coordinates_km || null;
-
-  if (runtimeBody && runtimeParent) {
-    return {
-      x: runtimeBody.x - runtimeParent.x,
-      y: runtimeBody.y - runtimeParent.y,
-      z: runtimeBody.z - runtimeParent.z,
-    };
-  }
-  if (liveBody && liveParent) {
-    return {
-      x: liveBody.x - liveParent.x,
-      y: liveBody.y - liveParent.y,
-      z: liveBody.z - liveParent.z,
-    };
-  }
-  if (liveBody && parentId === "sun") {
-    return {
-      x: liveBody.x,
-      y: liveBody.y,
-      z: liveBody.z,
-    };
-  }
-
-  const fallbackRadius = Number(body.semimajor_axis_km) || 0;
-  const fallbackPhase = (Number(body.phase) || 0) * Math.PI * 2;
-  return {
-    x: fallbackRadius * Math.cos(fallbackPhase),
-    y: fallbackRadius * Math.sin(fallbackPhase),
-    z: 0,
-  };
-}
-
-function computeRuntimeCoordinatesKm(nowMs) {
-  const runtimeCoords = new Map();
-  const sunNBody = nBodyCoordinatesKmById("sun");
-  const sunLive = positionsById.get("sun")?.coordinates_km;
-  const sunSeed = finiteVectorKm(sunNBody)
-    ? {
-        x: Number(sunNBody.x),
-        y: Number(sunNBody.y),
-        z: Number(sunNBody.z),
-      }
-    : finiteVectorKm(sunLive)
-    ? {
-        x: Number(sunLive.x),
-        y: Number(sunLive.y),
-        z: Number(sunLive.z),
-      }
-    : { x: 0, y: 0, z: 0 };
-  runtimeCoords.set(
-    "sun",
-    sunSeed,
-  );
-
-  const resolving = new Set();
-  for (const body of bodies) {
-    resolveRuntimeCoordinates(body.id, runtimeCoords, resolving, nowMs);
+  for (const [bodyId, body] of worldState.dynamicBodies.entries()) {
+    if (!finiteVectorKm(body?.position)) {
+      continue;
+    }
+    runtimeCoords.set(bodyId, {
+      x: Number(body.position.x),
+      y: Number(body.position.y),
+      z: Number(body.position.z),
+    });
   }
   return runtimeCoords;
-}
-
-function resolveRuntimeCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
-  if (runtimeCoords.has(bodyId)) {
-    return runtimeCoords.get(bodyId);
-  }
-  if (resolving.has(bodyId)) {
-    return null;
-  }
-  resolving.add(bodyId);
-
-  const state = orbitalStateById.get(bodyId);
-  const meta = metaById.get(bodyId);
-  const live = positionsById.get(bodyId)?.coordinates_km;
-  const nBodyCoords = nBodyCoordinatesKmById(bodyId);
-  if (finiteVectorKm(nBodyCoords)) {
-    runtimeCoords.set(bodyId, nBodyCoords);
-    resolving.delete(bodyId);
-    return nBodyCoords;
-  }
-  if (launchPersistenceManagedBodyId(bodyId)) {
-    resolving.delete(bodyId);
-    return null;
-  }
-  if (SCIENTIFIC_ACCURACY_MODE) {
-    if (finiteVectorKm(live)) {
-      const propagatedLive = propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs);
-      runtimeCoords.set(bodyId, propagatedLive);
-      resolving.delete(bodyId);
-      return propagatedLive;
-    }
-    resolving.delete(bodyId);
-    return null;
-  }
-  if (!state || !meta) {
-    const fallback = finiteVectorKm(live)
-      ? {
-          x: live.x,
-          y: live.y,
-          z: live.z,
-        }
-      : null;
-    if (!fallback) {
-      resolving.delete(bodyId);
-      return null;
-    }
-    runtimeCoords.set(bodyId, fallback);
-    resolving.delete(bodyId);
-    return fallback;
-  }
-
-  const parentId = state.parentId || meta.parent || "sun";
-  const parentCoords = resolveRuntimeCoordinates(parentId, runtimeCoords, resolving, nowMs);
-  if (!parentCoords) {
-    resolving.delete(bodyId);
-    return null;
-  }
-  const dtSeconds = clamp(
-    ((nowMs - state.baseTimestampMs) / 1000) * ORBIT_TIME_SCALE,
-    -ORBIT_PROPAGATION_MAX_SECONDS,
-    ORBIT_PROPAGATION_MAX_SECONDS,
-  );
-  let computed = null;
-  if (state.mode === "kepler" && state.aKm > 0) {
-    const meanAnomaly = normalizeAngle(state.baseMeanAnomalyRad + (state.angularSpeedRadPerSecond * dtSeconds));
-    const eccentricAnomaly = solveKepler(meanAnomaly, state.e);
-    const semiMinorKm = state.aKm * Math.sqrt(Math.max(1 - (state.e * state.e), 1e-8));
-    const perifocal = {
-      x: state.aKm * (Math.cos(eccentricAnomaly) - state.e),
-      y: semiMinorKm * Math.sin(eccentricAnomaly),
-      z: 0,
-    };
-    const rel = fromPerifocalFrame(perifocal, state);
-    computed = {
-      x: parentCoords.x + rel.x,
-      y: parentCoords.y + rel.y,
-      z: parentCoords.z + rel.z,
-    };
-  } else {
-    const angle = state.baseAngleRad + (state.angularSpeedRadPerSecond * dtSeconds);
-    const radiusKmXY = state.radiusKmXY > 0 ? state.radiusKmXY : Number(meta.semimajor_axis_km) || 0;
-    computed = {
-      x: parentCoords.x + (radiusKmXY * Math.cos(angle)),
-      y: parentCoords.y + (radiusKmXY * Math.sin(angle)),
-      z: parentCoords.z + (state.relZKm || 0),
-    };
-  }
-
-  runtimeCoords.set(bodyId, computed);
-  resolving.delete(bodyId);
-  return computed;
-}
-
-function gravityCenterIdForBody(body) {
-  if (!body || body.id === "sun") {
-    return null;
-  }
-  if (body.body_type === "moon" && body.parent) {
-    return body.parent;
-  }
-  if (body.parent) {
-    return body.parent;
-  }
-  return "sun";
 }
 
 function bodyMassKgById(bodyId) {
@@ -10289,124 +9630,6 @@ function bodyMassKgById(bodyId) {
   }
   const mass = Number(metaById.get(bodyId)?.mass_kg);
   return Number.isFinite(mass) && mass > 0 ? mass : null;
-}
-
-function liveCoordinatesForBody(bodyId) {
-  const coords = positionsById.get(bodyId)?.coordinates_km;
-  if (!coords) {
-    return null;
-  }
-  return {
-    x: Number(coords.x) || 0,
-    y: Number(coords.y) || 0,
-    z: Number(coords.z) || 0,
-  };
-}
-
-function liveVelocityForBody(bodyId) {
-  const velocity = positionsById.get(bodyId)?.coordinates_velocity_km_s;
-  if (
-    Number.isFinite(Number(velocity?.x)) &&
-    Number.isFinite(Number(velocity?.y)) &&
-    Number.isFinite(Number(velocity?.z))
-  ) {
-    return {
-      x: Number(velocity.x),
-      y: Number(velocity.y),
-      z: Number(velocity.z),
-    };
-  }
-  return { x: 0, y: 0, z: 0 };
-}
-
-function propagateLiveCoordinates(bodyId, runtimeCoords, resolving, nowMs) {
-  const liveEntry = positionsById.get(bodyId);
-  const liveCoords = liveEntry?.coordinates_km;
-  if (!liveCoords) {
-    return { x: 0, y: 0, z: 0 };
-  }
-  const liveVelocity = liveEntry?.coordinates_velocity_km_s;
-  const hasVelocity =
-    Number.isFinite(Number(liveVelocity?.x)) &&
-    Number.isFinite(Number(liveVelocity?.y)) &&
-    Number.isFinite(Number(liveVelocity?.z));
-  if (!hasVelocity) {
-    return {
-      x: liveCoords.x,
-      y: liveCoords.y,
-      z: liveCoords.z,
-    };
-  }
-
-  const dtSeconds = clamp(
-    (nowMs - latestSolarTimestampMs) / 1000,
-    -LIVE_VELOCITY_PROPAGATION_MAX_SECONDS,
-    LIVE_VELOCITY_PROPAGATION_MAX_SECONDS,
-  );
-  if (Math.abs(dtSeconds) < 1e-6) {
-    return {
-      x: liveCoords.x,
-      y: liveCoords.y,
-      z: liveCoords.z,
-    };
-  }
-
-  const meta = metaById.get(bodyId);
-  const centerId = gravityCenterIdForBody(meta);
-  if (!centerId) {
-    return {
-      x: liveCoords.x + (liveVelocity.x * dtSeconds),
-      y: liveCoords.y + (liveVelocity.y * dtSeconds),
-      z: liveCoords.z + (liveVelocity.z * dtSeconds),
-    };
-  }
-
-  const centerMassKg = bodyMassKgById(centerId);
-  if (!centerMassKg) {
-    return {
-      x: liveCoords.x + (liveVelocity.x * dtSeconds),
-      y: liveCoords.y + (liveVelocity.y * dtSeconds),
-      z: liveCoords.z + (liveVelocity.z * dtSeconds),
-    };
-  }
-
-  const centerLiveCoords = liveCoordinatesForBody(centerId) || { x: 0, y: 0, z: 0 };
-  const centerLiveVelocity = liveVelocityForBody(centerId);
-  const centerNowCoords = runtimeCoords.get(centerId)
-    || resolveRuntimeCoordinates(centerId, runtimeCoords, resolving, nowMs)
-    || centerLiveCoords;
-
-  const relX = liveCoords.x - centerLiveCoords.x;
-  const relY = liveCoords.y - centerLiveCoords.y;
-  const relZ = liveCoords.z - centerLiveCoords.z;
-  const relVX = liveVelocity.x - centerLiveVelocity.x;
-  const relVY = liveVelocity.y - centerLiveVelocity.y;
-  const relVZ = liveVelocity.z - centerLiveVelocity.z;
-  const relDistanceSq = (relX * relX) + (relY * relY) + (relZ * relZ);
-  if (!(relDistanceSq > 1e-8)) {
-    return {
-      x: liveCoords.x + (liveVelocity.x * dtSeconds),
-      y: liveCoords.y + (liveVelocity.y * dtSeconds),
-      z: liveCoords.z + (liveVelocity.z * dtSeconds),
-    };
-  }
-
-  const mu = GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 * centerMassKg;
-  const relDistance = Math.sqrt(relDistanceSq);
-  const invR3 = 1 / Math.max(relDistance * relDistanceSq, 1e-12);
-  const ax = -mu * relX * invR3;
-  const ay = -mu * relY * invR3;
-  const az = -mu * relZ * invR3;
-  const dt2 = dtSeconds * dtSeconds;
-  const nextRelX = relX + (relVX * dtSeconds) + (0.5 * ax * dt2);
-  const nextRelY = relY + (relVY * dtSeconds) + (0.5 * ay * dt2);
-  const nextRelZ = relZ + (relVZ * dtSeconds) + (0.5 * az * dt2);
-
-  return {
-    x: centerNowCoords.x + nextRelX,
-    y: centerNowCoords.y + nextRelY,
-    z: centerNowCoords.z + nextRelZ,
-  };
 }
 
 function applyScenePositions(runtimeCoordsKm, nowMs = Date.now()) {
@@ -10444,8 +9667,7 @@ function applyScenePositions(runtimeCoordsKm, nowMs = Date.now()) {
     if (!visual) {
       continue;
     }
-    const coordsKm = runtimeCoordsKm.get(bodyId)
-      || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_km);
+    const coordsKm = runtimeCoordsKm.get(bodyId) || null;
     if (!finiteVectorKm(coordsKm)) {
       visual.root.visible = false;
       continue;
@@ -10493,8 +9715,7 @@ function applyScenePositions(runtimeCoordsKm, nowMs = Date.now()) {
   for (const [bodyId, parentId, moonCoords] of deferredMoons) {
     const visual = bodyVisuals.get(bodyId);
     const parentVisual = bodyVisuals.get(parentId);
-    const parentCoords = runtimeCoordsKm.get(parentId)
-      || (launchPersistenceManagedBodyId(parentId) ? null : positionsById.get(parentId)?.coordinates_km);
+    const parentCoords = runtimeCoordsKm.get(parentId) || null;
     if (!visual) {
       continue;
     }
@@ -10580,7 +9801,7 @@ function computeMoonParentDistanceBoosts(deferredMoons, runtimeCoordsKm) {
   for (const [bodyId, parentId, moonCoords] of deferredMoons) {
     const visual = bodyVisuals.get(bodyId);
     const parentVisual = bodyVisuals.get(parentId);
-    const parentCoords = runtimeCoordsKm.get(parentId) || positionsById.get(parentId)?.coordinates_km;
+    const parentCoords = runtimeCoordsKm.get(parentId) || null;
     if (!visual || !parentVisual || !finiteVectorKm(moonCoords) || !finiteVectorKm(parentCoords)) {
       continue;
     }
@@ -11472,6 +10693,9 @@ function resolveSurfaceObserverAnchor(nowMs = Date.now()) {
   if (!preset) {
     return null;
   }
+  if (preset.kind === "launch_pad") {
+    return resolveLaunchPadObserverAnchor(preset, nowMs);
+  }
   if (preset.kind === "orbital") {
     return resolveOrbitalObserverAnchor(preset, nowMs);
   }
@@ -11488,6 +10712,59 @@ function resolveSurfaceObserverAnchorOnBody(preset) {
     pitchRad: observation.surfacePitch,
     label: preset.label,
   });
+}
+
+function resolveLaunchPadObserverAnchor(preset, nowMs = Date.now()) {
+  if (!THREE_NS) {
+    return null;
+  }
+  const padRoot = launchSiteStructureVisual?.root;
+  const padVisible = Boolean(padRoot?.visible);
+  if (!padVisible) {
+    return null;
+  }
+
+  const worldQuat = new THREE_NS.Quaternion();
+  padRoot.getWorldQuaternion(worldQuat);
+  const eastWorld = new THREE_NS.Vector3(1, 0, 0).applyQuaternion(worldQuat).normalize();
+  const upWorld = new THREE_NS.Vector3(0, 1, 0).applyQuaternion(worldQuat).normalize();
+  const northWorld = new THREE_NS.Vector3(0, 0, 1).applyQuaternion(worldQuat).normalize();
+
+  const yawRad = observation.surfaceYaw;
+  const horizontalOffset = eastWorld.clone()
+    .multiplyScalar(LAUNCH_PAD_VIEW_CAMERA_EAST_OFFSET_KM * DISTANCE_SCALE)
+    .add(
+      northWorld.clone().multiplyScalar(LAUNCH_PAD_VIEW_CAMERA_NORTH_OFFSET_KM * DISTANCE_SCALE),
+    )
+    .applyAxisAngle(upWorld, yawRad);
+
+  const cameraPosition = padRoot.position.clone()
+    .add(horizontalOffset)
+    .addScaledVector(upWorld, LAUNCH_PAD_VIEW_CAMERA_UP_OFFSET_KM * DISTANCE_SCALE);
+  const aimPoint = padRoot.position.clone()
+    .addScaledVector(upWorld, LAUNCH_PAD_VIEW_TARGET_UP_OFFSET_KM * DISTANCE_SCALE);
+
+  let forward = aimPoint.clone().sub(cameraPosition).normalize();
+  if (!(forward.lengthSq() > 1e-12)) {
+    forward = northWorld.clone();
+  }
+  let right = new THREE_NS.Vector3().crossVectors(forward, upWorld).normalize();
+  if (!(right.lengthSq() > 1e-12)) {
+    right = eastWorld.clone();
+  }
+  forward = forward.applyAxisAngle(right, observation.surfacePitch).normalize();
+
+  const lookDistance = Math.max(cameraPosition.distanceTo(aimPoint) * 1.2, 0.02 * DISTANCE_SCALE);
+  const target = cameraPosition.clone().addScaledVector(forward, lookDistance);
+  return {
+    label: String(preset.label || "Launch Pad"),
+    bodyId: preset.bodyId || "earth",
+    altitudeKm: Math.max(0.02, Number(preset.altitudeKm) || 0.16),
+    position: cameraPosition,
+    target,
+    up: upWorld,
+    nowMs,
+  };
 }
 
 function resolveOrbitalObserverAnchor(preset, nowMs) {
@@ -11759,29 +11036,35 @@ function connectWebSocket() {
   });
 }
 
-function updateOrbitVisualAnchorsAndPhase() {
+function updateOrbitVisualAnchorsAndPhase(
+  timestampMs = nBodyState?.simulationTimeMs || Date.now(),
+  runtimeCoordsKm = runtimeCoordsKmById,
+) {
   if (orbitVisuals.size === 0) {
     return;
   }
 
   const sunScenePos = bodyVisuals.get("sun")?.root.position || new THREE_NS.Vector3(0, 0, 0);
-  const sunLive = positionsById.get("sun")?.coordinates_km || { x: 0, y: 0, z: 0 };
+  const sunCoords = runtimeCoordsKm.get("sun") || nBodyCoordinatesKmById("sun");
+  if (!finiteVectorKm(sunCoords)) {
+    return;
+  }
 
   for (const [bodyId, orbitVisual] of orbitVisuals.entries()) {
     orbitVisual.group.position.copy(sunScenePos);
 
-    const bodyLive = positionsById.get(bodyId)?.coordinates_km;
-    if (!bodyLive) {
+    const bodyCoords = runtimeCoordsKm.get(bodyId) || nBodyCoordinatesKmById(bodyId);
+    if (!finiteVectorKm(bodyCoords)) {
       continue;
     }
-    const relX = (bodyLive.x - sunLive.x) * DISTANCE_SCALE;
-    const relZ = (bodyLive.y - sunLive.y) * DISTANCE_SCALE;
-    syncOrbitPhaseToLivePosition(orbitVisual, relX, relZ, latestSolarTimestampMs);
-    updateOrbitMarkerFromTime(orbitVisual, latestSolarTimestampMs);
+    const relX = (bodyCoords.x - sunCoords.x) * DISTANCE_SCALE;
+    const relZ = (bodyCoords.y - sunCoords.y) * DISTANCE_SCALE;
+    syncOrbitPhaseToRuntimePosition(orbitVisual, relX, relZ, timestampMs);
+    updateOrbitMarkerFromTime(orbitVisual, timestampMs);
   }
 }
 
-function syncOrbitPhaseToLivePosition(orbitVisual, relX, relZ, timestampMs) {
+function syncOrbitPhaseToRuntimePosition(orbitVisual, relX, relZ, timestampMs) {
   if (!(orbitVisual.a > 0) || !(orbitVisual.b > 0)) {
     return;
   }
@@ -11890,17 +11173,16 @@ function shouldApplyOcclusionPair(targetBody, occluderBody) {
   return true;
 }
 
+// Legacy helper name; position authority is runtime-only now.
 function runtimeCoordsOrLiveById(bodyId) {
   const coords = runtimeCoordsKmById.get(bodyId)
     || nBodyCoordinatesKmById(bodyId)
-    || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_km)
     || null;
   return finiteVectorKm(coords) ? coords : null;
 }
 
 function runtimeVelocityKmSOrLiveById(bodyId) {
   const velocity = nBodyVelocityKmSById(bodyId)
-    || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_velocity_km_s)
     || null;
   return finiteVectorKm(velocity) ? velocity : null;
 }
@@ -11908,7 +11190,6 @@ function runtimeVelocityKmSOrLiveById(bodyId) {
 function lightCoordsById(bodyId) {
   const coords = runtimeCoordsKmById.get(bodyId)
     || nBodyCoordinatesKmById(bodyId)
-    || (launchPersistenceManagedBodyId(bodyId) ? null : positionsById.get(bodyId)?.coordinates_km)
     || null;
   return finiteVectorKm(coords) ? coords : null;
 }
@@ -11920,14 +11201,12 @@ function currentLaunchRenderSourceState(bodyId = LAUNCH_BODY_ID) {
   }
   const runtimeCoords = runtimeCoordsKmById.get(id) || null;
   const nBodyCoords = nBodyCoordinatesKmById(id) || null;
-  const liveCoords = positionsById.get(id)?.coordinates_km || null;
   const visual = bodyVisuals.get(id) || null;
   return {
     bodyId: id,
     strictRuntime: launchPersistenceManagedBodyId(id),
     hasRuntimeCoords: finiteVectorKm(runtimeCoords),
     hasNBodyCoords: finiteVectorKm(nBodyCoords),
-    hasLiveSnapshotCoords: finiteVectorKm(liveCoords),
     sceneRootCount: countSceneBodyVisualRoots(id),
     trajectoryPathLineCount: countSceneObjectsByName("launch_trajectory_path"),
     textureMode: visual?.textureMode || null,
@@ -12685,7 +11964,7 @@ function animate(timestampMs = 0) {
       updateNBodySimulation(nowMs);
     });
     runFrameTaskSafely("scene-positions", () => {
-      if (orbitalStateById.size > 0) {
+      if (nBodyState?.initialized) {
         runtimeCoordsKmById = computeRuntimeCoordinatesKm(nowMs);
         applyScenePositions(runtimeCoordsKmById, nowMs);
       }
@@ -12743,9 +12022,7 @@ function animate(timestampMs = 0) {
     });
 
     runFrameTaskSafely("orbit-markers", () => {
-      for (const orbitVisual of orbitVisuals.values()) {
-        updateOrbitMarkerFromTime(orbitVisual, nowMs);
-      }
+      updateOrbitVisualAnchorsAndPhase(nowMs, runtimeCoordsKmById);
     });
 
     runFrameTaskSafely("camera-update", () => {
@@ -12776,8 +12053,8 @@ function animate(timestampMs = 0) {
 
 function findFocusBodyForDetails() {
   if (selectedId) {
-    const selectedLive = runtimeCoordsOrLiveById(selectedId);
-    if (selectedLive) {
+    const selectedCoords = runtimeCoordsOrLiveById(selectedId);
+    if (selectedCoords) {
       return selectedId;
     }
     return null;
@@ -12945,15 +12222,15 @@ function updateInfoOverlay() {
   const live = positionsById.get(detailBodyId);
   const visual = bodyVisuals.get(detailBodyId);
   const runtimeCoords = runtimeCoordsKmById.get(detailBodyId) || null;
-  if (!meta || !visual || (!live && !runtimeCoords)) {
+  if (!meta || !visual || !runtimeCoords) {
     infoCard.classList.remove("visible");
     infoCard.innerHTML = "";
     return;
   }
 
   const cameraDistance = camera.position.distanceTo(visual.root.position);
-  const coords = runtimeCoords || live?.coordinates_km || null;
-  const sunCoords = runtimeCoordsKmById.get("sun") || positionsById.get("sun")?.coordinates_km || null;
+  const coords = runtimeCoords;
+  const sunCoords = runtimeCoordsKmById.get("sun") || null;
   const hasCoords =
     Boolean(coords) &&
     Number.isFinite(Number(coords?.x)) &&
@@ -12989,7 +12266,7 @@ function updateInfoOverlay() {
     observation.mode === OBSERVATION_MODES.SURFACE
       ? (getSurfaceObserverPreset(observation.surfacePresetId)?.label || "n/a")
       : "n/a";
-  const earthCoordsForAtmosphere = runtimeCoordsKmById.get("earth") || positionsById.get("earth")?.coordinates_km || null;
+  const earthCoordsForAtmosphere = runtimeCoordsKmById.get("earth") || null;
   let atmospherePhysicsLine = "";
   if (physicsOverlayState.atmosphere) {
     if (meta.id === "earth") {

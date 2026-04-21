@@ -9,11 +9,11 @@ import {
   subtract,
 } from "../navigationMath.js";
 import {
-  buildMoonGuidanceSourceModel,
   burnDurationForDeltaVSec,
   estimateBPlaneErrorKm,
   propagateMoonGuidanceState,
-} from "./moonDynamicsModel.js";
+} from "../../runtime/lunarPropagation.js";
+import { buildMoonGuidanceSourceModel } from "../../runtime/lunarSourceModel.js";
 import { evaluateMoonDepartureCorridor } from "./moonDepartureCorridor.js";
 import { NAVIGATION_DEFAULTS } from "../navigationSystemConfig.js";
 

@@ -2,6 +2,7 @@ import { createLaunchController } from "../app/static/js/physics/launch/launchCo
 import {
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_BODY_ID,
+  LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
   LAUNCH_SITE,
   setLaunchSite,
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
@@ -165,10 +166,19 @@ function main() {
       `expected fixed pad longitude ${testSite.longitudeDeg}, got ${sample0?.longitudeDeg}, ${sampleLive?.longitudeDeg}, and ${sample1?.longitudeDeg}`,
     );
     assert(
-      Math.abs(Number(sample0?.altitudeAboveTerrainKm) - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM) <= 1e-6
-        && Math.abs(Number(sampleLive?.altitudeAboveTerrainKm) - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM) <= 1e-6
-        && Math.abs(Number(sample1?.altitudeAboveTerrainKm) - STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM) <= 1e-6,
-      `expected pad reference altitude ${STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM}, got ${sample0?.altitudeAboveTerrainKm}, ${sampleLive?.altitudeAboveTerrainKm}, and ${sample1?.altitudeAboveTerrainKm}`,
+      Math.abs(
+        Number(sample0?.altitudeAboveTerrainKm)
+          - (STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM),
+      ) <= 1e-6
+        && Math.abs(
+          Number(sampleLive?.altitudeAboveTerrainKm)
+            - (STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM),
+        ) <= 1e-6
+        && Math.abs(
+          Number(sample1?.altitudeAboveTerrainKm)
+            - (STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM),
+        ) <= 1e-6,
+      `expected pad reference altitude ${STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM}, got ${sample0?.altitudeAboveTerrainKm}, ${sampleLive?.altitudeAboveTerrainKm}, and ${sample1?.altitudeAboveTerrainKm}`,
     );
 
     console.log("PASS launch-pad-earth-fixed-lock");

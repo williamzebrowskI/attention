@@ -1,6 +1,7 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
 import {
   LAUNCH_BODY_ID,
+  LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
   LAUNCH_SITE,
   setLaunchSite,
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
@@ -135,9 +136,13 @@ function main() {
       { includeTerrain: false },
     );
     const expectedTerrainAnchoredDistanceKm =
-      Number(terrainSurface?.localSurfaceRadiusKm) + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM;
+      Number(terrainSurface?.localSurfaceRadiusKm)
+      + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM
+      + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM;
     const expectedEllipsoidDistanceKm =
-      Number(ellipsoidSurface?.localSurfaceRadiusKm) + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM;
+      Number(ellipsoidSurface?.localSurfaceRadiusKm)
+      + STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM
+      + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM;
 
     assert(
       Math.abs(repairedEarthDistanceKm - expectedTerrainAnchoredDistanceKm) <= 0.02,

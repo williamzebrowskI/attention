@@ -1,4 +1,5 @@
 import {
+  LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
   BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_AUTOPILOT_CONFIG,
@@ -17,7 +18,7 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
 } from "./launchConfig.js";
-import { computeBoosterRecoveryCommand } from "./boosterRecovery.js?v=20260420s";
+import { computeBoosterRecoveryCommand } from "./boosterRecovery.js?v=20260420am";
 import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js";
 import {
   computeBoosterCatchPinHeightErrorKm,
@@ -170,6 +171,10 @@ const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
 const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
 const PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM = 105;
 const PRIMARY_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA = 120;
+const ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S = 4.2;
+const ATTACHED_STACK_JOINT_DAMPING_RATIO = 1.18;
+const ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2 = 0.085;
+const ATTACHED_STACK_JOINT_MAX_LOAD_N = 2.4e8;
 
 function canonicalMoonMissionPhase(phase) {
   return normalizeMissionPhase(phase, LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
@@ -327,6 +332,26 @@ function computeHotstageRelativeOffsetsKm({
   };
 }
 
+function createAttachedStackJointState() {
+  return {
+    active: false,
+    targetOffsetWorldKm: null,
+    targetPositionKm: null,
+    targetVelocityKmS: null,
+    positionErrorKm: { x: 0, y: 0, z: 0 },
+    relativeVelocityKmS: { x: 0, y: 0, z: 0 },
+    shipBaseAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    boosterBaseAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    shipJointAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    boosterJointAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    shipAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    boosterAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    reactionForceN: 0,
+    shipMassKg: 0,
+    boosterMassKg: 0,
+  };
+}
+
 function stage2HotStagingThrottleCap(timeSinceIgnitionSec) {
   const t = Math.max(0, Number(timeSinceIgnitionSec) || 0);
   const ramp = clamp(t / 4.5, 0, 1);
@@ -394,6 +419,7 @@ function computePadState({
   earthRadiusKm,
   earthAxes,
   referenceOffsetKm = STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+  surfaceClearanceKm = 0,
 }) {
   if (!earthState?.position) {
     return null;
@@ -414,7 +440,9 @@ function computePadState({
     surfaceState.pointRelativeKm,
     scale(
       surfaceState.surfaceNormal,
-      LAUNCH_SITE.altitudeKm + Math.max(0, Number(referenceOffsetKm) || 0),
+      LAUNCH_SITE.altitudeKm
+      + Math.max(0, Number(surfaceClearanceKm) || 0)
+      + Math.max(0, Number(referenceOffsetKm) || 0),
     ),
   );
   const angularVelocity = scale(earthAxes.pole, angularRateRadS);
@@ -423,6 +451,32 @@ function computePadState({
     position: add(earthState.position, relPositionKm),
     velocity: add(earthState.velocity || { x: 0, y: 0, z: 0 }, localRotationalVelocityKmS),
   };
+}
+
+function primaryLaunchPadSurfaceClearanceKm(runtimeState = null) {
+  const runtime = runtimeState;
+  const guidanceMode = String(runtime?.lastStep?.guidanceMode || runtime?.autopilotMode || "").toLowerCase();
+  if (runtime?.phase === "idle") {
+    return LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM;
+  }
+  if (
+    guidanceMode.includes("pad-release")
+    || guidanceMode.includes("tower-clear")
+    || guidanceMode.includes("vertical-ascent")
+  ) {
+    return LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM;
+  }
+  const sampledAltitudeKm = Number(
+    runtime.lastSurfaceSample?.altitudeAboveTerrainKm
+      ?? runtime.lastTelemetry?.altitudeAboveTerrainKm,
+  );
+  if (
+    Number.isFinite(sampledAltitudeKm)
+    && sampledAltitudeKm <= (STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM + LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM + 0.05)
+  ) {
+    return LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM;
+  }
+  return 0;
 }
 
 function pressureRatio(pressurePa) {
@@ -900,7 +954,7 @@ function integrateBoosterAttitudeState(attitudeState, {
 }
 
 function scaleAngularControlState(controlState, scaleFactor = 1) {
-  const scaleClamped = clamp(Number(scaleFactor) || 0, 0, 1.5);
+  const scaleClamped = clamp(Number(scaleFactor) || 0, 0, 3.5);
   const base = controlState || {};
   return {
     ...base,
@@ -1741,6 +1795,7 @@ export function createLaunchController(options) {
     stageMassModel: createMassModelState(),
     boosterActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     boosterMassModel: createMassModelState(),
+    attachedJoint: createAttachedStackJointState(),
     stage2RefuelRecoveryApplied: false,
     mission: {
       selectedId: DEFAULT_LAUNCH_MISSION_ID,
@@ -1749,6 +1804,7 @@ export function createLaunchController(options) {
       completed: false,
     },
     booster: {
+      attached: true,
       active: false,
       phase: "idle",
       guidanceMode: "booster-idle",
@@ -2810,12 +2866,14 @@ export function createLaunchController(options) {
     runtime.stageMassModel = createMassModelState();
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.boosterMassModel = createMassModelState();
+    runtime.attachedJoint = createAttachedStackJointState();
     runtime.stage2RefuelRecoveryApplied = false;
     runtime.mission.selectedId = missionId;
     runtime.mission.phase = defaultMissionPhaseForProfileId(missionId);
     runtime.mission.phaseStartedElapsedSec = 0;
     runtime.mission.completed = false;
     runtime.booster.active = false;
+    runtime.booster.attached = true;
     runtime.booster.phase = "idle";
     runtime.booster.guidanceMode = "booster-idle";
     runtime.booster.propellantKg = 0;
@@ -2843,6 +2901,7 @@ export function createLaunchController(options) {
   function clearBoosterFromState(state) {
     state?.dynamicBodies?.delete?.(LAUNCH_BOOSTER_BODY_ID);
     runtime.booster.active = false;
+    runtime.booster.attached = true;
     runtime.booster.phase = "idle";
     runtime.booster.guidanceMode = "booster-idle";
     runtime.booster.propellantKg = 0;
@@ -2858,6 +2917,7 @@ export function createLaunchController(options) {
     runtime.booster.navigation = resetBoosterNavigationState(runtime.booster.navigation);
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.boosterMassModel = createMassModelState();
+    runtime.attachedJoint = createAttachedStackJointState();
   }
 
   function clearFleetVehiclesFromState(state) {
@@ -3840,6 +3900,340 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     );
   }
 
+  function attachedBoosterMassKgFromRuntime() {
+    const stage0 = stageAtIndex(0);
+    const dryMassKg = Math.max(
+      0,
+      Number(stage0?.dryMassKg) || Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0,
+    );
+    const reservePropellantKg = Math.max(
+      0,
+      Number(runtime.hotstage?.boosterReservePropellantKg) || 0,
+    );
+    const boosterPropellantKg = runtime.hotstage.active || runtime.stageIndex > 0
+      ? reservePropellantKg
+      : Math.max(0, Number(runtime.stagePropellantKg) || 0);
+    return dryMassKg + boosterPropellantKg;
+  }
+
+  function attachedShipMassKgFromRocket(rocketState, boosterMassKg = attachedBoosterMassKgFromRuntime()) {
+    return Math.max(
+      MIN_ROCKET_MASS_KG,
+      Math.max(MIN_ROCKET_MASS_KG, Number(rocketState?.massKg) || MIN_ROCKET_MASS_KG) - Math.max(0, Number(boosterMassKg) || 0),
+    );
+  }
+
+  function computeAttachedBoosterConstraintTarget({
+    rocketState,
+    earthState,
+    currentEarthAxes,
+    dtSeconds = 0,
+  }) {
+    if (!rocketState || !earthState) {
+      return null;
+    }
+    const relPos = subtract(rocketState.position, earthState.position);
+    const up = normalize(relPos, currentEarthAxes?.pole || { x: 0, y: 0, z: 1 });
+    const stackedBodyAxis = normalize(
+      runtime.lastStep?.bodyAxisDirectionKm
+        || runtime.stageActuator?.directionActual
+        || up,
+      up,
+    );
+    const boosterMassKg = attachedBoosterMassKgFromRuntime();
+    const shipMassKg = attachedShipMassKgFromRocket(rocketState, boosterMassKg);
+    const hotstageOffsets = computeHotstageRelativeOffsetsKm({
+      hotstage: runtime.hotstage,
+      elapsedSeconds: runtime.elapsedSeconds,
+      shipMassKg,
+      boosterMassKg,
+    });
+    const boosterCenterOffsetKm = -(
+      (STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5)
+      + hotstageOffsets.boosterOffsetKm
+    );
+    const offsetWorldKm = scale(stackedBodyAxis, boosterCenterOffsetKm);
+    const targetPositionKm = add(
+      rocketState.position,
+      offsetWorldKm,
+    );
+    let targetVelocityKmS = cloneVector(rocketState.velocity || { x: 0, y: 0, z: 0 });
+    const previousOffsetWorldKm = runtime.attachedJoint?.targetOffsetWorldKm;
+    if (dtSeconds > 1e-9 && finiteVector(previousOffsetWorldKm)) {
+      const offsetRateWorldKmS = scale(
+        subtract(offsetWorldKm, previousOffsetWorldKm),
+        1 / dtSeconds,
+      );
+      targetVelocityKmS = add(targetVelocityKmS, offsetRateWorldKmS);
+    }
+    return {
+      shipMassKg,
+      boosterMassKg,
+      stackedBodyAxis,
+      hotstageOffsets,
+      offsetWorldKm,
+      targetPositionKm,
+      targetVelocityKmS,
+    };
+  }
+
+  function ensureAttachedBoosterInNBody(
+    state,
+    rocketState,
+    earthState,
+    currentEarthAxes,
+    options = {},
+  ) {
+    if (!state?.dynamicBodies || !rocketState || !earthState) {
+      return null;
+    }
+    const hardSync = options?.hardSync === true;
+    const dtSeconds = Math.max(0, Number(options?.dtSeconds) || 0);
+    let boosterState = state.dynamicBodies.get(LAUNCH_BOOSTER_BODY_ID) || null;
+    const constraintTarget = runtime.booster.attached
+      ? computeAttachedBoosterConstraintTarget({
+        rocketState,
+        earthState,
+        currentEarthAxes,
+        dtSeconds,
+      })
+      : null;
+    if (!boosterState) {
+      boosterState = {
+        id: LAUNCH_BOOSTER_BODY_ID,
+        massKg: constraintTarget?.boosterMassKg || attachedBoosterMassKgFromRuntime(),
+        position: constraintTarget?.targetPositionKm
+          ? { ...constraintTarget.targetPositionKm }
+          : { ...(rocketState.position || { x: 0, y: 0, z: 0 }) },
+        velocity: constraintTarget?.targetVelocityKmS
+          ? { ...constraintTarget.targetVelocityKmS }
+          : { ...(rocketState.velocity || { x: 0, y: 0, z: 0 }) },
+      };
+      state.dynamicBodies.set(LAUNCH_BOOSTER_BODY_ID, boosterState);
+    }
+    if (!runtime.booster.attached) {
+      return boosterState;
+    }
+    boosterState.massKg = constraintTarget?.boosterMassKg || attachedBoosterMassKgFromRuntime();
+    if (
+      hardSync
+      || !finiteVector(boosterState.position)
+      || !finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      boosterState.position = constraintTarget?.targetPositionKm
+        ? { ...constraintTarget.targetPositionKm }
+        : { ...(rocketState.position || { x: 0, y: 0, z: 0 }) };
+      boosterState.velocity = constraintTarget?.targetVelocityKmS
+        ? { ...constraintTarget.targetVelocityKmS }
+        : { ...(rocketState.velocity || { x: 0, y: 0, z: 0 }) };
+    }
+    if (constraintTarget?.offsetWorldKm && !finiteVector(runtime.attachedJoint?.targetOffsetWorldKm)) {
+      runtime.attachedJoint.targetOffsetWorldKm = cloneVector(constraintTarget.offsetWorldKm);
+    }
+    return boosterState;
+  }
+
+  function updateAttachedStackJointState(state, rocketState, earthState, currentEarthAxes, dtSeconds) {
+    if (
+      !runtime.booster.attached
+      || runtime.booster.active
+      || !state?.dynamicBodies
+      || !rocketState
+      || !earthState
+      || !runtime.lastStep
+    ) {
+      runtime.attachedJoint = createAttachedStackJointState();
+      return;
+    }
+    const boosterState = ensureAttachedBoosterInNBody(
+      state,
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      { dtSeconds, hardSync: false },
+    );
+    if (!boosterState) {
+      runtime.attachedJoint = createAttachedStackJointState();
+      return;
+    }
+
+    const target = computeAttachedBoosterConstraintTarget({
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      dtSeconds,
+    });
+    if (!target) {
+      runtime.attachedJoint = createAttachedStackJointState();
+      return;
+    }
+
+    const shipMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(target.shipMassKg) || MIN_ROCKET_MASS_KG);
+    const boosterMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(target.boosterMassKg) || MIN_ROCKET_MASS_KG);
+    const effectiveMassKg = Math.max(
+      MIN_ROCKET_MASS_KG,
+      Number(runtime.lastStep?.effectiveMassKg) || Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || MIN_ROCKET_MASS_KG),
+    );
+    const bodyAxis = normalize(
+      runtime.lastStep?.bodyAxisDirectionKm || target.stackedBodyAxis,
+      target.stackedBodyAxis,
+    );
+    const thrustForceN = scale(bodyAxis, Math.max(0, Number(runtime.lastStep?.thrustN) || 0));
+    const aeroForceN = scale(
+      runtime.lastStep?.aeroAccelerationKmS2 || { x: 0, y: 0, z: 0 },
+      effectiveMassKg * 1000,
+    );
+    const rcsForceN = scale(
+      runtime.lastStep?.rcsAccelerationKmS2 || { x: 0, y: 0, z: 0 },
+      effectiveMassKg * 1000,
+    );
+    const shipForceShare = clamp(
+      (Number(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm) || 0.05)
+        / Math.max(1e-6, (Number(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm) || 0.05) + (Number(STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm) || 0.07)),
+      0.25,
+      0.75,
+    );
+    const boosterForceShare = 1 - shipForceShare;
+    const nonThrustForceN = add(aeroForceN, rcsForceN);
+    const shipBaseForceN = runtime.stageIndex === 0
+      ? scale(nonThrustForceN, shipForceShare)
+      : add(thrustForceN, scale(nonThrustForceN, shipForceShare));
+    const boosterBaseForceN = runtime.stageIndex === 0
+      ? add(thrustForceN, scale(nonThrustForceN, boosterForceShare))
+      : scale(nonThrustForceN, boosterForceShare);
+    const shipBaseAccelerationKmS2 = scale(shipBaseForceN, 1 / (shipMassKg * 1000));
+    const boosterBaseAccelerationKmS2 = scale(boosterBaseForceN, 1 / (boosterMassKg * 1000));
+
+    const positionErrorKm = subtract(target.targetPositionKm, boosterState.position);
+    const relativeVelocityKmS = subtract(
+      target.targetVelocityKmS,
+      boosterState.velocity || { x: 0, y: 0, z: 0 },
+    );
+    const springTermKmS2 = scale(
+      positionErrorKm,
+      ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S * ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S,
+    );
+    const dampingTermKmS2 = scale(
+      relativeVelocityKmS,
+      2 * ATTACHED_STACK_JOINT_DAMPING_RATIO * ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S,
+    );
+    const baseRelativeAccelerationKmS2 = subtract(
+      boosterBaseAccelerationKmS2,
+      shipBaseAccelerationKmS2,
+    );
+    let correctionAccelerationKmS2 = add(
+      add(springTermKmS2, dampingTermKmS2),
+      scale(baseRelativeAccelerationKmS2, -1),
+    );
+    const correctionMagKmS2 = length(correctionAccelerationKmS2);
+    if (correctionMagKmS2 > ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2) {
+      correctionAccelerationKmS2 = scale(
+        correctionAccelerationKmS2,
+        ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2 / correctionMagKmS2,
+      );
+    }
+    const reducedMassKg = 1 / ((1 / shipMassKg) + (1 / boosterMassKg));
+    let reactionForceVectorN = scale(correctionAccelerationKmS2, reducedMassKg * 1000);
+    const reactionForceMagN = length(reactionForceVectorN);
+    if (reactionForceMagN > ATTACHED_STACK_JOINT_MAX_LOAD_N) {
+      reactionForceVectorN = scale(reactionForceVectorN, ATTACHED_STACK_JOINT_MAX_LOAD_N / reactionForceMagN);
+    }
+    const shipJointAccelerationKmS2 = scale(reactionForceVectorN, -1 / (shipMassKg * 1000));
+    const boosterJointAccelerationKmS2 = scale(reactionForceVectorN, 1 / (boosterMassKg * 1000));
+    const shipAccelerationKmS2 = add(shipBaseAccelerationKmS2, shipJointAccelerationKmS2);
+    const boosterAccelerationKmS2 = add(boosterBaseAccelerationKmS2, boosterJointAccelerationKmS2);
+
+    runtime.attachedJoint = {
+      active: true,
+      targetOffsetWorldKm: cloneVector(target.offsetWorldKm),
+      targetPositionKm: cloneVector(target.targetPositionKm),
+      targetVelocityKmS: cloneVector(target.targetVelocityKmS),
+      positionErrorKm: cloneVector(positionErrorKm),
+      relativeVelocityKmS: cloneVector(relativeVelocityKmS),
+      shipBaseAccelerationKmS2: cloneVector(shipBaseAccelerationKmS2),
+      boosterBaseAccelerationKmS2: cloneVector(boosterBaseAccelerationKmS2),
+      shipJointAccelerationKmS2: cloneVector(shipJointAccelerationKmS2),
+      boosterJointAccelerationKmS2: cloneVector(boosterJointAccelerationKmS2),
+      shipAccelerationKmS2: cloneVector(shipAccelerationKmS2),
+      boosterAccelerationKmS2: cloneVector(boosterAccelerationKmS2),
+      reactionForceN: length(reactionForceVectorN),
+      shipMassKg,
+      boosterMassKg,
+    };
+
+    runtime.booster.lastStep = {
+      accelerationKmS2: cloneVector(boosterAccelerationKmS2),
+      guidanceMode: "booster-attached-joint",
+      requestedDirectionKm: cloneVectorOrNull(target.stackedBodyAxis),
+      bodyAxisDirectionKm: cloneVectorOrNull(target.stackedBodyAxis),
+      attachedJointLoadMN: runtime.attachedJoint.reactionForceN / 1e6,
+      attachedJointErrorM: length(positionErrorKm) * 1000,
+      attachedJointRelativeSpeedMS: length(relativeVelocityKmS) * 1000,
+      attachedJointBaseAccelerationKmS2: cloneVector(boosterBaseAccelerationKmS2),
+      attachedJointAccelerationKmS2: cloneVector(boosterJointAccelerationKmS2),
+    };
+  }
+
+  function stabilizeAttachedStackConstraint(state, rocketState, earthState, currentEarthAxes) {
+    if (!runtime.booster.attached || runtime.booster.active || !rocketState || !earthState) {
+      return;
+    }
+    const boosterState = boosterStateFromNBody(state);
+    if (!boosterState) {
+      return;
+    }
+    const target = computeAttachedBoosterConstraintTarget({
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      dtSeconds: 0,
+    });
+    if (!target) {
+      return;
+    }
+    const shipMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(target.shipMassKg) || MIN_ROCKET_MASS_KG);
+    const boosterMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(target.boosterMassKg) || MIN_ROCKET_MASS_KG);
+    const totalMassKg = shipMassKg + boosterMassKg;
+    const relativePositionErrorKm = subtract(
+      boosterState.position,
+      target.targetPositionKm,
+    );
+    const relativeVelocityErrorKmS = subtract(
+      boosterState.velocity || { x: 0, y: 0, z: 0 },
+      target.targetVelocityKmS,
+    );
+    if (length(relativePositionErrorKm) > 1e-9) {
+      rocketState.position = add(
+        rocketState.position,
+        scale(relativePositionErrorKm, boosterMassKg / totalMassKg),
+      );
+      boosterState.position = add(
+        boosterState.position,
+        scale(relativePositionErrorKm, -shipMassKg / totalMassKg),
+      );
+    }
+    if (length(relativeVelocityErrorKmS) > 1e-9) {
+      rocketState.velocity = add(
+        rocketState.velocity || { x: 0, y: 0, z: 0 },
+        scale(relativeVelocityErrorKmS, boosterMassKg / totalMassKg),
+      );
+      boosterState.velocity = add(
+        boosterState.velocity || { x: 0, y: 0, z: 0 },
+        scale(relativeVelocityErrorKmS, -shipMassKg / totalMassKg),
+      );
+    }
+    runtime.attachedJoint.targetOffsetWorldKm = cloneVector(target.offsetWorldKm);
+    runtime.attachedJoint.targetPositionKm = cloneVector(target.targetPositionKm);
+    runtime.attachedJoint.targetVelocityKmS = cloneVector(target.targetVelocityKmS);
+    runtime.attachedJoint.positionErrorKm = { x: 0, y: 0, z: 0 };
+    runtime.attachedJoint.relativeVelocityKmS = { x: 0, y: 0, z: 0 };
+    runtime.booster.lastTrackedPositionKm = earthFixedRelativePositionKm(
+      boosterState,
+      earthState,
+      currentEarthAxes,
+    );
+  }
+
   function updateRuntimeSurfaceSample(rocketState, earthState, earthFrameAxes, earthRadiusKm) {
     if (!rocketState?.position || !earthState?.position) {
       runtime.lastSurfaceSample = null;
@@ -4098,6 +4492,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthState,
       earthRadiusKm,
       earthAxes: currentEarthAxes,
+      surfaceClearanceKm: LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
     });
     if (!pad) {
       return false;
@@ -4134,6 +4529,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthRadiusKm,
       earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
       referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+      surfaceClearanceKm: LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
       dtSeconds: 0,
       thrustN: 0,
       includeTerrain: true,
@@ -4151,6 +4547,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     );
     runtime.stageActuator = createActuatorState(
       localPadUpDirection(rocketState, earthState, currentEarthAxes),
+    );
+    ensureAttachedBoosterInNBody(
+      state,
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      { hardSync: true },
     );
     const relPos = subtract(rocketState.position, earthState.position);
     const relVel = subtract(
@@ -4212,6 +4615,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthState,
       earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthAxes: currentEarthAxes,
+      surfaceClearanceKm: LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
     });
     if (!pad) {
       runtime.lastError = "Pad state unavailable";
@@ -4229,6 +4633,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       earthRadiusKm: Number(getEarthRadiusKm?.()) || 6371.0084,
       earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
       referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+      surfaceClearanceKm: LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM,
       dtSeconds: 0,
       thrustN: 0,
       includeTerrain: true,
@@ -4247,6 +4652,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     );
     runtime.stageActuator = createActuatorState(
       localPadUpDirection(rocketState, earthState, currentEarthAxes),
+    );
+    ensureAttachedBoosterInNBody(
+      state,
+      rocketState,
+      earthState,
+      currentEarthAxes,
+      { hardSync: true },
     );
     runtime.launchPlaneNormal = computeLaunchPlaneNormal(currentEarthAxes);
     runtime.phase = "idle";
@@ -4395,18 +4807,34 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterMassKg,
     });
 
+    const boosterState = ensureAttachedBoosterInNBody(
+      state,
+      rocketState,
+      earthState,
+      currentEarthAxes,
+    );
+    if (!boosterState) {
+      return null;
+    }
     const relPos = subtract(rocketState.position, earthState.position);
     const relVel = subtract(
       rocketState.velocity || { x: 0, y: 0, z: 0 },
       earthState.velocity || { x: 0, y: 0, z: 0 },
     );
     const up = normalize(relPos, currentEarthAxes.pole);
+    const stackedBodyAxis = normalize(
+      runtime.lastStep?.bodyAxisDirectionKm
+        || runtime.stageActuator?.directionActual
+        || up,
+      up,
+    );
+    const separationAxis = stackedBodyAxis;
 
     // Align the dynamic reference from stacked center to Starship center at staging.
     const shipCenterShiftKm = STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
     rocketState.position = add(
       rocketState.position,
-      scale(up, shipCenterShiftKm + hotstageOffsets.shipOffsetKm),
+      scale(separationAxis, shipCenterShiftKm + hotstageOffsets.shipOffsetKm),
     );
 
     // Place booster directly below Starship with only a small physical gap; add a tiny separation
@@ -4424,23 +4852,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ? separationRelativeSpeedKmS * (shipMassKg / totalMassKg)
       : 0;
     const baseVelocityKmS = rocketState.velocity || { x: 0, y: 0, z: 0 };
-    const shipImpulseKmS = scale(up, dvShipKmS);
-    const separationImpulseKmS = scale(up, -dvBoosterKmS);
+    const shipImpulseKmS = scale(separationAxis, dvShipKmS);
+    const separationImpulseKmS = scale(separationAxis, -dvBoosterKmS);
     rocketState.velocity = add(baseVelocityKmS, shipImpulseKmS);
-    const stackedBodyAxis = normalize(
-      runtime.lastStep?.bodyAxisDirectionKm
-        || runtime.stageActuator?.directionActual
-        || up,
-      up,
-    );
-    const boosterState = {
-      id: LAUNCH_BOOSTER_BODY_ID,
-      massKg: boosterMassKg,
-      position: add(rocketState.position, scale(up, -separationOffsetKm)),
-      velocity: add(baseVelocityKmS, separationImpulseKmS),
-    };
-    state.dynamicBodies.set(LAUNCH_BOOSTER_BODY_ID, boosterState);
+    boosterState.massKg = boosterMassKg;
+    boosterState.velocity = add(baseVelocityKmS, separationImpulseKmS);
 
+    runtime.booster.attached = false;
+    runtime.attachedJoint = createAttachedStackJointState();
     runtime.booster.active = true;
     runtime.booster.phase = "separation-flip";
     runtime.booster.guidanceMode = "booster-separation-flip";
@@ -4474,12 +4893,30 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       shipMassKg,
       shipImpulseKmS,
       separationImpulseKmS,
+      separationAxisWorldKm: { ...separationAxis },
     });
     emitRuntimeTransitionEvents("stage_separation");
     return boosterState;
   }
 
   function prepareBoosterStep(state, dtSeconds, nowMs = Date.now()) {
+    if (runtime.booster.attached && !runtime.booster.active) {
+      const earthState = earthStateFromNBody(state);
+      const rocketState = rocketStateFromNBody(state);
+      if (earthState && rocketState) {
+        ensureAttachedBoosterInNBody(
+          state,
+          rocketState,
+          earthState,
+          earthAxes(nowMs),
+          { dtSeconds, hardSync: false },
+        );
+      }
+      runtime.booster.lastStep = runtime.attachedJoint.active
+        ? cloneJson(runtime.booster.lastStep, null)
+        : null;
+      return;
+    }
     if (!runtime.booster.active) {
       runtime.booster.lastStep = null;
       return;
@@ -4673,13 +5110,21 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
     const pressurePa = Number(atmosphereSample?.pressurePa) || 0;
     const landingPhase = command.phase === "landing-burn" || command.phase === "landed";
-    const protectedReserveKg = landingPhase
+    const recoveryPropellantBudgetKg = stageReservePropellantKg(0);
+    const reserveProtectionRatio = landingPhase
       ? 0
       : (
-        command.phase === "entry-burn"
-          ? stageReservePropellantKg(0) * 0.7
-          : stageReservePropellantKg(0)
+        command.phase === "descent-coast"
+          ? 0.20
+          : command.phase === "entry-burn"
+            ? 0.30
+            : command.phase === "entry-align" || command.phase === "ballistic-descent"
+              ? 0.36
+              : command.phase === "boostback"
+                ? 0.54
+                : 0.52
       );
+    const protectedReserveKg = recoveryPropellantBudgetKg * reserveProtectionRatio;
     const burnablePropellantKg = Math.max(0, runtime.booster.propellantKg - protectedReserveKg);
     const canBurn = burnablePropellantKg > 1e-6 && !runtime.booster.landed;
     const relAirVelocityKmS = atmosphereRelativeVelocityKmS(
@@ -4764,7 +5209,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
     });
-    const attitudeResponseScale = clamp(Number(command.attitudeResponseScale) || 1, 0.05, 1.2);
+    const attitudeResponseScale = clamp(Number(command.attitudeResponseScale) || 1, 0.05, 2.8);
     const engineAngularControl = scaleAngularControlState(computeBoosterEngineAngularControlState({
       controlErrorsBody,
       omegaBodyRadS,
@@ -5313,7 +5758,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const stageDryMassKg = Number(activeStage?.dryMassKg) || 0;
       const stageAttachedMassKg = runtime.stageIndex === 0
         ? Math.max(0, (Number(rocketState.massKg) || 0) - stageDryMassKg - Math.max(0, Number(runtime.stagePropellantKg) || 0))
-        : 0;
+        : (
+          runtime.booster.attached && !runtime.booster.active
+            ? attachedBoosterMassKgFromRuntime()
+            : 0
+        );
       runtime.stageMassModel = updateMassModelState(runtime.stageMassModel, {
         propellantFraction: stagePropellantFraction,
         bodyKind: stageBodyKindFromStageIndex(runtime.stageIndex),
@@ -5644,6 +6093,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         }
         runtime.lastStep = {
           accelerationKmS2: add(add(thrustAccelerationKmS2, aero.accelerationKmS2), rcs.accelerationKmS2),
+          effectiveMassKg,
           throttle: throttleActual,
           throttleCommand: canThrust ? throttleCommand : 0,
           thrustN,
@@ -5653,6 +6103,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           guidanceMode: guidanceModeLabel,
           requestedDirectionKm: cloneVectorOrNull(steeringDirection),
           bodyAxisDirectionKm: cloneVectorOrNull(directionActual),
+          thrustAccelerationKmS2: cloneVectorOrNull(thrustAccelerationKmS2),
+          aeroAccelerationKmS2: cloneVectorOrNull(aero.accelerationKmS2),
+          rcsAccelerationKmS2: cloneVectorOrNull(rcs.accelerationKmS2),
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
           rcsAuthority: rcs.authority,
@@ -5675,6 +6128,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           angularDampingCommandPerS: commandedAngularDampingPerS,
           maxBodyRateCommandDegS: commandedMaxBodyRateDegS,
         };
+        updateAttachedStackJointState(
+          state,
+          rocketState,
+          earthState,
+          currentEarthAxes,
+          dtSeconds,
+        );
         if (runtime.phase === "powered" && !burnActive) {
           runtime.phase = "coast";
         }
@@ -5971,9 +6431,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
 
   function externalAccelerationKmS2(bodyId) {
     if (bodyId === LAUNCH_BODY_ID) {
+      if (runtime.attachedJoint.active) {
+        return runtime.attachedJoint.shipAccelerationKmS2 || { x: 0, y: 0, z: 0 };
+      }
       return runtime.lastStep?.accelerationKmS2 || { x: 0, y: 0, z: 0 };
     }
     if (bodyId === LAUNCH_BOOSTER_BODY_ID) {
+      if (runtime.attachedJoint.active) {
+        return runtime.attachedJoint.boosterAccelerationKmS2 || { x: 0, y: 0, z: 0 };
+      }
+      if (runtime.booster.attached && !runtime.booster.active) {
+        return { x: 0, y: 0, z: 0 };
+      }
       return runtime.booster.lastStep?.accelerationKmS2 || { x: 0, y: 0, z: 0 };
     }
     return fleetController.externalAccelerationKmS2(bodyId);
@@ -6065,6 +6534,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         earthRadiusKm,
         earthSiderealRateRadS: EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
         referenceOffsetKm: STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
+        surfaceClearanceKm: primaryLaunchPadSurfaceClearanceKm(runtime),
         dtSeconds,
         thrustN: Number(runtime.lastStep?.thrustN) || 0,
         includeTerrain: true,
@@ -6072,6 +6542,15 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       if (contact?.surfaceSample) {
         runtime.lastSurfaceSample = contact.surfaceSample;
       } else {
+        updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
+      }
+      if (runtime.booster.attached && !runtime.booster.active) {
+        stabilizeAttachedStackConstraint(
+          state,
+          rocketState,
+          earthState,
+          currentEarthAxes,
+        );
         updateRuntimeSurfaceSample(rocketState, earthState, currentEarthAxes, earthRadiusKm);
       }
 
@@ -6142,6 +6621,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         rocketState.massKg - appliedBurnKg,
       );
       runtime.stagePropellantKg = Math.max(0, runtime.stagePropellantKg - appliedBurnKg);
+    }
+    if (runtime.booster.attached && !runtime.booster.active) {
+      const attachedBoosterState = boosterStateFromNBody(state);
+      if (attachedBoosterState) {
+        attachedBoosterState.massKg = attachedBoosterMassKgFromRuntime();
+        runtime.booster.lastTrackedPositionKm = earthFixedRelativePositionKm(
+          attachedBoosterState,
+          earthState,
+          currentEarthAxes,
+        );
+      }
     }
 
     const stage = stageAtIndex(runtime.stageIndex);
@@ -6275,6 +6765,15 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           });
         }
       }
+    }
+
+    if (runtime.hotstage.active && runtime.booster.attached && !runtime.booster.active) {
+      stabilizeAttachedStackConstraint(
+        state,
+        rocketState,
+        earthState,
+        currentEarthAxes,
+      );
     }
 
     // Hot-staging overlap: detach booster when stage-2 ignition is stable and overlap gates are met.
@@ -6497,6 +6996,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         starshipDistanceKm: runtime.starshipDistanceKm,
         boosterPhase: runtime.booster.phase,
         boosterGuidanceMode: runtime.booster.guidanceMode,
+        attachedJointActive: Boolean(runtime.attachedJoint.active),
+        attachedJointLoadMN: Number(runtime.attachedJoint.reactionForceN) / 1e6 || 0,
+        attachedJointErrorM: length(runtime.attachedJoint.positionErrorKm || { x: 0, y: 0, z: 0 }) * 1000,
+        attachedJointRelativeSpeedMS: length(runtime.attachedJoint.relativeVelocityKmS || { x: 0, y: 0, z: 0 }) * 1000,
+        attachedJointShipMassKg: Number(runtime.attachedJoint.shipMassKg) || 0,
+        attachedJointBoosterMassKg: Number(runtime.attachedJoint.boosterMassKg) || 0,
         boosterActive: runtime.booster.active,
         boosterLanded: runtime.booster.landed,
         boosterThrottle: Number(runtime.booster.lastStep?.throttle) || 0,
@@ -6695,6 +7200,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       starshipDistanceKm: telemetry.starshipDistanceKm,
       boosterPhase: runtime.booster.telemetry?.phase || runtime.booster.phase,
       boosterGuidanceMode: runtime.booster.telemetry?.guidanceMode || runtime.booster.guidanceMode,
+      attachedJointActive: Boolean(runtime.attachedJoint.active),
+      attachedJointLoadMN: Number(runtime.attachedJoint.reactionForceN) / 1e6 || 0,
+      attachedJointErrorM: length(runtime.attachedJoint.positionErrorKm || { x: 0, y: 0, z: 0 }) * 1000,
+      attachedJointRelativeSpeedMS: length(runtime.attachedJoint.relativeVelocityKmS || { x: 0, y: 0, z: 0 }) * 1000,
+      attachedJointShipMassKg: Number(runtime.attachedJoint.shipMassKg) || 0,
+      attachedJointBoosterMassKg: Number(runtime.attachedJoint.boosterMassKg) || 0,
+      boosterAttached: runtime.booster.attached,
       boosterActive: runtime.booster.active,
       boosterLanded: runtime.booster.landed,
       boosterThrottle: Number(runtime.booster.telemetry?.throttle) || Number(runtime.booster.lastStep?.throttle) || 0,
@@ -6973,6 +7485,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       stageMassModel: cloneJson(runtime.stageMassModel, createMassModelState()),
       boosterActuator: cloneJson(runtime.boosterActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
       boosterMassModel: cloneJson(runtime.boosterMassModel, createMassModelState()),
+      attachedJoint: cloneJson(runtime.attachedJoint, createAttachedStackJointState()),
       stage2RefuelRecoveryApplied: Boolean(runtime.stage2RefuelRecoveryApplied),
       mission: {
         selectedId: normalizeMissionId(runtime.mission.selectedId),
@@ -6981,6 +7494,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         completed: Boolean(runtime.mission.completed),
       },
       booster: {
+        attached: Boolean(runtime.booster.attached),
         active: Boolean(runtime.booster.active),
         phase: String(runtime.booster.phase || "idle"),
         guidanceMode: String(runtime.booster.guidanceMode || "booster-idle"),
@@ -7099,6 +7613,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       { x: 0, y: 0, z: 1 },
     );
     runtime.boosterMassModel = applyMassModelSnapshot(runtime.boosterMassModel, snapshot.boosterMassModel);
+    runtime.attachedJoint = {
+      ...createAttachedStackJointState(),
+      ...(cloneJson(snapshot.attachedJoint, createAttachedStackJointState()) || {}),
+    };
     runtime.stage2RefuelRecoveryApplied = Boolean(snapshot.stage2RefuelRecoveryApplied);
 
     const missionSnapshot = snapshot.mission && typeof snapshot.mission === "object"
@@ -7119,6 +7637,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ? snapshot.booster
       : {};
     runtime.booster.active = Boolean(boosterSnapshot.active);
+    runtime.booster.attached = Boolean(
+      Object.prototype.hasOwnProperty.call(boosterSnapshot, "attached")
+        ? boosterSnapshot.attached
+        : runtime.booster.attached,
+    );
     runtime.booster.phase = String(boosterSnapshot.phase || runtime.booster.phase || "idle");
     runtime.booster.guidanceMode = String(
       boosterSnapshot.guidanceMode || runtime.booster.guidanceMode || "booster-idle",

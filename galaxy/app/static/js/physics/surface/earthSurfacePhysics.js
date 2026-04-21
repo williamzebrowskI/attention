@@ -377,6 +377,7 @@ export function applyEarthSurfaceContactForVehicle(options) {
     earthRadiusKm,
     earthSiderealRateRadS,
     referenceOffsetKm,
+    surfaceClearanceKm = 0,
     dtSeconds,
     thrustN = 0,
     includeTerrain = false,
@@ -397,9 +398,11 @@ export function applyEarthSurfaceContactForVehicle(options) {
     return { corrected: false, surfaceSample: null };
   }
 
+  const targetAltitudeKm = Math.max(0, Number(referenceOffsetKm) || 0)
+    + Math.max(0, Number(surfaceClearanceKm) || 0);
   const penetrationKm = Math.max(
     0,
-    Math.max(0, Number(referenceOffsetKm) || 0) - (Number(sample.altitudeAboveTerrainKm) || 0),
+    targetAltitudeKm - (Number(sample.altitudeAboveTerrainKm) || 0),
   );
   if (!(penetrationKm > 0)) {
     return { corrected: false, surfaceSample: sample, penetrationKm: 0 };
@@ -409,7 +412,7 @@ export function applyEarthSurfaceContactForVehicle(options) {
   const correctedRelPosition = sample.surfacePointRelativeKm
     ? add(
       sample.surfacePointRelativeKm,
-      scale(normal, Math.max(0, Number(referenceOffsetKm) || 0)),
+      scale(normal, targetAltitudeKm),
     )
     : add(relPosition, scale(normal, penetrationKm));
   rocketState.position = add(earthState.position, correctedRelPosition);

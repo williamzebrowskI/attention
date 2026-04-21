@@ -77,8 +77,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
   );
 
   const separationFlipMinSec = 0.9;
+  const separationFlipBurnReadySec = 6.5;
   const separationFlipMaxSec = 15.0;
-  const separationCoastMaxSec = 24.0;
+  const separationCoastMaxSec = 12.0;
   const entryBurnUpperKm = 74;
   const entryBurnLowerKm = 18;
   const touchdownBandKm = 0.03;
@@ -92,6 +93,21 @@ export function computeBoosterRecoveryCommand(input = {}) {
     downwardSpeedKmS,
   });
   const separationPhaseActive = !currentPhase || currentPhase === "separation-flip" || currentPhase === "separation-coast";
+  const lateralErrorNorm = clamp(launchSiteLateralRangeKm / rtlsLateralWindowKm, 0, 1);
+  const closingDeficitNorm = clamp(
+    (0.12 - launchSiteLateralClosingSpeedKmS) / 0.24,
+    0,
+    1,
+  );
+  const farFromLaunchSite =
+    launchSiteLateralRangeKm > significantSiteErrorKm
+    || launchSiteRangeKm > (rtlsLateralWindowKm * 1.1);
+  const hasBoostbackBudget = propellantKg > (reserveLandingKg * 0.55);
+  const returnEnergyNorm = Math.max(
+    lateralErrorNorm,
+    clamp((tangentialSpeedKmS - 0.95) / 2.6, 0, 1),
+    lateralClosingNeedNorm,
+  );
 
   if (altitudeKm <= touchdownBandKm && Math.abs(radialSpeedKmS) < 0.025 && tangentialSpeedKmS < 0.02) {
     return {
@@ -114,9 +130,27 @@ export function computeBoosterRecoveryCommand(input = {}) {
     1,
   );
   const coastPhaseProgress = clamp(
-    (elapsedSec - separationFlipMaxSec) / Math.max(separationCoastMaxSec - separationFlipMaxSec, 0.1),
+    (elapsedSec - separationFlipBurnReadySec) / Math.max(separationCoastMaxSec - separationFlipBurnReadySec, 0.1),
     0,
     1,
+  );
+  const boostbackDemand =
+    altitudeKm > 46
+    && hasBoostbackBudget
+    && (
+      tangentialSpeedKmS > 1.05
+      || farFromLaunchSite
+      || returnEnergyNorm > 0.2
+    );
+  const boostbackIgnitionEligible = boostbackDemand && (
+    elapsedSec >= separationCoastMaxSec
+    || (
+      elapsedSec >= separationFlipBurnReadySec
+      && (
+        flipAlignment >= 0.54
+        || bodyRetrogradeAlignment >= 0.42
+      )
+    )
   );
 
   if (
@@ -125,6 +159,7 @@ export function computeBoosterRecoveryCommand(input = {}) {
     elapsedSec < separationFlipMinSec
     || (
       elapsedSec < separationFlipMaxSec
+      && !boostbackIgnitionEligible
       && (!flipComplete || attitudeStillMostlyUp)
     )
     )
@@ -134,26 +169,27 @@ export function computeBoosterRecoveryCommand(input = {}) {
       phase: "separation-flip",
       guidanceMode: "booster-separation-flip",
       attitudeResponseScale: elapsedSec < 1.8
-        ? 0.08
-        : (0.22 + (0.58 * settleBlend)),
+        ? 0.18
+        : (0.74 + (1.08 * settleBlend)),
       attitudeTargetBlend: elapsedSec < 1.8
-        ? 0.08
-        : (0.18 + (0.42 * settleBlend)),
-      angularDampingPerS: 0.18 + (0.14 * settleBlend),
-      maxBodyRateDegS: 5.5 + (1.5 * settleBlend),
+        ? 0.10
+        : (0.28 + (0.42 * settleBlend)),
+      angularDampingPerS: 0.08 + (0.08 * settleBlend),
+      maxBodyRateDegS: 7.4 + (3.2 * settleBlend),
       siteTargetingEnabled: false,
       qAlphaSteeringEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.30 - (0.22 * flipPhaseProgress),
+        up: 0.24 - (0.16 * flipPhaseProgress),
         retrograde: 1.0,
-        antiTangent: 0.02 + (0.04 * flipPhaseProgress),
+        antiTangent: 0.08 + (0.18 * flipPhaseProgress),
       },
     };
   }
 
   if (
     separationPhaseActive
+    && !boostbackIgnitionEligible
     && (
     (
       elapsedSec < separationCoastMaxSec
@@ -168,64 +204,66 @@ export function computeBoosterRecoveryCommand(input = {}) {
     return {
       phase: "separation-coast",
       guidanceMode: "booster-separation-coast",
-      attitudeResponseScale: 0.82 + (0.10 * coastPhaseProgress),
-      attitudeTargetBlend: 0.60 + (0.18 * coastPhaseProgress),
-      angularDampingPerS: 0.26 + (0.12 * coastPhaseProgress),
-      maxBodyRateDegS: 8.0 + (1.0 * coastPhaseProgress),
+      attitudeResponseScale: 1.28 + (0.32 * coastPhaseProgress),
+      attitudeTargetBlend: 0.68 + (0.18 * coastPhaseProgress),
+      angularDampingPerS: 0.14 + (0.08 * coastPhaseProgress),
+      maxBodyRateDegS: 10.2 + (1.8 * coastPhaseProgress),
       siteTargetingEnabled: false,
       qAlphaSteeringEnabled: false,
       throttle: 0,
       directionMix: {
-        up: 0.10 - (0.05 * coastPhaseProgress),
+        up: 0.08 - (0.03 * coastPhaseProgress),
         retrograde: 1.0,
-        antiTangent: 0.05 + (0.07 * coastPhaseProgress),
+        antiTangent: 0.18 + (0.12 * coastPhaseProgress),
       },
-    };
+      };
   }
-
-  const lateralErrorNorm = clamp(launchSiteLateralRangeKm / rtlsLateralWindowKm, 0, 1);
-  const closingDeficitNorm = clamp(
-    (0.12 - launchSiteLateralClosingSpeedKmS) / 0.24,
-    0,
-    1,
-  );
-  const farFromLaunchSite =
-    launchSiteLateralRangeKm > significantSiteErrorKm
-    || launchSiteRangeKm > (rtlsLateralWindowKm * 1.1);
-  const hasBoostbackBudget = propellantKg > (reserveLandingKg * 1.12);
-  const returnEnergyNorm = Math.max(
-    lateralErrorNorm,
-    clamp((tangentialSpeedKmS - 0.95) / 2.6, 0, 1),
-    lateralClosingNeedNorm,
-  );
   if (
-    altitudeKm > 46
-    && hasBoostbackBudget
-    && (
-      tangentialSpeedKmS > 1.05
-      || farFromLaunchSite
-      || returnEnergyNorm > 0.2
+    (
+      boostbackIgnitionEligible
+      || (
+        currentPhase === "boostback"
+        && altitudeKm > 38
+        && hasBoostbackBudget
+        && (
+          tangentialSpeedKmS > 0.55
+          || launchSiteLateralRangeKm > 8
+          || lateralClosingNeedNorm > 0.10
+        )
+      )
     )
   ) {
     const tangentialScale = clamp((tangentialSpeedKmS - 1.05) / 2.8, 0, 1);
     const rtlsDemand = Math.max(returnEnergyNorm, closingDeficitNorm);
+    const flipIgnitionBlend = clamp((Math.max(flipAlignment, bodyRetrogradeAlignment) - 0.40) / 0.35, 0, 1);
+    const ignitionBlend = clamp(
+      Math.max(
+        (elapsedSec - 5.5) / Math.max(separationCoastMaxSec - 5.5, 0.1),
+        flipIgnitionBlend,
+      ),
+      0,
+      1,
+    );
       return {
         phase: "boostback",
         guidanceMode: "booster-boostback",
         attitudeControlMode: "engines+rcs",
         aeroAuthority: 0,
-        angularDampingPerS: 0.42,
-        maxBodyRateDegS: 9.5,
+        attitudeResponseScale: 2.2 + (0.40 * ignitionBlend),
+        attitudeTargetBlend: 0.42 + (0.40 * ignitionBlend),
+        angularDampingPerS: 0.10 + (0.08 * ignitionBlend),
+        maxBodyRateDegS: 11.4 + (2.6 * ignitionBlend),
         throttle: clamp(
-          0.34
-            + (0.24 * tangentialScale)
-          + (0.20 * rtlsDemand),
-        0.3,
-        0.78,
-      ),
-      directionMix: { up: 0.12, retrograde: 0.92, antiTangent: 0.62 },
-      siteVectorWeight: clamp(0.46 + (0.4 * rtlsDemand), 0.36, 0.88),
-      siteVelocityWeight: clamp(0.28 + (0.28 * rtlsDemand), 0.18, 0.62),
+          0.26
+            + (0.18 * tangentialScale)
+            + (0.18 * rtlsDemand)
+            + (0.22 * ignitionBlend),
+          0.24,
+          0.84,
+        ),
+      directionMix: { up: 0.08, retrograde: 1.0, antiTangent: 0.76 },
+      siteVectorWeight: clamp(0.52 + (0.34 * rtlsDemand), 0.42, 0.90),
+      siteVelocityWeight: clamp(0.34 + (0.24 * rtlsDemand), 0.24, 0.66),
     };
   }
 

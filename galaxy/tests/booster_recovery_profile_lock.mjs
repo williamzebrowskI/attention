@@ -47,7 +47,26 @@ function main() {
   assert(separationCoast.siteTargetingEnabled === false, "expected separation-coast to suppress pad-target steering");
   assert(separationCoast.qAlphaSteeringEnabled === false, "expected separation-coast to bypass q-alpha steering");
 
-  const postSeparationSettle = computeBoosterRecoveryCommand({
+  const earlyBoostback = computeBoosterRecoveryCommand({
+    currentPhase: "separation-coast",
+    altitudeKm: 71,
+    radialSpeedKmS: 0.08,
+    tangentialSpeedKmS: 1.52,
+    launchSiteRangeKm: 98,
+    launchSiteLateralRangeKm: 81,
+    launchSiteLateralClosingSpeedKmS: -0.02,
+    timeSinceSeparationSec: 5.4,
+    remainingPropellantKg: 320_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 260,
+    bodyRetrogradeAlignment: 0.54,
+    bodyAntiTangentAlignment: 0.36,
+    bodyUpAlignment: 0.08,
+  });
+  assert(earlyBoostback.phase === "boostback", `expected early post-separation boostback, got ${earlyBoostback.phase}`);
+  assert(earlyBoostback.throttle >= 0.38, `expected early boostback throttle, got ${earlyBoostback.throttle}`);
+
+  const postSeparationIgnition = computeBoosterRecoveryCommand({
     currentPhase: "separation-flip",
     altitudeKm: 73,
     radialSpeedKmS: 0.04,
@@ -63,7 +82,8 @@ function main() {
     bodyAntiTangentAlignment: 0.62,
     bodyUpAlignment: 0.22,
   });
-  assert(postSeparationSettle.phase === "separation-flip", `expected continued separation-flip while alignment is still incomplete, got ${postSeparationSettle.phase}`);
+  assert(postSeparationIgnition.phase === "boostback", `expected boostback once the flip has settled enough for ignition, got ${postSeparationIgnition.phase}`);
+  assert(postSeparationIgnition.throttle >= 0.38, `expected meaningful post-separation ignition throttle, got ${postSeparationIgnition.throttle}`);
 
   const boostback = computeBoosterRecoveryCommand({
     currentPhase: "boostback",

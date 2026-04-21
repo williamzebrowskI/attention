@@ -55,9 +55,6 @@ export function createLaunchVehicleDeleteController(options = {}) {
   const getOrbitVisuals = typeof options.getOrbitVisuals === "function"
     ? options.getOrbitVisuals
     : (() => new Map());
-  const getOrbitalStateById = typeof options.getOrbitalStateById === "function"
-    ? options.getOrbitalStateById
-    : (() => new Map());
   const getIlluminationById = typeof options.getIlluminationById === "function"
     ? options.getIlluminationById
     : (() => new Map());
@@ -112,6 +109,9 @@ export function createLaunchVehicleDeleteController(options = {}) {
   const nowMs = typeof options.nowMs === "function"
     ? options.nowMs
     : (() => Date.now());
+  const removeVehicleById = typeof options.removeVehicleById === "function"
+    ? options.removeVehicleById
+    : (() => null);
 
   function removeRuntimeCatalogBody(bodyId) {
     const targetId = String(bodyId || "").trim();
@@ -149,7 +149,6 @@ export function createLaunchVehicleDeleteController(options = {}) {
     metaById.delete(targetId);
     getPositionsById().delete(targetId);
     getRuntimeCoordsKmById().delete(targetId);
-    getOrbitalStateById().delete(targetId);
     getIlluminationById().delete(targetId);
     getGravityById().delete(targetId);
     getPrimeMeridianSpinOffsetRadById().delete(targetId);
@@ -206,7 +205,7 @@ export function createLaunchVehicleDeleteController(options = {}) {
       updateLaunchStatusPanel(true, "Select a tanker or fleet Starship to delete.");
       return;
     }
-    const deleteResult = launchController.removeVehicleById?.(nBodyState, targetId, nowMs());
+    const deleteResult = removeVehicleById(targetId, nowMs());
     if (!deleteResult?.accepted) {
       const rejectLabel = vehicleDeleteRejectLabel(deleteResult?.reason);
       appendLaunchLogEntry("error", {

@@ -7,9 +7,9 @@ import {
   subtract,
 } from "../navigationMath.js";
 import {
-  buildMoonGuidanceSourceModel,
   propagateMoonGuidanceState,
-} from "./moonDynamicsModel.js";
+} from "../../runtime/lunarPropagation.js";
+import { buildMoonGuidanceSourceModel } from "../../runtime/lunarSourceModel.js";
 import { synthesizeMoonNavigationMeasurement } from "./moonMeasurementModel.js";
 
 function finiteNumber(value, fallback = 0) {

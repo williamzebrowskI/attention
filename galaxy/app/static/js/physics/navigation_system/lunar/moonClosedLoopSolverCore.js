@@ -11,7 +11,7 @@ import {
   burnDurationForDeltaVSec,
   estimateBPlaneErrorKm,
   propagateMoonGuidanceState,
-} from "./moonDynamicsModel.js";
+} from "../../runtime/lunarPropagation.js";
 
 const EARTH_MU_KM3_S2 = 398600.4418;
 
