@@ -80,6 +80,7 @@ Launch-body ownership has also moved inward:
 - launch thrust authority now scales from configured engine counts instead of treating stage/booster thrust as engine-count-independent aggregate force
 - Super Heavy ascent/recovery now resolves actual lit-engine subsets from the shared engine layout, and booster plume visuals now follow the runtime engine mask instead of firing the full cluster
 - per-engine combustion faults, flame presence, chamber pressure, and exhaust temperature now flow through runtime telemetry, with mission-control/HUD engine-out state and plume color/brightness driven from those live chamber states
+- the attached Starship/Super Heavy stack no longer reports one opaque joint load; runtime now resolves separate axial compression, lateral flex/bending, and angular structural moment channels while attached
 
 Startup authority has also moved inward:
 

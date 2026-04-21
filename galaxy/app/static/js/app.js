@@ -5149,6 +5149,11 @@ function tagBodyVisualRoot(visual) {
   return visual;
 }
 
+function persistentLaunchBodyVisualProtected(bodyId) {
+  const id = String(bodyId || "").trim();
+  return id === String(LAUNCH_BOOSTER_BODY_ID || "");
+}
+
 function disposeVisualRootObject(root) {
   if (!root) {
     return;
@@ -5254,6 +5259,19 @@ async function ensureRuntimeCatalogBody(bodyMeta) {
     mountBodyVisual: (visual) => {
       const taggedVisual = tagBodyVisualRoot(visual);
       const existingVisual = bodyVisuals.get(taggedVisual.id);
+      if (
+        persistentLaunchBodyVisualProtected(taggedVisual.id)
+        && existingVisual?.root
+        && existingVisual !== taggedVisual
+      ) {
+        disposeBodyVisual(taggedVisual);
+        if (!existingVisual.root.parent) {
+          scene.add(existingVisual.root);
+        }
+        purgeDuplicateBodyVisualRoots(taggedVisual.id, existingVisual.root);
+        bodyVisuals.set(taggedVisual.id, existingVisual);
+        return;
+      }
       if (existingVisual && existingVisual !== taggedVisual) {
         disposeBodyVisual(existingVisual);
       }
@@ -6744,6 +6762,7 @@ function updateLaunchVehicleVisuals(nowMs = Date.now()) {
     ? { ...snapshot, externalBoosterVisualActive: true }
     : { externalBoosterVisualActive: true };
   applyStarshipVisualStageFn?.(visual.launchStackState, snapshot?.stageIndex, stackSnapshot);
+  enforceSinglePersistentBoosterVisual(visual);
   applyInlineBoosterFuelVisuals(visual.launchStackState, {
     enabled: false,
     fuelFraction: 0,
@@ -7113,6 +7132,98 @@ function attachedBoosterVisualSnapshot(snapshot = null) {
   };
 }
 
+const BOOSTER_SEPARATION_HANDOFF_MS = 220;
+
+function captureBoosterVisualPose(visual, nowMs = Date.now()) {
+  if (!visual?.root?.position || !visual?.tiltGroup?.quaternion || !visual?.spinGroup?.quaternion) {
+    return null;
+  }
+  return {
+    atMs: nowMs,
+    rootPosition: visual.root.position.clone(),
+    tiltQuaternion: visual.tiltGroup.quaternion.clone(),
+    spinQuaternion: visual.spinGroup.quaternion.clone(),
+  };
+}
+
+function beginBoosterSeparationVisualHandoff(visual, nowMs, runtimeTarget = {}) {
+  if (!visual) {
+    return null;
+  }
+  visual.userData = visual.userData || {};
+  const startPose = visual.userData.lastAttachedBoosterPose || captureBoosterVisualPose(visual, nowMs);
+  if (!startPose) {
+    visual.userData.boosterSeparationHandoff = null;
+    return null;
+  }
+  const handoff = {
+    startMs: nowMs,
+    startPose,
+    targetRootPosition: runtimeTarget.rootPosition?.clone?.() || null,
+  };
+  visual.userData.boosterSeparationHandoff = handoff;
+  return handoff;
+}
+
+function applyBoosterSeparationVisualHandoff(visual, nowMs, runtimeTarget = {}) {
+  if (!visual?.root?.position) {
+    return false;
+  }
+  visual.userData = visual.userData || {};
+  let handoff = visual.userData.boosterSeparationHandoff || null;
+  if (!handoff || !handoff.startPose?.rootPosition) {
+    return false;
+  }
+  if (runtimeTarget.rootPosition?.clone) {
+    handoff.targetRootPosition = runtimeTarget.rootPosition.clone();
+  }
+  const elapsedMs = Math.max(0, nowMs - (Number(handoff.startMs) || nowMs));
+  const alpha = clamp(elapsedMs / BOOSTER_SEPARATION_HANDOFF_MS, 0, 1);
+  visual.root.visible = true;
+  if (handoff.targetRootPosition) {
+    visual.root.position.copy(handoff.startPose.rootPosition).lerp(handoff.targetRootPosition, alpha);
+  } else {
+    visual.root.position.copy(handoff.startPose.rootPosition);
+  }
+  if (visual.tiltGroup?.quaternion && handoff.startPose.tiltQuaternion) {
+    visual.tiltGroup.quaternion.copy(handoff.startPose.tiltQuaternion);
+  }
+  if (visual.spinGroup?.quaternion && handoff.startPose.spinQuaternion) {
+    visual.spinGroup.quaternion.copy(handoff.startPose.spinQuaternion);
+  }
+  if (alpha >= 1 && handoff.targetRootPosition) {
+    visual.userData.boosterSeparationHandoff = null;
+  }
+  return true;
+}
+
+function enforceSinglePersistentBoosterVisual(launchVisual) {
+  const stackState = launchVisual?.launchStackState || launchVisual?.state || null;
+  if (!stackState || typeof stackState !== "object") {
+    return;
+  }
+  stackState.externalBoosterVisualActive = true;
+  if (stackState.boosterGroup) {
+    stackState.boosterGroup.visible = false;
+  }
+  const boosterPlumeCluster = stackState.mainEnginePlumes?.booster?.cluster
+    || stackState.boosterMainEnginePlume?.cluster
+    || null;
+  if (boosterPlumeCluster) {
+    boosterPlumeCluster.visible = false;
+  }
+  if (stackState.boosterFuelVisual?.group) {
+    stackState.boosterFuelVisual.group.visible = false;
+  }
+  if (stackState.boosterRcsJets && typeof stackState.boosterRcsJets === "object") {
+    for (const jetState of Object.values(stackState.boosterRcsJets)) {
+      if (jetState?.group) {
+        jetState.group.visible = false;
+      }
+    }
+  }
+}
+
 function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   if (!launchFeatureEnabled || !THREE_NS) {
     return;
@@ -7143,6 +7254,8 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   const effectNowMs = nowMs;
   const earthAtmosphereContext = earthAtmosphereEffectSceneContext(effectNowMs);
   const effectSceneParent = visual.root?.parent || null;
+  const runtimeRootPositionBeforeOverride = visual.root?.position?.clone?.() || null;
+  const runtimeRootVisibleBeforeOverride = Boolean(visual.root?.visible);
   applyInlineBoosterManeuverVisuals(visual.boosterVisualState, snapshot);
   applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
     enabled: boosterFuelViewEnabled,
@@ -7150,56 +7263,25 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
   });
   const stackedLaunchVisual = bodyVisuals.get(LAUNCH_BODY_ID) || null;
   if (boosterAttached) {
-    if (visual.root && stackedLaunchVisual?.root?.visible) {
-      const stackState = stackedLaunchVisual.launchStackState || null;
-      const stackTilt = stackedLaunchVisual.tiltGroup?.quaternion || null;
-      const stackSpin = stackedLaunchVisual.spinGroup?.quaternion || null;
-      if (stackState && stackTilt) {
-        const hotstageBoosterOffsetScene = Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0)
-          * (Number(stackState.distanceScale) || DISTANCE_SCALE || 1);
-        const localBoosterCenterY = Number.isFinite(Number(stackState.fullBoosterCenterY))
-          ? (Number(stackState.fullBoosterCenterY) - hotstageBoosterOffsetScene)
-          : 0;
-        const attachedOffsetScene = new THREE_NS.Vector3(0, localBoosterCenterY, 0)
-          .applyQuaternion(stackTilt);
-        visual.root.position.copy(stackedLaunchVisual.root.position).add(attachedOffsetScene);
-        if (visual.tiltGroup?.quaternion) {
-          visual.tiltGroup.quaternion.copy(stackTilt);
-        }
-        if (visual.spinGroup?.quaternion && stackSpin) {
-          visual.spinGroup.quaternion.copy(stackSpin);
-        }
-      } else {
-        visual.root.position.copy(stackedLaunchVisual.root.position);
+    if (visual.root) {
+      const stackTilt = stackedLaunchVisual?.tiltGroup?.quaternion || null;
+      const stackSpin = stackedLaunchVisual?.spinGroup?.quaternion || null;
+      if (visual.tiltGroup?.quaternion && stackTilt) {
+        visual.tiltGroup.quaternion.copy(stackTilt);
+      }
+      if (visual.spinGroup?.quaternion && stackSpin) {
+        visual.spinGroup.quaternion.copy(stackSpin);
       }
       visual.root.visible = true;
     }
     visual.userData = visual.userData || {};
+    visual.userData.boosterAttachedLastFrame = true;
     visual.userData.boosterWasVisible = true;
     if (!Number.isFinite(Number(visual.userData.boosterVisibleAtMs))) {
       visual.userData.boosterVisibleAtMs = effectNowMs;
     }
-    applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
-      sceneParent: effectSceneParent,
-      nowMs: effectNowMs,
-      bodyVisible: false,
-      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
-      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
-      renderRadiusScene: visual.renderRadius,
-    });
-    applyReentryHeatToVisual(visual, 0, true);
-    return;
-  }
-  const atmosphereBodyVisible = true;
-  if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
-    visual.userData = visual.userData || {};
-    visual.userData.boosterWasVisible = false;
-    visual.userData.boosterVisibleAtMs = null;
-    applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
-    applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
-      enabled: false,
-      fuelFraction: 0,
-    });
+    visual.userData.lastAttachedBoosterPose = captureBoosterVisualPose(visual, effectNowMs);
+    visual.userData.boosterSeparationHandoff = null;
     applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
       sceneParent: effectSceneParent,
       nowMs: effectNowMs,
@@ -7212,6 +7294,38 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
     return;
   }
   visual.userData = visual.userData || {};
+  const wasAttachedLastFrame = Boolean(visual.userData.boosterAttachedLastFrame);
+  visual.userData.boosterAttachedLastFrame = false;
+  if (wasAttachedLastFrame) {
+    beginBoosterSeparationVisualHandoff(visual, effectNowMs, {
+      rootPosition: runtimeRootVisibleBeforeOverride ? runtimeRootPositionBeforeOverride : null,
+    });
+  }
+  const handoffApplied = applyBoosterSeparationVisualHandoff(visual, effectNowMs, {
+    rootPosition: runtimeRootVisibleBeforeOverride ? runtimeRootPositionBeforeOverride : null,
+  });
+  const atmosphereBodyVisible = true;
+  if (!visual.root?.visible || !visual.tiltGroup?.quaternion) {
+    visual.userData.boosterWasVisible = false;
+    visual.userData.boosterVisibleAtMs = null;
+    applyInlineBoosterManeuverVisuals(visual.boosterVisualState, null);
+    applyInlineBoosterFuelVisuals(visual.boosterVisualState, {
+      enabled: false,
+      fuelFraction: 0,
+    });
+    applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
+      sceneParent: effectSceneParent,
+      nowMs: effectNowMs,
+      bodyVisible: handoffApplied,
+      earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
+      earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
+      renderRadiusScene: visual.renderRadius,
+    });
+    applyReentryHeatToVisual(visual, 0, true);
+    if (!handoffApplied) {
+      return;
+    }
+  }
   const boosterBecameVisible = !Boolean(visual.userData.boosterWasVisible);
   visual.userData.boosterWasVisible = true;
   if (boosterBecameVisible || !Number.isFinite(Number(visual.userData.boosterVisibleAtMs))) {
@@ -7908,6 +8022,9 @@ async function createSpacecraftVisual(body) {
       : initialSnapshot;
     const initialStageIndex = resolveFleetVisualStageIndex(body?.id, stageSnapshot);
     applyStarshipVisualStageFn?.(stack.state, initialStageIndex, stageSnapshot);
+    if (isLaunchVehicle) {
+      enforceSinglePersistentBoosterVisual({ launchStackState: stack.state });
+    }
   }
 
   const lod = {

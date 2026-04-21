@@ -122,7 +122,13 @@ function main() {
   let nowMs = NOW_MS;
   let sampleCount = 0;
   let maxJointLoadMN = 0;
+  let maxJointAxialLoadMN = 0;
+  let maxJointLateralLoadMN = 0;
+  let maxJointBendingMomentMNm = 0;
+  let maxJointAngularMomentMNm = 0;
   let maxJointErrorM = 0;
+  let maxJointAxialCompressionM = 0;
+  let maxJointLateralDeflectionM = 0;
   let maxJointRelativeSpeedMS = 0;
   let maxAccelerationSplitKmS2 = 0;
   let maxBoosterMassKg = 0;
@@ -145,7 +151,25 @@ function main() {
     ) {
       sampleCount += 1;
       maxJointLoadMN = Math.max(maxJointLoadMN, Number(snapshot.attachedJointLoadMN) || 0);
+      maxJointAxialLoadMN = Math.max(maxJointAxialLoadMN, Number(snapshot.attachedJointAxialLoadMN) || 0);
+      maxJointLateralLoadMN = Math.max(maxJointLateralLoadMN, Number(snapshot.attachedJointLateralLoadMN) || 0);
+      maxJointBendingMomentMNm = Math.max(
+        maxJointBendingMomentMNm,
+        Number(snapshot.attachedJointBendingMomentMNm) || 0,
+      );
+      maxJointAngularMomentMNm = Math.max(
+        maxJointAngularMomentMNm,
+        Number(snapshot.attachedJointAngularMomentMNm) || 0,
+      );
       maxJointErrorM = Math.max(maxJointErrorM, Number(snapshot.attachedJointErrorM) || 0);
+      maxJointAxialCompressionM = Math.max(
+        maxJointAxialCompressionM,
+        Number(snapshot.attachedJointAxialCompressionM) || 0,
+      );
+      maxJointLateralDeflectionM = Math.max(
+        maxJointLateralDeflectionM,
+        Number(snapshot.attachedJointLateralDeflectionM) || 0,
+      );
       maxJointRelativeSpeedMS = Math.max(
         maxJointRelativeSpeedMS,
         Number(snapshot.attachedJointRelativeSpeedMS) || 0,
@@ -178,15 +202,22 @@ function main() {
 
   assert(sampleCount >= 12, `launch_attached_structural_joint: expected enough attached samples, got ${sampleCount}`);
   assert(maxJointLoadMN > 20, `launch_attached_structural_joint: joint load too small (${maxJointLoadMN} MN)`);
-  assert(maxJointErrorM > 0.01, `launch_attached_structural_joint: joint error never developed (${maxJointErrorM} m)`);
-  assert(maxJointErrorM < 25, `launch_attached_structural_joint: joint error too large (${maxJointErrorM} m)`);
+  assert(maxJointAxialLoadMN > maxJointLateralLoadMN, `launch_attached_structural_joint: axial load should dominate lateral load (${maxJointAxialLoadMN} vs ${maxJointLateralLoadMN} MN)`);
+  assert(maxJointBendingMomentMNm > 1, `launch_attached_structural_joint: bending moment too small (${maxJointBendingMomentMNm} MNm)`);
+  assert(maxJointAngularMomentMNm > 0.5, `launch_attached_structural_joint: angular moment too small (${maxJointAngularMomentMNm} MNm)`);
   assert(
-    maxJointRelativeSpeedMS < 12,
-    `launch_attached_structural_joint: joint relative speed too large (${maxJointRelativeSpeedMS} m/s)`,
+    maxJointErrorM < 0.05,
+    `launch_attached_structural_joint: hard lock allowed too much relative displacement (${maxJointErrorM} m)`,
+  );
+  assert(maxJointAxialCompressionM > 0.02, `launch_attached_structural_joint: axial compression too small (${maxJointAxialCompressionM} m)`);
+  assert(maxJointLateralDeflectionM > 0.001, `launch_attached_structural_joint: lateral deflection too small (${maxJointLateralDeflectionM} m)`);
+  assert(
+    maxJointRelativeSpeedMS < 0.05,
+    `launch_attached_structural_joint: hard lock allowed too much relative speed (${maxJointRelativeSpeedMS} m/s)`,
   );
   assert(
-    maxAccelerationSplitKmS2 > 0.0001,
-    `launch_attached_structural_joint: ship/booster accelerations never separated (${maxAccelerationSplitKmS2} km/s^2)`,
+    maxAccelerationSplitKmS2 < 1e-6,
+    `launch_attached_structural_joint: hard lock allowed ship/booster acceleration mismatch (${maxAccelerationSplitKmS2} km/s^2)`,
   );
   assert(maxShipMassKg > 1_000_000, `launch_attached_structural_joint: unexpected attached ship mass ${maxShipMassKg} kg`);
   assert(maxBoosterMassKg > 3_000_000, `launch_attached_structural_joint: unexpected attached booster mass ${maxBoosterMassKg} kg`);

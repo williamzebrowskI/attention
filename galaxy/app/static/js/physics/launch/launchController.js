@@ -186,10 +186,16 @@ const PAD_TANKER_DEPLOYMENT_MAX_PERIAPSIS_KM = 165;
 const PAD_TANKER_DEPLOYMENT_MAX_APOAPSIS_KM = 165;
 const PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM = 105;
 const PRIMARY_QALPHA_ACTIVE_MIN_DYNAMIC_PRESSURE_PA = 120;
-const ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S = 4.2;
-const ATTACHED_STACK_JOINT_DAMPING_RATIO = 1.18;
-const ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2 = 0.085;
+const ATTACHED_STACK_JOINT_AXIAL_NATURAL_FREQUENCY_RAD_S = 4.8;
+const ATTACHED_STACK_JOINT_AXIAL_DAMPING_RATIO = 1.2;
+const ATTACHED_STACK_JOINT_LATERAL_NATURAL_FREQUENCY_RAD_S = 3.5;
+const ATTACHED_STACK_JOINT_LATERAL_DAMPING_RATIO = 1.08;
+const ATTACHED_STACK_JOINT_ANGULAR_NATURAL_FREQUENCY_RAD_S = 4.4;
+const ATTACHED_STACK_JOINT_ANGULAR_DAMPING_RATIO = 0.92;
+const ATTACHED_STACK_JOINT_MAX_AXIAL_CORRECTION_KM_S2 = 0.085;
+const ATTACHED_STACK_JOINT_MAX_LATERAL_CORRECTION_KM_S2 = 0.045;
 const ATTACHED_STACK_JOINT_MAX_LOAD_N = 2.4e8;
+const ATTACHED_STACK_JOINT_MAX_ANGULAR_MOMENT_NM = 9.0e8;
 const MISSION_PHASE_ADVISORY_HOLD_SEC = 0.35;
 
 function canonicalMoonMissionPhase(phase) {
@@ -354,6 +360,7 @@ function createAttachedStackJointState() {
     targetOffsetWorldKm: null,
     targetPositionKm: null,
     targetVelocityKmS: null,
+    bodyAxisDirectionKm: { x: 0, y: 0, z: 1 },
     positionErrorKm: { x: 0, y: 0, z: 0 },
     relativeVelocityKmS: { x: 0, y: 0, z: 0 },
     shipBaseAccelerationKmS2: { x: 0, y: 0, z: 0 },
@@ -362,9 +369,42 @@ function createAttachedStackJointState() {
     boosterJointAccelerationKmS2: { x: 0, y: 0, z: 0 },
     shipAccelerationKmS2: { x: 0, y: 0, z: 0 },
     boosterAccelerationKmS2: { x: 0, y: 0, z: 0 },
+    axialErrorKm: 0,
+    lateralErrorKm: 0,
+    axialRelativeSpeedKmS: 0,
+    lateralRelativeSpeedKmS: 0,
+    axialCompressionForceN: 0,
+    lateralForceN: 0,
+    correctionForceN: 0,
+    bendingMomentNm: 0,
+    angularMomentNm: 0,
+    axialCompressionM: 0,
+    lateralDeflectionM: 0,
+    angularDeflectionDeg: 0,
     reactionForceN: 0,
     shipMassKg: 0,
     boosterMassKg: 0,
+  };
+}
+
+function decomposeVectorAlongAxis(vector, axisUnit) {
+  const axis = normalize(axisUnit, { x: 0, y: 0, z: 1 });
+  const safeVector = (
+    vector
+    && Number.isFinite(Number(vector.x))
+    && Number.isFinite(Number(vector.y))
+    && Number.isFinite(Number(vector.z))
+  )
+    ? vector
+    : { x: 0, y: 0, z: 0 };
+  const axialScalar = dot(safeVector, axis);
+  const axialVector = scale(axis, axialScalar);
+  const lateralVector = subtract(safeVector, axialVector);
+  return {
+    axialScalar,
+    axialVector,
+    lateralVector,
+    lateralMagnitude: length(lateralVector),
   };
 }
 
@@ -5083,9 +5123,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
     boosterState.massKg = constraintTarget?.boosterMassKg || attachedBoosterMassKgFromRuntime();
     if (
-      hardSync
-      || !finiteVector(boosterState.position)
-      || !finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 })
+      constraintTarget?.targetPositionKm
+      && constraintTarget?.targetVelocityKmS
     ) {
       boosterState.position = constraintTarget?.targetPositionKm
         ? { ...constraintTarget.targetPositionKm }
@@ -5093,6 +5132,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterState.velocity = constraintTarget?.targetVelocityKmS
         ? { ...constraintTarget.targetVelocityKmS }
         : { ...(rocketState.velocity || { x: 0, y: 0, z: 0 }) };
+    } else if (
+      hardSync
+      || !finiteVector(boosterState.position)
+      || !finiteVector(boosterState.velocity || { x: 0, y: 0, z: 0 })
+    ) {
+      boosterState.position = { ...(rocketState.position || { x: 0, y: 0, z: 0 }) };
+      boosterState.velocity = { ...(rocketState.velocity || { x: 0, y: 0, z: 0 }) };
     }
     if (constraintTarget?.offsetWorldKm && !finiteVector(runtime.attachedJoint?.targetOffsetWorldKm)) {
       runtime.attachedJoint.targetOffsetWorldKm = cloneVector(constraintTarget.offsetWorldKm);
@@ -5176,29 +5222,56 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       target.targetVelocityKmS,
       boosterState.velocity || { x: 0, y: 0, z: 0 },
     );
-    const springTermKmS2 = scale(
-      positionErrorKm,
-      ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S * ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S,
-    );
-    const dampingTermKmS2 = scale(
-      relativeVelocityKmS,
-      2 * ATTACHED_STACK_JOINT_DAMPING_RATIO * ATTACHED_STACK_JOINT_NATURAL_FREQUENCY_RAD_S,
-    );
     const baseRelativeAccelerationKmS2 = subtract(
       boosterBaseAccelerationKmS2,
       shipBaseAccelerationKmS2,
     );
-    let correctionAccelerationKmS2 = add(
-      add(springTermKmS2, dampingTermKmS2),
-      scale(baseRelativeAccelerationKmS2, -1),
+    const axialError = decomposeVectorAlongAxis(positionErrorKm, bodyAxis);
+    const axialVelocityError = decomposeVectorAlongAxis(relativeVelocityKmS, bodyAxis);
+    const baseRelativeAcceleration = decomposeVectorAlongAxis(baseRelativeAccelerationKmS2, bodyAxis);
+
+    let axialCorrectionAccelerationKmS2 = add(
+      add(
+        scale(
+          axialError.axialVector,
+          ATTACHED_STACK_JOINT_AXIAL_NATURAL_FREQUENCY_RAD_S
+            * ATTACHED_STACK_JOINT_AXIAL_NATURAL_FREQUENCY_RAD_S,
+        ),
+        scale(
+          axialVelocityError.axialVector,
+          2 * ATTACHED_STACK_JOINT_AXIAL_DAMPING_RATIO * ATTACHED_STACK_JOINT_AXIAL_NATURAL_FREQUENCY_RAD_S,
+        ),
+      ),
+      scale(baseRelativeAcceleration.axialVector, -1),
     );
-    const correctionMagKmS2 = length(correctionAccelerationKmS2);
-    if (correctionMagKmS2 > ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2) {
-      correctionAccelerationKmS2 = scale(
-        correctionAccelerationKmS2,
-        ATTACHED_STACK_JOINT_MAX_CORRECTION_KM_S2 / correctionMagKmS2,
-      );
-    }
+    axialCorrectionAccelerationKmS2 = clampVectorMagnitude(
+      axialCorrectionAccelerationKmS2,
+      ATTACHED_STACK_JOINT_MAX_AXIAL_CORRECTION_KM_S2,
+    );
+
+    let lateralCorrectionAccelerationKmS2 = add(
+      add(
+        scale(
+          axialError.lateralVector,
+          ATTACHED_STACK_JOINT_LATERAL_NATURAL_FREQUENCY_RAD_S
+            * ATTACHED_STACK_JOINT_LATERAL_NATURAL_FREQUENCY_RAD_S,
+        ),
+        scale(
+          axialVelocityError.lateralVector,
+          2 * ATTACHED_STACK_JOINT_LATERAL_DAMPING_RATIO * ATTACHED_STACK_JOINT_LATERAL_NATURAL_FREQUENCY_RAD_S,
+        ),
+      ),
+      scale(baseRelativeAcceleration.lateralVector, -1),
+    );
+    lateralCorrectionAccelerationKmS2 = clampVectorMagnitude(
+      lateralCorrectionAccelerationKmS2,
+      ATTACHED_STACK_JOINT_MAX_LATERAL_CORRECTION_KM_S2,
+    );
+
+    const correctionAccelerationKmS2 = add(
+      axialCorrectionAccelerationKmS2,
+      lateralCorrectionAccelerationKmS2,
+    );
     const reducedMassKg = 1 / ((1 / shipMassKg) + (1 / boosterMassKg));
     let reactionForceVectorN = scale(correctionAccelerationKmS2, reducedMassKg * 1000);
     const reactionForceMagN = length(reactionForceVectorN);
@@ -5210,11 +5283,78 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const shipAccelerationKmS2 = add(shipBaseAccelerationKmS2, shipJointAccelerationKmS2);
     const boosterAccelerationKmS2 = add(boosterBaseAccelerationKmS2, boosterJointAccelerationKmS2);
 
+    const reactionForce = decomposeVectorAlongAxis(reactionForceVectorN, bodyAxis);
+    const shipAcceleration = decomposeVectorAlongAxis(shipAccelerationKmS2, bodyAxis);
+    const shipRelativePositionKm = subtract(
+      rocketState.position || { x: 0, y: 0, z: 0 },
+      earthState.position || { x: 0, y: 0, z: 0 },
+    );
+    const shipRelativeRadiusKm = Math.max(1e-6, length(shipRelativePositionKm));
+    const earthMassKg = Number(earthState.massKg) || Number(getEarthMassKg?.()) || 0;
+    const earthMuKm3S2 = Math.max(0, Number(gravitationalConstantKm3PerKgS2) || 0)
+      * Math.max(0, earthMassKg);
+    const shipGravityAccelerationKmS2 = earthMuKm3S2 > 0
+      ? scale(
+        shipRelativePositionKm,
+        -earthMuKm3S2 / (shipRelativeRadiusKm * shipRelativeRadiusKm * shipRelativeRadiusKm),
+      )
+      : { x: 0, y: 0, z: 0 };
+    const gravitySupportMS2 = Math.max(0, -dot(shipGravityAccelerationKmS2, bodyAxis) * 1000);
+    const upwardSupportMS2 = Math.max(0, shipAcceleration.axialScalar * 1000);
+    const lateralSupportForceN = shipMassKg * shipAcceleration.lateralMagnitude * 1000;
+    const axialCompressionForceN = Math.max(
+      0,
+      (shipMassKg * (gravitySupportMS2 + upwardSupportMS2)) + Math.max(0, -reactionForce.axialScalar),
+    );
+    const lateralForceN = Math.max(
+      0,
+      lateralSupportForceN + reactionForce.lateralMagnitude,
+    );
+    const interfaceLeverArmM = Math.max(8, stage2BodyLengthMeters() * 0.46);
+    const bendingMomentNm = lateralForceN * interfaceLeverArmM;
+    const angularErrorRad = Math.max(0, rad(Number(runtime.stageActuator?.gimbalErrorDeg) || 0));
+    const angularRateRadS = Math.max(0, Number(runtime.stageActuator?.angularRateRadS) || 0);
+    const angularReducedInertiaKgM2 = reducedMassKg * interfaceLeverArmM * interfaceLeverArmM;
+    let angularMomentNm =
+      angularReducedInertiaKgM2
+      * (
+        (ATTACHED_STACK_JOINT_ANGULAR_NATURAL_FREQUENCY_RAD_S
+          * ATTACHED_STACK_JOINT_ANGULAR_NATURAL_FREQUENCY_RAD_S
+          * angularErrorRad)
+        + (
+          2
+          * ATTACHED_STACK_JOINT_ANGULAR_DAMPING_RATIO
+          * ATTACHED_STACK_JOINT_ANGULAR_NATURAL_FREQUENCY_RAD_S
+          * angularRateRadS
+        )
+      );
+    angularMomentNm = clamp(angularMomentNm, 0, ATTACHED_STACK_JOINT_MAX_ANGULAR_MOMENT_NM);
+    const angularEquivalentLoadN = angularMomentNm / Math.max(interfaceLeverArmM, 1);
+    const totalStructuralLoadN = Math.min(
+      ATTACHED_STACK_JOINT_MAX_LOAD_N,
+      Math.hypot(axialCompressionForceN, lateralForceN, angularEquivalentLoadN),
+    );
+    const axialStiffnessNPerM = Math.max(
+      1,
+      reducedMassKg * ATTACHED_STACK_JOINT_AXIAL_NATURAL_FREQUENCY_RAD_S * ATTACHED_STACK_JOINT_AXIAL_NATURAL_FREQUENCY_RAD_S,
+    );
+    const lateralStiffnessNPerM = Math.max(
+      1,
+      reducedMassKg * ATTACHED_STACK_JOINT_LATERAL_NATURAL_FREQUENCY_RAD_S * ATTACHED_STACK_JOINT_LATERAL_NATURAL_FREQUENCY_RAD_S,
+    );
+    const angularStiffnessNmPerRad = Math.max(
+      1,
+      angularReducedInertiaKgM2
+        * ATTACHED_STACK_JOINT_ANGULAR_NATURAL_FREQUENCY_RAD_S
+        * ATTACHED_STACK_JOINT_ANGULAR_NATURAL_FREQUENCY_RAD_S,
+    );
+
     runtime.attachedJoint = {
       active: true,
       targetOffsetWorldKm: cloneVector(target.offsetWorldKm),
       targetPositionKm: cloneVector(target.targetPositionKm),
       targetVelocityKmS: cloneVector(target.targetVelocityKmS),
+      bodyAxisDirectionKm: cloneVector(bodyAxis),
       positionErrorKm: cloneVector(positionErrorKm),
       relativeVelocityKmS: cloneVector(relativeVelocityKmS),
       shipBaseAccelerationKmS2: cloneVector(shipBaseAccelerationKmS2),
@@ -5223,7 +5363,19 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterJointAccelerationKmS2: cloneVector(boosterJointAccelerationKmS2),
       shipAccelerationKmS2: cloneVector(shipAccelerationKmS2),
       boosterAccelerationKmS2: cloneVector(boosterAccelerationKmS2),
-      reactionForceN: length(reactionForceVectorN),
+      axialErrorKm: Math.abs(axialError.axialScalar),
+      lateralErrorKm: axialError.lateralMagnitude,
+      axialRelativeSpeedKmS: Math.abs(axialVelocityError.axialScalar),
+      lateralRelativeSpeedKmS: axialVelocityError.lateralMagnitude,
+      axialCompressionForceN,
+      lateralForceN,
+      correctionForceN: reactionForceMagN,
+      bendingMomentNm,
+      angularMomentNm,
+      axialCompressionM: axialCompressionForceN / axialStiffnessNPerM,
+      lateralDeflectionM: lateralForceN / lateralStiffnessNPerM,
+      angularDeflectionDeg: degrees(angularMomentNm / angularStiffnessNmPerRad),
+      reactionForceN: totalStructuralLoadN,
       shipMassKg,
       boosterMassKg,
     };
@@ -5234,6 +5386,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       requestedDirectionKm: cloneVectorOrNull(target.stackedBodyAxis),
       bodyAxisDirectionKm: cloneVectorOrNull(target.stackedBodyAxis),
       attachedJointLoadMN: runtime.attachedJoint.reactionForceN / 1e6,
+      attachedJointAxialLoadMN: axialCompressionForceN / 1e6,
+      attachedJointLateralLoadMN: lateralForceN / 1e6,
+      attachedJointBendingMomentMNm: bendingMomentNm / 1e6,
+      attachedJointAngularMomentMNm: angularMomentNm / 1e6,
       attachedJointErrorM: length(positionErrorKm) * 1000,
       attachedJointRelativeSpeedMS: length(relativeVelocityKmS) * 1000,
       attachedJointBaseAccelerationKmS2: cloneVector(boosterBaseAccelerationKmS2),
@@ -5292,8 +5448,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.attachedJoint.targetOffsetWorldKm = cloneVector(target.offsetWorldKm);
     runtime.attachedJoint.targetPositionKm = cloneVector(target.targetPositionKm);
     runtime.attachedJoint.targetVelocityKmS = cloneVector(target.targetVelocityKmS);
+    runtime.attachedJoint.bodyAxisDirectionKm = cloneVector(target.stackedBodyAxis);
     runtime.attachedJoint.positionErrorKm = { x: 0, y: 0, z: 0 };
     runtime.attachedJoint.relativeVelocityKmS = { x: 0, y: 0, z: 0 };
+    runtime.attachedJoint.axialErrorKm = 0;
+    runtime.attachedJoint.lateralErrorKm = 0;
+    runtime.attachedJoint.axialRelativeSpeedKmS = 0;
+    runtime.attachedJoint.lateralRelativeSpeedKmS = 0;
     runtime.booster.lastTrackedPositionKm = earthFixedRelativePositionKm(
       boosterState,
       earthState,
@@ -8264,8 +8425,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         boosterGuidanceMode: runtime.booster.guidanceMode,
         attachedJointActive: Boolean(runtime.attachedJoint.active),
         attachedJointLoadMN: Number(runtime.attachedJoint.reactionForceN) / 1e6 || 0,
+        attachedJointAxialLoadMN: Number(runtime.attachedJoint.axialCompressionForceN) / 1e6 || 0,
+        attachedJointLateralLoadMN: Number(runtime.attachedJoint.lateralForceN) / 1e6 || 0,
+        attachedJointBendingMomentMNm: Number(runtime.attachedJoint.bendingMomentNm) / 1e6 || 0,
+        attachedJointAngularMomentMNm: Number(runtime.attachedJoint.angularMomentNm) / 1e6 || 0,
         attachedJointErrorM: length(runtime.attachedJoint.positionErrorKm || { x: 0, y: 0, z: 0 }) * 1000,
+        attachedJointAxialErrorM: Math.abs(Number(runtime.attachedJoint.axialErrorKm) || 0) * 1000,
+        attachedJointLateralErrorM: Math.abs(Number(runtime.attachedJoint.lateralErrorKm) || 0) * 1000,
         attachedJointRelativeSpeedMS: length(runtime.attachedJoint.relativeVelocityKmS || { x: 0, y: 0, z: 0 }) * 1000,
+        attachedJointAxialCompressionM: Number(runtime.attachedJoint.axialCompressionM) || 0,
+        attachedJointLateralDeflectionM: Number(runtime.attachedJoint.lateralDeflectionM) || 0,
+        attachedJointAngularDeflectionDeg: Number(runtime.attachedJoint.angularDeflectionDeg) || 0,
         attachedJointShipMassKg: Number(runtime.attachedJoint.shipMassKg) || 0,
         attachedJointBoosterMassKg: Number(runtime.attachedJoint.boosterMassKg) || 0,
         boosterActive: runtime.booster.active,
@@ -8565,8 +8735,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterGuidanceMode: runtime.booster.telemetry?.guidanceMode || runtime.booster.guidanceMode,
       attachedJointActive: Boolean(runtime.attachedJoint.active),
       attachedJointLoadMN: Number(runtime.attachedJoint.reactionForceN) / 1e6 || 0,
+      attachedJointAxialLoadMN: Number(runtime.attachedJoint.axialCompressionForceN) / 1e6 || 0,
+      attachedJointLateralLoadMN: Number(runtime.attachedJoint.lateralForceN) / 1e6 || 0,
+      attachedJointBendingMomentMNm: Number(runtime.attachedJoint.bendingMomentNm) / 1e6 || 0,
+      attachedJointAngularMomentMNm: Number(runtime.attachedJoint.angularMomentNm) / 1e6 || 0,
       attachedJointErrorM: length(runtime.attachedJoint.positionErrorKm || { x: 0, y: 0, z: 0 }) * 1000,
+      attachedJointAxialErrorM: Math.abs(Number(runtime.attachedJoint.axialErrorKm) || 0) * 1000,
+      attachedJointLateralErrorM: Math.abs(Number(runtime.attachedJoint.lateralErrorKm) || 0) * 1000,
       attachedJointRelativeSpeedMS: length(runtime.attachedJoint.relativeVelocityKmS || { x: 0, y: 0, z: 0 }) * 1000,
+      attachedJointAxialCompressionM: Number(runtime.attachedJoint.axialCompressionM) || 0,
+      attachedJointLateralDeflectionM: Number(runtime.attachedJoint.lateralDeflectionM) || 0,
+      attachedJointAngularDeflectionDeg: Number(runtime.attachedJoint.angularDeflectionDeg) || 0,
       attachedJointShipMassKg: Number(runtime.attachedJoint.shipMassKg) || 0,
       attachedJointBoosterMassKg: Number(runtime.attachedJoint.boosterMassKg) || 0,
       boosterAttached: runtime.booster.attached,
