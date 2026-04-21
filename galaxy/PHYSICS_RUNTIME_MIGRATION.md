@@ -78,6 +78,8 @@ Launch-body ownership has also moved inward:
 - guidance no longer hard-owns command phase inside autopilot branches; runtime now resolves command phase from applied control plus physics-aware advisory intent
 - moon mission phase progression no longer mutates immediately from planner output; runtime now holds pending mission-phase advisories briefly before authorizing them
 - launch thrust authority now scales from configured engine counts instead of treating stage/booster thrust as engine-count-independent aggregate force
+- Super Heavy ascent/recovery now resolves actual lit-engine subsets from the shared engine layout, and booster plume visuals now follow the runtime engine mask instead of firing the full cluster
+- per-engine combustion faults, flame presence, chamber pressure, and exhaust temperature now flow through runtime telemetry, with mission-control/HUD engine-out state and plume color/brightness driven from those live chamber states
 
 Startup authority has also moved inward:
 

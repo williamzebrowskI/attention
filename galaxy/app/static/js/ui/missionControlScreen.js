@@ -3,6 +3,27 @@ import {
   shouldShowTerrainRelativeAltitude,
 } from "./launchTelemetryDisplay.js";
 import { displayMissionPhase } from "../physics/navigation_system/navigationMissionProfiles.js";
+import {
+  createSuperHeavyEngineDescriptors,
+  resolveActiveEngineSelection,
+  superHeavyEngineActivationOrder,
+} from "../physics/launch/launchEngineLayout.js";
+
+const MISSION_CONTROL_SUPER_HEAVY_ENGINES = createSuperHeavyEngineDescriptors(1, 0);
+const MISSION_CONTROL_SUPER_HEAVY_ACTIVATION_ORDER = superHeavyEngineActivationOrder(
+  MISSION_CONTROL_SUPER_HEAVY_ENGINES,
+);
+const MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS = MISSION_CONTROL_SUPER_HEAVY_ENGINES.reduce(
+  (maxRadius, descriptor) => Math.max(
+    maxRadius,
+    Math.hypot(Number(descriptor?.x) || 0, Number(descriptor?.z) || 0),
+  ),
+  1,
+);
+const MISSION_CONTROL_OVERLAY_SVG_NS = "http://www.w3.org/2000/svg";
+const MISSION_CONTROL_BOOSTER_OVERLAY_CENTER_X = 110;
+const MISSION_CONTROL_BOOSTER_OVERLAY_CENTER_Y = 548;
+const MISSION_CONTROL_BOOSTER_OVERLAY_RADIUS_PX = 34;
 
 function fallbackEscapeHtml(value) {
   return String(value ?? "")
@@ -196,6 +217,9 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlLiveMetricsNode = options.missionControlLiveMetricsNode
     || missionControlScreenNode?.querySelector?.("#mission-control-live-metrics")
     || null;
+  const missionControlEngineMatrixNode = options.missionControlEngineMatrixNode
+    || missionControlScreenNode?.querySelector?.("#mission-control-engine-matrix")
+    || null;
   const missionControlLiveFeedVideoNode = options.missionControlLiveFeedVideoNode
     || missionControlScreenNode?.querySelector?.("#mission-control-live-feed-video")
     || null;
@@ -217,6 +241,8 @@ export function createMissionControlScreenController(options = {}) {
   const missionControlVehicleOverlayNode = options.missionControlVehicleOverlayNode
     || missionControlScreenNode?.querySelector?.("#mission-control-vehicle-overlay")
     || null;
+  const missionControlBoosterEngineOverlayNode = missionControlVehicleOverlayNode?.querySelector?.("#mission-control-booster-engine-overlay")
+    || null;
   const staleViewportLabelNode = missionControlScreenNode?.querySelector?.(".mission-control-live-viewport-label") || null;
   if (staleViewportLabelNode && typeof staleViewportLabelNode.remove === "function") {
     staleViewportLabelNode.remove();
@@ -234,6 +260,31 @@ export function createMissionControlScreenController(options = {}) {
         missionControlVehiclePartMap.set(part, []);
       }
       missionControlVehiclePartMap.get(part).push(node);
+    }
+  }
+  const missionControlBoosterEngineNodes = [];
+  if (missionControlBoosterEngineOverlayNode && typeof documentRef?.createElementNS === "function") {
+    for (let i = 0; i < MISSION_CONTROL_SUPER_HEAVY_ENGINES.length; i += 1) {
+      const descriptor = MISSION_CONTROL_SUPER_HEAVY_ENGINES[i];
+      const radiusNorm = MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS > 1e-9
+        ? (Math.hypot(Number(descriptor?.x) || 0, Number(descriptor?.z) || 0) / MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS)
+        : 0;
+      const circle = documentRef.createElementNS(MISSION_CONTROL_OVERLAY_SVG_NS, "circle");
+      circle.setAttribute("class", "mission-control-booster-engine-node");
+      circle.setAttribute("cx", String(
+        MISSION_CONTROL_BOOSTER_OVERLAY_CENTER_X
+        + (((Number(descriptor?.x) || 0) / MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS) * MISSION_CONTROL_BOOSTER_OVERLAY_RADIUS_PX)
+      ));
+      circle.setAttribute("cy", String(
+        MISSION_CONTROL_BOOSTER_OVERLAY_CENTER_Y
+        + (((Number(descriptor?.z) || 0) / MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS) * MISSION_CONTROL_BOOSTER_OVERLAY_RADIUS_PX)
+      ));
+      circle.setAttribute("r", String(4 + (radiusNorm * 1.8)));
+      circle.setAttribute("data-engine-index", String(i));
+      circle.setAttribute("data-engine-ring", String(descriptor?.ring || "outer"));
+      circle.setAttribute("aria-hidden", "true");
+      missionControlBoosterEngineOverlayNode.appendChild(circle);
+      missionControlBoosterEngineNodes.push(circle);
     }
   }
   const liveFeedSourceCanvas = options.liveFeedSourceCanvas || null;
@@ -301,6 +352,58 @@ export function createMissionControlScreenController(options = {}) {
     const keys = missionControlVehiclePartMap.keys();
     for (const part of keys) {
       setVehiclePartActivity(part, false, 0);
+    }
+    for (let i = 0; i < missionControlBoosterEngineNodes.length; i += 1) {
+      const node = missionControlBoosterEngineNodes[i];
+      if (!(node instanceof Element)) {
+        continue;
+      }
+      node.classList.remove("state-active", "state-standby", "state-out", "state-idle");
+      node.classList.add("state-idle");
+      node.style.removeProperty("--activity");
+    }
+  }
+
+  function setBoosterEngineOverlayState(snapshot) {
+    if (missionControlBoosterEngineNodes.length <= 0) {
+      return;
+    }
+    const telemetry = resolveBoosterEngineTelemetry(snapshot);
+    const selection = resolveActiveEngineSelection({
+      descriptors: MISSION_CONTROL_SUPER_HEAVY_ENGINES,
+      activationOrder: MISSION_CONTROL_SUPER_HEAVY_ACTIVATION_ORDER,
+      desiredEngineCount: telemetry.desiredCount,
+    });
+    const explicitActiveIndices = (Array.isArray(telemetry.activeIndices) ? telemetry.activeIndices : [])
+      .map((value) => finiteInteger(value, -1))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value < MISSION_CONTROL_SUPER_HEAVY_ENGINES.length);
+    const fallbackActiveIndices = explicitActiveIndices.length <= 0 && telemetry.activeCount > 0
+      ? selection.activeIndices.slice(0, Math.min(telemetry.activeCount, selection.activeIndices.length))
+      : [];
+    const activeSet = new Set(explicitActiveIndices.length > 0 ? explicitActiveIndices : fallbackActiveIndices);
+    const desiredSet = new Set(selection.desiredIndices);
+    const activity = clamp(
+      Number.isFinite(telemetry.throttle)
+        ? Math.max(0.35, telemetry.throttle)
+        : (activeSet.size > 0 ? 0.55 : 0),
+      0,
+      1,
+    );
+    for (let i = 0; i < missionControlBoosterEngineNodes.length; i += 1) {
+      const node = missionControlBoosterEngineNodes[i];
+      if (!(node instanceof Element)) {
+        continue;
+      }
+      const stateClass = activeSet.has(i)
+        ? "state-active"
+        : (desiredSet.has(i) ? "state-out" : (telemetry.available ? "state-standby" : "state-idle"));
+      node.classList.remove("state-active", "state-standby", "state-out", "state-idle");
+      node.classList.add(stateClass);
+      if (stateClass === "state-active") {
+        node.style.setProperty("--activity", activity.toFixed(3));
+      } else {
+        node.style.removeProperty("--activity");
+      }
     }
   }
 
@@ -421,6 +524,9 @@ export function createMissionControlScreenController(options = {}) {
     }
 
     const isBoosterMode = mode === "booster";
+    if (isBoosterMode) {
+      setBoosterEngineOverlayState(snapshot);
+    }
     const mainThrottle = isBoosterMode
       ? Number(snapshot?.boosterThrottleCommand ?? snapshot?.boosterThrottle)
       : Number(snapshot?.throttleCommand ?? snapshot?.throttle);
@@ -570,6 +676,36 @@ export function createMissionControlScreenController(options = {}) {
     return numeric === null ? "n/a" : `${formatNumber(numeric * 100, digits)}%`;
   }
 
+  function finiteInteger(value, fallback = 0) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return Math.max(0, Math.round(Number(fallback) || 0));
+    }
+    return Math.max(0, Math.round(numeric));
+  }
+
+  function normalizedEngineIndexArray(values, limit = Infinity) {
+    if (!Array.isArray(values)) {
+      return [];
+    }
+    const maxLimit = Math.max(0, Number(limit) || 0);
+    const seen = new Set();
+    const normalized = [];
+    for (const value of values) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        continue;
+      }
+      const index = Math.round(numeric);
+      if (index < 0 || index >= maxLimit || seen.has(index)) {
+        continue;
+      }
+      seen.add(index);
+      normalized.push(index);
+    }
+    return normalized;
+  }
+
   function shortModeLabel(value) {
     const text = String(value || "").trim();
     if (!text) {
@@ -652,6 +788,190 @@ export function createMissionControlScreenController(options = {}) {
       `<strong class="mission-control-alert-title">${escapeHtml(title || "n/a")}</strong>`,
       detail ? `<p class="mission-control-alert-detail">${escapeHtml(detail)}</p>` : "",
       meta ? `<p class="mission-control-alert-meta">${escapeHtml(meta)}</p>` : "",
+      "</article>",
+    ].join("");
+  }
+
+  function resolveBoosterEngineTelemetry(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") {
+      return {
+        sourceLabel: "Await telemetry",
+        phaseLabel: "Standby",
+        thrustN: null,
+        throttle: null,
+        activeIndices: [],
+        flamePresentIndices: [],
+        failedIndices: [],
+        faultedIndices: [],
+        activeCount: 0,
+        desiredCount: 0,
+        available: false,
+      };
+    }
+
+    const boosterActiveIndices = Array.isArray(snapshot.boosterActiveEngineIndices)
+      ? snapshot.boosterActiveEngineIndices
+      : [];
+    const boosterActiveCount = finiteInteger(snapshot.boosterActiveEngineCount, boosterActiveIndices.length);
+    const boosterDesiredCount = finiteInteger(snapshot.boosterDesiredEngineCount, boosterActiveCount);
+    const boosterAttached = Boolean(snapshot.boosterAttached) && !Boolean(snapshot.boosterActive);
+    const attachedStageZero = boosterAttached && Number(snapshot.stageIndex) <= 0 && (
+      Array.isArray(snapshot.activeEngineIndices)
+      || finiteInteger(snapshot.desiredEngineCount, 0) > 0
+      || Math.abs(Number(snapshot.thrustN) || 0) > 1
+      || String(snapshot.phase || "").trim().length > 0
+    );
+    if (attachedStageZero) {
+      const activeIndices = Array.isArray(snapshot.activeEngineIndices) ? snapshot.activeEngineIndices : [];
+      const flamePresentIndices = Array.isArray(snapshot.flamePresentIndices)
+        ? snapshot.flamePresentIndices
+        : [];
+      const activeCount = finiteInteger(snapshot.activeEngineCount, activeIndices.length);
+      const desiredCount = finiteInteger(snapshot.desiredEngineCount, activeCount);
+      return {
+        sourceLabel: "Attached booster",
+        phaseLabel: String(snapshot.boosterPhase || snapshot.phase || "Attached").trim() || "Attached",
+        thrustN: finiteNumberOrNull(snapshot.thrustN),
+        throttle: finiteNumberOrNull(snapshot.throttle),
+        activeIndices,
+        flamePresentIndices,
+        failedIndices: Array.isArray(snapshot.failedEngineIndices) ? snapshot.failedEngineIndices : [],
+        faultedIndices: Array.isArray(snapshot.faultedEngineIndices) ? snapshot.faultedEngineIndices : [],
+        activeCount,
+        desiredCount,
+        available: true,
+      };
+    }
+
+    const boosterPhase = String(snapshot.boosterPhase || "").trim();
+    const boosterTelemetryAvailable = (
+      boosterActiveIndices.length > 0
+      || boosterActiveCount > 0
+      || boosterDesiredCount > 0
+      || Math.abs(Number(snapshot.boosterThrustN) || 0) > 1
+      || boosterPhase.length > 0
+      || Boolean(snapshot.boosterActive)
+      || Boolean(snapshot.boosterLanded)
+    );
+    if (boosterTelemetryAvailable) {
+      return {
+        sourceLabel: snapshot.boosterActive ? "Booster recovery" : "Booster telemetry",
+        phaseLabel: boosterPhase || "Booster",
+        thrustN: finiteNumberOrNull(snapshot.boosterThrustN),
+        throttle: finiteNumberOrNull(snapshot.boosterThrottle),
+        activeIndices: boosterActiveIndices,
+        flamePresentIndices: Array.isArray(snapshot.boosterFlamePresentIndices)
+          ? snapshot.boosterFlamePresentIndices
+          : [],
+        failedIndices: Array.isArray(snapshot.boosterFailedEngineIndices)
+          ? snapshot.boosterFailedEngineIndices
+          : [],
+        faultedIndices: Array.isArray(snapshot.boosterFaultedEngineIndices)
+          ? snapshot.boosterFaultedEngineIndices
+          : [],
+        activeCount: boosterActiveCount,
+        desiredCount: boosterDesiredCount,
+        available: true,
+      };
+    }
+
+    return {
+      sourceLabel: "No Super Heavy telemetry",
+      phaseLabel: "Standby",
+      thrustN: null,
+      throttle: null,
+      activeIndices: [],
+      flamePresentIndices: [],
+      failedIndices: [],
+      faultedIndices: [],
+      activeCount: 0,
+      desiredCount: 0,
+      available: false,
+    };
+  }
+
+  function renderBoosterEngineMatrix(snapshot) {
+    const telemetry = resolveBoosterEngineTelemetry(snapshot);
+    const selection = resolveActiveEngineSelection({
+      descriptors: MISSION_CONTROL_SUPER_HEAVY_ENGINES,
+      activationOrder: MISSION_CONTROL_SUPER_HEAVY_ACTIVATION_ORDER,
+      desiredEngineCount: telemetry.desiredCount,
+    });
+    const explicitActiveIndices = normalizedEngineIndexArray(
+      Array.isArray(telemetry.flamePresentIndices) && telemetry.flamePresentIndices.length > 0
+        ? telemetry.flamePresentIndices
+        : telemetry.activeIndices,
+      MISSION_CONTROL_SUPER_HEAVY_ENGINES.length,
+    );
+    const fallbackActiveIndices = explicitActiveIndices.length <= 0 && telemetry.activeCount > 0
+      ? selection.activeIndices.slice(0, Math.min(telemetry.activeCount, selection.activeIndices.length))
+      : [];
+    const activeSet = new Set(explicitActiveIndices.length > 0 ? explicitActiveIndices : fallbackActiveIndices);
+    const explicitFaultedIndices = normalizedEngineIndexArray([
+      ...(Array.isArray(telemetry.failedIndices) ? telemetry.failedIndices : []),
+      ...(Array.isArray(telemetry.faultedIndices) ? telemetry.faultedIndices : []),
+    ], MISSION_CONTROL_SUPER_HEAVY_ENGINES.length);
+    const desiredSet = new Set(selection.desiredIndices);
+    const outSet = new Set(selection.desiredIndices.filter((index) => !activeSet.has(index)));
+    for (const index of explicitFaultedIndices) {
+      outSet.add(index);
+    }
+    const outCount = outSet.size;
+    const activeCount = Math.max(
+      Array.from(activeSet).filter((index) => !outSet.has(index)).length,
+      finiteInteger(telemetry.activeCount, activeSet.size),
+    );
+    const standbyCount = Math.max(0, MISSION_CONTROL_SUPER_HEAVY_ENGINES.length - activeCount - outCount);
+    const tone = outCount > 0 ? "critical" : (activeCount > 0 ? "nominal" : (telemetry.available ? "caution" : "info"));
+    const thrustLabel = Number.isFinite(telemetry.thrustN)
+      ? `${formatNumber(telemetry.thrustN / 1_000_000, 3)} MN`
+      : "n/a";
+    const throttleLabel = Number.isFinite(telemetry.throttle)
+      ? `${formatNumber(telemetry.throttle * 100, 1)}%`
+      : "n/a";
+    const engineMarkup = MISSION_CONTROL_SUPER_HEAVY_ENGINES
+      .map((descriptor) => {
+        const index = finiteInteger(descriptor?.index, 0);
+        const state = outSet.has(index)
+          ? "out"
+          : (activeSet.has(index) ? "active" : (telemetry.available ? "standby" : "idle"));
+        const leftPct = 50 + ((Number(descriptor?.x) || 0) / MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS) * 36;
+        const topPct = 50 + ((Number(descriptor?.z) || 0) / MISSION_CONTROL_SUPER_HEAVY_MAX_RADIUS) * 36;
+        const ring = String(descriptor?.ring || "outer").trim().toLowerCase();
+        const statusLabel = state === "active"
+          ? "active"
+          : (state === "out" ? "out" : (state === "standby" ? "standby" : "idle"));
+        return [
+          `<span class="mission-control-engine-cell ring-${escapeHtml(ring)} state-${escapeHtml(state)}"`,
+          ` style="left:${leftPct.toFixed(3)}%;top:${topPct.toFixed(3)}%;"`,
+          ` title="${escapeHtml(`${String(descriptor?.id || `engine_${index + 1}`)} ${statusLabel}`)}"`,
+          ` aria-label="${escapeHtml(`${String(descriptor?.id || `engine_${index + 1}`)} ${statusLabel}`)}"></span>`,
+        ].join("");
+      })
+      .join("");
+    return [
+      `<article class="mission-control-engine-health tone-${toneClass(tone)}">`,
+      "<div class=\"mission-control-engine-health-head\">",
+      "<div class=\"mission-control-engine-health-copy\">",
+      `<span class="mission-control-panel-kicker">Super Heavy Cluster</span>`,
+      `<strong class="mission-control-engine-health-title">${escapeHtml(telemetry.phaseLabel)}</strong>`,
+      `<p class="mission-control-engine-health-meta">${escapeHtml(`${telemetry.sourceLabel} | Thrust ${thrustLabel} | Throttle ${throttleLabel}`)}</p>`,
+      "</div>",
+      "<div class=\"mission-control-engine-summary\">",
+      `<span class="mission-control-engine-summary-chip state-active"><strong>${activeCount}</strong><em>Active</em></span>`,
+      `<span class="mission-control-engine-summary-chip state-standby"><strong>${standbyCount}</strong><em>Standby</em></span>`,
+      `<span class="mission-control-engine-summary-chip state-out"><strong>${outCount}</strong><em>Out</em></span>`,
+      "</div>",
+      "</div>",
+      `<div class="mission-control-engine-cluster tone-${toneClass(tone)}" role="img" aria-label="${escapeHtml(`Super Heavy engine health. ${activeCount} active, ${standbyCount} standby, ${outCount} out.`)}">`,
+      engineMarkup,
+      `<span class="mission-control-engine-cluster-core">${MISSION_CONTROL_SUPER_HEAVY_ENGINES.length}</span>`,
+      "</div>",
+      "<div class=\"mission-control-engine-legend\">",
+      "<span class=\"mission-control-engine-legend-item\"><span class=\"mission-control-engine-legend-swatch state-active\"></span>Active burn</span>",
+      "<span class=\"mission-control-engine-legend-item\"><span class=\"mission-control-engine-legend-swatch state-standby\"></span>Installed / ready</span>",
+      "<span class=\"mission-control-engine-legend-item\"><span class=\"mission-control-engine-legend-swatch state-out\"></span>Commanded but offline</span>",
+      "</div>",
       "</article>",
     ].join("");
   }
@@ -1523,6 +1843,9 @@ export function createMissionControlScreenController(options = {}) {
           heroMetric({ label: "Guidance", value: "Standby", detail: "Flight rules will appear here once telemetry is live.", tone: "info" }),
         ].join("");
       }
+      if (missionControlEngineMatrixNode) {
+        missionControlEngineMatrixNode.innerHTML = renderBoosterEngineMatrix(null);
+      }
       if (missionControlSubsystemsNode) {
         missionControlSubsystemsNode.innerHTML = [
           alertCard({
@@ -2008,6 +2331,9 @@ export function createMissionControlScreenController(options = {}) {
         }),
         missionSpecificHero,
       ].join("");
+    }
+    if (missionControlEngineMatrixNode) {
+      missionControlEngineMatrixNode.innerHTML = renderBoosterEngineMatrix(snapshot);
     }
 
     if (missionControlSubsystemsNode) {

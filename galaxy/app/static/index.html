@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260419y" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260421d" />
   </head>
   <body>
     <canvas id="scene"></canvas>
@@ -162,11 +162,15 @@
                       <rect class="mission-control-hull-fin" x="152" y="438" width="24" height="86" rx="8" />
                     </g>
 
-                    <g class="mission-control-vehicle-nodes">
+                    <g class="mission-control-vehicle-nodes mission-control-engine-group mission-control-engine-group-starship">
                       <circle class="mission-control-engine-node" data-part="main-engine" cx="90" cy="546" r="10" />
                       <circle class="mission-control-engine-node" data-part="main-engine" cx="110" cy="556" r="11" />
                       <circle class="mission-control-engine-node" data-part="main-engine" cx="130" cy="546" r="10" />
+                    </g>
 
+                    <g id="mission-control-booster-engine-overlay" class="mission-control-vehicle-nodes mission-control-engine-group mission-control-engine-group-booster"></g>
+
+                    <g class="mission-control-vehicle-nodes mission-control-thruster-group">
                       <circle class="mission-control-thruster-node" data-part="forward" cx="110" cy="102" r="7" />
                       <circle class="mission-control-thruster-node" data-part="aft" cx="110" cy="506" r="7" />
                       <circle class="mission-control-thruster-node" data-part="dorsal" cx="110" cy="236" r="7" />
@@ -187,6 +191,16 @@
                 </div>
               </div>
               <div id="mission-control-live-metrics" class="mission-control-live-metrics" aria-live="polite"></div>
+            </section>
+
+            <section class="mission-control-block mission-control-engine-block">
+              <div class="mission-control-panel-header">
+                <div class="mission-control-panel-heading">
+                  <p class="mission-control-panel-kicker">Booster Propulsion</p>
+                  <h3>33 Engine Health</h3>
+                </div>
+              </div>
+              <div id="mission-control-engine-matrix" class="mission-control-engine-matrix" aria-live="polite"></div>
             </section>
           </section>
 
@@ -234,6 +248,16 @@
         </main>
       </div>
     </section>
-    <script type="module" src="/static/js/app.js?v=20260420am"></script>
+    <aside id="launch-booster-engine-hud" class="launch-booster-engine-hud" aria-hidden="true">
+      <svg class="launch-booster-engine-hud-svg" viewBox="0 0 176 176" role="presentation" focusable="false">
+        <circle class="launch-booster-engine-hud-backdrop" cx="88" cy="88" r="80" />
+        <circle class="launch-booster-engine-hud-ring launch-booster-engine-hud-ring-outer" cx="88" cy="88" r="74" />
+        <circle class="launch-booster-engine-hud-ring launch-booster-engine-hud-ring-inner" cx="88" cy="88" r="64" />
+        <circle id="launch-booster-engine-hud-fuel-track" class="launch-booster-engine-hud-arc launch-booster-engine-hud-arc-secondary" cx="88" cy="88" r="77" />
+        <circle id="launch-booster-engine-hud-fuel-arc" class="launch-booster-engine-hud-arc launch-booster-engine-hud-arc-primary" cx="88" cy="88" r="77" />
+        <g id="launch-booster-engine-hud-cluster"></g>
+      </svg>
+    </aside>
+    <script type="module" src="/static/js/app.js?v=20260421g"></script>
   </body>
 </html>

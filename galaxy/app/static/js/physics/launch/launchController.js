@@ -17,8 +17,22 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STANDARD_GRAVITY_M_S2,
+  resolveConfiguredEngineCounts,
   resolveConfiguredThrustBoundsN,
 } from "./launchConfig.js";
+import {
+  createSuperHeavyEngineDescriptors,
+  createStarshipStage2EngineDescriptors,
+  resolveActiveEngineSelection,
+  starshipStage2EngineActivationOrder,
+  superHeavyEngineActivationOrder,
+} from "./launchEngineLayout.js";
+import {
+  createEngineCombustionClusterState,
+  hydrateEngineCombustionClusterState,
+  transferEngineCombustionClusterState,
+  updateEngineCombustionClusterState,
+} from "./launchCombustionModel.js";
 import { computeBoosterRecoveryCommand } from "./boosterRecovery.js?v=20260420am";
 import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js";
 import {
@@ -592,6 +606,61 @@ function interpolateConfiguredThrustN(config, pressurePa, fallbackEngineCount = 
   );
 }
 
+function rawConfiguredThrustBoundsN(config) {
+  const thrustVacuumN = Math.max(
+    0,
+    Number(config?.thrustVacuumN) || Number(config?.thrustSeaLevelN) || 0,
+  );
+  const thrustSeaLevelN = Math.max(
+    0,
+    Number(config?.thrustSeaLevelN) || thrustVacuumN,
+  );
+  return {
+    thrustVacuumN,
+    thrustSeaLevelN,
+  };
+}
+
+function resolveSuperHeavyEngineState(config, pressurePa = 0, throttle = 0) {
+  const descriptors = createSuperHeavyEngineDescriptors(
+    boosterRadiusMeters(),
+    -boosterBodyLengthMeters() * 0.46,
+  );
+  const { engineCount, nominalEngineCount } = resolveConfiguredEngineCounts(config, descriptors.length);
+  const selection = resolveActiveEngineSelection({
+    descriptors,
+    activationOrder: superHeavyEngineActivationOrder(descriptors),
+    desiredEngineCount: Math.min(engineCount, descriptors.length),
+  });
+  const rawThrustBounds = rawConfiguredThrustBoundsN(config);
+  const perEngineThrustVacuumN = nominalEngineCount > 0
+    ? rawThrustBounds.thrustVacuumN / nominalEngineCount
+    : 0;
+  const perEngineThrustSeaLevelN = nominalEngineCount > 0
+    ? rawThrustBounds.thrustSeaLevelN / nominalEngineCount
+    : 0;
+  const fullPerEngineThrustN = interpolateSeaToVac(
+    perEngineThrustVacuumN,
+    perEngineThrustSeaLevelN,
+    pressurePa,
+  );
+  const throttleClamped = clamp(Number(throttle) || 0, 0, 1);
+  const perEngineThrustN = fullPerEngineThrustN * throttleClamped;
+  return {
+    descriptors,
+    activeIndices: selection.activeIndices,
+    activeDescriptors: selection.activeIndices.map((index) => descriptors[index]).filter(Boolean),
+    desiredIndices: selection.desiredIndices,
+    inactiveIndices: selection.inactiveIndices,
+    activeCount: selection.activeCount,
+    desiredCount: selection.desiredCount,
+    nominalEngineCount,
+    fullPerEngineThrustN,
+    perEngineThrustN,
+    thrustN: perEngineThrustN * selection.activeCount,
+  };
+}
+
 function stageBodyKindFromStageIndex(stageIndex) {
   return Number(stageIndex) >= 1 ? "stage2" : "stage1";
 }
@@ -826,6 +895,75 @@ function boosterBodyLengthMeters() {
 
 function boosterRadiusMeters() {
   return Math.max(1, Number(STARSHIP_STACK_DIMENSIONS_KM.diameterKm) || 0) * 500;
+}
+
+function stage2BodyLengthMeters() {
+  return Math.max(1, Number(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm) || 0) * 1000;
+}
+
+function stageRadiusMeters() {
+  return Math.max(1, Number(STARSHIP_STACK_DIMENSIONS_KM.diameterKm) || 0) * 500;
+}
+
+function stage1CombustionClusterOptions() {
+  const descriptors = createSuperHeavyEngineDescriptors(
+    stageRadiusMeters(),
+    -boosterBodyLengthMeters() * 0.46,
+  );
+  return {
+    descriptors,
+    activationOrder: superHeavyEngineActivationOrder(descriptors),
+    config: stageAtIndex(0),
+    fallbackEngineCount: descriptors.length,
+  };
+}
+
+function stage2CombustionClusterOptions() {
+  const descriptors = createStarshipStage2EngineDescriptors(
+    stageRadiusMeters(),
+    -stage2BodyLengthMeters() * 0.46,
+  );
+  return {
+    descriptors,
+    activationOrder: starshipStage2EngineActivationOrder(descriptors),
+    config: stageAtIndex(1),
+    fallbackEngineCount: descriptors.length,
+  };
+}
+
+function boosterCombustionClusterOptions() {
+  const descriptors = createSuperHeavyEngineDescriptors(
+    stageRadiusMeters(),
+    -boosterBodyLengthMeters() * 0.46,
+  );
+  return {
+    descriptors,
+    activationOrder: superHeavyEngineActivationOrder(descriptors),
+    config: LAUNCH_BOOSTER_CONFIG,
+    fallbackEngineCount: descriptors.length,
+  };
+}
+
+function createStage1CombustionClusterState() {
+  return createEngineCombustionClusterState(stage1CombustionClusterOptions());
+}
+
+function createStage2CombustionClusterState() {
+  return createEngineCombustionClusterState(stage2CombustionClusterOptions());
+}
+
+function createBoosterCombustionClusterState() {
+  return createEngineCombustionClusterState(boosterCombustionClusterOptions());
+}
+
+function combustionSummaryFields(clusterState = null) {
+  return {
+    avgChamberPressurePa: Number(clusterState?.avgChamberPressurePa) || 0,
+    maxChamberPressurePa: Number(clusterState?.maxChamberPressurePa) || 0,
+    avgCombustionEfficiency: Number(clusterState?.avgCombustionEfficiency) || 0,
+    avgTurbopumpNorm: Number(clusterState?.avgTurbopumpNorm) || 0,
+    maxExhaustTemperatureK: Number(clusterState?.maxExhaustTemperatureK) || 0,
+  };
 }
 
 function createBoosterAttitudeState(initialAxisWorld = { x: 0, y: 0, z: 1 }) {
@@ -1100,6 +1238,7 @@ function computeBoosterEngineAngularControlState({
   throttle = 0,
   massKg = 0,
   massModel = null,
+  engineState = null,
 }) {
   const maxGimbalDeflectionRad = rad(
     Number(LAUNCH_REALISM_CONFIG.actuator?.booster?.maxGimbalDeflectionDeg) || 8,
@@ -1113,8 +1252,17 @@ function computeBoosterEngineAngularControlState({
       dampingPerS: 0,
     };
   }
-  const fullThrustN = interpolateConfiguredThrustN(LAUNCH_BOOSTER_CONFIG, pressurePa);
-  const thrustN = fullThrustN * clamp(Number(throttle) || 0, 0, 1);
+  const resolvedEngineState = engineState || resolveSuperHeavyEngineState(
+    LAUNCH_BOOSTER_CONFIG,
+    pressurePa,
+    throttle,
+  );
+  const thrustN = Math.max(0, Number(resolvedEngineState.thrustN) || 0);
+  const fullThrustN = Math.max(
+    0,
+    (Number(resolvedEngineState.fullPerEngineThrustN) || 0)
+      * Math.max(1, Number(resolvedEngineState.activeCount) || 0),
+  );
   if (!(thrustN > 0)) {
     return {
       authority: 0,
@@ -1130,9 +1278,6 @@ function computeBoosterEngineAngularControlState({
     0.1,
     Math.abs(comNorm - (Number.isFinite(enginePlaneNorm) ? enginePlaneNorm : 0.04)) * boosterBodyLengthMeters(),
   );
-  const engineCluster = Array.isArray(LAUNCH_REALISM_CONFIG.engineCluster?.booster?.engines)
-    ? LAUNCH_REALISM_CONFIG.engineCluster.booster.engines
-    : [];
   const omegaBody = {
     x: finiteNumber(omegaBodyRadS?.x, 0),
     y: finiteNumber(omegaBodyRadS?.y, 0),
@@ -1158,17 +1303,24 @@ function computeBoosterEngineAngularControlState({
     y: Math.cos(Math.hypot(axisCommand.x, axisCommand.z)),
     z: Math.sin(axisCommand.x),
   }, { x: 0, y: 1, z: 0 });
-  const engines = engineCluster.length > 0
-    ? engineCluster
-    : [{ name: "aggregate", positionBodyM: { x: 0, y: -leverArmM, z: 0 } }];
+  const engines = Array.isArray(resolvedEngineState.activeDescriptors) && resolvedEngineState.activeDescriptors.length > 0
+    ? resolvedEngineState.activeDescriptors
+    : [{ positionBodyM: { x: 0, y: -leverArmM, z: 0 } }];
+  const activeEngineThrustsN = Array.isArray(resolvedEngineState.activeEngineThrustsN)
+    && resolvedEngineState.activeEngineThrustsN.length === engines.length
+    ? resolvedEngineState.activeEngineThrustsN
+    : null;
   const thrustPerEngineN = thrustN / Math.max(1, engines.length);
   const bodyTorqueNm = engines.reduce((sum, engine) => {
     const positionBodyM = {
-      x: finiteNumber(engine?.positionBodyM?.x, 0),
-      y: finiteNumber(engine?.positionBodyM?.y, -leverArmM),
-      z: finiteNumber(engine?.positionBodyM?.z, 0),
+      x: finiteNumber(engine?.positionBodyM?.x, finiteNumber(engine?.x, 0)),
+      y: finiteNumber(engine?.positionBodyM?.y, finiteNumber(engine?.y, -leverArmM)),
+      z: finiteNumber(engine?.positionBodyM?.z, finiteNumber(engine?.z, 0)),
     };
-    const forceBodyN = scale(commandedDirectionBody, thrustPerEngineN);
+    const engineThrustN = activeEngineThrustsN
+      ? Math.max(0, Number(activeEngineThrustsN[engines.indexOf(engine)]) || 0)
+      : thrustPerEngineN;
+    const forceBodyN = scale(commandedDirectionBody, engineThrustN);
     return add(sum, cross(positionBodyM, forceBodyN));
   }, { x: 0, y: 0, z: 0 });
   const momentNm = Math.hypot(bodyTorqueNm.x, bodyTorqueNm.z);
@@ -1318,7 +1470,9 @@ function limitThrottleByThrustAccelerationG({
     return clamp(throttle, 0, 1);
   }
 
-  const stageFullThrustN = interpolateConfiguredThrustN(stage, pressurePa);
+  const stageFullThrustN = stageIndex === 0
+    ? resolveSuperHeavyEngineState(stage, pressurePa, 1).thrustN
+    : interpolateConfiguredThrustN(stage, pressurePa);
   if (!(stageFullThrustN > 0)) {
     return 0;
   }
@@ -1472,7 +1626,41 @@ function telemetryFromState({
     throttle: runtime.lastStep?.throttle || 0,
     throttleCommand: runtime.lastStep?.throttleCommand || 0,
     thrustN: runtime.lastStep?.thrustN || 0,
+    activeEngineIndices: Array.isArray(runtime.lastStep?.activeEngineIndices)
+      ? [...runtime.lastStep.activeEngineIndices]
+      : [],
+    activeEngineCount: Math.max(0, Number(runtime.lastStep?.activeEngineCount) || 0),
+    desiredEngineCount: Math.max(0, Number(runtime.lastStep?.desiredEngineCount) || 0),
+    failedEngineIndices: Array.isArray(runtime.lastStep?.failedEngineIndices)
+      ? [...runtime.lastStep.failedEngineIndices]
+      : [],
+    faultedEngineIndices: Array.isArray(runtime.lastStep?.faultedEngineIndices)
+      ? [...runtime.lastStep.faultedEngineIndices]
+      : [],
+    flamePresentIndices: Array.isArray(runtime.lastStep?.flamePresentIndices)
+      ? [...runtime.lastStep.flamePresentIndices]
+      : [],
+    chamberPressurePaByIndex: Array.isArray(runtime.lastStep?.chamberPressurePaByIndex)
+      ? [...runtime.lastStep.chamberPressurePaByIndex]
+      : [],
+    exhaustTemperatureKByIndex: Array.isArray(runtime.lastStep?.exhaustTemperatureKByIndex)
+      ? [...runtime.lastStep.exhaustTemperatureKByIndex]
+      : [],
+    combustionEfficiencyByIndex: Array.isArray(runtime.lastStep?.combustionEfficiencyByIndex)
+      ? [...runtime.lastStep.combustionEfficiencyByIndex]
+      : [],
+    turbopumpNormByIndex: Array.isArray(runtime.lastStep?.turbopumpNormByIndex)
+      ? [...runtime.lastStep.turbopumpNormByIndex]
+      : [],
+    engineThrustNByIndex: Array.isArray(runtime.lastStep?.engineThrustNByIndex)
+      ? [...runtime.lastStep.engineThrustNByIndex]
+      : [],
     burnRateKgS: runtime.lastStep?.burnRateKgS || 0,
+    avgChamberPressurePa: Number(runtime.lastStep?.avgChamberPressurePa) || 0,
+    maxChamberPressurePa: Number(runtime.lastStep?.maxChamberPressurePa) || 0,
+    avgCombustionEfficiency: Number(runtime.lastStep?.avgCombustionEfficiency) || 0,
+    avgTurbopumpNorm: Number(runtime.lastStep?.avgTurbopumpNorm) || 0,
+    maxExhaustTemperatureK: Number(runtime.lastStep?.maxExhaustTemperatureK) || 0,
     stagePropellantKg: Math.max(0, Number(runtime.stagePropellantKg) || 0),
     dynamicPressurePa,
     angleOfAttackDeg: Number(runtime.lastStep?.angleOfAttackDeg) || 0,
@@ -1655,7 +1843,41 @@ function boosterTelemetryFromState({
     throttle: runtime.booster.lastStep?.throttle || 0,
     throttleCommand: runtime.booster.lastStep?.throttleCommand || 0,
     thrustN: runtime.booster.lastStep?.thrustN || 0,
+    activeEngineIndices: Array.isArray(runtime.booster.lastStep?.activeEngineIndices)
+      ? [...runtime.booster.lastStep.activeEngineIndices]
+      : [],
+    activeEngineCount: Math.max(0, Number(runtime.booster.lastStep?.activeEngineCount) || 0),
+    desiredEngineCount: Math.max(0, Number(runtime.booster.lastStep?.desiredEngineCount) || 0),
+    failedEngineIndices: Array.isArray(runtime.booster.lastStep?.failedEngineIndices)
+      ? [...runtime.booster.lastStep.failedEngineIndices]
+      : [],
+    faultedEngineIndices: Array.isArray(runtime.booster.lastStep?.faultedEngineIndices)
+      ? [...runtime.booster.lastStep.faultedEngineIndices]
+      : [],
+    flamePresentIndices: Array.isArray(runtime.booster.lastStep?.flamePresentIndices)
+      ? [...runtime.booster.lastStep.flamePresentIndices]
+      : [],
+    chamberPressurePaByIndex: Array.isArray(runtime.booster.lastStep?.chamberPressurePaByIndex)
+      ? [...runtime.booster.lastStep.chamberPressurePaByIndex]
+      : [],
+    exhaustTemperatureKByIndex: Array.isArray(runtime.booster.lastStep?.exhaustTemperatureKByIndex)
+      ? [...runtime.booster.lastStep.exhaustTemperatureKByIndex]
+      : [],
+    combustionEfficiencyByIndex: Array.isArray(runtime.booster.lastStep?.combustionEfficiencyByIndex)
+      ? [...runtime.booster.lastStep.combustionEfficiencyByIndex]
+      : [],
+    turbopumpNormByIndex: Array.isArray(runtime.booster.lastStep?.turbopumpNormByIndex)
+      ? [...runtime.booster.lastStep.turbopumpNormByIndex]
+      : [],
+    engineThrustNByIndex: Array.isArray(runtime.booster.lastStep?.engineThrustNByIndex)
+      ? [...runtime.booster.lastStep.engineThrustNByIndex]
+      : [],
     burnRateKgS: runtime.booster.lastStep?.burnRateKgS || 0,
+    avgChamberPressurePa: Number(runtime.booster.lastStep?.avgChamberPressurePa) || 0,
+    maxChamberPressurePa: Number(runtime.booster.lastStep?.maxChamberPressurePa) || 0,
+    avgCombustionEfficiency: Number(runtime.booster.lastStep?.avgCombustionEfficiency) || 0,
+    avgTurbopumpNorm: Number(runtime.booster.lastStep?.avgTurbopumpNorm) || 0,
+    maxExhaustTemperatureK: Number(runtime.booster.lastStep?.maxExhaustTemperatureK) || 0,
     rcsBurnRateKgS: runtime.booster.lastStep?.rcsBurnRateKgS || 0,
     rcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
@@ -1738,8 +1960,24 @@ function zeroBoosterStep(guidanceMode = "booster-idle") {
     accelerationKmS2: { x: 0, y: 0, z: 0 },
     throttle: 0,
     thrustN: 0,
+    activeEngineIndices: [],
+    activeEngineCount: 0,
+    desiredEngineCount: 0,
+    failedEngineIndices: [],
+    faultedEngineIndices: [],
+    flamePresentIndices: [],
+    chamberPressurePaByIndex: [],
+    exhaustTemperatureKByIndex: [],
+    combustionEfficiencyByIndex: [],
+    turbopumpNormByIndex: [],
+    engineThrustNByIndex: [],
     burnKg: 0,
     burnRateKgS: 0,
+    avgChamberPressurePa: 0,
+    maxChamberPressurePa: 0,
+    avgCombustionEfficiency: 0,
+    avgTurbopumpNorm: 0,
+    maxExhaustTemperatureK: 0,
     rcsBurnKg: 0,
     rcsBurnRateKgS: 0,
     dynamicPressurePa: 0,
@@ -2010,6 +2248,8 @@ export function createLaunchController(options) {
     windSeed: initialWindSeed,
     stageActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     stageMassModel: createMassModelState(),
+    stage1Combustion: createStage1CombustionClusterState(),
+    stage2Combustion: createStage2CombustionClusterState(),
     boosterActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     boosterMassModel: createMassModelState(),
     attachedJoint: createAttachedStackJointState(),
@@ -2033,6 +2273,7 @@ export function createLaunchController(options) {
       initialPropellantKg: 0,
       separationTimeSec: 0,
       landed: false,
+      combustion: createBoosterCombustionClusterState(),
       lastStep: null,
       lastSurfaceSample: null,
       lastTrackedPositionKm: null,
@@ -3675,6 +3916,8 @@ export function createLaunchController(options) {
     runtime.windSeed = initialWindSeed;
     runtime.stageActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.stageMassModel = createMassModelState();
+    runtime.stage1Combustion = createStage1CombustionClusterState();
+    runtime.stage2Combustion = createStage2CombustionClusterState();
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.boosterMassModel = createMassModelState();
     runtime.attachedJoint = createAttachedStackJointState();
@@ -3693,6 +3936,7 @@ export function createLaunchController(options) {
     runtime.booster.initialPropellantKg = 0;
     runtime.booster.separationTimeSec = 0;
     runtime.booster.landed = false;
+    runtime.booster.combustion = createBoosterCombustionClusterState();
     runtime.booster.lastStep = null;
     runtime.booster.lastSurfaceSample = null;
     runtime.booster.lastTrackedPositionKm = null;
@@ -3722,6 +3966,7 @@ export function createLaunchController(options) {
     runtime.booster.initialPropellantKg = 0;
     runtime.booster.separationTimeSec = 0;
     runtime.booster.landed = false;
+    runtime.booster.combustion = createBoosterCombustionClusterState();
     runtime.booster.lastStep = null;
     runtime.booster.lastSurfaceSample = null;
     runtime.booster.lastTrackedPositionKm = null;
@@ -5689,6 +5934,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.booster.initialPropellantKg = reservePropellantKg;
     runtime.booster.separationTimeSec = runtime.elapsedSeconds;
     runtime.booster.landed = false;
+    runtime.booster.combustion = transferEngineCombustionClusterState(
+      runtime.stage1Combustion,
+      boosterCombustionClusterOptions(),
+    );
     runtime.booster.lastStep = zeroBoosterStep("booster-separation-flip");
     runtime.booster.attitude = createBoosterAttitudeState(stackedBodyAxis);
     runtime.boosterActuator = createActuatorState(stackedBodyAxis);
@@ -6032,13 +6281,29 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massModel: runtime.boosterMassModel,
     });
     const attitudeResponseScale = clamp(Number(command.attitudeResponseScale) || 1, 0.05, 2.8);
+    runtime.boosterActuator = updateBoosterThrottleState(runtime.boosterActuator, {
+      requestedThrottle,
+      dtSeconds,
+      massModel: runtime.boosterMassModel,
+    });
+    const throttleActual = clamp(Number(runtime.boosterActuator.throttleActual) || 0, 0, 1);
+    const boosterEngineState = updateEngineCombustionClusterState(
+      runtime.booster.combustion,
+      {
+        config: LAUNCH_BOOSTER_CONFIG,
+        dtSeconds,
+        pressurePa,
+        throttleCommand: canBurn ? throttleActual : 0,
+      },
+    );
     const engineAngularControl = scaleAngularControlState(computeBoosterEngineAngularControlState({
       controlErrorsBody,
       omegaBodyRadS,
       pressurePa,
-      throttle: requestedThrottle,
+      throttle: throttleActual,
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
+      engineState: boosterEngineState,
     }), attitudeResponseScale);
     const rcsAngularControl = scaleAngularControlState(computeBoosterRcsAngularControlState({
       controlErrorsBody,
@@ -6049,12 +6314,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
     }), attitudeResponseScale);
-    runtime.boosterActuator = updateBoosterThrottleState(runtime.boosterActuator, {
-      requestedThrottle,
-      dtSeconds,
-      massModel: runtime.boosterMassModel,
-    });
-    const throttleActual = clamp(Number(runtime.boosterActuator.throttleActual) || 0, 0, 1);
 
     const aeroPreview = computeAerodynamicResponse({
       bodyKind: "booster",
@@ -6076,12 +6335,27 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       * Math.max(0, Number(LAUNCH_BOOSTER_CONFIG.referenceAreaM2) || 0)
       * boosterBodyLengthMeters()
       * (-(Number(aeroPreview.momentCoefficient) || 0));
+    const engineAsymmetryBodyTorqueNm = boosterEngineState.activeDescriptors.reduce((sum, engine) => {
+      const positionBodyM = {
+        x: finiteNumber(engine?.x, 0),
+        y: finiteNumber(engine?.y, -boosterBodyLengthMeters() * 0.46),
+        z: finiteNumber(engine?.z, 0),
+      };
+      return add(sum, cross(positionBodyM, {
+        x: 0,
+        y: Number(boosterEngineState.perEngineThrustN) || 0,
+        z: 0,
+      }));
+    }, { x: 0, y: 0, z: 0 });
     const totalBodyTorqueNm = add(
       add(
         gridFinControl.bodyTorqueNm || { x: 0, y: 0, z: 0 },
         engineAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 },
       ),
-      rcsAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 },
+      add(
+        rcsAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 },
+        engineAsymmetryBodyTorqueNm,
+      ),
     );
     let totalTorqueWorldNm = rotateVectorByQuaternion(
       totalBodyTorqueNm,
@@ -6106,16 +6380,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.boosterActuator.gimbalErrorDeg = degrees(angleBetweenRadians(directionActual, direction));
     runtime.boosterActuator.angularRateRadS = length(runtime.booster.attitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 });
 
-    const fullThrustN = interpolateConfiguredThrustN(LAUNCH_BOOSTER_CONFIG, pressurePa);
-    const thrustN = fullThrustN * throttleActual;
-    const ispS = interpolateSeaToVac(
-      Number(LAUNCH_BOOSTER_CONFIG.ispVacuumS) || 0,
-      Number(LAUNCH_BOOSTER_CONFIG.ispSeaLevelS) || 0,
-      pressurePa,
-    );
-    const burnRateKgS = thrustN > 0 && ispS > 0
-      ? thrustN / (ispS * STANDARD_GRAVITY_M_S2)
-      : 0;
+    const thrustN = Math.max(0, Number(boosterEngineState.thrustN) || 0);
+    const burnRateKgS = Math.max(0, Number(boosterEngineState.burnRateKgS) || 0);
     const burnKg = Math.min(burnablePropellantKg, burnRateKgS * dtSeconds);
     const effectiveMassKg = Math.max(
       MIN_ROCKET_MASS_KG,
@@ -6171,8 +6437,36 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       throttle: throttleActual,
       throttleCommand: requestedThrottle,
       thrustN,
+      activeEngineIndices: [...boosterEngineState.activeIndices],
+      activeEngineCount: boosterEngineState.activeCount,
+      desiredEngineCount: boosterEngineState.desiredCount,
+      failedEngineIndices: Array.isArray(boosterEngineState.failedIndices)
+        ? [...boosterEngineState.failedIndices]
+        : [],
+      faultedEngineIndices: Array.isArray(boosterEngineState.faultedIndices)
+        ? [...boosterEngineState.faultedIndices]
+        : [],
+      flamePresentIndices: Array.isArray(boosterEngineState.flamePresentIndices)
+        ? [...boosterEngineState.flamePresentIndices]
+        : [],
+      chamberPressurePaByIndex: Array.isArray(boosterEngineState.chamberPressurePaByIndex)
+        ? [...boosterEngineState.chamberPressurePaByIndex]
+        : [],
+      exhaustTemperatureKByIndex: Array.isArray(boosterEngineState.exhaustTemperatureKByIndex)
+        ? [...boosterEngineState.exhaustTemperatureKByIndex]
+        : [],
+      combustionEfficiencyByIndex: Array.isArray(boosterEngineState.combustionEfficiencyByIndex)
+        ? [...boosterEngineState.combustionEfficiencyByIndex]
+        : [],
+      turbopumpNormByIndex: Array.isArray(boosterEngineState.turbopumpNormByIndex)
+        ? [...boosterEngineState.turbopumpNormByIndex]
+        : [],
+      engineThrustNByIndex: Array.isArray(boosterEngineState.engineThrustNByIndex)
+        ? [...boosterEngineState.engineThrustNByIndex]
+        : [],
       burnKg,
       burnRateKgS,
+      ...combustionSummaryFields(boosterEngineState),
       rcsBurnKg,
       rcsBurnRateKgS,
       dynamicPressurePa: aero.dynamicPressurePa,
@@ -6866,20 +7160,23 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           runtime.stageActuator.directionActual,
           steeringDirection,
         );
+        const stageCombustionState = stageForStep
+          ? updateEngineCombustionClusterState(
+            runtime.stageIndex === 0 ? runtime.stage1Combustion : runtime.stage2Combustion,
+            {
+              config: stageForStep,
+              dtSeconds,
+              pressurePa,
+              throttleCommand: canThrust ? throttleActual : 0,
+            },
+          )
+          : null;
         let thrustN = 0;
         let burnRateKgS = 0;
         let burnKg = 0;
-        if (canThrust && throttleActual > 1e-7 && stageForStep) {
-          const fullThrustN = interpolateConfiguredThrustN(stageForStep, pressurePa);
-          thrustN = fullThrustN * throttleActual;
-          const ispS = interpolateSeaToVac(
-            Number(stageForStep.ispVacuumS) || 0,
-            Number(stageForStep.ispSeaLevelS) || 0,
-            pressurePa,
-          );
-          burnRateKgS = thrustN > 0 && ispS > 0
-            ? thrustN / (ispS * STANDARD_GRAVITY_M_S2)
-            : 0;
+        if (stageForStep) {
+          thrustN = Math.max(0, Number(stageCombustionState?.thrustN) || 0);
+          burnRateKgS = Math.max(0, Number(stageCombustionState?.burnRateKgS) || 0);
           burnKg = Math.min(availablePropellantKg, burnRateKgS * dtSeconds);
         }
 
@@ -6941,8 +7238,38 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           throttle: throttleActual,
           throttleCommand: canThrust ? throttleCommand : 0,
           thrustN,
+          activeEngineIndices: Array.isArray(stageCombustionState?.activeIndices)
+            ? [...stageCombustionState.activeIndices]
+            : [],
+          activeEngineCount: Math.max(0, Number(stageCombustionState?.activeCount) || 0),
+          desiredEngineCount: Math.max(0, Number(stageCombustionState?.desiredCount) || 0),
+          failedEngineIndices: Array.isArray(stageCombustionState?.failedIndices)
+            ? [...stageCombustionState.failedIndices]
+            : [],
+          faultedEngineIndices: Array.isArray(stageCombustionState?.faultedIndices)
+            ? [...stageCombustionState.faultedIndices]
+            : [],
+          flamePresentIndices: Array.isArray(stageCombustionState?.flamePresentIndices)
+            ? [...stageCombustionState.flamePresentIndices]
+            : [],
+          chamberPressurePaByIndex: Array.isArray(stageCombustionState?.chamberPressurePaByIndex)
+            ? [...stageCombustionState.chamberPressurePaByIndex]
+            : [],
+          exhaustTemperatureKByIndex: Array.isArray(stageCombustionState?.exhaustTemperatureKByIndex)
+            ? [...stageCombustionState.exhaustTemperatureKByIndex]
+            : [],
+          combustionEfficiencyByIndex: Array.isArray(stageCombustionState?.combustionEfficiencyByIndex)
+            ? [...stageCombustionState.combustionEfficiencyByIndex]
+            : [],
+          turbopumpNormByIndex: Array.isArray(stageCombustionState?.turbopumpNormByIndex)
+            ? [...stageCombustionState.turbopumpNormByIndex]
+            : [],
+          engineThrustNByIndex: Array.isArray(stageCombustionState?.engineThrustNByIndex)
+            ? [...stageCombustionState.engineThrustNByIndex]
+            : [],
           burnKg,
           burnRateKgS,
+          ...combustionSummaryFields(stageCombustionState),
           dynamicPressurePa: aero.dynamicPressurePa,
           guidanceMode: guidanceModeLabel,
           requestedDirectionKm: cloneVectorOrNull(steeringDirection),
@@ -7929,6 +8256,56 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         boosterLanded: runtime.booster.landed,
         boosterThrottle: Number(runtime.booster.lastStep?.throttle) || 0,
         boosterThrustN: Number(runtime.booster.lastStep?.thrustN) || 0,
+        activeEngineIndices: Array.isArray(runtime.lastStep?.activeEngineIndices)
+          ? [...runtime.lastStep.activeEngineIndices]
+          : [],
+        activeEngineCount: Math.max(0, Number(runtime.lastStep?.activeEngineCount) || 0),
+        desiredEngineCount: Math.max(0, Number(runtime.lastStep?.desiredEngineCount) || 0),
+        failedEngineIndices: Array.isArray(runtime.lastStep?.failedEngineIndices)
+          ? [...runtime.lastStep.failedEngineIndices]
+          : [],
+        faultedEngineIndices: Array.isArray(runtime.lastStep?.faultedEngineIndices)
+          ? [...runtime.lastStep.faultedEngineIndices]
+          : [],
+        flamePresentIndices: Array.isArray(runtime.lastStep?.flamePresentIndices)
+          ? [...runtime.lastStep.flamePresentIndices]
+          : [],
+        chamberPressurePaByIndex: Array.isArray(runtime.lastStep?.chamberPressurePaByIndex)
+          ? [...runtime.lastStep.chamberPressurePaByIndex]
+          : [],
+        exhaustTemperatureKByIndex: Array.isArray(runtime.lastStep?.exhaustTemperatureKByIndex)
+          ? [...runtime.lastStep.exhaustTemperatureKByIndex]
+          : [],
+        avgChamberPressurePa: Number(runtime.lastStep?.avgChamberPressurePa) || 0,
+        maxChamberPressurePa: Number(runtime.lastStep?.maxChamberPressurePa) || 0,
+        avgCombustionEfficiency: Number(runtime.lastStep?.avgCombustionEfficiency) || 0,
+        avgTurbopumpNorm: Number(runtime.lastStep?.avgTurbopumpNorm) || 0,
+        maxExhaustTemperatureK: Number(runtime.lastStep?.maxExhaustTemperatureK) || 0,
+        boosterActiveEngineIndices: Array.isArray(runtime.booster.lastStep?.activeEngineIndices)
+          ? [...runtime.booster.lastStep.activeEngineIndices]
+          : [],
+        boosterActiveEngineCount: Math.max(0, Number(runtime.booster.lastStep?.activeEngineCount) || 0),
+        boosterDesiredEngineCount: Math.max(0, Number(runtime.booster.lastStep?.desiredEngineCount) || 0),
+        boosterFailedEngineIndices: Array.isArray(runtime.booster.lastStep?.failedEngineIndices)
+          ? [...runtime.booster.lastStep.failedEngineIndices]
+          : [],
+        boosterFaultedEngineIndices: Array.isArray(runtime.booster.lastStep?.faultedEngineIndices)
+          ? [...runtime.booster.lastStep.faultedEngineIndices]
+          : [],
+        boosterFlamePresentIndices: Array.isArray(runtime.booster.lastStep?.flamePresentIndices)
+          ? [...runtime.booster.lastStep.flamePresentIndices]
+          : [],
+        boosterChamberPressurePaByIndex: Array.isArray(runtime.booster.lastStep?.chamberPressurePaByIndex)
+          ? [...runtime.booster.lastStep.chamberPressurePaByIndex]
+          : [],
+        boosterExhaustTemperatureKByIndex: Array.isArray(runtime.booster.lastStep?.exhaustTemperatureKByIndex)
+          ? [...runtime.booster.lastStep.exhaustTemperatureKByIndex]
+          : [],
+        boosterAvgChamberPressurePa: Number(runtime.booster.lastStep?.avgChamberPressurePa) || 0,
+        boosterMaxChamberPressurePa: Number(runtime.booster.lastStep?.maxChamberPressurePa) || 0,
+        boosterAvgCombustionEfficiency: Number(runtime.booster.lastStep?.avgCombustionEfficiency) || 0,
+        boosterAvgTurbopumpNorm: Number(runtime.booster.lastStep?.avgTurbopumpNorm) || 0,
+        boosterMaxExhaustTemperatureK: Number(runtime.booster.lastStep?.maxExhaustTemperatureK) || 0,
         boosterRcsActive: Boolean(runtime.booster.lastStep?.rcsActive),
         boosterRcsErrorDeg: Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
         boosterRcsAuthority: Number(runtime.booster.lastStep?.rcsAuthority) || 0,
@@ -8038,6 +8415,31 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       periapsisKm: telemetry.periapsisKm,
       throttle: telemetry.throttle,
       thrustN: telemetry.thrustN,
+      activeEngineIndices: Array.isArray(telemetry.activeEngineIndices)
+        ? [...telemetry.activeEngineIndices]
+        : [],
+      activeEngineCount: Math.max(0, Number(telemetry.activeEngineCount) || 0),
+      desiredEngineCount: Math.max(0, Number(telemetry.desiredEngineCount) || 0),
+      failedEngineIndices: Array.isArray(telemetry.failedEngineIndices)
+        ? [...telemetry.failedEngineIndices]
+        : [],
+      faultedEngineIndices: Array.isArray(telemetry.faultedEngineIndices)
+        ? [...telemetry.faultedEngineIndices]
+        : [],
+      flamePresentIndices: Array.isArray(telemetry.flamePresentIndices)
+        ? [...telemetry.flamePresentIndices]
+        : [],
+      chamberPressurePaByIndex: Array.isArray(telemetry.chamberPressurePaByIndex)
+        ? [...telemetry.chamberPressurePaByIndex]
+        : [],
+      exhaustTemperatureKByIndex: Array.isArray(telemetry.exhaustTemperatureKByIndex)
+        ? [...telemetry.exhaustTemperatureKByIndex]
+        : [],
+      avgChamberPressurePa: Number(telemetry.avgChamberPressurePa) || 0,
+      maxChamberPressurePa: Number(telemetry.maxChamberPressurePa) || 0,
+      avgCombustionEfficiency: Number(telemetry.avgCombustionEfficiency) || 0,
+      avgTurbopumpNorm: Number(telemetry.avgTurbopumpNorm) || 0,
+      maxExhaustTemperatureK: Number(telemetry.maxExhaustTemperatureK) || 0,
       burnRateKgS: telemetry.burnRateKgS,
       dynamicPressurePa: telemetry.dynamicPressurePa,
       throttleCommand: telemetry.throttleCommand,
@@ -8147,6 +8549,45 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterLanded: runtime.booster.landed,
       boosterThrottle: Number(runtime.booster.telemetry?.throttle) || Number(runtime.booster.lastStep?.throttle) || 0,
       boosterThrustN: Number(runtime.booster.telemetry?.thrustN) || Number(runtime.booster.lastStep?.thrustN) || 0,
+      boosterActiveEngineIndices: Array.isArray(runtime.booster.telemetry?.activeEngineIndices)
+        ? [...runtime.booster.telemetry.activeEngineIndices]
+        : (Array.isArray(runtime.booster.lastStep?.activeEngineIndices) ? [...runtime.booster.lastStep.activeEngineIndices] : []),
+      boosterActiveEngineCount: Number(runtime.booster.telemetry?.activeEngineCount)
+        || Number(runtime.booster.lastStep?.activeEngineCount)
+        || 0,
+      boosterDesiredEngineCount: Number(runtime.booster.telemetry?.desiredEngineCount)
+        || Number(runtime.booster.lastStep?.desiredEngineCount)
+        || 0,
+      boosterFailedEngineIndices: Array.isArray(runtime.booster.telemetry?.failedEngineIndices)
+        ? [...runtime.booster.telemetry.failedEngineIndices]
+        : (Array.isArray(runtime.booster.lastStep?.failedEngineIndices) ? [...runtime.booster.lastStep.failedEngineIndices] : []),
+      boosterFaultedEngineIndices: Array.isArray(runtime.booster.telemetry?.faultedEngineIndices)
+        ? [...runtime.booster.telemetry.faultedEngineIndices]
+        : (Array.isArray(runtime.booster.lastStep?.faultedEngineIndices) ? [...runtime.booster.lastStep.faultedEngineIndices] : []),
+      boosterFlamePresentIndices: Array.isArray(runtime.booster.telemetry?.flamePresentIndices)
+        ? [...runtime.booster.telemetry.flamePresentIndices]
+        : (Array.isArray(runtime.booster.lastStep?.flamePresentIndices) ? [...runtime.booster.lastStep.flamePresentIndices] : []),
+      boosterChamberPressurePaByIndex: Array.isArray(runtime.booster.telemetry?.chamberPressurePaByIndex)
+        ? [...runtime.booster.telemetry.chamberPressurePaByIndex]
+        : (Array.isArray(runtime.booster.lastStep?.chamberPressurePaByIndex) ? [...runtime.booster.lastStep.chamberPressurePaByIndex] : []),
+      boosterExhaustTemperatureKByIndex: Array.isArray(runtime.booster.telemetry?.exhaustTemperatureKByIndex)
+        ? [...runtime.booster.telemetry.exhaustTemperatureKByIndex]
+        : (Array.isArray(runtime.booster.lastStep?.exhaustTemperatureKByIndex) ? [...runtime.booster.lastStep.exhaustTemperatureKByIndex] : []),
+      boosterAvgChamberPressurePa: Number(runtime.booster.telemetry?.avgChamberPressurePa)
+        || Number(runtime.booster.lastStep?.avgChamberPressurePa)
+        || 0,
+      boosterMaxChamberPressurePa: Number(runtime.booster.telemetry?.maxChamberPressurePa)
+        || Number(runtime.booster.lastStep?.maxChamberPressurePa)
+        || 0,
+      boosterAvgCombustionEfficiency: Number(runtime.booster.telemetry?.avgCombustionEfficiency)
+        || Number(runtime.booster.lastStep?.avgCombustionEfficiency)
+        || 0,
+      boosterAvgTurbopumpNorm: Number(runtime.booster.telemetry?.avgTurbopumpNorm)
+        || Number(runtime.booster.lastStep?.avgTurbopumpNorm)
+        || 0,
+      boosterMaxExhaustTemperatureK: Number(runtime.booster.telemetry?.maxExhaustTemperatureK)
+        || Number(runtime.booster.lastStep?.maxExhaustTemperatureK)
+        || 0,
       boosterRcsActive: Boolean(runtime.booster.telemetry?.rcsActive ?? runtime.booster.lastStep?.rcsActive),
       boosterRcsErrorDeg: Number(runtime.booster.telemetry?.rcsErrorDeg) || Number(runtime.booster.lastStep?.rcsErrorDeg) || 0,
       boosterRcsAuthority: Number(runtime.booster.telemetry?.rcsAuthority) || Number(runtime.booster.lastStep?.rcsAuthority) || 0,
@@ -8421,6 +8862,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       windSeed: Math.max(0, Math.floor(finiteNumber(runtime.windSeed, Date.now() % 1_000_000))),
       stageActuator: cloneJson(runtime.stageActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
       stageMassModel: cloneJson(runtime.stageMassModel, createMassModelState()),
+      stage1Combustion: cloneJson(runtime.stage1Combustion, createStage1CombustionClusterState()),
+      stage2Combustion: cloneJson(runtime.stage2Combustion, createStage2CombustionClusterState()),
       boosterActuator: cloneJson(runtime.boosterActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
       boosterMassModel: cloneJson(runtime.boosterMassModel, createMassModelState()),
       attachedJoint: cloneJson(runtime.attachedJoint, createAttachedStackJointState()),
@@ -8444,6 +8887,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         initialPropellantKg: Math.max(0, finiteNumber(runtime.booster.initialPropellantKg, 0)),
         separationTimeSec: Math.max(0, finiteNumber(runtime.booster.separationTimeSec, 0)),
         landed: Boolean(runtime.booster.landed),
+        combustion: cloneJson(runtime.booster.combustion, createBoosterCombustionClusterState()),
         lastStep: cloneJson(runtime.booster.lastStep),
         lastSurfaceSample: cloneJson(runtime.booster.lastSurfaceSample),
         lastTrackedPositionKm: cloneVectorOrNull(runtime.booster.lastTrackedPositionKm),
@@ -8552,6 +8996,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       { x: 0, y: 0, z: 1 },
     );
     runtime.stageMassModel = applyMassModelSnapshot(runtime.stageMassModel, snapshot.stageMassModel);
+    runtime.stage1Combustion = hydrateEngineCombustionClusterState(
+      snapshot.stage1Combustion,
+      stage1CombustionClusterOptions(),
+    );
+    runtime.stage2Combustion = hydrateEngineCombustionClusterState(
+      snapshot.stage2Combustion,
+      stage2CombustionClusterOptions(),
+    );
     runtime.boosterActuator = applyActuatorSnapshot(
       runtime.boosterActuator,
       snapshot.boosterActuator,
@@ -8648,6 +9100,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       finiteNumber(boosterSnapshot.separationTimeSec, runtime.booster.separationTimeSec),
     );
     runtime.booster.landed = Boolean(boosterSnapshot.landed);
+    runtime.booster.combustion = hydrateEngineCombustionClusterState(
+      boosterSnapshot.combustion,
+      boosterCombustionClusterOptions(),
+    );
     runtime.booster.lastStep = cloneJson(boosterSnapshot.lastStep);
     runtime.booster.lastSurfaceSample = cloneJson(boosterSnapshot.lastSurfaceSample);
     runtime.booster.lastTrackedPositionKm = cloneVectorOrNull(boosterSnapshot.lastTrackedPositionKm);

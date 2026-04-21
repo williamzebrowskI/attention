@@ -2,6 +2,7 @@ import {
   STARSHIP_STACK_DIMENSIONS_KM,
   STARSHIP_STACK_TOTAL_HEIGHT_KM,
 } from "./launchConfig.js";
+import { createSuperHeavyEngineDescriptors } from "./launchEngineLayout.js";
 import {
   BOOSTER_THRUSTER_LAYOUT,
   STARSHIP_THRUSTER_LAYOUT,
@@ -9,7 +10,7 @@ import {
 import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
-} from "./launchAtmosphereEffects.js?v=20260419p";
+} from "./launchAtmosphereEffects.js?v=20260421a";
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
@@ -17,8 +18,8 @@ const STARSHIP_NAV_BEACON_COLOR = 0xff3d2a;
 const STARSHIP_NAV_BEACON_PERIOD_SEC = 2.4;
 const STARSHIP_NAV_BEACON_MIN_ALPHA = 0.12;
 const STARSHIP_NAV_BEACON_MAX_ALPHA = 0.98;
-const MAIN_ENGINE_PLUME_SIZE_SCALE = 0.25;
-const MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE = 0.25;
+const MAIN_ENGINE_PLUME_SIZE_SCALE = 0.52;
+const MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE = 0.68;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -477,6 +478,12 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
       plumeOuter,
       plumeCore,
       glow,
+      outerBaseColor: outerColor.clone(),
+      outerHotColor: new THREE.Color(0xfff7ea),
+      coreBaseColor: coreColor.clone(),
+      coreHotColor: new THREE.Color(0xffffff),
+      glowBaseColor: outerColor.clone(),
+      glowHotColor: new THREE.Color(0xdeefff),
     });
   }
 
@@ -489,6 +496,60 @@ function createMainEnginePlumeCluster(THREE, stageGroup, options = {}) {
     basePlumeRadius,
     baseGlowRadius,
   };
+}
+
+function normalizePlumeEngineIndexArray(values, limit = Infinity) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const maxLimit = Math.max(0, Number(limit) || 0);
+  const seen = new Set();
+  const normalized = [];
+  for (const value of values) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    const index = Math.round(numeric);
+    if (index < 0 || index >= maxLimit || seen.has(index)) {
+      continue;
+    }
+    seen.add(index);
+    normalized.push(index);
+  }
+  return normalized;
+}
+
+function sliceLocalEngineIndexArray(values, startIndex, count) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  const start = Math.max(0, Number(startIndex) || 0);
+  const limit = start + Math.max(0, Number(count) || 0);
+  const localized = [];
+  for (const value of values) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    const index = Math.round(numeric);
+    if (index >= start && index < limit) {
+      localized.push(index - start);
+    }
+  }
+  return localized;
+}
+
+function sliceLocalEngineValueArray(values, startIndex, count) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  const start = Math.max(0, Number(startIndex) || 0);
+  const width = Math.max(0, Number(count) || 0);
+  return values.slice(start, start + width).map((value) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+  });
 }
 
 function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
@@ -582,17 +643,19 @@ function createCircularOffsets(count, ringRadius, phaseRadians = 0) {
 }
 
 function createSuperHeavyEngineOffsets(radius) {
-  const safeRadius = Math.max(1e-9, Number(radius) || 1e-9);
-  const outerRingRadius = clamp(safeRadius * 0.69, safeRadius * 0.42, safeRadius * 0.74);
-  const midRingRadius = clamp(outerRingRadius * 0.57, safeRadius * 0.22, outerRingRadius * 0.63);
-  const coreRingRadius = clamp(outerRingRadius * 0.24, safeRadius * 0.08, outerRingRadius * 0.3);
+  const descriptors = createSuperHeavyEngineDescriptors(radius, 0);
+  const outerRingRadius = descriptors
+    .filter((descriptor) => descriptor?.ring === "outer")
+    .reduce((maxRadius, descriptor) => Math.max(
+      maxRadius,
+      Math.hypot(Number(descriptor?.x) || 0, Number(descriptor?.z) || 0),
+    ), 0);
   return {
     outerRingRadius,
-    offsets: [
-      ...createCircularOffsets(20, outerRingRadius, Math.PI / 20),
-      ...createCircularOffsets(10, midRingRadius, Math.PI / 10),
-      ...createCircularOffsets(3, coreRingRadius, Math.PI / 6),
-    ],
+    offsets: descriptors.map((descriptor) => ({
+      x: Number(descriptor?.x) || 0,
+      z: Number(descriptor?.z) || 0,
+    })),
   };
 }
 
@@ -867,7 +930,8 @@ function addSuperHeavyBoosterVisuals(THREE, boosterGroup, stainless, darkSteel, 
   const engineLayout = createSuperHeavyEngineOffsets(radius);
   const engineBellRadius = clamp(radius * 0.102, radius * 0.054, radius * 0.13);
   const engineBellHeight = clamp(radius * 0.205, radius * 0.11, radius * 0.27);
-  const engineExitY = (-0.5 * boosterHeight) + (engineBellHeight * 0.04);
+  const mountY = (-0.5 * boosterHeight) + (engineSkirtHeight * 0.06);
+  const engineExitY = mountY - (engineBellHeight * 0.95);
 
   const bellGeom = new THREE.ConeGeometry(engineBellRadius, engineBellHeight, 14, 1, true);
   bellGeom.translate(0, engineBellHeight * 0.5, 0);
@@ -1571,10 +1635,10 @@ function updateRcsJetVisuals(stageState, snapshot) {
   }
 }
 
-function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
+function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1, options = {}) {
   if (Array.isArray(plumeState)) {
     for (const state of plumeState) {
-      setMainEnginePlumeVisual(state, firing, throttle, pulse);
+      setMainEnginePlumeVisual(state, firing, throttle, pulse, options);
     }
     return;
   }
@@ -1588,11 +1652,33 @@ function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
     plumeState.shutdownHoldUntilMs = nowMs + 140;
   }
   plumeState.targetFiring = targetFiring;
+  if (targetFiring) {
+    plumeState.activeEntryIndexSet = Array.isArray(options.activeIndices) && options.activeIndices.length > 0
+      ? new Set(normalizePlumeEngineIndexArray(options.activeIndices, plumeState.entries.length))
+      : null;
+    plumeState.faultedEntryIndexSet = Array.isArray(options.faultedIndices) && options.faultedIndices.length > 0
+      ? new Set(normalizePlumeEngineIndexArray(options.faultedIndices, plumeState.entries.length))
+      : null;
+    plumeState.flameEntryIndexSet = Array.isArray(options.flamePresentIndices) && options.flamePresentIndices.length > 0
+      ? new Set(normalizePlumeEngineIndexArray(options.flamePresentIndices, plumeState.entries.length))
+      : null;
+    plumeState.chamberPressurePaByIndex = Array.isArray(options.chamberPressurePaByIndex)
+      ? [...options.chamberPressurePaByIndex]
+      : null;
+    plumeState.exhaustTemperatureKByIndex = Array.isArray(options.exhaustTemperatureKByIndex)
+      ? [...options.exhaustTemperatureKByIndex]
+      : null;
+    plumeState.nominalChamberPressurePa = Number(options.nominalChamberPressurePa) || 0;
+    plumeState.nominalExhaustTemperatureK = Number(options.nominalExhaustTemperatureK) || 0;
+  }
   const fadeOutHold = Number(plumeState.shutdownHoldUntilMs) > nowMs;
   const visible = targetFiring || fadeOutHold;
   plumeState.cluster.visible = visible;
   if (!visible) {
     plumeState.smoothedThrottle = 0;
+    plumeState.activeEntryIndexSet = null;
+    plumeState.faultedEntryIndexSet = null;
+    plumeState.flameEntryIndexSet = null;
     return;
   }
   const targetThrottle = targetFiring ? clamp(Number(throttle) || 0, 0, 1) : 0;
@@ -1608,51 +1694,121 @@ function setMainEnginePlumeVisual(plumeState, firing, throttle = 0, pulse = 1) {
   const radiusScale = 0.9 + (t * 0.52);
   const glowScale = 0.95 + (t * 0.72);
   const nowSec = Date.now() / 1000;
+  const activeEntryIndexSet = plumeState.activeEntryIndexSet instanceof Set
+    ? plumeState.activeEntryIndexSet
+    : null;
+  const faultedEntryIndexSet = plumeState.faultedEntryIndexSet instanceof Set
+    ? plumeState.faultedEntryIndexSet
+    : null;
+  const flameEntryIndexSet = plumeState.flameEntryIndexSet instanceof Set
+    ? plumeState.flameEntryIndexSet
+    : null;
+  const chamberPressurePaByIndex = Array.isArray(plumeState.chamberPressurePaByIndex)
+    ? plumeState.chamberPressurePaByIndex
+    : null;
+  const exhaustTemperatureKByIndex = Array.isArray(plumeState.exhaustTemperatureKByIndex)
+    ? plumeState.exhaustTemperatureKByIndex
+    : null;
+  const nominalChamberPressurePa = Math.max(
+    1,
+    Number(plumeState.nominalChamberPressurePa)
+      || Number(options.nominalChamberPressurePa)
+      || 1,
+  );
+  const nominalExhaustTemperatureK = Math.max(
+    1000,
+    Number(plumeState.nominalExhaustTemperatureK)
+      || Number(options.nominalExhaustTemperatureK)
+      || 3400,
+  );
+  const exhaustBaselineK = 900;
   for (let index = 0; index < plumeState.entries.length; index += 1) {
     const entry = plumeState.entries[index];
     if (!entry) {
       continue;
     }
+    const selected = !activeEntryIndexSet || activeEntryIndexSet.has(index);
+    const faulted = Boolean(faultedEntryIndexSet?.has(index));
+    const flamePresent = !faulted && (
+      flameEntryIndexSet instanceof Set
+        ? flameEntryIndexSet.has(index)
+        : selected
+    );
+    const chamberPressurePa = Number(chamberPressurePaByIndex?.[index]);
+    const exhaustTemperatureK = Number(exhaustTemperatureKByIndex?.[index]);
+    const chamberNorm = flamePresent
+      ? (
+        Number.isFinite(chamberPressurePa) && chamberPressurePa > 0
+          ? clamp(chamberPressurePa / nominalChamberPressurePa, 0, 1.12)
+          : 1
+      )
+      : 0;
+    const thermalNorm = flamePresent
+      ? (
+        Number.isFinite(exhaustTemperatureK) && exhaustTemperatureK > 0
+          ? clamp(
+            (exhaustTemperatureK - exhaustBaselineK)
+              / Math.max(nominalExhaustTemperatureK - exhaustBaselineK, 1),
+            0,
+            1.12,
+          )
+          : chamberNorm
+      )
+      : 0;
+    const engineDrive = flamePresent
+      ? clamp((0.36 + (0.64 * chamberNorm)) * (0.78 + (0.22 * t)), 0, 1.18)
+      : 0;
     const turbulence = 0.975 + (0.045 * Math.sin((nowSec * 8.5) + (index * 1.37)));
     const flicker = 0.992 + (0.016 * Math.sin((nowSec * 3.4) + (index * 2.11)));
+    const opacityScale = flamePresent ? engineDrive : 0;
+    const heatBlend = clamp((thermalNorm * 0.82) + (chamberNorm * 0.18), 0, 1);
     if (entry.plumeOuter?.scale) {
       entry.plumeOuter.scale.set(
-        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
-        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE * turbulence,
-        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * (0.82 + (0.28 * chamberNorm)),
+        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE * turbulence * (0.84 + (0.42 * chamberNorm)),
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * (0.82 + (0.28 * chamberNorm)),
       );
     }
     if (entry.plumeOuter?.material && !Array.isArray(entry.plumeOuter.material)) {
+      if (entry.outerBaseColor && entry.outerHotColor) {
+        entry.plumeOuter.material.color.copy(entry.outerBaseColor).lerp(entry.outerHotColor, heatBlend);
+      }
       entry.plumeOuter.material.opacity = clamp(
-        plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 0.78 * flicker,
+        plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 0.78 * flicker * opacityScale,
         0,
         1,
       );
     }
     if (entry.plumeCore?.scale) {
       entry.plumeCore.scale.set(
-        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * 0.62,
-        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE * turbulence * 0.9,
-        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * 0.62,
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * 0.62 * (0.86 + (0.24 * chamberNorm)),
+        stretch * MAIN_ENGINE_PLUME_SIZE_SCALE * turbulence * 0.9 * (0.86 + (0.34 * chamberNorm)),
+        radiusScale * MAIN_ENGINE_PLUME_SIZE_SCALE * 0.62 * (0.86 + (0.24 * chamberNorm)),
       );
     }
     if (entry.plumeCore?.material && !Array.isArray(entry.plumeCore.material)) {
+      if (entry.coreBaseColor && entry.coreHotColor) {
+        entry.plumeCore.material.color.copy(entry.coreBaseColor).lerp(entry.coreHotColor, heatBlend);
+      }
       entry.plumeCore.material.opacity = clamp(
-        plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 1.05 * flicker,
+        plumeOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 1.05 * flicker * opacityScale,
         0,
         1,
       );
     }
     if (entry.glow?.scale) {
       entry.glow.scale.set(
-        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
-        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
-        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE,
+        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE * (0.88 + (0.26 * chamberNorm)),
+        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE * (0.88 + (0.26 * chamberNorm)),
+        glowScale * MAIN_ENGINE_PLUME_SIZE_SCALE * (0.88 + (0.26 * chamberNorm)),
       );
     }
     if (entry.glow?.material && !Array.isArray(entry.glow.material)) {
+      if (entry.glowBaseColor && entry.glowHotColor) {
+        entry.glow.material.color.copy(entry.glowBaseColor).lerp(entry.glowHotColor, heatBlend);
+      }
       entry.glow.material.opacity = clamp(
-        glowOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 0.95 * flicker,
+        glowOpacity * MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE * 0.95 * flicker * opacityScale,
         0,
         1,
       );
@@ -1669,11 +1825,75 @@ function updateMainEnginePlumes(stageState, stageIndex, snapshot) {
   const phase = String(snapshot?.phase || "").toLowerCase();
   const thrustN = Math.max(0, Number(snapshot?.thrustN) || 0);
   const throttle = clamp(Number(snapshot?.throttle) || 0, 0, 1);
-  const powered = phase === "powered" && thrustN > 0.01;
+  const powered = thrustN > 0.01 && (throttle > 0.001 || phase === "powered");
   const pulse = 1;
+  const activeEngineIndices = Array.isArray(snapshot?.activeEngineIndices)
+    ? snapshot.activeEngineIndices
+    : null;
+  const failedEngineIndices = Array.isArray(snapshot?.failedEngineIndices)
+    ? snapshot.failedEngineIndices
+    : null;
+  const faultedEngineIndices = Array.isArray(snapshot?.faultedEngineIndices)
+    ? snapshot.faultedEngineIndices
+    : null;
+  const flamePresentIndices = Array.isArray(snapshot?.flamePresentIndices)
+    ? snapshot.flamePresentIndices
+    : null;
+  const chamberPressurePaByIndex = Array.isArray(snapshot?.chamberPressurePaByIndex)
+    ? snapshot.chamberPressurePaByIndex
+    : null;
+  const exhaustTemperatureKByIndex = Array.isArray(snapshot?.exhaustTemperatureKByIndex)
+    ? snapshot.exhaustTemperatureKByIndex
+    : null;
+  const nominalChamberPressurePa = Math.max(
+    0,
+    Number(snapshot?.maxChamberPressurePa) || Number(snapshot?.avgChamberPressurePa) || 0,
+  );
+  const nominalExhaustTemperatureK = Math.max(0, Number(snapshot?.maxExhaustTemperatureK) || 0);
 
-  setMainEnginePlumeVisual(plumes.booster, powered && !separated, throttle, pulse);
-  setMainEnginePlumeVisual(plumes.ship, powered && separated, throttle, pulse);
+  setMainEnginePlumeVisual(plumes.booster, powered && !separated, throttle, pulse, {
+    activeIndices: activeEngineIndices,
+    failedIndices: failedEngineIndices,
+    faultedIndices: faultedEngineIndices,
+    flamePresentIndices: flamePresentIndices,
+    chamberPressurePaByIndex: chamberPressurePaByIndex,
+    exhaustTemperatureKByIndex: exhaustTemperatureKByIndex,
+    nominalChamberPressurePa,
+    nominalExhaustTemperatureK,
+  });
+  if (Array.isArray(plumes.ship) && plumes.ship.length >= 2) {
+    setMainEnginePlumeVisual(plumes.ship[0], powered && separated, throttle, pulse, {
+      activeIndices: sliceLocalEngineIndexArray(activeEngineIndices, 0, 3),
+      failedIndices: sliceLocalEngineIndexArray(failedEngineIndices, 0, 3),
+      faultedIndices: sliceLocalEngineIndexArray(faultedEngineIndices, 0, 3),
+      flamePresentIndices: sliceLocalEngineIndexArray(flamePresentIndices, 0, 3),
+      chamberPressurePaByIndex: sliceLocalEngineValueArray(chamberPressurePaByIndex, 0, 3),
+      exhaustTemperatureKByIndex: sliceLocalEngineValueArray(exhaustTemperatureKByIndex, 0, 3),
+      nominalChamberPressurePa,
+      nominalExhaustTemperatureK,
+    });
+    setMainEnginePlumeVisual(plumes.ship[1], powered && separated, throttle, pulse, {
+      activeIndices: sliceLocalEngineIndexArray(activeEngineIndices, 3, 3),
+      failedIndices: sliceLocalEngineIndexArray(failedEngineIndices, 3, 3),
+      faultedIndices: sliceLocalEngineIndexArray(faultedEngineIndices, 3, 3),
+      flamePresentIndices: sliceLocalEngineIndexArray(flamePresentIndices, 3, 3),
+      chamberPressurePaByIndex: sliceLocalEngineValueArray(chamberPressurePaByIndex, 3, 3),
+      exhaustTemperatureKByIndex: sliceLocalEngineValueArray(exhaustTemperatureKByIndex, 3, 3),
+      nominalChamberPressurePa,
+      nominalExhaustTemperatureK,
+    });
+    return;
+  }
+  setMainEnginePlumeVisual(plumes.ship, powered && separated, throttle, pulse, {
+    activeIndices: activeEngineIndices,
+    failedIndices: failedEngineIndices,
+    faultedIndices: faultedEngineIndices,
+    flamePresentIndices: flamePresentIndices,
+    chamberPressurePaByIndex: chamberPressurePaByIndex,
+    exhaustTemperatureKByIndex: exhaustTemperatureKByIndex,
+    nominalChamberPressurePa,
+    nominalExhaustTemperatureK,
+  });
 }
 
 export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null) {

@@ -66,6 +66,7 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   setLaunchSite as setRuntimeLaunchSite,
 } from "./physics/launch/launchConfig.js";
+import { computeBoosterEntryThermalState } from "./physics/launch/launchThermalModel.js?v=20260421a";
 import { surfacePointRelativeKmAtLatLon } from "./physics/surface/earthSurfacePhysics.js";
 import {
   applyInlineBoosterFuelVisuals,
@@ -87,6 +88,11 @@ import {
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_NODE_SAMPLES,
   MOON_ORBIT_INJECT_BROWSER_LAUNCH_SEARCH_PROFILE,
 } from "./physics/launch/lunar/constants.js";
+import {
+  createSuperHeavyEngineDescriptors,
+  resolveActiveEngineSelection,
+  superHeavyEngineActivationOrder,
+} from "./physics/launch/launchEngineLayout.js";
 import { createMissionControlScreenController } from "./ui/missionControlScreen.js?v=20260419n";
 import {
   activeLaunchTelemetryBodyId as activeLaunchTelemetryBodyIdView,
@@ -145,6 +151,9 @@ const missionControlViewStatusNode = document.getElementById("mission-control-vi
 const missionControlLiveFeedCanvasNode = document.getElementById("mission-control-live-feed-canvas");
 const missionControlViewStarshipButton = document.getElementById("mission-control-view-starship");
 const missionControlViewBoosterButton = document.getElementById("mission-control-view-booster");
+const launchBoosterEngineHudNode = document.getElementById("launch-booster-engine-hud");
+const launchBoosterEngineHudClusterNode = document.getElementById("launch-booster-engine-hud-cluster");
+const launchBoosterEngineHudFuelArcNode = document.getElementById("launch-booster-engine-hud-fuel-arc");
 let launchStatusNode = document.getElementById("launch-status");
 let launchDebugNode = document.getElementById("launch-debug");
 let launchEventLogNode = document.getElementById("launch-event-log");
@@ -174,6 +183,25 @@ function createMoonOrbitInjectDebugState() {
 }
 
 let moonOrbitInjectDebugState = createMoonOrbitInjectDebugState();
+const LAUNCH_ENGINE_HUD_SVG_NS = "http://www.w3.org/2000/svg";
+const LAUNCH_ENGINE_HUD_CLUSTER_CENTER_X = 88;
+const LAUNCH_ENGINE_HUD_CLUSTER_CENTER_Y = 88;
+const LAUNCH_ENGINE_HUD_CLUSTER_RADIUS_PX = 56;
+const LAUNCH_ENGINE_HUD_FUEL_ARC_RADIUS_PX = 77;
+const LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE = 2 * Math.PI * LAUNCH_ENGINE_HUD_FUEL_ARC_RADIUS_PX;
+const LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES = createSuperHeavyEngineDescriptors(1, 0);
+const LAUNCH_ENGINE_HUD_SUPER_HEAVY_ACTIVATION_ORDER = superHeavyEngineActivationOrder(
+  LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES,
+);
+const LAUNCH_ENGINE_HUD_SUPER_HEAVY_MAX_RADIUS = LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.reduce(
+  (maxRadius, descriptor) => Math.max(
+    maxRadius,
+    Math.hypot(Number(descriptor?.x) || 0, Number(descriptor?.z) || 0),
+  ),
+  1,
+);
+const launchBoosterEngineHudNodes = [];
+initializeLaunchBoosterEngineHud();
 const INFO_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_info_panel_collapsed";
 const LEGEND_PANEL_COLLAPSED_STORAGE_KEY = "galaxy_legend_panel_collapsed";
 const LEGEND_SECTION_COLLAPSED_STORAGE_KEY_PREFIX = "galaxy_legend_section_collapsed_";
@@ -261,7 +289,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260420am";
+const FRONTEND_MODULE_VERSION = "20260421g";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -4019,6 +4047,253 @@ function missionControlFleetEntries(nowMs = Date.now()) {
   return entries;
 }
 
+function launchEngineHudFiniteNumberOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function launchEngineHudFiniteInteger(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, Math.round(Number(fallback) || 0));
+  }
+  return Math.max(0, Math.round(numeric));
+}
+
+function normalizeLaunchEngineHudIndexArray(values, limit = Infinity) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const maxLimit = Math.max(0, Number(limit) || 0);
+  const seen = new Set();
+  const normalized = [];
+  for (const value of values) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    const index = Math.round(numeric);
+    if (index < 0 || index >= maxLimit || seen.has(index)) {
+      continue;
+    }
+    seen.add(index);
+    normalized.push(index);
+  }
+  return normalized;
+}
+
+function initializeLaunchBoosterEngineHud() {
+  if (!launchBoosterEngineHudClusterNode || launchBoosterEngineHudNodes.length > 0) {
+    return;
+  }
+  if (typeof document?.createElementNS !== "function") {
+    return;
+  }
+  for (let i = 0; i < LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length; i += 1) {
+    const descriptor = LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES[i];
+    const circle = document.createElementNS(LAUNCH_ENGINE_HUD_SVG_NS, "circle");
+    const normalizedX = ((Number(descriptor?.x) || 0) / LAUNCH_ENGINE_HUD_SUPER_HEAVY_MAX_RADIUS);
+    const normalizedY = ((Number(descriptor?.z) || 0) / LAUNCH_ENGINE_HUD_SUPER_HEAVY_MAX_RADIUS);
+    let radiusPx = 4.8;
+    if (descriptor?.ring === "mid") {
+      radiusPx = 5.5;
+    } else if (descriptor?.ring === "core") {
+      radiusPx = 6.2;
+    }
+    circle.setAttribute("class", "launch-booster-engine-hud-node state-idle");
+    circle.setAttribute(
+      "cx",
+      String(LAUNCH_ENGINE_HUD_CLUSTER_CENTER_X + (normalizedX * LAUNCH_ENGINE_HUD_CLUSTER_RADIUS_PX)),
+    );
+    circle.setAttribute(
+      "cy",
+      String(LAUNCH_ENGINE_HUD_CLUSTER_CENTER_Y + (normalizedY * LAUNCH_ENGINE_HUD_CLUSTER_RADIUS_PX)),
+    );
+    circle.setAttribute("r", String(radiusPx));
+    circle.setAttribute("data-engine-index", String(i));
+    circle.setAttribute("data-engine-ring", String(descriptor?.ring || "outer"));
+    circle.setAttribute("aria-hidden", "true");
+    launchBoosterEngineHudClusterNode.appendChild(circle);
+    launchBoosterEngineHudNodes.push(circle);
+  }
+}
+
+function resolveLaunchBoosterEngineHudTelemetry(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return {
+      available: false,
+      phaseLabel: "Standby",
+      thrustN: null,
+      throttle: null,
+      fuelFraction: null,
+      activeIndices: [],
+      flamePresentIndices: [],
+      failedIndices: [],
+      faultedIndices: [],
+      activeCount: 0,
+      desiredCount: 0,
+    };
+  }
+
+  const boosterAttached = Boolean(snapshot.boosterAttached) && !Boolean(snapshot.boosterActive);
+  const attachedStageZero = boosterAttached && Number(snapshot.stageIndex) <= 0 && (
+    Array.isArray(snapshot.activeEngineIndices)
+    || launchEngineHudFiniteInteger(snapshot.desiredEngineCount, 0) > 0
+    || Math.abs(Number(snapshot.thrustN) || 0) > 1
+    || String(snapshot.phase || "").trim().length > 0
+  );
+  if (attachedStageZero) {
+    const activeIndices = Array.isArray(snapshot.activeEngineIndices) ? snapshot.activeEngineIndices : [];
+    const flamePresentIndices = Array.isArray(snapshot.flamePresentIndices)
+      ? snapshot.flamePresentIndices
+      : [];
+    const activeCount = launchEngineHudFiniteInteger(snapshot.activeEngineCount, activeIndices.length);
+    const desiredCount = launchEngineHudFiniteInteger(snapshot.desiredEngineCount, activeCount);
+    return {
+      available: true,
+      phaseLabel: String(snapshot.boosterPhase || snapshot.phase || "Attached").trim() || "Attached",
+      thrustN: launchEngineHudFiniteNumberOrNull(snapshot.thrustN),
+      throttle: launchEngineHudFiniteNumberOrNull(snapshot.throttle),
+      fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
+      activeIndices,
+      flamePresentIndices,
+      failedIndices: Array.isArray(snapshot.failedEngineIndices) ? snapshot.failedEngineIndices : [],
+      faultedIndices: Array.isArray(snapshot.faultedEngineIndices) ? snapshot.faultedEngineIndices : [],
+      activeCount,
+      desiredCount,
+    };
+  }
+
+  const boosterActiveIndices = Array.isArray(snapshot.boosterActiveEngineIndices)
+    ? snapshot.boosterActiveEngineIndices
+    : [];
+  const boosterActiveCount = launchEngineHudFiniteInteger(
+    snapshot.boosterActiveEngineCount,
+    boosterActiveIndices.length,
+  );
+  const boosterDesiredCount = launchEngineHudFiniteInteger(
+    snapshot.boosterDesiredEngineCount,
+    boosterActiveCount,
+  );
+  const boosterPhase = String(snapshot.boosterPhase || "").trim();
+  const boosterTelemetryAvailable = (
+    boosterActiveIndices.length > 0
+    || boosterActiveCount > 0
+    || boosterDesiredCount > 0
+    || Math.abs(Number(snapshot.boosterThrustN) || 0) > 1
+    || boosterPhase.length > 0
+    || Boolean(snapshot.boosterActive)
+    || Boolean(snapshot.boosterLanded)
+  );
+  if (boosterTelemetryAvailable) {
+    return {
+      available: true,
+      phaseLabel: boosterPhase || "Booster",
+      thrustN: launchEngineHudFiniteNumberOrNull(snapshot.boosterThrustN),
+      throttle: launchEngineHudFiniteNumberOrNull(snapshot.boosterThrottle),
+      fuelFraction: boosterFuelFractionFromSnapshot(snapshot),
+      activeIndices: boosterActiveIndices,
+      flamePresentIndices: Array.isArray(snapshot.boosterFlamePresentIndices)
+        ? snapshot.boosterFlamePresentIndices
+        : [],
+      failedIndices: Array.isArray(snapshot.boosterFailedEngineIndices)
+        ? snapshot.boosterFailedEngineIndices
+        : [],
+      faultedIndices: Array.isArray(snapshot.boosterFaultedEngineIndices)
+        ? snapshot.boosterFaultedEngineIndices
+        : [],
+      activeCount: boosterActiveCount,
+      desiredCount: boosterDesiredCount,
+    };
+  }
+
+    return {
+      available: false,
+      phaseLabel: "Standby",
+      thrustN: null,
+      throttle: null,
+      fuelFraction: null,
+      activeIndices: [],
+      flamePresentIndices: [],
+      failedIndices: [],
+      faultedIndices: [],
+      activeCount: 0,
+      desiredCount: 0,
+    };
+  }
+
+function updateLaunchBoosterEngineHud(snapshot) {
+  if (!launchBoosterEngineHudNode || launchBoosterEngineHudNodes.length <= 0) {
+    return;
+  }
+  const missionControlVisible = Boolean(missionControlScreenNode?.classList?.contains("visible"));
+  const telemetry = !missionControlVisible
+    ? resolveLaunchBoosterEngineHudTelemetry(snapshot)
+    : { available: false, activeIndices: [], activeCount: 0, desiredCount: 0, throttle: null, thrustN: null };
+  const visible = Boolean(telemetry.available);
+  launchBoosterEngineHudNode.classList.toggle("visible", visible);
+  launchBoosterEngineHudNode.setAttribute("aria-hidden", visible ? "false" : "true");
+  if (!visible) {
+    launchBoosterEngineHudNode.classList.remove("engines-hot");
+    launchBoosterEngineHudNode.removeAttribute("title");
+    if (launchBoosterEngineHudFuelArcNode) {
+      launchBoosterEngineHudFuelArcNode.style.strokeDasharray = `0 ${LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE.toFixed(2)}`;
+    }
+    for (let i = 0; i < launchBoosterEngineHudNodes.length; i += 1) {
+      const node = launchBoosterEngineHudNodes[i];
+      node.classList.remove("state-active", "state-standby", "state-out", "state-idle");
+      node.classList.add("state-idle");
+    }
+    return;
+  }
+
+  const selection = resolveActiveEngineSelection({
+    descriptors: LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES,
+    activationOrder: LAUNCH_ENGINE_HUD_SUPER_HEAVY_ACTIVATION_ORDER,
+    desiredEngineCount: telemetry.desiredCount,
+  });
+  const explicitActiveIndices = normalizeLaunchEngineHudIndexArray(
+    Array.isArray(telemetry.flamePresentIndices) && telemetry.flamePresentIndices.length > 0
+      ? telemetry.flamePresentIndices
+      : telemetry.activeIndices,
+    LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length,
+  );
+  const fallbackActiveIndices = explicitActiveIndices.length <= 0 && telemetry.activeCount > 0
+    ? selection.activeIndices.slice(0, Math.min(telemetry.activeCount, selection.activeIndices.length))
+    : [];
+  const activeSet = new Set(explicitActiveIndices.length > 0 ? explicitActiveIndices : fallbackActiveIndices);
+  const explicitFaultedIndices = normalizeLaunchEngineHudIndexArray([
+    ...(Array.isArray(telemetry.failedIndices) ? telemetry.failedIndices : []),
+    ...(Array.isArray(telemetry.faultedIndices) ? telemetry.faultedIndices : []),
+  ], LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length);
+  const outSet = new Set(selection.desiredIndices.filter((index) => !activeSet.has(index)));
+  for (const index of explicitFaultedIndices) {
+    outSet.add(index);
+  }
+  const enginesHot = activeSet.size > 0 && (
+    (Number.isFinite(telemetry.thrustN) && telemetry.thrustN > 1)
+    || (Number.isFinite(telemetry.throttle) && telemetry.throttle > 0.01)
+  );
+  const fuelFraction = Number.isFinite(Number(telemetry.fuelFraction))
+    ? Math.max(0, Math.min(1, Number(telemetry.fuelFraction)))
+    : boosterFuelFractionFromSnapshot(snapshot);
+  if (launchBoosterEngineHudFuelArcNode) {
+    const visibleLength = LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE * fuelFraction;
+    launchBoosterEngineHudFuelArcNode.style.strokeDasharray = `${visibleLength.toFixed(2)} ${LAUNCH_ENGINE_HUD_FUEL_ARC_CIRCUMFERENCE.toFixed(2)}`;
+  }
+  launchBoosterEngineHudNode.classList.toggle("engines-hot", enginesHot);
+  launchBoosterEngineHudNode.title = `${String(telemetry.phaseLabel || "Booster").trim() || "Booster"} | ${activeSet.size}/${LAUNCH_ENGINE_HUD_SUPER_HEAVY_ENGINES.length} active | ${outSet.size} out | Fuel ${(fuelFraction * 100).toFixed(1)}%`;
+
+  for (let i = 0; i < launchBoosterEngineHudNodes.length; i += 1) {
+    const node = launchBoosterEngineHudNodes[i];
+    const stateClass = outSet.has(i)
+      ? "state-out"
+      : (activeSet.has(i) ? "state-active" : "state-standby");
+    node.classList.remove("state-active", "state-standby", "state-out", "state-idle");
+    node.classList.add(stateClass);
+  }
+}
+
 function updateLegendBoosterFuelToggle() {
   if (!legendBoosterFuelToggleButton) {
     return;
@@ -5540,6 +5815,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   lastLaunchStatusRenderMs = nowMs;
   if (!launchController) {
     launchStatusNode.textContent = fallbackLine || availabilityReason || "Launch controller unavailable.";
+    updateLaunchBoosterEngineHud(null);
     updateLaunchMissionControlPanel(null, false);
     missionControlScreenController.render(
       null,
@@ -5565,6 +5841,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
   updateLegendFallbackIndicators();
   if (!snapshot) {
     launchStatusNode.textContent = fallbackLine || "Launch status unavailable.";
+    updateLaunchBoosterEngineHud(null);
     updateLaunchMissionControlPanel(null, launchActive);
     missionControlScreenController.render(
       null,
@@ -5582,6 +5859,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     : Number(snapshot.speedKmS);
   if (!Number.isFinite(snapshot.altitudeKm) || !Number.isFinite(earthRelativeSpeedKmS)) {
     launchStatusNode.textContent = snapshot.statusLine || phaseLabelForLaunch(snapshot.phase);
+    updateLaunchBoosterEngineHud(snapshot);
     updateLaunchMissionControlPanel(snapshot, launchActive);
     missionControlScreenController.render(
       snapshot,
@@ -5594,6 +5872,7 @@ function updateLaunchStatusPanel(force = false, fallbackLine = "") {
     );
     return;
   }
+  updateLaunchBoosterEngineHud(snapshot);
   const thrustMN = Number.isFinite(snapshot.thrustN) ? snapshot.thrustN / 1_000_000 : 0;
   const throttlePct = Number.isFinite(snapshot.throttle) ? snapshot.throttle * 100 : 0;
   const guidanceLine = snapshot.guidanceDisplayMode || snapshot.autopilotMode || snapshot.guidanceMode || "guidance";
@@ -5842,6 +6121,22 @@ function computeReentryHeatTargetForBody(bodyId, launchSnapshot = null) {
   const kinematics = earthRelativeKinematicsForBody(bodyId);
   if (!kinematics) {
     return 0;
+  }
+  if (bodyId === LAUNCH_BOOSTER_BODY_ID) {
+    const thermalState = computeBoosterEntryThermalState({
+      phase: launchSnapshot?.boosterPhase,
+      altitudeKm: launchSnapshot?.boosterAltitudeKm ?? kinematics.altitudeKm,
+      altitudeAboveTerrainKm: launchSnapshot?.boosterAltitudeAboveTerrainKm,
+      dynamicPressurePa: launchSnapshot?.boosterDynamicPressurePa ?? kinematics.dynamicPressurePa,
+      airRelativeSpeedKmS: launchSnapshot?.boosterAirRelativeSpeedKmS,
+      earthRelativeSpeedKmS:
+        launchSnapshot?.boosterEarthRelativeSpeedKmS
+        ?? launchSnapshot?.boosterSpeedKmS
+        ?? kinematics.speedKmS,
+      radialSpeedKmS: kinematics.radialSpeedKmS,
+      throttle: launchSnapshot?.boosterThrottle,
+    });
+    return thermalState.active ? thermalState.heatLevel : 0;
   }
   if (kinematics.altitudeKm <= REENTRY_HEAT_MIN_EFFECT_ALTITUDE_KM) {
     return 0;
@@ -6416,6 +6711,39 @@ function attachedBoosterVisualSnapshot(snapshot = null) {
     boosterGuidanceMode: String(snapshot.guidanceMode || snapshot.boosterGuidanceMode || "attached"),
     boosterThrottle: stage0Active ? (Number(snapshot.throttle) || 0) : 0,
     boosterThrustN: stage0Active ? (Number(snapshot.thrustN) || 0) : 0,
+    boosterActiveEngineIndices: stage0Active && Array.isArray(snapshot.activeEngineIndices)
+      ? [...snapshot.activeEngineIndices]
+      : (Array.isArray(snapshot.boosterActiveEngineIndices) ? [...snapshot.boosterActiveEngineIndices] : []),
+    boosterActiveEngineCount: stage0Active
+      ? (Number(snapshot.activeEngineCount) || 0)
+      : (Number(snapshot.boosterActiveEngineCount) || 0),
+    boosterDesiredEngineCount: stage0Active
+      ? (Number(snapshot.desiredEngineCount) || 0)
+      : (Number(snapshot.boosterDesiredEngineCount) || 0),
+    boosterFailedEngineIndices: stage0Active && Array.isArray(snapshot.failedEngineIndices)
+      ? [...snapshot.failedEngineIndices]
+      : (Array.isArray(snapshot.boosterFailedEngineIndices) ? [...snapshot.boosterFailedEngineIndices] : []),
+    boosterFaultedEngineIndices: stage0Active && Array.isArray(snapshot.faultedEngineIndices)
+      ? [...snapshot.faultedEngineIndices]
+      : (Array.isArray(snapshot.boosterFaultedEngineIndices) ? [...snapshot.boosterFaultedEngineIndices] : []),
+    boosterFlamePresentIndices: stage0Active && Array.isArray(snapshot.flamePresentIndices)
+      ? [...snapshot.flamePresentIndices]
+      : (Array.isArray(snapshot.boosterFlamePresentIndices) ? [...snapshot.boosterFlamePresentIndices] : []),
+    boosterChamberPressurePaByIndex: stage0Active && Array.isArray(snapshot.chamberPressurePaByIndex)
+      ? [...snapshot.chamberPressurePaByIndex]
+      : (Array.isArray(snapshot.boosterChamberPressurePaByIndex) ? [...snapshot.boosterChamberPressurePaByIndex] : []),
+    boosterExhaustTemperatureKByIndex: stage0Active && Array.isArray(snapshot.exhaustTemperatureKByIndex)
+      ? [...snapshot.exhaustTemperatureKByIndex]
+      : (Array.isArray(snapshot.boosterExhaustTemperatureKByIndex) ? [...snapshot.boosterExhaustTemperatureKByIndex] : []),
+    boosterAvgChamberPressurePa: stage0Active
+      ? (Number(snapshot.avgChamberPressurePa) || 0)
+      : (Number(snapshot.boosterAvgChamberPressurePa) || 0),
+    boosterMaxChamberPressurePa: stage0Active
+      ? (Number(snapshot.maxChamberPressurePa) || 0)
+      : (Number(snapshot.boosterMaxChamberPressurePa) || 0),
+    boosterMaxExhaustTemperatureK: stage0Active
+      ? (Number(snapshot.maxExhaustTemperatureK) || 0)
+      : (Number(snapshot.boosterMaxExhaustTemperatureK) || 0),
     boosterPressurePa: Number.isFinite(Number(snapshot.boosterPressurePa))
       ? Number(snapshot.boosterPressurePa)
       : Number(snapshot.pressurePa),
@@ -6425,6 +6753,15 @@ function attachedBoosterVisualSnapshot(snapshot = null) {
     boosterDynamicPressurePa: Number.isFinite(Number(snapshot.boosterDynamicPressurePa))
       ? Number(snapshot.boosterDynamicPressurePa)
       : Number(snapshot.dynamicPressurePa),
+    boosterSpeedKmS: Number.isFinite(Number(snapshot.boosterSpeedKmS))
+      ? Number(snapshot.boosterSpeedKmS)
+      : Number(snapshot.speedKmS),
+    boosterEarthRelativeSpeedKmS: Number.isFinite(Number(snapshot.boosterEarthRelativeSpeedKmS))
+      ? Number(snapshot.boosterEarthRelativeSpeedKmS)
+      : Number(snapshot.earthRelativeSpeedKmS ?? snapshot.speedKmS),
+    boosterAirRelativeSpeedKmS: Number.isFinite(Number(snapshot.boosterAirRelativeSpeedKmS))
+      ? Number(snapshot.boosterAirRelativeSpeedKmS)
+      : Number(snapshot.airRelativeSpeedKmS),
     boosterRcsActive: Boolean(snapshot.boosterRcsActive),
     boosterRcsErrorDeg: Number(snapshot.boosterRcsErrorDeg) || 0,
     boosterRcsAuthority: Number(snapshot.boosterRcsAuthority) || 0,
@@ -6462,6 +6799,12 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
         stageIndex: 0,
         altitudeKm: snapshot.boosterAltitudeKm,
         altitudeAboveTerrainKm: snapshot.boosterAltitudeAboveTerrainKm,
+        pressurePa: snapshot.boosterPressurePa,
+        densityKgM3: snapshot.boosterDensityKgM3,
+        dynamicPressurePa: snapshot.boosterDynamicPressurePa,
+        speedKmS: snapshot.boosterSpeedKmS,
+        earthRelativeSpeedKmS: snapshot.boosterEarthRelativeSpeedKmS ?? snapshot.boosterSpeedKmS,
+        airRelativeSpeedKmS: snapshot.boosterAirRelativeSpeedKmS,
       }
     : null;
   const effectNowMs = nowMs;
@@ -6550,6 +6893,22 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
         z: (Number(velocityKmS.z) || 0) - (Number(earthVelocityKmS.z) || 0),
       }
     : velocityKmS;
+  if (boosterAtmosphereSnapshot && finiteVectorKm(boosterCoordsKm) && finiteVectorKm(earthCoordsKm)) {
+    const relPosKm = {
+      x: (Number(boosterCoordsKm.x) || 0) - (Number(earthCoordsKm.x) || 0),
+      y: (Number(boosterCoordsKm.y) || 0) - (Number(earthCoordsKm.y) || 0),
+      z: (Number(boosterCoordsKm.z) || 0) - (Number(earthCoordsKm.z) || 0),
+    };
+    const relRadiusKm = Math.hypot(relPosKm.x, relPosKm.y, relPosKm.z);
+    boosterAtmosphereSnapshot.radialSpeedKmS = relRadiusKm > 1e-9
+      ? (
+        ((relPosKm.x * (Number(relVelocityKmS.x) || 0))
+          + (relPosKm.y * (Number(relVelocityKmS.y) || 0))
+          + (relPosKm.z * (Number(relVelocityKmS.z) || 0)))
+        / relRadiusKm
+      )
+      : null;
+  }
   const velocityScene = new THREE_NS.Vector3(
     Number(relVelocityKmS.x) || 0,
     Number(relVelocityKmS.z) || 0,
