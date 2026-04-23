@@ -986,82 +986,80 @@ export function computeAutopilotCommand({
     mode = inPadReleaseWindow ? "autopilot-pad-release" : "autopilot-tower-clear";
   }
   if (ascentProfile.turnAltitudeProgress >= 1) {
-    const totalSpeedKmS = Math.max(0, length(relVel));
     const hotstageGuidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
     const hotstageTargetAltitudeKm = Math.max(
       Number(hotstageGuidance.hotstageMinAltitudeKm) || 0,
       Number(hotstageGuidance.hotstageNominalAltitudeKm) || 0,
-    );
-    const hotstageTargetSpeedKmS = Math.max(
-      Number(hotstageGuidance.hotstageMinSpeedKmS) || 0,
-      Number(hotstageGuidance.hotstageNominalSpeedKmS) || 0,
     );
     const hotstageNominalElapsedSec = Math.max(
       Number(hotstageGuidance.hotstageMinElapsedSec) || 0,
       Number(hotstageGuidance.hotstageNominalElapsedSec) || 0,
       1,
     );
+    const hotstageTransitionPending = Boolean(
+      runtime.pendingStageTransition?.active
+      && runtime.pendingStageTransition.kind === "hotstage_ignite",
+    );
     const stage1HotstageClimbActive =
       Number(runtime.stageIndex) === 0
       && !Boolean(runtime.hotstage?.active)
-      && (
-        orbital.altitudeKm < Math.max(hotstageTargetAltitudeKm, 1)
-        || totalSpeedKmS < Math.max(hotstageTargetSpeedKmS, 0.1)
-      );
+      && !hotstageTransitionPending;
     if (stage1HotstageClimbActive) {
       const progradeDirection = normalize(relVel, tangent);
       const altitudeProgress = clamp(
         orbital.altitudeKm / Math.max(hotstageTargetAltitudeKm, 1),
         0,
-        1,
+        1.15,
       );
-      const speedProgress = clamp(
-        totalSpeedKmS / Math.max(hotstageTargetSpeedKmS, 0.1),
+      const elapsedProgress = clamp(
+        launchElapsedSeconds / hotstageNominalElapsedSec,
         0,
-        1.25,
+        1.15,
       );
       const scheduledAltitudeKm = clamp(
         hotstageTargetAltitudeKm
-          * clamp(launchElapsedSeconds / hotstageNominalElapsedSec, 0, 1.08),
+          * elapsedProgress,
         0,
-        hotstageTargetAltitudeKm * 1.08,
+        hotstageTargetAltitudeKm * 1.15,
       );
       const altitudeLeadKm = Math.max(0, orbital.altitudeKm - scheduledAltitudeKm);
-      const earlyArrivalNorm = clamp(altitudeLeadKm / 18, 0, 1);
-      const climbProgress = Math.max(altitudeProgress, speedProgress);
+      const altitudeLagKm = Math.max(0, scheduledAltitudeKm - orbital.altitudeKm);
+      const earlyArrivalNorm = clamp(altitudeLeadKm / 6, 0, 1.5);
+      const lagNorm = clamp(altitudeLagKm / 10, 0, 1.25);
+      const climbProgress = Math.max(altitudeProgress, elapsedProgress * 0.94);
       let minimumClimbWeight = clamp(
-        0.72 - (climbProgress * 0.26),
-        0.46,
-        0.72,
-      );
-      minimumClimbWeight = clamp(
-        minimumClimbWeight - (earlyArrivalNorm * 0.24),
-        0.22,
-        0.72,
+        0.58
+          - (climbProgress * 0.26)
+          - (earlyArrivalNorm * 0.36)
+          + (lagNorm * 0.06),
+        0.12,
+        0.58,
       );
       let targetRadialSpeedKmS = clamp(
-        1.02 - (climbProgress * 0.26),
-        0.68,
-        1.02,
-      );
-      targetRadialSpeedKmS = clamp(
-        targetRadialSpeedKmS - (earlyArrivalNorm * 0.42),
-        0.26,
-        1.02,
+        0.82
+          - (climbProgress * 0.24)
+          - (earlyArrivalNorm * 0.42)
+          + (lagNorm * 0.12),
+        0.22,
+        0.82,
       );
       const radialSpeedDeficit = Math.max(0, targetRadialSpeedKmS - radialSpeedKmS);
       const climbBias = clamp(
-        0.32
-          + (radialSpeedDeficit * 0.72)
-          + ((1 - altitudeProgress) * 0.18)
-          + ((1 - speedProgress) * 0.12),
-        0.12,
-        0.72,
-      ) - (earlyArrivalNorm * 0.28);
+        0.18
+          + (radialSpeedDeficit * 0.62)
+          + ((1 - altitudeProgress) * 0.08)
+          + (lagNorm * 0.08)
+          - (earlyArrivalNorm * 0.32),
+        -0.06,
+        0.44,
+      );
       const progradeBlend = clamp(
-        0.72 + (altitudeProgress * 0.10) + (earlyArrivalNorm * 0.12),
-        0.72,
-        0.94,
+        0.80
+          + (altitudeProgress * 0.10)
+          + (earlyArrivalNorm * 0.14)
+          - (lagNorm * 0.04),
+        0.78,
+        0.97,
       );
       const directionBasis = normalize(
         add(
@@ -1083,11 +1081,11 @@ export function computeAutopilotCommand({
         }).direction;
       }
       const climbThrottle = clamp(
-        0.94
-          + (radialSpeedDeficit * 0.10)
-          + ((1 - speedProgress) * 0.04)
-          - (earlyArrivalNorm * 0.08),
-        0.84,
+        0.90
+          + (radialSpeedDeficit * 0.08)
+          + (lagNorm * 0.03)
+          - (earlyArrivalNorm * 0.12),
+        0.76,
         1.0,
       );
       return finalizeCommand({

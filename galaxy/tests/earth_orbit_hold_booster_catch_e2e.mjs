@@ -94,9 +94,9 @@ function makeState() {
 function main() {
   const physicsEnvironmentRuntime = createPhysicsEnvironmentRuntime({
     getLaunchSite: () => ({
-      latitudeDeg: 28.562,
-      longitudeDeg: -80.577,
-      siteName: "Cape Canaveral",
+      latitudeDeg: 25.9969,
+      longitudeDeg: -97.1548,
+      siteName: "Starbase",
     }),
     getEarthFixedAxesEcliptic: () => earthAxes(),
   });
@@ -156,6 +156,9 @@ function main() {
     const boosterRangeKm = Number(snapshot?.boosterCatchTotalRangeKm) || 0;
     const boosterLateralSpeedKmS = Number(snapshot?.boosterCatchLateralSpeedKmS) || 0;
     const boosterMode = String(snapshot?.boosterGuidanceMode || "");
+    const exported = controller.exportPersistentSnapshot(state, nowMs);
+    const boosterLastStep = exported?.runtime?.booster?.lastStep || {};
+    const bodyUpAlignment = Number(boosterLastStep.bodyUpAlignment) || 0;
 
     if (!marks.hotstageIgnition && Boolean(snapshot?.hotstageIgnitionAuthorized)) {
       marks.hotstageIgnition = {
@@ -178,6 +181,7 @@ function main() {
         altitudeKm: boosterAltitudeKm,
         rangeKm: boosterRangeKm,
         lateralSpeedKmS: boosterLateralSpeedKmS,
+        bodyUpAlignment,
       };
       if (!marks.catchApproach && boosterMode === "booster-catch-approach") {
         marks.catchApproach = mark;
@@ -245,6 +249,24 @@ function main() {
       && marks.catchContact.elapsedSec < marks.catchCapture.elapsedSec
       && marks.catchCapture.elapsedSec < marks.caught.elapsedSec,
     `earth_orbit_hold_booster_catch_e2e: booster catch sequence out of order ${JSON.stringify(marks)}`,
+  );
+  assert(
+    marks.catchApproach.bodyUpAlignment >= 0.90,
+    `earth_orbit_hold_booster_catch_e2e: catch approach not upright enough ${JSON.stringify(marks.catchApproach)}`,
+  );
+  assert(
+    marks.catchBurn.bodyUpAlignment >= 0.95,
+    `earth_orbit_hold_booster_catch_e2e: catch burn not upright enough ${JSON.stringify(marks.catchBurn)}`,
+  );
+  assert(
+    marks.catchContact.bodyUpAlignment >= 0.95
+      && marks.catchCapture.bodyUpAlignment >= 0.95
+      && marks.caught.bodyUpAlignment >= 0.95,
+    `earth_orbit_hold_booster_catch_e2e: final capture states not upright enough ${JSON.stringify({
+      catchContact: marks.catchContact,
+      catchCapture: marks.catchCapture,
+      caught: marks.caught,
+    })}`,
   );
 
   console.log("PASS earth-orbit-hold-booster-catch-e2e");

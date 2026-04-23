@@ -114,8 +114,8 @@ export function createLaunchWeatherProvider(options = {}) {
   function resolvedSite() {
     const location = locationProvider() || {};
     return {
-      latitudeDeg: finiteOr(location?.latitudeDeg, 28.5618571),
-      longitudeDeg: normalizeLongitudeDeg(location?.longitudeDeg ?? -80.577366),
+      latitudeDeg: finiteOr(location?.latitudeDeg, 25.9968983),
+      longitudeDeg: normalizeLongitudeDeg(location?.longitudeDeg ?? -97.1547571),
       siteName: String(location?.siteName || location?.name || snapshotState.siteName || "Launch Site").trim() || "Launch Site",
     };
   }

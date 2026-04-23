@@ -307,7 +307,7 @@ const SUN_TEXTURE_LOAD_TIMEOUT_MS = 9000;
 const PHOTOREAL_BODY_TEXTURE_TIMEOUT_MS = 8000;
 const PHOTOREAL_RETRY_LIMIT = 5;
 const PHOTOREAL_RETRY_DELAY_MS = 3000;
-const FRONTEND_MODULE_VERSION = "20260422j";
+const FRONTEND_MODULE_VERSION = "20260422k";
 const SPACE_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EARTH_EOP_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAUNCH_WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -7595,26 +7595,7 @@ function updateBoosterVehicleVisuals(nowMs = Date.now()) {
     if (visualVerticalHold) {
       visual.tiltGroup.quaternion.copy(targetQuaternion);
     } else if (boosterBecameVisible) {
-      if (stackedLaunchVisual?.tiltGroup?.quaternion) {
-        visual.tiltGroup.quaternion.copy(stackedLaunchVisual.tiltGroup.quaternion);
-      } else {
-        visual.tiltGroup.quaternion.copy(targetQuaternion);
-      }
-      applyStarshipAtmosphereEffectsFn?.(visual.boosterVisualState, boosterAtmosphereSnapshot, {
-        sceneParent: effectSceneParent,
-        nowMs: effectNowMs,
-        bodyVisible: atmosphereBodyVisible,
-        bodyWorldPosition: visual.root.getWorldPosition(new THREE_NS.Vector3()),
-        earthWorldPosition: earthAtmosphereContext?.earthWorldPosition || null,
-        earthAngularVelocityScene: earthAtmosphereContext?.earthAngularVelocityScene || null,
-        renderRadiusScene: visual.renderRadius,
-      });
-      const heatEligibleImmediate = atmosphereBodyVisible
-        && reentryHeatEligibleForLaunchState(LAUNCH_BOOSTER_BODY_ID, snapshot);
-      if (!heatEligibleImmediate) {
-        applyReentryHeatToVisual(visual, 0, true);
-      }
-      return;
+      visual.tiltGroup.quaternion.copy(targetQuaternion);
     }
     const boosterPhase = String(snapshot?.boosterPhase || "").toLowerCase();
     const separationLike = boosterPhase.includes("separation");

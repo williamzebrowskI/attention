@@ -9,7 +9,7 @@ const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
 const DT_SEC = 1;
-const MAX_STEPS = 360;
+const MAX_STEPS = 1200;
 
 function assert(condition, message) {
   if (!condition) {
@@ -97,8 +97,8 @@ function makeState() {
   };
 }
 
-function createHarness() {
-  return createLaunchController({
+function main() {
+  const controller = createLaunchController({
     getEarthRadiusKm: () => EARTH_RADIUS_KM,
     getEarthMassKg: () => EARTH_MASS_KG,
     getBodyRadiusKm: (id) => (String(id) === "moon" ? MOON_RADIUS_KM : EARTH_RADIUS_KM),
@@ -108,16 +108,19 @@ function createHarness() {
     windSeed: 1,
     gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
   });
-}
-
-function main() {
   const state = makeState();
-  const controller = createHarness();
   controller.setMissionProfile(LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
-  assert(controller.startLaunch(state, NOW_MS, { launchKind: "booster-post-hotstage-boostback-lock" }), "startLaunch rejected");
+  assert(
+    controller.startLaunch(state, NOW_MS, {
+      launchKind: "booster-terminal-attitude-e2e",
+      boosterEngineCount: 33,
+    }),
+    "booster_terminal_attitude_e2e: startLaunch rejected",
+  );
 
   let nowMs = NOW_MS;
-  const phaseChanges = [];
+  let entryBurn = null;
+  let terminalAttitude = null;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -134,52 +137,65 @@ function main() {
     nowMs += DT_SEC * 1000;
 
     const snapshot = controller.statusSnapshot(state);
-    if (!snapshot.boosterActive) {
-      continue;
+    const mode = String(snapshot?.boosterGuidanceMode || "").toLowerCase();
+    const exported = controller.exportPersistentSnapshot(state, nowMs);
+    const lastStep = exported?.runtime?.booster?.lastStep || {};
+
+    if (!entryBurn && mode.includes("entry-burn")) {
+      entryBurn = {
+        elapsedSec: Number(snapshot?.elapsedSeconds) || 0,
+        altitudeKm: Number(snapshot?.boosterAltitudeKm) || 0,
+        bodyUpAlignment: Number(lastStep.bodyUpAlignment) || 0,
+        thrustN: Number(lastStep.thrustN) || 0,
+      };
     }
-    const currentGuidanceMode = String(snapshot.boosterGuidanceMode || "").trim().toLowerCase();
-    const lastGuidanceMode = phaseChanges[phaseChanges.length - 1]?.guidanceMode || "";
-    if (currentGuidanceMode && currentGuidanceMode !== lastGuidanceMode) {
-      phaseChanges.push({
-        elapsedSec: Number(snapshot.elapsedSeconds) || 0,
-        phase: String(snapshot.boosterPhase || "").trim().toLowerCase(),
-        guidanceMode: currentGuidanceMode,
-        throttle: Number(snapshot.boosterThrottle) || 0,
-        altitudeKm: Number(snapshot.boosterAltitudeKm) || 0,
-        lateralRangeKm: Number(snapshot.boosterLaunchSiteLateralRangeKm) || 0,
-      });
-    }
-    if (phaseChanges.some((entry) => entry.guidanceMode === "booster-boostback")) {
+
+    if (
+      !terminalAttitude
+      && (
+        mode.includes("landing-burn")
+        || mode.includes("catch-burn")
+        || mode.includes("catch-approach")
+        || mode.includes("terminal-intercept")
+      )
+    ) {
+      terminalAttitude = {
+        elapsedSec: Number(snapshot?.elapsedSeconds) || 0,
+        altitudeKm: Number(snapshot?.boosterAltitudeKm) || 0,
+        bodyUpAlignment: Number(lastStep.bodyUpAlignment) || 0,
+        thrustN: Number(lastStep.thrustN) || 0,
+        guidanceMode: String(snapshot?.boosterGuidanceMode || ""),
+      };
       break;
     }
   }
 
-  const separationFlipIndex = phaseChanges.findIndex((entry) => entry.guidanceMode === "booster-separation-flip");
-  const boostbackIndex = phaseChanges.findIndex((entry) => entry.guidanceMode === "booster-boostback");
-  assert(separationFlipIndex >= 0, `expected separation-flip in phase trace, got ${JSON.stringify(phaseChanges)}`);
-  assert(boostbackIndex >= 0, `expected boostback soon after hotstage, got ${JSON.stringify(phaseChanges)}`);
-  assert(boostbackIndex > separationFlipIndex, `expected boostback after separation-flip, got ${JSON.stringify(phaseChanges)}`);
+  assert(entryBurn, "booster_terminal_attitude_e2e: never observed entry-burn");
+  assert(terminalAttitude, "booster_terminal_attitude_e2e: never observed terminal attitude phase");
 
-  const preBoostbackPhases = phaseChanges.slice(separationFlipIndex + 1, boostbackIndex).map((entry) => entry.guidanceMode);
   assert(
-    !preBoostbackPhases.includes("booster-descent-coast")
-      && !preBoostbackPhases.includes("booster-entry-align")
-      && !preBoostbackPhases.includes("booster-entry-burn"),
-    `expected no descent/entry phases before boostback, got ${JSON.stringify(phaseChanges)}`,
-  );
-
-  const separationFlip = phaseChanges[separationFlipIndex];
-  const boostback = phaseChanges[boostbackIndex];
-  assert(
-    (boostback.elapsedSec - separationFlip.elapsedSec) <= 32,
-    `expected boostback within 32 s of hotstage separation, got ${boostback.elapsedSec - separationFlip.elapsedSec} s`,
+    entryBurn.altitudeKm >= 30 && entryBurn.altitudeKm <= 55,
+    `booster_terminal_attitude_e2e: entry-burn altitude out of band ${JSON.stringify(entryBurn)}`,
   );
   assert(
-    boostback.throttle >= 0.35,
-    `expected meaningful boostback throttle, got ${boostback.throttle}`,
+    entryBurn.bodyUpAlignment >= 0.93,
+    `booster_terminal_attitude_e2e: expected entry-burn to be near-vertical, got ${JSON.stringify(entryBurn)}`,
+  );
+  assert(
+    entryBurn.thrustN >= 10_000_000,
+    `booster_terminal_attitude_e2e: expected strong entry-burn thrust, got ${JSON.stringify(entryBurn)}`,
   );
 
-  console.log("PASS booster-post-hotstage-boostback-lock");
+  assert(
+    terminalAttitude.altitudeKm >= 0.005 && terminalAttitude.altitudeKm <= 20.0,
+    `booster_terminal_attitude_e2e: terminal attitude altitude out of band ${JSON.stringify(terminalAttitude)}`,
+  );
+  assert(
+    terminalAttitude.bodyUpAlignment >= 0.95,
+    `booster_terminal_attitude_e2e: expected terminal attitude to be near-vertical, got ${JSON.stringify(terminalAttitude)}`,
+  );
+
+  console.log("PASS booster-terminal-attitude-e2e");
 }
 
 main();

@@ -107,9 +107,9 @@ function makeState() {
 function main() {
   const physicsEnvironmentRuntime = createPhysicsEnvironmentRuntime({
     getLaunchSite: () => ({
-      latitudeDeg: 28.562,
-      longitudeDeg: -80.577,
-      siteName: "Cape Canaveral",
+      latitudeDeg: 25.9969,
+      longitudeDeg: -97.1548,
+      siteName: "Starbase",
     }),
     getEarthFixedAxesEcliptic: () => earthAxes(),
   });

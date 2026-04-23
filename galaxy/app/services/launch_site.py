@@ -8,9 +8,9 @@ import httpx
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_QUERIES = (
-    "Space Launch Complex 40, Cape Canaveral Space Force Station, Florida, USA",
-    "Cape Canaveral Space Force Station, Florida, USA",
-    "Cape Canaveral, Florida, USA",
+    "SpaceX Starbase, Cameron County, Texas, USA",
+    "Starbase Launch Site, Boca Chica Boulevard, Starbase, Cameron County, Texas, USA",
+    "Starbase, Cameron County, Texas, USA",
 )
 
 
@@ -39,9 +39,9 @@ def _utc_now_iso() -> str:
 
 
 DEFAULT_LAUNCH_SITE = LaunchSiteRecord(
-    name="Cape Canaveral, FL (SLC-40)",
-    latitude_deg=28.5618571,
-    longitude_deg=-80.577366,
+    name="Starbase, TX (Boca Chica Launch Site)",
+    latitude_deg=25.9968983,
+    longitude_deg=-97.1547571,
     altitude_km=0.0,
     source="default_static",
     refreshed_at_utc=_utc_now_iso(),
@@ -62,7 +62,7 @@ class LaunchSiteService:
             self._site = env_site
             return
 
-        fetched = await self._fetch_cape_coordinates()
+        fetched = await self._fetch_starbase_coordinates()
         if fetched is not None:
             self._site = fetched
             return
@@ -105,7 +105,7 @@ class LaunchSiteService:
             refreshed_at_utc=_utc_now_iso(),
         )
 
-    async def _fetch_cape_coordinates(self) -> LaunchSiteRecord | None:
+    async def _fetch_starbase_coordinates(self) -> LaunchSiteRecord | None:
         headers = {
             "User-Agent": "galaxy-sim/1.0 (local startup geocode)",
         }

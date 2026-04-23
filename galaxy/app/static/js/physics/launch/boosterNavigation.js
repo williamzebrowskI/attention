@@ -173,8 +173,15 @@ export function updateBoosterNavigationState({
 
   if (catchFrame && truthCatchRelativeState) {
     const towerAvailable = (
-      truthCatchRelativeState.totalRangeKm <= 45
-      && Math.max(0, Number(altitudeKm) || 0) <= 28
+      (
+        truthCatchRelativeState.totalRangeKm <= 45
+        && Math.max(0, Number(altitudeKm) || 0) <= 28
+      )
+      || (
+        truthCatchRelativeState.lateralRangeKm <= 18
+        && Math.abs(Number(truthCatchRelativeState.verticalErrorKm) || 0) <= 120
+        && Math.max(0, Number(altitudeKm) || 0) <= 120
+      )
     );
     if (towerAvailable) {
       const rangeNorm = clamp(truthCatchRelativeState.totalRangeKm / 45, 0, 1);

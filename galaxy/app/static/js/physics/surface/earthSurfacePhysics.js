@@ -9,8 +9,8 @@ const EARTH_SECOND_ECCENTRICITY_SQ = (EARTH_EQUATORIAL_RADIUS_SQ_KM2 / EARTH_POL
 const EARTH_MAX_ELEVATION_KM = 8.849;
 const EARTH_MIN_ELEVATION_KM = -10.994;
 
-const CAPE_CANAVERAL_LAT_DEG = 28.5618571;
-const CAPE_CANAVERAL_LON_DEG = -80.577366;
+const STARBASE_LAT_DEG = 25.9968983;
+const STARBASE_LON_DEG = -97.1547571;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -189,9 +189,9 @@ function terrainRaw(latRad, lonRad) {
   return continental + mountainBelts;
 }
 
-const TERRAIN_CAPE_REFERENCE = terrainRaw(
-  rad(CAPE_CANAVERAL_LAT_DEG),
-  rad(CAPE_CANAVERAL_LON_DEG),
+const TERRAIN_STARBASE_REFERENCE = terrainRaw(
+  rad(STARBASE_LAT_DEG),
+  rad(STARBASE_LON_DEG),
 );
 
 export function terrainHeightKmAtLatLon(latitudeDeg, longitudeDeg) {
@@ -200,7 +200,7 @@ export function terrainHeightKmAtLatLon(latitudeDeg, longitudeDeg) {
   const latRad = rad(latDeg);
   const lonRad = rad(lonDeg);
 
-  const normalized = terrainRaw(latRad, lonRad) - TERRAIN_CAPE_REFERENCE;
+  const normalized = terrainRaw(latRad, lonRad) - TERRAIN_STARBASE_REFERENCE;
   let terrainKm = normalized * 5.4;
   if (terrainKm < 0) {
     terrainKm *= 1.35;

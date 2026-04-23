@@ -139,8 +139,8 @@ class LaunchWeatherRecord:
 
 DEFAULT_LAUNCH_WEATHER = LaunchWeatherRecord(
     site_name="Launch Site",
-    latitude_deg=28.5618571,
-    longitude_deg=-80.577366,
+    latitude_deg=25.9968983,
+    longitude_deg=-97.1547571,
     temperature_c=27.0,
     relative_humidity=0.72,
     wind_speed_m_s=5.0,
@@ -440,4 +440,3 @@ class LaunchWeatherService:
             valid_time_utc=valid_time_utc,
             short_forecast=short_forecast,
         )
-

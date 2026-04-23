@@ -51,8 +51,8 @@ export function createPhysicsEnvironmentRuntime(options = {}) {
     earthEopRefreshIntervalMs = 6 * 60 * 60 * 1000,
     launchWeatherRefreshIntervalMs = 5 * 60 * 1000,
     getLaunchSite = () => ({
-      latitudeDeg: 28.5618571,
-      longitudeDeg: -80.577366,
+      latitudeDeg: 25.9968983,
+      longitudeDeg: -97.1547571,
       siteName: "Launch Site",
     }),
     resolveEarthLatLon = () => null,

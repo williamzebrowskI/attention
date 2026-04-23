@@ -37,7 +37,7 @@ This simulation now includes a dedicated launch dynamics system under:
   - orbital-hold coast state (no thrust)
 
 4. Earth launch pad initialization
-- Launch site is Cape Canaveral, Florida (SLC-40 coordinates).
+- Launch site is Starbase, Texas (Boca Chica Launch Site coordinates).
 - Initial inertial velocity includes Earth co-rotation:
   - `v0 = v_earth + (omega_earth x r_site)`
 

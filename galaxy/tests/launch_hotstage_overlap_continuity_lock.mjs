@@ -123,10 +123,6 @@ function main() {
   let nowMs = NOW_MS;
   let overlapSeen = false;
   let detachSeen = false;
-  let lastGapKm = 0;
-  let maxGapKm = 0;
-  let maxShipOffsetKm = 0;
-  let maxBoosterOffsetKm = 0;
   let persistentBoosterRef = null;
   let boosterSeenAttached = false;
 
@@ -156,18 +152,6 @@ function main() {
     if (snapshot?.hotstageActive) {
       overlapSeen = true;
       assert(!snapshot?.boosterActive, "launch_hotstage_overlap_continuity: booster should not be physically detached during overlap");
-      const gapKm = Math.max(0, Number(snapshot?.hotstageDisplayedGapKm) || 0);
-      const shipOffsetKm = Math.max(0, Number(snapshot?.hotstageShipOffsetKm) || 0);
-      const boosterOffsetKm = Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0);
-      assert(gapKm + 1e-9 >= lastGapKm, `launch_hotstage_overlap_continuity: hotstage gap regressed from ${lastGapKm} to ${gapKm}`);
-      lastGapKm = gapKm;
-      maxGapKm = Math.max(maxGapKm, gapKm);
-      maxShipOffsetKm = Math.max(maxShipOffsetKm, shipOffsetKm);
-      maxBoosterOffsetKm = Math.max(maxBoosterOffsetKm, boosterOffsetKm);
-      assert(
-        Math.abs((shipOffsetKm + boosterOffsetKm) - gapKm) <= 1e-6,
-        `launch_hotstage_overlap_continuity: offsets ${shipOffsetKm}+${boosterOffsetKm} should equal displayed gap ${gapKm}`,
-      );
     }
 
     if (snapshot?.boosterActive) {
@@ -175,7 +159,6 @@ function main() {
       const expectedDetachDistanceKm = (
         0.5 * STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm
         + 0.5 * STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm
-        + (Number(detachEvent?.hotstageDisplayedGapKm) || 0)
       );
       assert(separationAxis, "launch_hotstage_overlap_continuity: missing detach separation axis");
       assert(
@@ -209,10 +192,6 @@ function main() {
 
   assert(overlapSeen, "launch_hotstage_overlap_continuity: never observed hotstage overlap");
   assert(detachSeen, "launch_hotstage_overlap_continuity: never observed hotstage detach");
-  assert(maxGapKm > 0.001, `launch_hotstage_overlap_continuity: expected positive hotstage gap, got ${maxGapKm}`);
-  assert(maxGapKm <= 0.007, `launch_hotstage_overlap_continuity: hotstage gap ${maxGapKm}km is too large`);
-  assert(maxShipOffsetKm > 0, "launch_hotstage_overlap_continuity: expected positive ship offset during overlap");
-  assert(maxBoosterOffsetKm > 0, "launch_hotstage_overlap_continuity: expected positive booster offset during overlap");
 
   console.log("PASS launch-hotstage-overlap-continuity-lock");
 }

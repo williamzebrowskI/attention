@@ -1109,10 +1109,9 @@ function updateInlineHotstageVentPlumes(stageState, snapshot) {
   const overlapSec = Math.max(0.001, Number(snapshot?.hotstageOverlapSeconds) || 1);
   const timeSinceIgnitionSec = Math.max(0, Number(snapshot?.hotstageTimeSinceIgnitionSec) || 0);
   const progress = clamp(timeSinceIgnitionSec / overlapSec, 0, 1);
-  const gapNorm = clamp((Number(snapshot?.hotstageDisplayedGapKm) || 0) / 0.0065, 0, 1);
   const pulse = 0.88 + (0.12 * Math.sin((Date.now() / 1000) * 34));
   const intensity = active
-    ? clamp((0.26 + (0.56 * thrustNorm) + (0.18 * progress)) * (0.7 + (0.3 * gapNorm)), 0, 1)
+    ? clamp(0.26 + (0.56 * thrustNorm) + (0.18 * progress), 0, 1)
     : 0;
   ventState.group.visible = intensity > 0.01;
   for (const entry of ventState.plumes) {
@@ -1549,12 +1548,10 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
         : stageTwoActive
     );
   const distanceScale = Number(stageState?.distanceScale) || 1;
-  const hotstageShipOffsetScene = Math.max(0, Number(snapshot?.hotstageShipOffsetKm) || 0) * distanceScale;
-
   if (Number.isFinite(stageState.detachedShipCenterY) && Number.isFinite(stageState.fullShipCenterY)) {
     stageState.shipGroup.position.y = detached
       ? stageState.detachedShipCenterY
-      : Number(stageState.fullShipCenterY) + hotstageShipOffsetScene;
+      : Number(stageState.fullShipCenterY);
   }
 
   // Ship main engines (used by mission ships/tankers during powered phases).

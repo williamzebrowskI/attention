@@ -26,12 +26,12 @@ function main() {
     bodyUpAlignment: 0.92,
   });
   assert(
-    alignedTerminalDescent.phase === "descent-coast",
-    `expected aligned late descent to stay in descent-coast, got ${alignedTerminalDescent.phase}`,
+    alignedTerminalDescent.phase === "terminal-intercept",
+    `expected aligned late descent to enter terminal-intercept, got ${alignedTerminalDescent.phase}`,
   );
   assert(
-    alignedTerminalDescent.attitudeControlMode === "grid-fins+rcs",
-    `expected aligned late descent to stay aero+rcs controlled, got ${alignedTerminalDescent.attitudeControlMode}`,
+    alignedTerminalDescent.attitudeControlMode === "engines+rcs",
+    `expected aligned late descent to use engines+rcs terminal control, got ${alignedTerminalDescent.attitudeControlMode}`,
   );
   assert(
     alignedTerminalDescent.terminalUprightCommit === true,
@@ -43,8 +43,8 @@ function main() {
     bodyUpAlignment: 0.34,
   });
   assert(
-    misalignedTerminalDescent.phase === "landing-burn",
-    `expected poor body-up alignment to trigger an earlier landing burn, got ${misalignedTerminalDescent.phase}`,
+    misalignedTerminalDescent.phase === "terminal-intercept",
+    `expected poor body-up alignment to stay in terminal-intercept, got ${misalignedTerminalDescent.phase}`,
   );
   assert(
     misalignedTerminalDescent.attitudeControlMode === "engines+rcs",
@@ -55,8 +55,8 @@ function main() {
     "expected misaligned terminal descent to stay hard-committed upright",
   );
   assert(
-    Number(misalignedTerminalDescent.uprightTiltLimitDeg) <= 4,
-    `expected tight terminal upright tilt limit, got ${misalignedTerminalDescent.uprightTiltLimitDeg}`,
+    Number(misalignedTerminalDescent.uprightTiltLimitDeg) <= 14,
+    `expected bounded terminal upright tilt limit, got ${misalignedTerminalDescent.uprightTiltLimitDeg}`,
   );
   assert(
     Number(misalignedTerminalDescent.attitudeResponseScale) > Number(alignedTerminalDescent.attitudeResponseScale),

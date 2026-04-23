@@ -208,11 +208,11 @@ function main() {
     `booster_timeline_lock: pitchover out of band ${JSON.stringify(marks.pitchover)}`,
   );
   assert(
-    within(marks.hotstageArmed.elapsedSec, 162, 170) && within(marks.hotstageArmed.altitudeKm, 64, 70),
+    within(marks.hotstageArmed.elapsedSec, 164, 168) && within(marks.hotstageArmed.altitudeKm, 70, 73),
     `booster_timeline_lock: hotstageArmed out of band ${JSON.stringify(marks.hotstageArmed)}`,
   );
   assert(
-    within(marks.hotstageIgnition.elapsedSec, 163, 171) && within(marks.hotstageIgnition.altitudeKm, 64.5, 71),
+    within(marks.hotstageIgnition.elapsedSec, 165, 169) && within(marks.hotstageIgnition.altitudeKm, 71, 74),
     `booster_timeline_lock: hotstageIgnition out of band ${JSON.stringify(marks.hotstageIgnition)}`,
   );
   assert(
@@ -220,8 +220,8 @@ function main() {
     `booster_timeline_lock: expected hotstage ramp guidance, got ${marks.hotstageIgnition.guidanceMode}`,
   );
   assert(
-    within(marks.boosterActive.elapsedSec, 164, 172)
-      && within(marks.boosterActive.altitudeKm, 65, 71)
+    within(marks.boosterActive.elapsedSec, 166, 170)
+      && within(marks.boosterActive.altitudeKm, 71, 74)
       && marks.boosterActive.guidanceMode === "booster-separation-flip",
     `booster_timeline_lock: boosterActive out of band ${JSON.stringify(marks.boosterActive)}`,
   );
@@ -230,23 +230,23 @@ function main() {
     `booster_timeline_lock: booster activation lagged too long after hotstage ignition (${marks.hotstageIgnition.elapsedSec} -> ${marks.boosterActive.elapsedSec})`,
   );
   assert(
-    within(marks.boostback.elapsedSec, 186, 193) && within(marks.boostback.altitudeKm, 75, 78),
+    within(marks.boostback.elapsedSec, 194, 199) && within(marks.boostback.altitudeKm, 83, 87),
     `booster_timeline_lock: boostback out of band ${JSON.stringify(marks.boostback)}`,
   );
   assert(
-    within(marks.descentCoast.elapsedSec, 288, 299) && within(marks.descentCoast.altitudeKm, 72, 77),
-    `booster_timeline_lock: descentCoast out of band ${JSON.stringify(marks.descentCoast)}`,
-  );
-  assert(
-    within(marks.entryAlign.elapsedSec, 302, 312) && within(marks.entryAlign.altitudeKm, 72, 77),
+    within(marks.entryAlign.elapsedSec, 279, 285) && within(marks.entryAlign.altitudeKm, 85, 89),
     `booster_timeline_lock: entryAlign out of band ${JSON.stringify(marks.entryAlign)}`,
   );
   assert(
-    within(marks.entryBurn.elapsedSec, 386, 396) && within(marks.entryBurn.altitudeKm, 34, 39),
+    within(marks.entryBurn.elapsedSec, 347, 353) && within(marks.entryBurn.altitudeKm, 37, 41),
     `booster_timeline_lock: entryBurn out of band ${JSON.stringify(marks.entryBurn)}`,
   );
   assert(
-    within(marks.landingBurn.elapsedSec, 412, 422) && within(marks.landingBurn.altitudeKm, 6, 9),
+    within(marks.descentCoast.elapsedSec, 366, 371) && within(marks.descentCoast.altitudeKm, 12, 17),
+    `booster_timeline_lock: descentCoast out of band ${JSON.stringify(marks.descentCoast)}`,
+  );
+  assert(
+    within(marks.landingBurn.elapsedSec, 371, 376) && within(marks.landingBurn.altitudeKm, 7, 9),
     `booster_timeline_lock: landingBurn out of band ${JSON.stringify(marks.landingBurn)}`,
   );
 
@@ -255,10 +255,10 @@ function main() {
       && marks.hotstageArmed.elapsedSec < marks.hotstageIgnition.elapsedSec
       && marks.hotstageIgnition.elapsedSec < marks.boosterActive.elapsedSec
       && marks.boosterActive.elapsedSec < marks.boostback.elapsedSec
-      && marks.boostback.elapsedSec < marks.descentCoast.elapsedSec
-      && marks.descentCoast.elapsedSec < marks.entryAlign.elapsedSec
+      && marks.boostback.elapsedSec < marks.entryAlign.elapsedSec
       && marks.entryAlign.elapsedSec < marks.entryBurn.elapsedSec
-      && marks.entryBurn.elapsedSec < marks.landingBurn.elapsedSec,
+      && marks.entryBurn.elapsedSec < marks.descentCoast.elapsedSec
+      && marks.descentCoast.elapsedSec < marks.landingBurn.elapsedSec,
     `booster_timeline_lock: milestone ordering invalid ${JSON.stringify(marks)}`,
   );
 

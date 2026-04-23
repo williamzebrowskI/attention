@@ -313,50 +313,6 @@ function stageReservePropellantKg(stageIndex) {
   return clamp(configuredReserve, 0, Number(stage?.propellantMassKg) || configuredReserve);
 }
 
-function separationGapKm() {
-  return 0.0025;
-}
-
-function computeHotstageDisplayedGapKm(hotstage, elapsedSeconds = 0) {
-  if (!hotstage?.active) {
-    return 0;
-  }
-  const overlapSec = Math.max(0.001, Number(hotstage?.overlapSeconds) || hotstageOverlapSeconds());
-  const timeSinceIgnitionSec = hotstageTimeSinceIgnitionSec(hotstage, elapsedSeconds);
-  const ramp = clamp(
-    Number.isFinite(timeSinceIgnitionSec) ? (timeSinceIgnitionSec / overlapSec) : 0,
-    0,
-    1,
-  );
-  const baseGapKm = separationGapKm() * ramp;
-  const virtualGapKm = clamp(Number(hotstage?.virtualSeparationKm) || 0, 0, 0.004);
-  return clamp(baseGapKm + virtualGapKm, 0, separationGapKm() + 0.004);
-}
-
-function computeHotstageRelativeOffsetsKm({
-  hotstage = null,
-  elapsedSeconds = 0,
-  shipMassKg = 0,
-  boosterMassKg = 0,
-} = {}) {
-  const displayedGapKm = computeHotstageDisplayedGapKm(hotstage, elapsedSeconds);
-  if (!(displayedGapKm > 0)) {
-    return {
-      displayedGapKm: 0,
-      shipOffsetKm: 0,
-      boosterOffsetKm: 0,
-    };
-  }
-  const safeShipMassKg = Math.max(1, Number(shipMassKg) || 0);
-  const safeBoosterMassKg = Math.max(1, Number(boosterMassKg) || 0);
-  const totalMassKg = safeShipMassKg + safeBoosterMassKg;
-  return {
-    displayedGapKm,
-    shipOffsetKm: displayedGapKm * (safeBoosterMassKg / totalMassKg),
-    boosterOffsetKm: displayedGapKm * (safeShipMassKg / totalMassKg),
-  };
-}
-
 function createAttachedStackJointState() {
   return {
     active: false,
@@ -610,8 +566,6 @@ function evaluateHotstageRealismEnvelope(runtime, rocketState, earthState, earth
   const maxElapsedSec = Math.max(minElapsedSec, Number(guidance.hotstageMaxElapsedSec) || minElapsedSec);
   const minAltitudeKm = Math.max(0, Number(guidance.hotstageMinAltitudeKm) || 0);
   const maxAltitudeKm = Math.max(minAltitudeKm, Number(guidance.hotstageMaxAltitudeKm) || minAltitudeKm);
-  const minSpeedKmS = Math.max(0, Number(guidance.hotstageMinSpeedKmS) || 0);
-  const maxSpeedKmS = Math.max(minSpeedKmS, Number(guidance.hotstageMaxSpeedKmS) || minSpeedKmS);
   return {
     elapsedSec,
     altitudeKm,
@@ -620,15 +574,8 @@ function evaluateHotstageRealismEnvelope(runtime, rocketState, earthState, earth
     maxElapsedSec,
     minAltitudeKm,
     maxAltitudeKm,
-    minSpeedKmS,
-    maxSpeedKmS,
     nominalElapsedSec: Math.max(minElapsedSec, Number(guidance.hotstageNominalElapsedSec) || minElapsedSec),
     nominalAltitudeKm: Math.max(minAltitudeKm, Number(guidance.hotstageNominalAltitudeKm) || minAltitudeKm),
-    nominalSpeedKmS: Math.max(minSpeedKmS, Number(guidance.hotstageNominalSpeedKmS) || minSpeedKmS),
-    speedWithinAdvisory: (
-      speedKmS >= minSpeedKmS
-      && speedKmS <= maxSpeedKmS
-    ),
     withinEnvelope: (
       elapsedSec >= minElapsedSec
       && elapsedSec <= maxElapsedSec
@@ -1950,16 +1897,6 @@ function telemetryFromState({
     runtime.stagePropellantKg,
     refuelTargetPropellantKg,
   );
-  const boosterHotstageMassKg = Math.max(
-    1,
-    (Number(LAUNCH_BOOSTER_CONFIG.dryMassKg) || 0) + Math.max(0, Number(runtime.hotstage?.boosterReservePropellantKg) || 0),
-  );
-  const hotstageOffsets = computeHotstageRelativeOffsetsKm({
-    hotstage: runtime.hotstage,
-    elapsedSeconds: runtime.elapsedSeconds,
-    shipMassKg: rocketState.massKg,
-    boosterMassKg: boosterHotstageMassKg,
-  });
   const vehiclePhase = deriveStarshipVehiclePhase({
     telemetry: {
       altitudeKm: reportedAltitudeKm,
@@ -2121,9 +2058,6 @@ function telemetryFromState({
     hotstageOverlapSeconds: Number(runtime.hotstage.overlapSeconds) || hotstageOverlapSeconds(),
     hotstageIgnitionStableSec: Number(runtime.hotstage.ignitionStableSec) || 0,
     hotstageVirtualSeparationKm: Number(runtime.hotstage.virtualSeparationKm) || 0,
-    hotstageDisplayedGapKm: hotstageOffsets.displayedGapKm,
-    hotstageShipOffsetKm: hotstageOffsets.shipOffsetKm,
-    hotstageBoosterOffsetKm: hotstageOffsets.boosterOffsetKm,
     hotstageDetachReason: runtime.hotstage.detachReason || null,
   };
 }
@@ -2440,8 +2374,20 @@ function limitDirectionOffAxis(desiredDirection, referenceAxis, maxTiltRad) {
   if (!(angle > limit) || !(limit > 1e-9)) {
     return desired;
   }
-  const blend = clamp(limit / Math.max(angle, 1e-9), 0, 1);
-  return normalize(mixVectors(axis, desired, blend), axis);
+  const projected = subtract(desired, scale(axis, dot(desired, axis)));
+  let lateralAxis = unitOrNull(projected);
+  if (!lateralAxis) {
+    lateralAxis = unitOrNull(cross(axis, { x: 1, y: 0, z: 0 }))
+      || unitOrNull(cross(axis, { x: 0, y: 1, z: 0 }))
+      || { x: 0, y: 0, z: 1 };
+  }
+  return normalize(
+    add(
+      scale(axis, Math.cos(limit)),
+      scale(lateralAxis, Math.sin(limit)),
+    ),
+    axis,
+  );
 }
 
 function lateralDirectionTowardTarget(fromPosition, toPosition, up, fallbackDirection) {
@@ -4550,7 +4496,6 @@ export function createLaunchController(options) {
         speedKmS: hotstageEnvelope.speedKmS,
         nominalElapsedSec: hotstageEnvelope.nominalElapsedSec,
         nominalAltitudeKm: hotstageEnvelope.nominalAltitudeKm,
-        nominalSpeedKmS: hotstageEnvelope.nominalSpeedKmS,
         realismEnvelopeSatisfied: hotstageEnvelope.withinEnvelope,
       });
       resetPendingStageTransition(runtime.pendingStageTransition);
@@ -5868,15 +5813,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     );
     const boosterMassKg = attachedBoosterMassKgFromRuntime();
     const shipMassKg = attachedShipMassKgFromRocket(rocketState, boosterMassKg);
-    const hotstageOffsets = computeHotstageRelativeOffsetsKm({
-      hotstage: runtime.hotstage,
-      elapsedSeconds: runtime.elapsedSeconds,
-      shipMassKg,
-      boosterMassKg,
-    });
     const boosterCenterOffsetKm = -(
-      (STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5)
-      + hotstageOffsets.boosterOffsetKm
+      STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5
     );
     const offsetWorldKm = scale(stackedBodyAxis, boosterCenterOffsetKm);
     const targetPositionKm = add(
@@ -5896,7 +5834,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       shipMassKg,
       boosterMassKg,
       stackedBodyAxis,
-      hotstageOffsets,
       offsetWorldKm,
       targetPositionKm,
       targetVelocityKmS,
@@ -6877,13 +6814,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     }
     const preSeparationStackMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || 0);
     const shipMassKg = Math.max(MIN_ROCKET_MASS_KG, preSeparationStackMassKg - boosterMassKg);
-    const hotstageOffsets = computeHotstageRelativeOffsetsKm({
-      hotstage: runtime.hotstage,
-      elapsedSeconds: runtime.elapsedSeconds,
-      shipMassKg,
-      boosterMassKg,
-    });
-
     const boosterState = ensureAttachedBoosterInNBody(
       state,
       rocketState,
@@ -6911,15 +6841,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const shipCenterShiftKm = STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
     rocketState.position = add(
       rocketState.position,
-      scale(separationAxis, shipCenterShiftKm + hotstageOffsets.shipOffsetKm),
+      scale(separationAxis, shipCenterShiftKm),
     );
 
-    // Place booster directly below Starship with only a small physical gap; add a tiny separation
-    // impulse that conserves momentum and yields a gentle relative separation speed.
-    const separationOffsetKm =
-      (STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm * 0.5)
-      + (STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5)
-      + hotstageOffsets.displayedGapKm;
+    // Keep the booster touching the ship at release and let the post-release
+    // relative impulse create the visible separation over subsequent frames.
     const separationRelativeSpeedKmS = Math.max(0, hotstageSeparationRelativeSpeedKmS());
     const totalMassKg = shipMassKg + boosterMassKg;
     const dvShipKmS = totalMassKg > 0
@@ -6969,10 +6895,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterPropellantKg,
       reservePropellantKg: reserveLimitKg,
       shipCenterShiftKm,
-      separationOffsetKm,
-      hotstageDisplayedGapKm: hotstageOffsets.displayedGapKm,
-      hotstageShipOffsetKm: hotstageOffsets.shipOffsetKm,
-      hotstageBoosterOffsetKm: hotstageOffsets.boosterOffsetKm,
       shipMassKg,
       shipImpulseKmS,
       separationImpulseKmS,
@@ -7286,7 +7208,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       if (siteVelocityWeight > 1e-6 && padInterceptBlend <= 1e-6) {
         direction = normalize(mixVectors(direction, padRetrogradeDirection, siteVelocityWeight), direction);
       }
-      const maxSiteSteeringAngleDeg = Number(command.maxSiteSteeringAngleDeg);
+      const baseMaxSiteSteeringAngleDeg = Number(command.maxSiteSteeringAngleDeg);
+      const predictiveSteeringExtraDeg =
+        command.predictiveCatchControl?.enabled && !command.predictiveCatchControl?.translationOnly
+          ? clamp(
+            10 + (28 * clamp(Number(command.predictiveCatchControl?.blend) || 0, 0, 1)),
+            10,
+            38,
+          )
+          : 0;
+      const maxSiteSteeringAngleDeg = Number.isFinite(baseMaxSiteSteeringAngleDeg)
+        ? Math.min(88, baseMaxSiteSteeringAngleDeg + predictiveSteeringExtraDeg)
+        : Number.NaN;
       if (Number.isFinite(maxSiteSteeringAngleDeg) && maxSiteSteeringAngleDeg > 0) {
         direction = limitDirectionOffAxis(
           direction,
@@ -7294,6 +7227,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           rad(maxSiteSteeringAngleDeg),
         );
       }
+    }
+    if (command.predictiveCatchControl && catchRelativeState && !command.predictiveCatchControl.translationOnly) {
+      direction = composePredictiveCatchDirection(
+        direction,
+        catchRelativeState,
+        command.predictiveCatchControl,
+      );
     }
     if (command.terminalUprightCommit) {
       direction = limitDirectionOffAxis(
@@ -7305,6 +7245,19 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const pressurePa = Number(atmosphereSample?.pressurePa) || 0;
     const landingPhase = command.phase === "landing-burn" || command.phase === "landed";
     const recoveryPhase = String(command.phase || "").toLowerCase();
+    const terminalUprightCommitActive = Boolean(command.terminalUprightCommit);
+    const strongTerminalUprightPhase = terminalUprightCommitActive && (
+      recoveryPhase === "entry-align"
+      || recoveryPhase === "entry-burn"
+      || recoveryPhase === "descent-coast"
+      || recoveryPhase === "landing-burn"
+      || recoveryPhase === "terminal-intercept"
+      || recoveryPhase === "catch-approach"
+      || recoveryPhase === "catch-burn"
+      || recoveryPhase === "catch-contact"
+      || recoveryPhase === "catch-capture"
+      || recoveryPhase === "caught"
+    );
     const recoveryPropellantBudgetKg = stageReservePropellantKg(0);
     const reserveProtectionRatio = landingPhase
       ? 0
@@ -7334,7 +7287,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       currentEarthAxes.pole,
       windSample.vectorKmS,
     );
-    const qAlphaSteeringEnabled = command.qAlphaSteeringEnabled !== false;
+    const qAlphaSteeringEnabled = command.qAlphaSteeringEnabled !== false
+      && !strongTerminalUprightPhase;
     const qAlphaActive = (
       qAlphaSteeringEnabled
       && (
@@ -7356,6 +7310,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         qAlphaPaRad: 0,
       };
     direction = qAlphaSteering.direction;
+    if (terminalUprightCommitActive) {
+      direction = limitDirectionOffAxis(
+        direction,
+        terminalUprightAxis,
+        rad(Number(command.uprightTiltLimitDeg) || 0),
+      );
+    }
     let requestedThrottle = canBurn ? clamp(Number(command.throttle) || 0, 0, 1) : 0;
     if (qAlphaActive) {
       requestedThrottle = limitThrottleByQAlpha({
@@ -7376,24 +7337,67 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       propellantMassKg: Number(runtime.booster.initialPropellantKg) || 0,
       attachedMassKg: 0,
     });
-    const attitudeResponseScale = clamp(Number(command.attitudeResponseScale) || 1, 0.05, 2.8);
+    const terminalUprightAlignment = terminalUprightCommitActive
+      ? clamp(dot(currentBoosterAxis, terminalUprightAxis), -1, 1)
+      : 1;
+    const terminalUprightErrorNorm = terminalUprightCommitActive
+      ? clamp((1 - terminalUprightAlignment) / 0.5, 0, 1)
+      : 0;
+    const terminalUprightRateFloorDegS = strongTerminalUprightPhase
+      ? (
+        recoveryPhase === "landing-burn"
+          || recoveryPhase.startsWith("catch-")
+          || recoveryPhase === "caught"
+          ? 24 + (18 * terminalUprightErrorNorm)
+          : 18 + (14 * terminalUprightErrorNorm)
+      )
+      : 0;
+    const effectiveAngularDampingPerS = terminalUprightCommitActive
+      ? (Number(command.angularDampingPerS) || 0) + (0.20 * terminalUprightErrorNorm)
+      : (Number(command.angularDampingPerS) || 0);
+    const effectiveMaxBodyRateDegS = Number.isFinite(Number(command.maxBodyRateDegS))
+      ? Math.max(Number(command.maxBodyRateDegS), terminalUprightRateFloorDegS)
+      : terminalUprightRateFloorDegS;
+    const effectiveMaxBodyRateRadS = effectiveMaxBodyRateDegS > 0
+      ? rad(effectiveMaxBodyRateDegS)
+      : null;
+    const effectiveAttitudeResponseScale = clamp(
+      (
+        Number(command.attitudeResponseScale) || 1
+      ) * (
+        terminalUprightCommitActive
+          ? 1 + (1.10 * terminalUprightErrorNorm)
+          : 1
+      ),
+      0.05,
+      4.2,
+    );
     runtime.boosterActuator = applyActuatorModel(runtime.boosterActuator, {
       requestedThrottle: canBurn ? requestedThrottle : 0,
       requestedDirection: direction,
       dtSeconds,
       config: LAUNCH_REALISM_CONFIG.actuator.booster,
       massModel: runtime.boosterMassModel,
-      angularDampingPerS: Number(command.angularDampingPerS) || 0,
-      maxBodyRateRadS: Number.isFinite(Number(command.maxBodyRateDegS))
-        ? rad(Number(command.maxBodyRateDegS))
-        : null,
+      angularDampingPerS: effectiveAngularDampingPerS,
+      maxBodyRateRadS: effectiveMaxBodyRateRadS,
     });
     const throttleActual = clamp(Number(runtime.boosterActuator.throttleActual) || 0, 0, 1);
     const actuatedDirection = normalize(
       runtime.boosterActuator.directionActual,
       direction,
     );
-    const attitudeTargetBlend = clamp(Number(command.attitudeTargetBlend) || 1, 0, 1);
+    const attitudeTargetBlend = clamp(
+      terminalUprightCommitActive
+        ? Math.max(
+          Number(command.attitudeTargetBlend) || 1,
+          strongTerminalUprightPhase
+            ? 0.96 + (0.03 * terminalUprightErrorNorm)
+            : 0.90 + (0.06 * terminalUprightErrorNorm),
+        )
+        : (Number(command.attitudeTargetBlend) || 1),
+      0,
+      1,
+    );
     const desiredAttitudeDirection = attitudeTargetBlend < 0.999
       ? normalize(
         mixVectors(currentBoosterAxis, actuatedDirection, attitudeTargetBlend),
@@ -7448,7 +7452,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massKg: Number(boosterState.massKg) || 0,
       massModel: runtime.boosterMassModel,
       engineState: boosterEngineState,
-    }), attitudeResponseScale);
+    }), effectiveAttitudeResponseScale);
     const rcsAngularControl = scaleAngularControlState(computeBoosterRcsAngularControlState({
       controlErrorsBody,
       omegaBodyRadS,
@@ -7459,7 +7463,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       massModel: runtime.boosterMassModel,
       phase: command.phase || currentBoosterCommandPhase(),
       guidanceMode: command.guidanceMode || runtime.booster.guidanceMode,
-    }), attitudeResponseScale);
+    }), effectiveAttitudeResponseScale);
     const thrustN = Math.max(0, Number(boosterEngineState.thrustN) || 0);
     const burnRateKgS = Math.max(0, Number(boosterEngineState.burnRateKgS) || 0);
     const burnKg = Math.min(burnablePropellantKg, burnRateKgS * dtSeconds);
@@ -7574,18 +7578,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       torqueWorldNm: totalTorqueWorldNm,
       massKg: Number(boosterState.massKg) || 0,
       inertiaNormalized: runtime.boosterMassModel?.inertiaNormalized,
-      angularDampingPerS: Number(command.angularDampingPerS) || 0,
-      maxBodyRateRadS: Number.isFinite(Number(command.maxBodyRateDegS))
-        ? rad(Number(command.maxBodyRateDegS))
-        : null,
+      angularDampingPerS: effectiveAngularDampingPerS,
+      maxBodyRateRadS: effectiveMaxBodyRateRadS,
       dtSeconds,
     });
     runtime.booster.attitude = stabilizeBoosterAttitudeTowardDirection(runtime.booster.attitude, {
       targetDirectionWorld: actuatedDirection,
       dtSeconds,
-      maxBodyRateRadS: Number.isFinite(Number(command.maxBodyRateDegS))
-        ? rad(Number(command.maxBodyRateDegS))
-        : null,
+      maxBodyRateRadS: effectiveMaxBodyRateRadS,
     });
     const directionActual = boosterBodyAxisWorld(runtime.booster.attitude);
     runtime.boosterActuator.directionCommand = normalize(direction, directionActual);
@@ -7637,10 +7637,97 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         (Math.max(0, Number(runtime.booster.rcsCombustion?.thrustN) || 0) / effectiveMassKg) / 1000,
       )
       : { x: 0, y: 0, z: 0 };
+    const catchGuidanceText = String(command.guidanceMode || runtime.booster.guidanceMode || "").toLowerCase();
+    const corridorGuidanceActive = Boolean(
+      catchRelativeState
+      && !runtime.booster.capture?.active
+      && !catchGuidanceText.startsWith("booster-catch")
+      && altitudeKm <= 120
+      && (
+        Boolean(navigationSolution?.towerRelativeActive)
+        || catchRelativeState.lateralRangeKm <= 24
+        || catchRelativeState.totalRangeKm <= 32
+      )
+    );
+    let corridorCorrectionAccelerationKmS2 = { x: 0, y: 0, z: 0 };
+    if (corridorGuidanceActive) {
+      const interceptTimeSec = clamp(
+        (
+          Boolean(navigationSolution?.towerRelativeActive)
+            ? 10 + (0.34 * altitudeKm) + (0.10 * catchRelativeState.lateralRangeKm)
+            : 18 + (0.46 * altitudeKm) + (0.12 * catchRelativeState.lateralRangeKm)
+        ),
+        Boolean(navigationSolution?.towerRelativeActive) ? 12 : 20,
+        Boolean(navigationSolution?.towerRelativeActive) ? 68 : 110,
+      );
+      const desiredHorizontalSpeedLimitKmS = clamp(
+        (
+          altitudeKm > 70 ? 0.42
+            : altitudeKm > 40 ? 0.30
+              : altitudeKm > 20 ? 0.18
+                : 0.10
+        ) + (
+          Boolean(navigationSolution?.towerRelativeActive) ? 0.04 : 0
+        ),
+        0.10,
+        0.48,
+      );
+      const desiredVerticalSpeedKmS = -clamp(
+        0.035 + (0.0038 * altitudeKm),
+        altitudeKm > 50 ? 0.14 : altitudeKm > 20 ? 0.10 : 0.06,
+        altitudeKm > 70 ? 0.32 : altitudeKm > 35 ? 0.22 : 0.12,
+      );
+      const desiredEastSpeedKmS = clamp(
+        -catchRelativeState.eastErrorKm / Math.max(interceptTimeSec, 1),
+        -desiredHorizontalSpeedLimitKmS,
+        desiredHorizontalSpeedLimitKmS,
+      );
+      const desiredNorthSpeedKmS = clamp(
+        -catchRelativeState.northErrorKm / Math.max(interceptTimeSec, 1),
+        -desiredHorizontalSpeedLimitKmS,
+        desiredHorizontalSpeedLimitKmS,
+      );
+      const eastSpeedErrorKmS = desiredEastSpeedKmS - catchRelativeState.eastSpeedKmS;
+      const northSpeedErrorKmS = desiredNorthSpeedKmS - catchRelativeState.northSpeedKmS;
+      const verticalSpeedErrorKmS = desiredVerticalSpeedKmS - catchRelativeState.verticalSpeedKmS;
+      const axisAccelLimitKmS2 = clamp(
+        thrustN > 1e-3
+          ? 0.040
+          : (Boolean(navigationSolution?.towerRelativeActive) ? 0.016 : 0.010),
+        0.008,
+        0.040,
+      );
+      const eastAccelKmS2 = clamp(
+        (-0.0012 * catchRelativeState.eastErrorKm) + (0.021 * eastSpeedErrorKmS),
+        -axisAccelLimitKmS2,
+        axisAccelLimitKmS2,
+      );
+      const northAccelKmS2 = clamp(
+        (-0.0012 * catchRelativeState.northErrorKm) + (0.021 * northSpeedErrorKmS),
+        -axisAccelLimitKmS2,
+        axisAccelLimitKmS2,
+      );
+      const verticalAccelLimitKmS2 = axisAccelLimitKmS2 * 0.45;
+      const verticalAccelKmS2 = clamp(
+        (-0.0005 * catchRelativeState.verticalErrorKm) + (0.010 * verticalSpeedErrorKmS),
+        -verticalAccelLimitKmS2,
+        verticalAccelLimitKmS2,
+      );
+      corridorCorrectionAccelerationKmS2 = add(
+        add(
+          scale(catchRelativeState.eastAxisKm, eastAccelKmS2),
+          scale(catchRelativeState.northAxisKm, northAccelKmS2),
+        ),
+        scale(catchRelativeState.upAxisKm, verticalAccelKmS2),
+      );
+    }
     runtime.booster.lastStep = {
       accelerationKmS2: add(
-        add(scale(directionActual, accelerationMagKmS2), aero.accelerationKmS2),
-        boosterRcsAccelerationKmS2,
+        add(
+          add(scale(directionActual, accelerationMagKmS2), aero.accelerationKmS2),
+          boosterRcsAccelerationKmS2,
+        ),
+        corridorCorrectionAccelerationKmS2,
       ),
       throttle: throttleActual,
       throttleCommand: requestedThrottle,
@@ -7703,6 +7790,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rcsAuthority: boosterRcsAvailability * clamp(Number(boosterRcs.authority) || 0, 0, 1),
       rcsAccelerationKmS2: boosterRcsAccelerationKmS2,
       rcsAccelerationMagKmS2: length(boosterRcsAccelerationKmS2),
+      corridorGuidanceActive,
+      corridorCorrectionAccelerationKmS2,
       rcsJets: boosterRcsActive ? activeRcsJets : [],
       rcsActiveThrusterIndices: boosterRcsActive ? activeRcsThrusterIndices : [],
       rcsFailedThrusterIndices: Array.isArray(runtime.booster.rcsCombustion?.failedIndices)
@@ -9674,10 +9763,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     const targetDescriptor = missionTargetDescriptor();
     const directionTelemetry = resolveRelativeDirectionTelemetry(state, LAUNCH_BODY_ID);
     const hotstageSinceIgnitionSec = hotstageTimeSinceIgnitionSec(runtime.hotstage, runtime.elapsedSeconds);
-    const hotstageSnapshotOffsets = computeHotstageRelativeOffsetsKm({
-      hotstage: runtime.hotstage,
-      elapsedSeconds: runtime.elapsedSeconds,
-    });
     const refuelStatus = refuelController.status();
     const tankerIndicators = refuelTankerIndicatorsFromState(state);
     const refuelTargetKg = refuelStatus.targetPropellantKg;
@@ -9987,9 +10072,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         hotstageOverlapSeconds: Number(runtime.hotstage.overlapSeconds) || hotstageOverlapSeconds(),
         hotstageIgnitionStableSec: Number(runtime.hotstage.ignitionStableSec) || 0,
         hotstageVirtualSeparationKm: Number(runtime.hotstage.virtualSeparationKm) || 0,
-        hotstageDisplayedGapKm: hotstageSnapshotOffsets.displayedGapKm,
-        hotstageShipOffsetKm: hotstageSnapshotOffsets.shipOffsetKm,
-        hotstageBoosterOffsetKm: hotstageSnapshotOffsets.boosterOffsetKm,
         hotstageDetachReason: runtime.hotstage.detachReason || null,
         terrainElevationKm: null,
         altitudeAboveTerrainKm: null,
@@ -10381,15 +10463,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       hotstageOverlapSeconds: telemetry.hotstageOverlapSeconds,
       hotstageIgnitionStableSec: telemetry.hotstageIgnitionStableSec,
       hotstageVirtualSeparationKm: telemetry.hotstageVirtualSeparationKm,
-      hotstageDisplayedGapKm: Number.isFinite(Number(telemetry.hotstageDisplayedGapKm))
-        ? Number(telemetry.hotstageDisplayedGapKm)
-        : hotstageSnapshotOffsets.displayedGapKm,
-      hotstageShipOffsetKm: Number.isFinite(Number(telemetry.hotstageShipOffsetKm))
-        ? Number(telemetry.hotstageShipOffsetKm)
-        : hotstageSnapshotOffsets.shipOffsetKm,
-      hotstageBoosterOffsetKm: Number.isFinite(Number(telemetry.hotstageBoosterOffsetKm))
-        ? Number(telemetry.hotstageBoosterOffsetKm)
-        : hotstageSnapshotOffsets.boosterOffsetKm,
       hotstageDetachReason: telemetry.hotstageDetachReason,
       terrainElevationKm: telemetry.terrainElevationKm,
       altitudeAboveTerrainKm: telemetry.altitudeAboveTerrainKm,

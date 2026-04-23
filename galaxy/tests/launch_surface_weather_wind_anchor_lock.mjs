@@ -27,7 +27,7 @@ const earthAxes = {
 
 const baseGround = sampleWindVectorKmS({
   altitudeKm: 0,
-  relPos: relativePositionKm(28.5618571, -80.577366, 0),
+  relPos: relativePositionKm(25.9968983, -97.1547571, 0),
   earthPole: earthAxes.pole,
   earthAxes,
   timestampMs: Date.UTC(2026, 3, 19, 22, 0, 0),
@@ -37,7 +37,7 @@ const baseGround = sampleWindVectorKmS({
 
 const anchoredGround = sampleWindVectorKmS({
   altitudeKm: 0,
-  relPos: relativePositionKm(28.5618571, -80.577366, 0),
+  relPos: relativePositionKm(25.9968983, -97.1547571, 0),
   earthPole: earthAxes.pole,
   earthAxes,
   timestampMs: Date.UTC(2026, 3, 19, 22, 0, 0),
@@ -58,7 +58,7 @@ assert(
 
 const baseUpper = sampleWindVectorKmS({
   altitudeKm: 12,
-  relPos: relativePositionKm(28.5618571, -80.577366, 12),
+  relPos: relativePositionKm(25.9968983, -97.1547571, 12),
   earthPole: earthAxes.pole,
   earthAxes,
   timestampMs: Date.UTC(2026, 3, 19, 22, 0, 0),
@@ -68,7 +68,7 @@ const baseUpper = sampleWindVectorKmS({
 
 const anchoredUpper = sampleWindVectorKmS({
   altitudeKm: 12,
-  relPos: relativePositionKm(28.5618571, -80.577366, 12),
+  relPos: relativePositionKm(25.9968983, -97.1547571, 12),
   earthPole: earthAxes.pole,
   earthAxes,
   timestampMs: Date.UTC(2026, 3, 19, 22, 0, 0),

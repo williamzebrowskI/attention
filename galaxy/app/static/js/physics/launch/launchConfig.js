@@ -33,9 +33,9 @@ export const LAUNCH_PAD_CONTACT_HEIGHT_ABOVE_TERRAIN_KM =
   + LAUNCH_PAD_CONTACT_CLEARANCE_KM;
 
 const DEFAULT_LAUNCH_SITE = Object.freeze({
-  name: "Cape Canaveral, FL (SLC-40)",
-  latitudeDeg: 28.5618571,
-  longitudeDeg: -80.577366,
+  name: "Starbase, TX (Boca Chica Launch Site)",
+  latitudeDeg: 25.9968983,
+  longitudeDeg: -97.1547571,
   altitudeKm: 0.0,
 });
 export let LAUNCH_SITE = { ...DEFAULT_LAUNCH_SITE };
@@ -167,9 +167,6 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
     hotstageNominalAltitudeKm: 70,
     hotstageMinAltitudeKm: 60,
     hotstageMaxAltitudeKm: 85,
-    hotstageNominalSpeedKmS: 2.15,
-    hotstageMinSpeedKmS: 1.6,
-    hotstageMaxSpeedKmS: 2.4,
   }),
   stages: Object.freeze([
     Object.freeze({

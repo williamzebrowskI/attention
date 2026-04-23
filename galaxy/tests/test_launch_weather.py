@@ -30,9 +30,9 @@ class LaunchWeatherServiceTests(unittest.IsolatedAsyncioTestCase):
                 "windDirection": "SW",
                 "shortForecast": "Partly Sunny",
             },
-            28.5618571,
-            -80.577366,
-            "Cape Canaveral",
+            25.9968983,
+            -97.1547571,
+            "Starbase",
         )
         self.assertIsNotNone(record)
         assert record is not None
@@ -44,9 +44,9 @@ class LaunchWeatherServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hybrid_mode_uses_simulated_fallback_when_fetch_fails(self) -> None:
         site = SimpleNamespace(
-            name="Cape Canaveral",
-            latitude_deg=28.5618571,
-            longitude_deg=-80.577366,
+            name="Starbase",
+            latitude_deg=25.9968983,
+            longitude_deg=-97.1547571,
         )
         service = LaunchWeatherService(
             mode="hybrid",
