@@ -97,6 +97,9 @@ function main() {
     remainingPropellantKg: 310_000,
     reserveLandingPropellantKg: 160_000,
     dynamicPressurePa: 200,
+    bodyRetrogradeAlignment: 0.78,
+    bodyAntiTangentAlignment: 0.62,
+    bodyUpAlignment: 0.12,
   });
   assert(boostback.phase === "boostback", `expected boostback, got ${boostback.phase}`);
   assert(boostback.throttle >= 0.34, `expected meaningful boostback throttle, got ${boostback.throttle}`);
@@ -133,6 +136,7 @@ function main() {
     remainingPropellantKg: 270_000,
     reserveLandingPropellantKg: 160_000,
     dynamicPressurePa: 19_000,
+    bodyUpAlignment: 0.62,
   });
   assert(entryBurn.phase === "entry-burn", `expected entry-burn, got ${entryBurn.phase}`);
   assert(entryBurn.throttle >= 0.30, `expected strong entry-burn throttle, got ${entryBurn.throttle}`);
@@ -151,28 +155,101 @@ function main() {
     remainingPropellantKg: 215_000,
     reserveLandingPropellantKg: 160_000,
     dynamicPressurePa: 3_500,
+    bodyUpAlignment: 0.84,
   });
   assert(descentCoast.phase === "descent-coast", `expected descent-coast, got ${descentCoast.phase}`);
   assert(descentCoast.throttle === 0, `expected descent coast throttle 0, got ${descentCoast.throttle}`);
-  assert(descentCoast.attitudeControlMode === "grid-fins", `expected grid-fin-only control, got ${descentCoast.attitudeControlMode}`);
+  assert(descentCoast.attitudeControlMode === "grid-fins+rcs", `expected grid-fins+rcs control, got ${descentCoast.attitudeControlMode}`);
   assert(descentCoast.aeroAuthority > 0.05, `expected nonzero grid-fin authority in descent coast, got ${descentCoast.aeroAuthority}`);
+
+  const terminalIntercept = computeBoosterRecoveryCommand({
+    currentPhase: "descent-coast",
+    altitudeKm: 15.8,
+    radialSpeedKmS: -0.12,
+    tangentialSpeedKmS: 0.34,
+    launchSiteRangeKm: 18.5,
+    launchSiteLateralRangeKm: 10.4,
+    launchSiteLateralClosingSpeedKmS: 0.08,
+    catchTotalRangeKm: 16.7,
+    catchLateralRangeKm: 10.0,
+    catchVerticalErrorKm: 14.9,
+    catchLateralSpeedKmS: 0.42,
+    catchVerticalSpeedKmS: -0.12,
+    catchApproachSpeedKmS: 0.44,
+    catchEastErrorKm: 7.1,
+    catchNorthErrorKm: 7.0,
+    catchEastSpeedKmS: 0.28,
+    catchNorthSpeedKmS: 0.24,
+    catchClosingSpeedKmS: 0.09,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.010,
+    catchVelocitySigmaKmS: 0.00008,
+    timeSinceSeparationSec: 360,
+    remainingPropellantKg: 202_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 6_200,
+    bodyUpAlignment: 0.76,
+  });
+  assert(terminalIntercept.phase === "terminal-intercept", `expected terminal-intercept, got ${terminalIntercept.phase}`);
+  assert(terminalIntercept.guidanceMode === "booster-terminal-intercept", `expected booster-terminal-intercept mode, got ${terminalIntercept.guidanceMode}`);
+  assert(terminalIntercept.throttle >= 0.08, `expected engine-supported terminal intercept throttle, got ${terminalIntercept.throttle}`);
+  assert(terminalIntercept.attitudeControlMode === "engines+rcs", `expected engines+rcs terminal intercept control, got ${terminalIntercept.attitudeControlMode}`);
+  assert(terminalIntercept.siteTargetingEnabled === true, "expected terminal intercept to keep site targeting active while converging on the tower corridor");
+  assert(terminalIntercept.qAlphaSteeringEnabled === false, "expected terminal intercept to bypass q-alpha throttle suppression");
+  assert(terminalIntercept.predictiveCatchControl?.enabled === true, "expected predictive catch control in terminal intercept");
+  assert(terminalIntercept.predictiveCatchControl?.translationOnly === false, "expected terminal intercept to allow main-engine tilt authority");
+
+  const towerCorridorDescent = computeBoosterRecoveryCommand({
+    currentPhase: "descent-coast",
+    altitudeKm: 5.6,
+    radialSpeedKmS: -0.06,
+    tangentialSpeedKmS: 0.08,
+    launchSiteRangeKm: 4.1,
+    launchSiteLateralRangeKm: 3.1,
+    launchSiteLateralClosingSpeedKmS: 0.08,
+    catchTotalRangeKm: 4.0,
+    catchLateralRangeKm: 3.0,
+    catchVerticalErrorKm: 0.5,
+    catchLateralSpeedKmS: 0.20,
+    catchVerticalSpeedKmS: -0.10,
+    catchApproachSpeedKmS: 0.24,
+    catchEastErrorKm: 2.1,
+    catchNorthErrorKm: 2.0,
+    catchEastSpeedKmS: 0.12,
+    catchNorthSpeedKmS: 0.10,
+    catchClosingSpeedKmS: 0.05,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.006,
+    catchVelocitySigmaKmS: 0.00008,
+    timeSinceSeparationSec: 332,
+    remainingPropellantKg: 210_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 2_400,
+    bodyUpAlignment: 0.82,
+  });
+  assert(towerCorridorDescent.phase === "catch-approach", `expected predictive catch approach in tower corridor, got ${towerCorridorDescent.phase}`);
+  assert(towerCorridorDescent.siteTargetingEnabled === false, "expected predictive catch approach to bypass generic site targeting");
+  assert(towerCorridorDescent.predictiveCatchControl?.enabled === true, "expected predictive catch control in tower corridor");
+  assert(towerCorridorDescent.throttle === 0, `expected tower-corridor catch approach to stay off the main engines, got ${towerCorridorDescent.throttle}`);
+  assert(towerCorridorDescent.terminalUprightCommit === true, "expected tower-corridor catch approach to commit upright");
 
   const landingBurn = computeBoosterRecoveryCommand({
     currentPhase: "descent-coast",
-    altitudeKm: 3,
-    radialSpeedKmS: -0.52,
-    tangentialSpeedKmS: 0.05,
-    launchSiteRangeKm: 0.9,
-    launchSiteLateralRangeKm: 0.6,
-    launchSiteLateralClosingSpeedKmS: 0.02,
+    altitudeKm: 0.4,
+    radialSpeedKmS: -0.18,
+    tangentialSpeedKmS: 0.02,
+    launchSiteRangeKm: 0.08,
+    launchSiteLateralRangeKm: 0.05,
+    launchSiteLateralClosingSpeedKmS: 0.008,
     timeSinceSeparationSec: 345,
     remainingPropellantKg: 205_000,
     reserveLandingPropellantKg: 160_000,
-    dynamicPressurePa: 1_200,
+    dynamicPressurePa: 500,
+    bodyUpAlignment: 0.97,
   });
   assert(landingBurn.phase === "landing-burn", `expected landing-burn, got ${landingBurn.phase}`);
   assert(landingBurn.throttle > 0.3, `expected positive landing burn throttle, got ${landingBurn.throttle}`);
-  assert(landingBurn.attitudeControlMode === "engines", `expected engine-led landing control, got ${landingBurn.attitudeControlMode}`);
+  assert(landingBurn.attitudeControlMode === "engines+rcs", `expected engines+rcs landing control, got ${landingBurn.attitudeControlMode}`);
 
   console.log("PASS booster-recovery-profile-lock");
 }

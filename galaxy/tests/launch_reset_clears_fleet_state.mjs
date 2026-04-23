@@ -1,5 +1,8 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
-import { LAUNCH_BODY_ID } from "../app/static/js/physics/launch/launchConfig.js";
+import {
+  LAUNCH_BODY_ID,
+  LAUNCH_BOOSTER_BODY_ID,
+} from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
@@ -121,9 +124,10 @@ function main() {
   );
   assert(
     Array.isArray(afterSnapshot?.managedBodies)
-      && afterSnapshot.managedBodies.length === 1
-      && String(afterSnapshot.managedBodies[0]?.id || "") === LAUNCH_BODY_ID,
-    `reset test: expected only primary launch body after reset, got ${afterSnapshot?.managedBodies?.map((body) => body.id).join(", ")}`,
+      && afterSnapshot.managedBodies.length === 2
+      && afterSnapshot.managedBodies.some((body) => String(body?.id || "") === LAUNCH_BODY_ID)
+      && afterSnapshot.managedBodies.some((body) => String(body?.id || "") === LAUNCH_BOOSTER_BODY_ID),
+    `reset test: expected primary launch body plus persistent booster after reset, got ${afterSnapshot?.managedBodies?.map((body) => body.id).join(", ")}`,
   );
   assert(
     afterSnapshot?.runtime?.phase === "idle",

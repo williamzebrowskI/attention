@@ -1355,9 +1355,8 @@ function addInlineStarshipEngines(THREE, shipGroup, material, radius, shipHeight
   };
 }
 
-export function createInlineStarshipStackVisual(THREE, distanceScale, options = {}) {
+export function createInlineStarshipStackVisual(THREE, distanceScale) {
   const dims = INLINE_STARSHIP_STACK_DIMENSIONS_KM;
-  const externalBoosterVisualActive = options?.externalBoosterVisualActive === true;
 
   const radius = dims.diameterKm * 0.5 * distanceScale;
   const boosterHeight = dims.boosterHeightKm * distanceScale;
@@ -1402,54 +1401,15 @@ export function createInlineStarshipStackVisual(THREE, distanceScale, options = 
   const root = new THREE.Group();
 
   // Groups
-  const boosterGroup = externalBoosterVisualActive ? null : new THREE.Group();
   const shipGroup = new THREE.Group();
 
   const fullShipCenterY = baseY + boosterHeight + (0.5 * shipHeight);
   const detachedShipCenterY = 0;
   const fullBoosterCenterY = baseY + (0.5 * boosterHeight);
 
-  if (boosterGroup) {
-    boosterGroup.position.y = fullBoosterCenterY;
-  }
   shipGroup.position.y = fullShipCenterY;
 
-  if (boosterGroup) {
-    root.add(boosterGroup);
-  }
   root.add(shipGroup);
-
-  // Booster (returns exact engineExitY)
-  const boosterVisual = boosterGroup
-    ? addInlineSuperHeavyBooster(THREE, boosterGroup, stainless, darkSteel, radius, boosterHeight)
-    : null;
-  const boosterFuelVisual = boosterGroup
-    ? createBoosterFuelVisual(THREE, boosterGroup, radius, boosterHeight)
-    : null;
-
-  // Booster plumes + RCS
-  const boosterMainEnginePlume = boosterGroup && boosterVisual
-    ? createEnginePlumeCluster(THREE, boosterGroup, {
-      offsets: boosterVisual.engineOffsets,
-      anchorY: boosterVisual.engineExitY,
-      plumeLength: clamp(boosterHeight * 0.052, radius * 0.18, boosterHeight * 0.1),
-      plumeRadius: clamp(boosterVisual.bellRadius * 1.18, boosterVisual.bellRadius * 1.04, boosterVisual.bellRadius * 1.28),
-      nozzleRadius: clamp(boosterVisual.bellRadius * 0.96, boosterVisual.bellRadius * 0.88, boosterVisual.bellRadius),
-      colorHex: BOOSTER_MAIN_ENGINE_PLUME_COLOR_HEX,
-    })
-    : null;
-
-  const boosterRcsJets = boosterGroup
-    ? createRcsJetVisuals(
-      THREE,
-      boosterGroup,
-      radius,
-      boosterHeight,
-      BOOSTER_THRUSTER_LAYOUT,
-      BOOSTER_RCS_JET_COLOR_HEX,
-      new THREE.MeshStandardMaterial({ color: new THREE.Color(0x6a727f), roughness: 0.6, metalness: 0.52 }),
-    )
-    : null;
 
   // Ship hull (kept simple: cylinder + cone)
   const shipBody = new THREE.Mesh(
@@ -1548,17 +1508,10 @@ export function createInlineStarshipStackVisual(THREE, distanceScale, options = 
     materials: [stainless, darkSteel, nozzleMat, heatShieldMat],
     state: {
       distanceScale,
-      externalBoosterVisualActive,
-      boosterGroup,
       shipGroup,
       fullBoosterCenterY,
       fullShipCenterY,
       detachedShipCenterY,
-
-      // booster visuals
-      boosterFuelVisual,
-      boosterMainEnginePlume,
-      boosterRcsJets,
 
       // ship visuals
       shipMainEnginePlumes,
@@ -1583,8 +1536,6 @@ export function createInlineStarshipStackVisual(THREE, distanceScale, options = 
 
 export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot = null) {
   if (!stageState?.shipGroup) return;
-  const externalBoosterVisualActive = Boolean(snapshot?.externalBoosterVisualActive)
-    || Boolean(stageState?.externalBoosterVisualActive);
 
   const stageTwoActive = Number.isFinite(stageIndex) && stageIndex >= 1;
   const snapshotBodyId = String(snapshot?.bodyId || "");
@@ -1597,17 +1548,8 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
         ? Boolean(snapshot.boosterActive)
         : stageTwoActive
     );
-  const hotstageActive = Boolean(snapshot?.hotstageActive) && !detached;
   const distanceScale = Number(stageState?.distanceScale) || 1;
   const hotstageShipOffsetScene = Math.max(0, Number(snapshot?.hotstageShipOffsetKm) || 0) * distanceScale;
-  const hotstageBoosterOffsetScene = Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0) * distanceScale;
-
-  if (stageState.boosterGroup) {
-    stageState.boosterGroup.visible = !externalBoosterVisualActive && (!detached || hotstageActive);
-    if (Number.isFinite(stageState.fullBoosterCenterY)) {
-      stageState.boosterGroup.position.y = Number(stageState.fullBoosterCenterY) - hotstageBoosterOffsetScene;
-    }
-  }
 
   if (Number.isFinite(stageState.detachedShipCenterY) && Number.isFinite(stageState.fullShipCenterY)) {
     stageState.shipGroup.position.y = detached

@@ -80,8 +80,16 @@ function main() {
   assert(snapshot?.runtime, "launch_powered_phase_coast_fallback: missing runtime snapshot");
 
   snapshot.runtime.phase = "powered";
+  snapshot.runtime.commandPhase = "powered";
   snapshot.runtime.stageIndex = 1;
   snapshot.runtime.stagePropellantKg = 12_000;
+  snapshot.runtime.lastTelemetry = {
+    ...(snapshot.runtime.lastTelemetry || {}),
+    altitudeAboveTerrainKm: 120,
+    groundRelativeSpeedKmS: 1.2,
+    altitudeKm: 120,
+    stageIndex: 1,
+  };
   snapshot.runtime.lastStep = {
     ...(snapshot.runtime.lastStep || {}),
     throttle: 0,

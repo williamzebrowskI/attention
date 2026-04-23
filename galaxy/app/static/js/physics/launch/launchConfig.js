@@ -157,7 +157,7 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
     verticalHoldMaxLateralSpeedKmS: 0.015,
     verticalHoldCorrectionGain: 0.6,
     verticalHoldMaxTiltDeg: 5.0,
-    boosterLandingReservePropellantKg: 320_000,
+    boosterLandingReservePropellantKg: 140_000,
     // Starship-style hot staging is expected high in the atmosphere, roughly around
     // the 3-minute mark and near the 70 km band. Keep this as an explicit realism
     // envelope so the launch profile does not silently drift away from that regime.
@@ -238,8 +238,11 @@ export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
   // Separated-booster recovery thrust is modeled as a multi-engine burn cluster.
   engineCount: 13,
   nominalEngineCount: 13,
-  thrustSeaLevelN: 19_000_000,
-  thrustVacuumN: 20_500_000,
+  // Use the same per-engine thrust basis as the configured 33-engine booster stage.
+  // A 13-engine center-cluster recovery burn should therefore retain roughly 13/33 of
+  // the full Super Heavy thrust capability, not an artificially weakened subset.
+  thrustSeaLevelN: 29_150_000,
+  thrustVacuumN: 30_350_000,
   ispSeaLevelS: 327,
   ispVacuumS: 350,
   combustion: Object.freeze({
@@ -257,23 +260,51 @@ export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
     mixtureRatioNominal: 3.6,
     mixtureRatioTransientRange: 0.18,
   }),
-  // Approximate aggregate propellant flow for attitude-control jets at full authority.
-  rcsPropellantFlowKgS: 6.5,
+  // Public sources clearly establish 33 Raptors and 4 grid fins, but do not
+  // publish a clean official Super Heavy side-thruster count/spec sheet. We
+  // keep the existing six modeled hardpoints and treat this RCS cluster as a
+  // high-fidelity hot-gas proxy calibrated to the current control envelope.
+  rcsThrusterCount: 6,
+  rcsThrustSeaLevelN: 19_200,
+  rcsThrustVacuumN: 21_000,
+  rcsIspSeaLevelS: 285,
+  rcsIspVacuumS: 300,
+  rcsCombustion: Object.freeze({
+    nominalChamberPressurePa: 3_200_000,
+    turbopumpIdleNorm: 0.22,
+    ignitionPumpThreshold: 0.06,
+    turbopumpRiseTauSec: 0.035,
+    turbopumpFallTauSec: 0.055,
+    chamberRiseTauSec: 0.03,
+    chamberFallTauSec: 0.045,
+    minStableThrottle: 0.06,
+    combustionEfficiencyFloor: 0.72,
+    exhaustTemperatureIdleK: 620,
+    exhaustTemperatureNominalK: 1980,
+    mixtureRatioNominal: 3.4,
+    mixtureRatioTransientRange: 0.08,
+    lowThrottleAmbientPressurePaMin: 40_000,
+    lowThrottleFlameoutSec: 0.7,
+    restartCooldownSec: 0.08,
+    hotRelightDamageScale: 0.035,
+    failureHealthFloor: 0.34,
+  }),
 });
 
 export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({
   enabled: true,
   targetOrbitAltitudeKm: 250,
   targetAltitudeToleranceKm: 8,
-  verticalAscentMaxAltitudeKm: 1.4,
-  earlyAscentPitchLimitEndAltitudeKm: 3.0,
-  earlyAscentMaxPitchDeg: 6.5,
+  verticalAscentMaxAltitudeKm: 1.0,
+  earlyAscentPitchLimitEndAltitudeKm: 2.6,
+  earlyAscentMaxPitchDeg: 12.0,
   padReleaseDurationSec: 1.3,
   towerClearAltitudeKm: 0.12,
-  towerClearMaxPitchDeg: 5.0,
+  towerClearMaxDurationSec: 8.5,
+  towerClearMaxPitchDeg: 6.0,
   pitchKickStartAltitudeKm: 0.12,
-  pitchKickEndAltitudeKm: 4.5,
-  pitchKickMaxDeg: 13.0,
+  pitchKickEndAltitudeKm: 2.8,
+  pitchKickMaxDeg: 17.5,
   progradeTrackMinAirSpeedKmS: 0.12,
   ascentAoALimitDeg: 7.5,
   towerClearAoALimitDeg: 3.5,

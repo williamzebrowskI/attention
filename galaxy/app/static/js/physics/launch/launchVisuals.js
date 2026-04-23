@@ -916,9 +916,8 @@ export function starshipPhysicalRenderRadiusScene(distanceScale) {
   return kmToScene(STARSHIP_STACK_TOTAL_HEIGHT_KM * 0.5, distanceScale);
 }
 
-function createProceduralStarshipStackVisual(THREE, distanceScale, options = {}) {
+function createProceduralStarshipStackVisual(THREE, distanceScale) {
   const dims = STARSHIP_STACK_DIMENSIONS_KM;
-  const externalBoosterVisualActive = options?.externalBoosterVisualActive === true;
   const radius = kmToScene(dims.diameterKm * 0.5, distanceScale);
   const boosterHeight = kmToScene(dims.boosterHeightKm, distanceScale);
   const shipHeight = kmToScene(dims.shipHeightKm, distanceScale);
@@ -978,23 +977,6 @@ function createProceduralStarshipStackVisual(THREE, distanceScale, options = {})
   const materials = [stainless, darkSteel, tileBlack];
 
   const stackRoot = new THREE.Group();
-
-  let boosterGroup = null;
-  let boosterVisualState = null;
-  if (!externalBoosterVisualActive) {
-    boosterGroup = new THREE.Group();
-    boosterGroup.position.y = fullBoosterCenterY;
-    stackRoot.add(boosterGroup);
-
-    boosterVisualState = addSuperHeavyBoosterVisuals(
-      THREE,
-      boosterGroup,
-      stainless,
-      darkSteel,
-      radius,
-      boosterHeight,
-    );
-  }
 
   const shipGroup = new THREE.Group();
   shipGroup.position.y = fullShipCenterY;
@@ -1194,15 +1176,6 @@ function createProceduralStarshipStackVisual(THREE, distanceScale, options = {})
 
   const shipEngineState = addShipEngineCluster(THREE, shipGroup, darkSteel, radius, shipHeight);
 
-  const boosterMainEnginePlume = boosterGroup && boosterVisualState
-    ? createMainEnginePlumeCluster(THREE, boosterGroup, {
-      offsets: boosterVisualState.engineOffsets,
-      anchorY: boosterVisualState.plumeAnchorY,
-      plumeLength: clamp(boosterHeight * 0.052, radius * 0.18, boosterHeight * 0.1),
-      plumeRadius: clamp(boosterVisualState.bellRadius * 1.18, boosterVisualState.bellRadius * 1.04, boosterVisualState.bellRadius * 1.28),
-      nozzleRadius: clamp(boosterVisualState.bellRadius * 0.96, boosterVisualState.bellRadius * 0.88, boosterVisualState.bellRadius),
-    })
-    : null;
   const shipMainEnginePlume = [
     createMainEnginePlumeCluster(THREE, shipGroup, {
       offsets: shipEngineState?.plume?.vacOffsets || [],
@@ -1229,9 +1202,6 @@ function createProceduralStarshipStackVisual(THREE, distanceScale, options = {})
     materials,
     state: {
       distanceScale,
-      externalBoosterVisualActive,
-      boosterGroup,
-      boosterVisualState,
       shipGroup,
       fullBoosterCenterY,
       fullShipCenterY,
@@ -1245,7 +1215,6 @@ function createProceduralStarshipStackVisual(THREE, distanceScale, options = {})
       ),
       rcsJets,
       mainEnginePlumes: {
-        booster: boosterMainEnginePlume,
         ship: shipMainEnginePlume,
       },
       atmosphereEffects: createLaunchAtmosphereEffects(THREE, {
@@ -1259,8 +1228,8 @@ function createProceduralStarshipStackVisual(THREE, distanceScale, options = {})
   };
 }
 
-export async function createStarshipStackVisual(THREE, distanceScale, options = {}) {
-  const visual = createProceduralStarshipStackVisual(THREE, distanceScale, options);
+export async function createStarshipStackVisual(THREE, distanceScale) {
+  const visual = createProceduralStarshipStackVisual(THREE, distanceScale);
   visual.root.userData.starshipBoosterEngineSource = "local_raptor_replica";
   return visual;
 }
@@ -1554,8 +1523,6 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
   if (!stageState || !stageState.shipGroup) {
     return;
   }
-  const externalBoosterVisualActive = Boolean(snapshot?.externalBoosterVisualActive)
-    || Boolean(stageState?.externalBoosterVisualActive);
   const stageTwoActive = Number.isFinite(stageIndex) && stageIndex >= 1;
   const snapshotBodyId = String(snapshot?.bodyId || "");
   const fleetVehicle = snapshotBodyId.startsWith("earth_mission_ship_")
@@ -1567,21 +1534,10 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
         ? Boolean(snapshot.boosterActive)
         : stageTwoActive
     );
-  const hotstageActive = Boolean(snapshot?.hotstageActive) && !detached;
   const hotstageShipOffsetScene = kmToScene(
     Math.max(0, Number(snapshot?.hotstageShipOffsetKm) || 0),
     Number(stageState?.distanceScale) || 1,
   );
-  const hotstageBoosterOffsetScene = kmToScene(
-    Math.max(0, Number(snapshot?.hotstageBoosterOffsetKm) || 0),
-    Number(stageState?.distanceScale) || 1,
-  );
-  if (stageState.boosterGroup) {
-    stageState.boosterGroup.visible = !externalBoosterVisualActive && (!detached || hotstageActive);
-    if (Number.isFinite(stageState.fullBoosterCenterY)) {
-      stageState.boosterGroup.position.y = Number(stageState.fullBoosterCenterY) - hotstageBoosterOffsetScene;
-    }
-  }
   if (
     Number.isFinite(stageState.detachedShipCenterY)
     && Number.isFinite(stageState.fullShipCenterY)

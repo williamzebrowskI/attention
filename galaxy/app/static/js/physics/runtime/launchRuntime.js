@@ -53,9 +53,9 @@ export function createPhysicsLaunchRuntime(options = {}) {
     return result;
   }
 
-  function startLaunch(state, nowMs = Date.now()) {
+  function startLaunch(state, nowMs = Date.now(), options = {}) {
     const launchController = activeLaunchController();
-    const started = Boolean(launchController?.startLaunch?.(state, nowMs));
+    const started = Boolean(launchController?.startLaunch?.(state, nowMs, options));
     if (started) {
       markWorldStateMutation(state);
     }

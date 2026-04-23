@@ -1,6 +1,5 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
 import { LAUNCH_BODY_ID, LAUNCH_BOOSTER_BODY_ID } from "../app/static/js/physics/launch/launchConfig.js";
-import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 
 const GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2 = 6.67430e-20;
 const EARTH_MASS_KG = 5.97237e24;
@@ -9,7 +8,7 @@ const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
 const DT_SEC = 1;
-const MAX_STEPS = 360;
+const MAX_STEPS_TO_SEPARATION = 360;
 
 function assert(condition, message) {
   if (!condition) {
@@ -110,76 +109,70 @@ function createHarness() {
   });
 }
 
-function main() {
+function stepController(controller, state, nowMs) {
+  controller.prepareStep(state, DT_SEC, nowMs);
+  const earthState = state.staticSources.get("earth");
+  const shipState = state.dynamicBodies.get(LAUNCH_BODY_ID);
+  if (shipState) {
+    integrateBody(shipState, earthState, controller.externalAccelerationKmS2(LAUNCH_BODY_ID), DT_SEC);
+  }
+  const boosterState = state.dynamicBodies.get(LAUNCH_BOOSTER_BODY_ID);
+  if (boosterState) {
+    integrateBody(boosterState, earthState, controller.externalAccelerationKmS2(LAUNCH_BOOSTER_BODY_ID), DT_SEC);
+  }
+  controller.finalizeStep(state, DT_SEC, nowMs);
+}
+
+function verifyAscentEngineSelection() {
   const state = makeState();
   const controller = createHarness();
-  controller.setMissionProfile(LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
-  assert(controller.startLaunch(state, NOW_MS, { launchKind: "booster-post-hotstage-boostback-lock" }), "startLaunch rejected");
+  assert(
+    controller.startLaunch(state, NOW_MS, {
+      launchKind: "booster-engine-selector-lock-ascent",
+      boosterEngineCount: 5,
+    }),
+    "startLaunch rejected for ascent selector case",
+  );
+  let snapshot = controller.statusSnapshot(state);
+  assert(snapshot.boosterEngineCountSelected === 5, `expected staged ascent booster engine count 5, got ${snapshot.boosterEngineCountSelected}`);
+  assert(snapshot.boosterRecoveryEngineCountSelected === 5, `expected staged recovery booster engine count 5, got ${snapshot.boosterRecoveryEngineCountSelected}`);
 
+  stepController(controller, state, NOW_MS);
+  snapshot = controller.statusSnapshot(state);
+  assert(snapshot.desiredEngineCount === 5, `expected ascent desired engine count 5, got ${snapshot.desiredEngineCount}`);
+  assert(snapshot.activeEngineCount <= 5, `expected ascent active engine count <= 5, got ${snapshot.activeEngineCount}`);
+}
+
+function verifyRecoveryEngineSelectionCap() {
+  const state = makeState();
+  const controller = createHarness();
+  assert(
+    controller.startLaunch(state, NOW_MS, {
+      launchKind: "booster-engine-selector-lock-recovery",
+      boosterEngineCount: 33,
+    }),
+    "startLaunch rejected for recovery selector case",
+  );
   let nowMs = NOW_MS;
-  const phaseChanges = [];
-
-  for (let step = 0; step < MAX_STEPS; step += 1) {
-    controller.prepareStep(state, DT_SEC, nowMs);
-    const earthState = state.staticSources.get("earth");
-    const shipState = state.dynamicBodies.get(LAUNCH_BODY_ID);
-    if (shipState) {
-      integrateBody(shipState, earthState, controller.externalAccelerationKmS2(LAUNCH_BODY_ID), DT_SEC);
-    }
-    const boosterState = state.dynamicBodies.get(LAUNCH_BOOSTER_BODY_ID);
-    if (boosterState) {
-      integrateBody(boosterState, earthState, controller.externalAccelerationKmS2(LAUNCH_BOOSTER_BODY_ID), DT_SEC);
-    }
-    controller.finalizeStep(state, DT_SEC, nowMs);
+  for (let step = 0; step < MAX_STEPS_TO_SEPARATION; step += 1) {
+    stepController(controller, state, nowMs);
     nowMs += DT_SEC * 1000;
-
     const snapshot = controller.statusSnapshot(state);
     if (!snapshot.boosterActive) {
       continue;
     }
-    const currentGuidanceMode = String(snapshot.boosterGuidanceMode || "").trim().toLowerCase();
-    const lastGuidanceMode = phaseChanges[phaseChanges.length - 1]?.guidanceMode || "";
-    if (currentGuidanceMode && currentGuidanceMode !== lastGuidanceMode) {
-      phaseChanges.push({
-        elapsedSec: Number(snapshot.elapsedSeconds) || 0,
-        phase: String(snapshot.boosterPhase || "").trim().toLowerCase(),
-        guidanceMode: currentGuidanceMode,
-        throttle: Number(snapshot.boosterThrottle) || 0,
-        altitudeKm: Number(snapshot.boosterAltitudeKm) || 0,
-        lateralRangeKm: Number(snapshot.boosterLaunchSiteLateralRangeKm) || 0,
-      });
-    }
-    if (phaseChanges.some((entry) => entry.guidanceMode === "booster-boostback")) {
-      break;
-    }
+    assert(snapshot.boosterEngineCountSelected === 33, `expected ascent selection 33 to persist after separation, got ${snapshot.boosterEngineCountSelected}`);
+    assert(snapshot.boosterRecoveryEngineCountSelected === 13, `expected recovery engine count to cap at 13, got ${snapshot.boosterRecoveryEngineCountSelected}`);
+    assert(snapshot.boosterDesiredEngineCount <= 13, `expected separated booster desired engine count <= 13, got ${snapshot.boosterDesiredEngineCount}`);
+    return;
   }
+  throw new Error("expected booster to separate and expose recovery engine selection");
+}
 
-  const separationFlipIndex = phaseChanges.findIndex((entry) => entry.guidanceMode === "booster-separation-flip");
-  const boostbackIndex = phaseChanges.findIndex((entry) => entry.guidanceMode === "booster-boostback");
-  assert(separationFlipIndex >= 0, `expected separation-flip in phase trace, got ${JSON.stringify(phaseChanges)}`);
-  assert(boostbackIndex >= 0, `expected boostback soon after hotstage, got ${JSON.stringify(phaseChanges)}`);
-  assert(boostbackIndex > separationFlipIndex, `expected boostback after separation-flip, got ${JSON.stringify(phaseChanges)}`);
-
-  const preBoostbackPhases = phaseChanges.slice(separationFlipIndex + 1, boostbackIndex).map((entry) => entry.guidanceMode);
-  assert(
-    !preBoostbackPhases.includes("booster-descent-coast")
-      && !preBoostbackPhases.includes("booster-entry-align")
-      && !preBoostbackPhases.includes("booster-entry-burn"),
-    `expected no descent/entry phases before boostback, got ${JSON.stringify(phaseChanges)}`,
-  );
-
-  const separationFlip = phaseChanges[separationFlipIndex];
-  const boostback = phaseChanges[boostbackIndex];
-  assert(
-    (boostback.elapsedSec - separationFlip.elapsedSec) <= 24,
-    `expected boostback within 24 s of hotstage separation, got ${boostback.elapsedSec - separationFlip.elapsedSec} s`,
-  );
-  assert(
-    boostback.throttle >= 0.35,
-    `expected meaningful boostback throttle, got ${boostback.throttle}`,
-  );
-
-  console.log("PASS booster-post-hotstage-boostback-lock");
+function main() {
+  verifyAscentEngineSelection();
+  verifyRecoveryEngineSelectionCap();
+  console.log("PASS booster-engine-selector-lock");
 }
 
 main();

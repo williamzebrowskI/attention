@@ -91,8 +91,8 @@ function main() {
   assert(descentCoast.phase === "descent-coast", `expected descent-coast, got ${descentCoast.phase}`);
   assert(descentCoast.siteTargetingEnabled === true, "expected descent-coast to stay site-targeted under grid-fin control");
   assert(
-    descentCoast.siteVectorWeight > entryBurn.siteVectorWeight,
-    `expected descent-coast to rely on fin-driven site vector more than entry-burn, got ${descentCoast.siteVectorWeight} vs ${entryBurn.siteVectorWeight}`,
+    descentCoast.siteVectorWeight >= 0.22 && descentCoast.siteVectorWeight < entryBurn.siteVectorWeight,
+    `expected descent-coast to keep meaningful but reduced site-vector weighting under predictive corridor guidance, got ${descentCoast.siteVectorWeight} vs ${entryBurn.siteVectorWeight}`,
   );
   assert(
     descentCoast.siteVelocityWeight >= 0.14,

@@ -331,6 +331,7 @@ export function updateEngineCombustionClusterState(state, {
   pressurePa = 0,
   throttleCommand = 0,
   desiredEngineCount = null,
+  desiredEngineIndices = null,
   failedEngineIndices = null,
 } = {}) {
   if (!state || typeof state !== "object") {
@@ -360,18 +361,39 @@ export function updateEngineCombustionClusterState(state, {
     ...internalFailedSet,
     ...externalFailedSet,
   ]));
-  const resolvedDesiredCount = desiredEngineCount === null || desiredEngineCount === undefined
-    ? counts.engineCount
-    : finiteNonNegativeInteger(desiredEngineCount, counts.engineCount);
-  const selection = resolveActiveEngineSelection({
-    descriptors: state.descriptors,
-    activationOrder: state.activationOrder,
-    desiredEngineCount: resolvedDesiredCount,
-    failedEngineIndices: effectiveFailedIndices,
-  });
-  state.desiredIndices = [...selection.desiredIndices];
-  state.inactiveIndices = [...selection.inactiveIndices];
-  state.desiredCount = selection.desiredCount;
+  const explicitDesiredIndicesProvided = Array.isArray(desiredEngineIndices);
+  let desiredIndices = [];
+  let inactiveIndices = [];
+  let desiredCount = 0;
+  if (explicitDesiredIndicesProvided) {
+    const desiredSet = normalizedIndexSet(desiredEngineIndices, descriptorCount);
+    desiredIndices = Array.from(desiredSet)
+      .filter((index) => !externalFailedSet.has(index) && !internalFailedSet.has(index))
+      .slice(0, Math.max(0, counts.engineCount));
+    const desiredIndexSet = new Set(desiredIndices);
+    for (let index = 0; index < descriptorCount; index += 1) {
+      if (!desiredIndexSet.has(index)) {
+        inactiveIndices.push(index);
+      }
+    }
+    desiredCount = desiredIndices.length;
+  } else {
+    const resolvedDesiredCount = desiredEngineCount === null || desiredEngineCount === undefined
+      ? counts.engineCount
+      : finiteNonNegativeInteger(desiredEngineCount, counts.engineCount);
+    const selection = resolveActiveEngineSelection({
+      descriptors: state.descriptors,
+      activationOrder: state.activationOrder,
+      desiredEngineCount: resolvedDesiredCount,
+      failedEngineIndices: effectiveFailedIndices,
+    });
+    desiredIndices = [...selection.desiredIndices];
+    inactiveIndices = [...selection.inactiveIndices];
+    desiredCount = selection.desiredCount;
+  }
+  state.desiredIndices = desiredIndices;
+  state.inactiveIndices = inactiveIndices;
+  state.desiredCount = desiredCount;
 
   const rawThrust = rawConfiguredThrustBounds(config);
   const perEngineThrustVacuumN = counts.nominalEngineCount > 0
@@ -393,7 +415,7 @@ export function updateEngineCombustionClusterState(state, {
   );
   state.ispS = Math.max(0, ispS);
 
-  const desiredSet = new Set(selection.desiredIndices);
+  const desiredSet = new Set(state.desiredIndices);
   const failedSet = new Set(effectiveFailedIndices);
   const dt = Math.max(0, finiteNumber(dtSeconds, 0));
   const stableThrottleBlend = clamp(

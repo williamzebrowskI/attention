@@ -37,6 +37,15 @@ function bodyDirectionFromLatLon(axes, latitudeDeg, longitudeDeg) {
   return normalize(direction);
 }
 
+function resolvedLaunchElapsedSeconds(runtime, fallbackElapsedSeconds = 0) {
+  const elapsedSec = Math.max(0, Number(fallbackElapsedSeconds) || 0);
+  const startElapsedSec = Math.max(0, Number(runtime?.launchSequence?.startElapsedSec) || 0);
+  if (!Boolean(runtime?.launchSequence?.active)) {
+    return elapsedSec;
+  }
+  return Math.max(0, elapsedSec - startElapsedSec);
+}
+
 export function guidanceDirection({
   rocketState,
   earthState,
@@ -484,6 +493,7 @@ function stateDrivenAscentProfile({
   earthPole,
   targetCircularSpeedKmS,
   dynamicPressurePa,
+  elapsedSeconds = 0,
   verticalAscentMaxAltitudeKm,
   gravityTurnEndAltitudeKm,
   config,
@@ -494,6 +504,10 @@ function stateDrivenAscentProfile({
   const towerClearAltitudeKm = Math.max(
     0,
     Number(config.towerClearAltitudeKm) || 0,
+  );
+  const towerClearMaxDurationSec = Math.max(
+    0,
+    Number(config.towerClearMaxDurationSec) || 0,
   );
   const safeTurnStartKm = Math.max(0, verticalAscentMaxAltitudeKm * 0.15);
   const turnAltitudeProgress = clamp(
@@ -560,13 +574,13 @@ function stateDrivenAscentProfile({
     scheduledDirection,
   );
   const climbAssistWeight = clamp(
-    0.12
-      + (Math.max(0, radialDeficit) * 0.16)
-      + (Math.max(0, qRatio - 1) * 0.08)
-      - (0.16 * turnAltitudeProgress)
-      - (0.10 * tangentialProgress),
+    0.05
+      + (Math.max(0, radialDeficit) * 0.14)
+      + (Math.max(0, qRatio - 1) * 0.05)
+      - (0.10 * turnAltitudeProgress)
+      - (0.06 * tangentialProgress),
     0,
-    0.28,
+    0.18,
   );
   if (climbAssistWeight > 1e-6) {
     direction = normalize(
@@ -591,7 +605,12 @@ function stateDrivenAscentProfile({
       angleRad: 0,
     };
   direction = aoaLimited.direction;
-  const towerClearActive = towerClearAltitudeKm > 0 && altitudeKm < towerClearAltitudeKm;
+  const towerClearActive = towerClearAltitudeKm > 0
+    && altitudeKm < towerClearAltitudeKm
+    && (
+      towerClearMaxDurationSec <= 0
+      || elapsedSeconds < towerClearMaxDurationSec
+    );
   let towerClearLimited = false;
   if (towerClearActive) {
     const trueVerticalAltitudeKm = Math.max(0.03, towerClearAltitudeKm * 0.4);
@@ -683,7 +702,12 @@ export function computeAutopilotCommand({
     ? Math.max(targetAltitudeSafe, 500)
     : targetAltitudeSafe;
   const verticalAscentMaxAltitudeKm = Math.max(0.05, Number(config.verticalAscentMaxAltitudeKm) || 0.05);
-  const lowOrbitLaunchProfileActive = Number(runtime?.stageIndex) === 0 && ascentTargetAltitudeSafe <= 350;
+  // Stage 1 should still use the low-orbit ascent profile when the mission target
+  // itself is a low parking orbit. Using the internally expanded stage-1 climb
+  // target here prematurely disabled the dense-air / extended gravity-turn branch
+  // at browser-rate timesteps, causing an early apoapsis-raise transition and a
+  // missed hotstage window.
+  const lowOrbitLaunchProfileActive = Number(runtime?.stageIndex) === 0 && targetAltitudeSafe <= 350;
   const apoapsisKm = Number(orbital.apoapsisKm);
   const periapsisKm = Number(orbital.periapsisKm);
   const apoDefined = Number.isFinite(apoapsisKm);
@@ -902,6 +926,7 @@ export function computeAutopilotCommand({
     });
   }
 
+  const launchElapsedSeconds = resolvedLaunchElapsedSeconds(runtime, runtime.elapsedSeconds);
   const ascentProfile = stateDrivenAscentProfile({
     orbital,
     relPos,
@@ -912,6 +937,7 @@ export function computeAutopilotCommand({
     earthPole,
     targetCircularSpeedKmS,
     dynamicPressurePa,
+    elapsedSeconds: launchElapsedSeconds,
     verticalAscentMaxAltitudeKm,
     gravityTurnEndAltitudeKm: lowOrbitLaunchProfileActive
       ? Math.max(Number(config.gravityTurnEndAltitudeKm) || 0, 38)
@@ -932,7 +958,7 @@ export function computeAutopilotCommand({
       direction,
     );
   }
-  let throttle = throttleForState(runtime.stageIndex, runtime.elapsedSeconds, dynamicPressurePa);
+  let throttle = throttleForState(runtime.stageIndex, launchElapsedSeconds, dynamicPressurePa);
   let mode = ascentProfile.progradeCapture < 0.58
     ? "autopilot-pitch-program"
     : "autopilot-gravity-turn";
@@ -944,14 +970,133 @@ export function computeAutopilotCommand({
     0,
     Number(config.towerClearAltitudeKm) || 0,
   );
-  const inPadReleaseWindow = runtime.stageIndex === 0 && runtime.elapsedSeconds < padReleaseDurationSec;
+  const towerClearMaxDurationSec = Math.max(
+    0,
+    Number(config.towerClearMaxDurationSec) || 0,
+  );
+  const inPadReleaseWindow = runtime.stageIndex === 0 && launchElapsedSeconds < padReleaseDurationSec;
   const towerClearActive = runtime.stageIndex === 0
     && ascentProfile.towerClearActive
-    && orbital.altitudeKm < towerClearAltitudeKm;
+    && orbital.altitudeKm < towerClearAltitudeKm
+    && (
+      towerClearMaxDurationSec <= 0
+      || launchElapsedSeconds < towerClearMaxDurationSec
+    );
   if (towerClearActive) {
     mode = inPadReleaseWindow ? "autopilot-pad-release" : "autopilot-tower-clear";
   }
   if (ascentProfile.turnAltitudeProgress >= 1) {
+    const totalSpeedKmS = Math.max(0, length(relVel));
+    const hotstageGuidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
+    const hotstageTargetAltitudeKm = Math.max(
+      Number(hotstageGuidance.hotstageMinAltitudeKm) || 0,
+      Number(hotstageGuidance.hotstageNominalAltitudeKm) || 0,
+    );
+    const hotstageTargetSpeedKmS = Math.max(
+      Number(hotstageGuidance.hotstageMinSpeedKmS) || 0,
+      Number(hotstageGuidance.hotstageNominalSpeedKmS) || 0,
+    );
+    const hotstageNominalElapsedSec = Math.max(
+      Number(hotstageGuidance.hotstageMinElapsedSec) || 0,
+      Number(hotstageGuidance.hotstageNominalElapsedSec) || 0,
+      1,
+    );
+    const stage1HotstageClimbActive =
+      Number(runtime.stageIndex) === 0
+      && !Boolean(runtime.hotstage?.active)
+      && (
+        orbital.altitudeKm < Math.max(hotstageTargetAltitudeKm, 1)
+        || totalSpeedKmS < Math.max(hotstageTargetSpeedKmS, 0.1)
+      );
+    if (stage1HotstageClimbActive) {
+      const progradeDirection = normalize(relVel, tangent);
+      const altitudeProgress = clamp(
+        orbital.altitudeKm / Math.max(hotstageTargetAltitudeKm, 1),
+        0,
+        1,
+      );
+      const speedProgress = clamp(
+        totalSpeedKmS / Math.max(hotstageTargetSpeedKmS, 0.1),
+        0,
+        1.25,
+      );
+      const scheduledAltitudeKm = clamp(
+        hotstageTargetAltitudeKm
+          * clamp(launchElapsedSeconds / hotstageNominalElapsedSec, 0, 1.08),
+        0,
+        hotstageTargetAltitudeKm * 1.08,
+      );
+      const altitudeLeadKm = Math.max(0, orbital.altitudeKm - scheduledAltitudeKm);
+      const earlyArrivalNorm = clamp(altitudeLeadKm / 18, 0, 1);
+      const climbProgress = Math.max(altitudeProgress, speedProgress);
+      let minimumClimbWeight = clamp(
+        0.72 - (climbProgress * 0.26),
+        0.46,
+        0.72,
+      );
+      minimumClimbWeight = clamp(
+        minimumClimbWeight - (earlyArrivalNorm * 0.24),
+        0.22,
+        0.72,
+      );
+      let targetRadialSpeedKmS = clamp(
+        1.02 - (climbProgress * 0.26),
+        0.68,
+        1.02,
+      );
+      targetRadialSpeedKmS = clamp(
+        targetRadialSpeedKmS - (earlyArrivalNorm * 0.42),
+        0.26,
+        1.02,
+      );
+      const radialSpeedDeficit = Math.max(0, targetRadialSpeedKmS - radialSpeedKmS);
+      const climbBias = clamp(
+        0.32
+          + (radialSpeedDeficit * 0.72)
+          + ((1 - altitudeProgress) * 0.18)
+          + ((1 - speedProgress) * 0.12),
+        0.12,
+        0.72,
+      ) - (earlyArrivalNorm * 0.28);
+      const progradeBlend = clamp(
+        0.72 + (altitudeProgress * 0.10) + (earlyArrivalNorm * 0.12),
+        0.72,
+        0.94,
+      );
+      const directionBasis = normalize(
+        add(
+          scale(progradeDirection, progradeBlend),
+          scale(tangent, Math.max(0.06, 1 - progradeBlend)),
+        ),
+        progradeDirection,
+      );
+      direction = normalize(
+        add(scale(directionBasis, 1), scale(up, Math.max(0.04, climbBias))),
+        directionBasis,
+      );
+      if (dot(direction, up) < minimumClimbWeight) {
+        direction = limitDirectionAngle({
+          desiredDirection: direction,
+          referenceDirection: up,
+          maxAngleRad: Math.acos(clamp(minimumClimbWeight, -1, 1)),
+          fallback: up,
+        }).direction;
+      }
+      const climbThrottle = clamp(
+        0.94
+          + (radialSpeedDeficit * 0.10)
+          + ((1 - speedProgress) * 0.04)
+          - (earlyArrivalNorm * 0.08),
+        0.84,
+        1.0,
+      );
+      return finalizeCommand({
+        phase: "powered",
+        throttle: climbThrottle,
+        direction,
+        mode: "autopilot-stage1-hotstage-climb",
+      });
+    }
     runtime.autopilotMode = "autopilot-apoapsis-raise";
     const apoDeficitKm = apoDefined ? targetAltitudeKm - apoapsisKm : targetAltitudeKm;
     const highOrbitTargetActive = targetAltitudeSafe > 350 && Number(runtime.stageIndex) >= 1;
@@ -964,7 +1109,7 @@ export function computeAutopilotCommand({
     const highOrbitPeriGuideKm = targetAltitudeSafe * 0.52;
     const highOrbitInitialClimbAltitudeKm = Math.max(
       config.circularizationMinAltitudeKm,
-      targetAltitudeSafe * 0.28,
+      targetAltitudeSafe * 0.32,
     );
     const highOrbitInitialApoGuideKm = Math.max(
       targetAltitudeSafe * 0.35,
@@ -980,11 +1125,33 @@ export function computeAutopilotCommand({
         || !periDefined
         || periapsisKm < highOrbitPeriGuideKm
       );
+    // For high-energy targets like the Moon parking orbit, do not end the
+    // initial climb just because apoapsis rises quickly. The upper stage
+    // should continue a real geometric climb until it has actually cleared
+    // the early post-hotstage altitude band.
     const highOrbitInitialClimbActive = highOrbitTargetActive
-      && orbital.altitudeKm < highOrbitInitialClimbAltitudeKm
+      && orbital.altitudeKm < highOrbitInitialClimbAltitudeKm;
+    const lowOrbitStage2TargetActive =
+      Number(runtime.stageIndex) >= 1
+      && targetAltitudeSafe > 120
+      && targetAltitudeSafe <= 350;
+    const lowOrbitInitialClimbAltitudeKm = Math.max(
+      config.circularizationMinAltitudeKm * 0.78,
+      targetAltitudeSafe * 0.62,
+      110,
+    );
+    const lowOrbitInitialApoGuideKm = Math.max(
+      targetAltitudeSafe * 0.6,
+      95,
+    );
+    const lowOrbitInitialClimbActive =
+      lowOrbitStage2TargetActive
+      && orbital.altitudeKm < lowOrbitInitialClimbAltitudeKm
       && (
         !apoDefined
-        || apoapsisKm < highOrbitInitialApoGuideKm
+        || apoapsisKm < (lowOrbitInitialApoGuideKm + 8)
+        || !periDefined
+        || periapsisKm < 0
       );
     const radialBias = highOrbitDirectInsertionActive
       ? (() => {
@@ -1047,9 +1214,9 @@ export function computeAutopilotCommand({
         : 0;
       const climbProgress = Math.max(climbAltitudeProgress, apoProgress);
       const minimumClimbWeight = clamp(
-        0.74 - (climbProgress * 0.16),
-        0.58,
-        0.74,
+        0.78 - (climbProgress * 0.18),
+        0.62,
+        0.78,
       );
       const targetRadialSpeedKmS = clamp(
         0.62 - (climbProgress * 0.16),
@@ -1058,12 +1225,70 @@ export function computeAutopilotCommand({
       );
       const radialSpeedDeficit = Math.max(0, targetRadialSpeedKmS - radialSpeedKmS);
       const climbBias = clamp(
-        0.30
+        0.34
           + (radialSpeedDeficit * 0.9)
           + ((1 - apoProgress) * 0.18)
-          + ((1 - climbAltitudeProgress) * 0.12),
-        0.30,
-        0.68,
+          + ((1 - climbAltitudeProgress) * 0.14),
+        0.34,
+        0.74,
+      );
+      direction = normalize(
+        add(scale(direction, 1), scale(up, climbBias)),
+        up,
+      );
+      if (dot(direction, up) < minimumClimbWeight) {
+        direction = limitDirectionAngle({
+          desiredDirection: direction,
+          referenceDirection: up,
+          maxAngleRad: Math.acos(clamp(minimumClimbWeight, -1, 1)),
+          fallback: up,
+        }).direction;
+      }
+      // After hotstage on a high-energy ascent, the upper stage should stay
+      // close to full thrust until it has genuinely cleared the initial climb
+      // band instead of relaxing into a shallow suborbital arc too early.
+      const climbThrottle = clamp(
+        0.96
+          + (radialSpeedDeficit * 0.12)
+          + ((1 - apoProgress) * 0.04),
+        0.96,
+        1.0,
+      );
+      return finalizeCommand({
+        phase: "powered",
+        throttle: climbThrottle,
+        direction,
+        mode: "autopilot-high-orbit-climb",
+      });
+    }
+    if (lowOrbitInitialClimbActive) {
+      const climbAltitudeProgress = clamp(
+        orbital.altitudeKm / Math.max(lowOrbitInitialClimbAltitudeKm, 1),
+        0,
+        1,
+      );
+      const apoProgress = apoDefined
+        ? clamp(apoapsisKm / Math.max(lowOrbitInitialApoGuideKm, 1), 0, 1)
+        : 0;
+      const climbProgress = Math.max(climbAltitudeProgress, apoProgress);
+      const minimumClimbWeight = clamp(
+        0.7 - (climbProgress * 0.16),
+        0.56,
+        0.7,
+      );
+      const targetRadialSpeedKmS = clamp(
+        0.4 - (climbProgress * 0.12),
+        0.24,
+        0.4,
+      );
+      const radialSpeedDeficit = Math.max(0, targetRadialSpeedKmS - radialSpeedKmS);
+      const climbBias = clamp(
+        0.26
+          + (radialSpeedDeficit * 1.1)
+          + ((1 - apoProgress) * 0.16)
+          + ((1 - climbAltitudeProgress) * 0.1),
+        0.26,
+        0.62,
       );
       direction = normalize(
         add(scale(direction, 1), scale(up, climbBias)),
@@ -1078,17 +1303,17 @@ export function computeAutopilotCommand({
         }).direction;
       }
       const climbThrottle = clamp(
-        0.90
-          + (radialSpeedDeficit * 0.16)
-          + ((1 - apoProgress) * 0.06),
-        0.90,
+        0.94
+          + (radialSpeedDeficit * 0.14)
+          + ((1 - apoProgress) * 0.04),
+        0.94,
         1.0,
       );
       return finalizeCommand({
         phase: "powered",
         throttle: climbThrottle,
         direction,
-        mode: "autopilot-high-orbit-climb",
+        mode: "autopilot-stage2-initial-climb",
       });
     }
     if (highOrbitDirectInsertionActive) {

@@ -1,9 +1,5 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
-import {
-  LAUNCH_BODY_ID,
-  LAUNCH_BOOSTER_BODY_ID,
-  LAUNCH_VEHICLE_CONFIG,
-} from "../app/static/js/physics/launch/launchConfig.js";
+import { LAUNCH_BODY_ID, LAUNCH_BOOSTER_BODY_ID } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
@@ -13,7 +9,7 @@ const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
 const DT_SEC = 1;
-const MAX_STEPS = 1200;
+const MAX_STEPS = 320;
 
 function assert(condition, message) {
   if (!condition) {
@@ -22,27 +18,15 @@ function assert(condition, message) {
 }
 
 function add(a, b) {
-  return {
-    x: a.x + b.x,
-    y: a.y + b.y,
-    z: a.z + b.z,
-  };
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
 }
 
-function scale(vector, scalar) {
-  return {
-    x: vector.x * scalar,
-    y: vector.y * scalar,
-    z: vector.z * scalar,
-  };
+function scale(v, s) {
+  return { x: v.x * s, y: v.y * s, z: v.z * s };
 }
 
 function subtract(a, b) {
-  return {
-    x: a.x - b.x,
-    y: a.y - b.y,
-    z: a.z - b.z,
-  };
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
 }
 
 function dot(a, b) {
@@ -126,14 +110,14 @@ function main() {
   });
   const state = makeState();
   controller.setMissionProfile(LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
-  const started = controller.startLaunch(state, NOW_MS, { launchKind: "surface-launch-test" });
-  assert(started, "surface_launch_hotstage_realism: startLaunch rejected");
+  const started = controller.startLaunch(state, NOW_MS, {
+    launchKind: "hotstage-window-miss-lock",
+    boosterEngineCount: 24,
+  });
+  assert(started, "launch_hotstage_window_miss_anomaly_lock: startLaunch rejected");
 
-  const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
   let nowMs = NOW_MS;
-  let ignition = null;
-  let detach = null;
-
+  let finalStatus = null;
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
     const earthState = state.staticSources.get("earth");
@@ -147,59 +131,56 @@ function main() {
     }
     controller.finalizeStep(state, DT_SEC, nowMs);
     nowMs += DT_SEC * 1000;
-    const snapshot = controller.statusSnapshot(state);
-
-    if (!ignition && Boolean(snapshot?.hotstageActive)) {
-      ignition = {
-        elapsedSec: Number(snapshot?.elapsedSeconds),
-        altitudeKm: Number(snapshot?.altitudeKm),
-        speedKmS: Number(snapshot?.speedKmS),
-      };
-    }
-    if (!detach && Boolean(snapshot?.boosterActive)) {
-      detach = {
-        elapsedSec: Number(snapshot?.elapsedSeconds),
-        altitudeKm: Number(snapshot?.altitudeKm),
-        speedKmS: Number(snapshot?.speedKmS),
-        boosterAltitudeKm: Number(snapshot?.boosterAltitudeKm),
-      };
-      break;
-    }
+    finalStatus = controller.statusSnapshot(state);
   }
 
-  assert(ignition, "surface_launch_hotstage_realism: never observed hotstage ignition");
-  assert(detach, "surface_launch_hotstage_realism: never observed booster detach");
-
+  assert(finalStatus, "launch_hotstage_window_miss_anomaly_lock: missing final status snapshot");
+  assert(finalStatus.stageIndex === 0, `launch_hotstage_window_miss_anomaly_lock: expected to remain on stage 0, got ${finalStatus.stageIndex}`);
+  assert(finalStatus.stageTransitionPending, "launch_hotstage_window_miss_anomaly_lock: expected pending hotstage transition after missing window");
+  assert(finalStatus.stageTransitionKind === "hotstage_ignite", `launch_hotstage_window_miss_anomaly_lock: expected hotstage_ignite transition, got ${finalStatus.stageTransitionKind || "missing"}`);
+  assert(finalStatus.stageTransitionAnomalyActive, "launch_hotstage_window_miss_anomaly_lock: expected hotstage anomaly state");
   assert(
-    ignition.elapsedSec >= Number(guidance.hotstageMinElapsedSec)
-      && ignition.elapsedSec <= Number(guidance.hotstageMaxElapsedSec),
-    `surface_launch_hotstage_realism: ignition time ${ignition.elapsedSec}s outside ${guidance.hotstageMinElapsedSec}-${guidance.hotstageMaxElapsedSec}s`,
+    String(finalStatus.stageTransitionAnomalyReason || "").startsWith("hotstage_window_missed")
+      || String(finalStatus.stageTransitionAnomalyReason || "") === "hotstage_never_armed",
+    `launch_hotstage_window_miss_anomaly_lock: unexpected anomaly reason ${finalStatus.stageTransitionAnomalyReason || "missing"}`,
   );
   assert(
-    ignition.altitudeKm >= Number(guidance.hotstageMinAltitudeKm)
-      && ignition.altitudeKm <= Number(guidance.hotstageMaxAltitudeKm),
-    `surface_launch_hotstage_realism: ignition altitude ${ignition.altitudeKm}km outside ${guidance.hotstageMinAltitudeKm}-${guidance.hotstageMaxAltitudeKm}km`,
+    String(finalStatus.guidanceMode || "").includes("hotstage-anomaly-hold"),
+    `launch_hotstage_window_miss_anomaly_lock: expected hotstage anomaly guidance hold, got ${finalStatus.guidanceMode || "missing"}`,
   );
   assert(
-    Math.abs(ignition.altitudeKm - Number(guidance.hotstageNominalAltitudeKm)) <= 12,
-    `surface_launch_hotstage_realism: ignition altitude ${ignition.altitudeKm}km drifted too far from nominal ${guidance.hotstageNominalAltitudeKm}km`,
+    finalStatus.phase === "coast",
+    `launch_hotstage_window_miss_anomaly_lock: expected coast/hold phase after hotstage anomaly, got ${finalStatus.phase || "missing"}`,
   );
   assert(
-    detach.elapsedSec >= ignition.elapsedSec
-      && (detach.elapsedSec - ignition.elapsedSec) <= 5,
-    `surface_launch_hotstage_realism: detach should follow ignition quickly, got ignition ${ignition.elapsedSec}s detach ${detach.elapsedSec}s`,
-  );
-  assert(
-    Number.isFinite(detach.boosterAltitudeKm)
-      && Math.abs(detach.boosterAltitudeKm - detach.altitudeKm) <= 0.5,
-    `surface_launch_hotstage_realism: stacked ship/booster detach altitudes diverged unexpectedly (${detach.altitudeKm} vs ${detach.boosterAltitudeKm})`,
+    controller.isPrimaryLaunchActive() === false,
+    "launch_hotstage_window_miss_anomaly_lock: missed hotstage anomaly should not block a fresh primary pad launch",
   );
 
-  console.log(JSON.stringify({
-    ignition,
-    detach,
-  }, null, 2));
-  console.log("PASS surface-launch-hotstage-realism-e2e");
+  controller.setMissionProfile(LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD);
+  const restarted = controller.startLaunch(state, nowMs, {
+    launchKind: "hotstage-window-miss-relaunch-lock",
+    boosterEngineCount: 33,
+  });
+  assert(restarted, "launch_hotstage_window_miss_anomaly_lock: relaunch after anomaly was rejected");
+  controller.prepareStep(state, DT_SEC, nowMs);
+  const relaunchShipState = state.dynamicBodies.get(LAUNCH_BODY_ID);
+  const relaunchEarthState = state.staticSources.get("earth");
+  if (relaunchShipState) {
+    integrateBody(relaunchShipState, relaunchEarthState, controller.externalAccelerationKmS2(LAUNCH_BODY_ID), DT_SEC);
+  }
+  controller.finalizeStep(state, DT_SEC, nowMs);
+  const relaunchStatus = controller.statusSnapshot(state);
+  assert(
+    relaunchStatus.stageIndex === 0 && relaunchStatus.phase === "powered",
+    `launch_hotstage_window_miss_anomaly_lock: relaunch should reset to powered stage 1, got stage ${relaunchStatus.stageIndex} phase ${relaunchStatus.phase || "missing"}`,
+  );
+  assert(
+    !relaunchStatus.stageTransitionPending,
+    "launch_hotstage_window_miss_anomaly_lock: relaunch should clear pending hotstage anomaly state",
+  );
+
+  console.log("PASS launch-hotstage-window-miss-anomaly-lock");
 }
 
 main();

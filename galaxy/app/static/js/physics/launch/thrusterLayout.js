@@ -4,7 +4,9 @@
  *
  * Public references describe:
  * - Starship: 4 hot-gas thrusters below payload-bay region, + 2 on the oxygen-tank section.
- * - Super Heavy: attitude vents near interstage + downward-canted vents below common-dome region.
+ * - Super Heavy: public references clearly show four grid fins and the booster return profile,
+ *   but do not publish a clean official side-thruster count/spec sheet. We therefore keep the
+ *   six modeled Super Heavy RCS hardpoints here as an inference from the visible booster layout.
  *
  * We model those zones directly on our procedural meshes using normalized coordinates.
  * xR/zR scale with body radius; yH scales with body height.

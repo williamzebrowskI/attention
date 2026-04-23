@@ -1,4 +1,5 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
+import { createPhysicsEnvironmentRuntime } from "../app/static/js/physics/runtime/environmentRuntime.js";
 import {
   LAUNCH_BODY_ID,
   LAUNCH_BOOSTER_BODY_ID,
@@ -11,9 +12,9 @@ const EARTH_MASS_KG = 5.97237e24;
 const EARTH_RADIUS_KM = 6371.0084;
 const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
-const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
-const DT_SEC = 1;
-const MAX_STEPS = 1200;
+const NOW_MS = Date.UTC(2026, 3, 22, 23, 0, 0);
+const DT_SEC = 1 / 60;
+const MAX_STEPS = 60 * 260;
 
 function assert(condition, message) {
   if (!condition) {
@@ -77,16 +78,6 @@ function earthAxes() {
   };
 }
 
-function sampleEarthAtmosphere(altitudeKm = 0) {
-  const safeAltitudeKm = Math.max(0, Number(altitudeKm) || 0);
-  const attenuation = Math.exp(-safeAltitudeKm / 7.5);
-  return {
-    densityKgM3: 1.225 * attenuation,
-    pressurePa: 101325 * attenuation,
-    temperatureK: 288.15,
-  };
-}
-
 function makeState() {
   return {
     dynamicBodies: new Map(),
@@ -114,25 +105,42 @@ function makeState() {
 }
 
 function main() {
+  const physicsEnvironmentRuntime = createPhysicsEnvironmentRuntime({
+    getLaunchSite: () => ({
+      latitudeDeg: 28.562,
+      longitudeDeg: -80.577,
+      siteName: "Cape Canaveral",
+    }),
+    getEarthFixedAxesEcliptic: () => earthAxes(),
+  });
   const controller = createLaunchController({
     getEarthRadiusKm: () => EARTH_RADIUS_KM,
     getEarthMassKg: () => EARTH_MASS_KG,
     getBodyRadiusKm: (id) => (String(id) === "moon" ? MOON_RADIUS_KM : EARTH_RADIUS_KM),
     getBodyMassKg: (id) => (String(id) === "moon" ? MOON_MASS_KG : EARTH_MASS_KG),
     getEarthFixedAxesEcliptic: earthAxes,
-    sampleEarthAtmosphere,
+    sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => (
+      physicsEnvironmentRuntime.sampleEarthAtmosphere(altitudeKm, sampleOptions)
+    ),
+    sampleLaunchWeather: (sampleOptions = {}) => (
+      physicsEnvironmentRuntime.sampleLaunchWeather(sampleOptions)
+    ),
     windSeed: 1,
     gravitationalConstantKm3PerKgS2: G_KM3_KG_S2,
   });
   const state = makeState();
-  controller.setMissionProfile(LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
-  const started = controller.startLaunch(state, NOW_MS, { launchKind: "surface-launch-test" });
-  assert(started, "surface_launch_hotstage_realism: startLaunch rejected");
+  controller.setMissionProfile(LAUNCH_MISSION_IDS.EARTH_ORBIT_HOLD);
+  const started = controller.startLaunch(state, NOW_MS, {
+    launchKind: "earth-orbit-hold-hotstage-realism",
+    boosterEngineCount: 33,
+  });
+  assert(started, "earth_orbit_hold_hotstage_realism: startLaunch rejected");
 
   const guidance = LAUNCH_VEHICLE_CONFIG.guidance || {};
   let nowMs = NOW_MS;
   let ignition = null;
   let detach = null;
+  let afterDetachSnapshot = null;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -154,6 +162,7 @@ function main() {
         elapsedSec: Number(snapshot?.elapsedSeconds),
         altitudeKm: Number(snapshot?.altitudeKm),
         speedKmS: Number(snapshot?.speedKmS),
+        guidanceMode: String(snapshot?.guidanceMode || ""),
       };
     }
     if (!detach && Boolean(snapshot?.boosterActive)) {
@@ -162,44 +171,87 @@ function main() {
         altitudeKm: Number(snapshot?.altitudeKm),
         speedKmS: Number(snapshot?.speedKmS),
         boosterAltitudeKm: Number(snapshot?.boosterAltitudeKm),
+        boosterGuidanceMode: String(snapshot?.boosterGuidanceMode || ""),
+      };
+    }
+    if (
+      detach
+      && !afterDetachSnapshot
+      && Number(snapshot?.elapsedSeconds) >= (detach.elapsedSec + 10)
+    ) {
+      afterDetachSnapshot = {
+        elapsedSec: Number(snapshot?.elapsedSeconds),
+        altitudeKm: Number(snapshot?.altitudeKm),
+        stageIndex: Number(snapshot?.stageIndex),
+        phase: String(snapshot?.phase || ""),
+        guidanceMode: String(snapshot?.guidanceMode || ""),
+        boosterActive: Boolean(snapshot?.boosterActive),
+        boosterGuidanceMode: String(snapshot?.boosterGuidanceMode || ""),
       };
       break;
     }
   }
 
-  assert(ignition, "surface_launch_hotstage_realism: never observed hotstage ignition");
-  assert(detach, "surface_launch_hotstage_realism: never observed booster detach");
+  assert(ignition, "earth_orbit_hold_hotstage_realism: never observed hotstage ignition");
+  assert(detach, "earth_orbit_hold_hotstage_realism: never observed booster detach");
+  assert(afterDetachSnapshot, "earth_orbit_hold_hotstage_realism: never observed sustained post-detach stage 2 state");
 
   assert(
     ignition.elapsedSec >= Number(guidance.hotstageMinElapsedSec)
       && ignition.elapsedSec <= Number(guidance.hotstageMaxElapsedSec),
-    `surface_launch_hotstage_realism: ignition time ${ignition.elapsedSec}s outside ${guidance.hotstageMinElapsedSec}-${guidance.hotstageMaxElapsedSec}s`,
+    `earth_orbit_hold_hotstage_realism: ignition time ${ignition.elapsedSec}s outside ${guidance.hotstageMinElapsedSec}-${guidance.hotstageMaxElapsedSec}s`,
   );
   assert(
     ignition.altitudeKm >= Number(guidance.hotstageMinAltitudeKm)
       && ignition.altitudeKm <= Number(guidance.hotstageMaxAltitudeKm),
-    `surface_launch_hotstage_realism: ignition altitude ${ignition.altitudeKm}km outside ${guidance.hotstageMinAltitudeKm}-${guidance.hotstageMaxAltitudeKm}km`,
+    `earth_orbit_hold_hotstage_realism: ignition altitude ${ignition.altitudeKm}km outside ${guidance.hotstageMinAltitudeKm}-${guidance.hotstageMaxAltitudeKm}km`,
   );
   assert(
     Math.abs(ignition.altitudeKm - Number(guidance.hotstageNominalAltitudeKm)) <= 12,
-    `surface_launch_hotstage_realism: ignition altitude ${ignition.altitudeKm}km drifted too far from nominal ${guidance.hotstageNominalAltitudeKm}km`,
+    `earth_orbit_hold_hotstage_realism: ignition altitude ${ignition.altitudeKm}km drifted too far from nominal ${guidance.hotstageNominalAltitudeKm}km`,
+  );
+  assert(
+    ignition.guidanceMode === "stage-transition:hotstage-authorized"
+      || ignition.guidanceMode.includes("hotstage-ramp"),
+    `earth_orbit_hold_hotstage_realism: expected hotstage authorization/ramp guidance, got ${ignition.guidanceMode}`,
   );
   assert(
     detach.elapsedSec >= ignition.elapsedSec
       && (detach.elapsedSec - ignition.elapsedSec) <= 5,
-    `surface_launch_hotstage_realism: detach should follow ignition quickly, got ignition ${ignition.elapsedSec}s detach ${detach.elapsedSec}s`,
+    `earth_orbit_hold_hotstage_realism: detach should follow ignition quickly, got ignition ${ignition.elapsedSec}s detach ${detach.elapsedSec}s`,
   );
   assert(
     Number.isFinite(detach.boosterAltitudeKm)
       && Math.abs(detach.boosterAltitudeKm - detach.altitudeKm) <= 0.5,
-    `surface_launch_hotstage_realism: stacked ship/booster detach altitudes diverged unexpectedly (${detach.altitudeKm} vs ${detach.boosterAltitudeKm})`,
+    `earth_orbit_hold_hotstage_realism: stacked ship/booster detach altitudes diverged unexpectedly (${detach.altitudeKm} vs ${detach.boosterAltitudeKm})`,
+  );
+  assert(
+    detach.boosterGuidanceMode === "booster-separation-flip",
+    `earth_orbit_hold_hotstage_realism: expected booster separation flip, got ${detach.boosterGuidanceMode}`,
+  );
+  assert(
+    afterDetachSnapshot.stageIndex === 1,
+    `earth_orbit_hold_hotstage_realism: expected stage 2 after detach, got stage ${afterDetachSnapshot.stageIndex}`,
+  );
+  assert(
+    afterDetachSnapshot.phase === "powered",
+    `earth_orbit_hold_hotstage_realism: expected powered stage 2 after detach, got ${afterDetachSnapshot.phase}`,
+  );
+  assert(
+    afterDetachSnapshot.guidanceMode.includes("stage2-initial-climb"),
+    `earth_orbit_hold_hotstage_realism: expected stage2 initial climb guidance after detach, got ${afterDetachSnapshot.guidanceMode}`,
+  );
+  assert(
+    afterDetachSnapshot.boosterActive,
+    "earth_orbit_hold_hotstage_realism: booster should remain active after detach",
   );
 
   console.log(JSON.stringify({
     ignition,
     detach,
+    afterDetachSnapshot,
   }, null, 2));
-  console.log("PASS surface-launch-hotstage-realism-e2e");
+  console.log("PASS earth-orbit-hold-hotstage-realism-e2e");
 }
 
 main();
