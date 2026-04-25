@@ -5,7 +5,7 @@ import {
   scale,
   subtract,
 } from "./launchMath.js";
-import { computeBoosterCatchRelativeState } from "./launchSiteCatchGeometry.js";
+import { computeBoosterCatchRelativeState } from "./launchSiteCatchGeometry.js?v=20260424b";
 
 function waveNoise(seed = 0, timeSec = 0) {
   const phase = (Number(seed) || 0) * 1.61803398875;
@@ -91,13 +91,15 @@ export function createBoosterNavigationState() {
       processVelocitySigmaKmSPerSec: 0.000018,
     }),
     catchEstimator: createNavigationStateEstimator({
-      positionBlend: 0.44,
-      velocityBlend: 0.52,
+      positionBlend: 0.58,
+      velocityBlend: 0.82,
       measurementPositionSigmaKm: 0.0025,
       measurementVelocitySigmaKmS: 0.00005,
       processPositionSigmaKmPerSec: 0.00005,
       processVelocitySigmaKmSPerSec: 0.00001,
     }),
+    lastCatchRelativePositionKm: null,
+    lastCatchTimestampSec: null,
     solution: null,
   };
 }
@@ -108,6 +110,8 @@ export function resetBoosterNavigationState(state = null) {
     : createBoosterNavigationState();
   nextState.globalEstimator?.reset?.();
   nextState.catchEstimator?.reset?.();
+  nextState.lastCatchRelativePositionKm = null;
+  nextState.lastCatchTimestampSec = null;
   nextState.solution = null;
   return nextState;
 }
@@ -175,7 +179,7 @@ export function updateBoosterNavigationState({
     const towerAvailable = (
       (
         truthCatchRelativeState.totalRangeKm <= 45
-        && Math.max(0, Number(altitudeKm) || 0) <= 28
+        && Math.max(0, Number(altitudeKm) || 0) <= 34
       )
       || (
         truthCatchRelativeState.lateralRangeKm <= 18
@@ -203,9 +207,30 @@ export function updateBoosterNavigationState({
         northAxis: truthCatchRelativeState.northAxisKm,
         upAxis: truthCatchRelativeState.upAxisKm,
       });
+      let measuredCatchRelativeVelocityKmS = truthCatchRelativeState.relativeVelocityKmS;
+      const previousCatchPosition = state.lastCatchRelativePositionKm;
+      const previousCatchTimestampSec = Number(state.lastCatchTimestampSec);
+      const catchDtSec = timestampSec - previousCatchTimestampSec;
+      if (
+        previousCatchPosition
+        && Number.isFinite(catchDtSec)
+        && catchDtSec > 1e-4
+        && catchDtSec < 1.0
+      ) {
+        const positionRateVelocityKmS = scale(
+          subtract(truthCatchRelativeState.relativePositionKm, previousCatchPosition),
+          1 / catchDtSec,
+        );
+        measuredCatchRelativeVelocityKmS = add(
+          scale(positionRateVelocityKmS, 0.90),
+          scale(truthCatchRelativeState.relativeVelocityKmS, 0.10),
+        );
+      }
+      state.lastCatchRelativePositionKm = { ...truthCatchRelativeState.relativePositionKm };
+      state.lastCatchTimestampSec = timestampSec;
       state.catchEstimator.update({
         position: add(truthCatchRelativeState.relativePositionKm, positionNoiseKm),
-        velocity: add(truthCatchRelativeState.relativeVelocityKmS, velocityNoiseKmS),
+        velocity: add(measuredCatchRelativeVelocityKmS, velocityNoiseKmS),
         nextTimestampSec: timestampSec,
       });
       catchSnapshot = state.catchEstimator.snapshot();
@@ -218,6 +243,8 @@ export function updateBoosterNavigationState({
       towerRelativeActive = true;
     } else {
       state.catchEstimator.predict(timestampSec);
+      state.lastCatchRelativePositionKm = null;
+      state.lastCatchTimestampSec = null;
     }
   }
 

@@ -823,7 +823,7 @@ function computeOrbitalRefuelDemoAutopilotCommand({
       const apoapsisDeficitKm = Number.isFinite(apoapsisKm)
         ? Math.max(0, (Number(config.parkingOrbitApoapsisMinKm) || 180) - apoapsisKm)
         : (Number(config.parkingOrbitApoapsisMinKm) || 180);
-      const recoveryUpBias = clamp(
+      const rawRecoveryUpBias = clamp(
         0.24
           + Math.min(0.12, periapsisDeficitKm / 500)
           + Math.min(0.10, apoapsisDeficitKm / 500)
@@ -831,14 +831,26 @@ function computeOrbitalRefuelDemoAutopilotCommand({
         0.24,
         0.46,
       );
+      const climbMarginNorm = Math.max(
+        clamp(radialSpeedKmS / 0.45, 0, 1),
+        clamp((altitudeKm - 130) / 180, 0, 1) * 0.8,
+        Number.isFinite(apoapsisKm) && apoapsisKm >= (Number(config.parkingOrbitApoapsisMinKm) || 180)
+          ? 0.75
+          : 0,
+      );
+      const recoveryUpBias = clamp(
+        rawRecoveryUpBias * (1 - (0.86 * climbMarginNorm)),
+        0.04,
+        0.46,
+      );
       return {
         phase: "powered",
         throttle: clamp(
-          0.62
-            + Math.min(0.18, periapsisDeficitKm / 700)
-            + Math.min(0.12, apoapsisDeficitKm / 700),
-          0.62,
-          0.92,
+          0.82
+            + Math.min(0.16, periapsisDeficitKm / 1800)
+            + Math.min(0.06, apoapsisDeficitKm / 700),
+          0.78,
+          1.0,
         ),
         direction: normalize(
           add(scale(tangent, 1 - recoveryUpBias), scale(up, recoveryUpBias)),

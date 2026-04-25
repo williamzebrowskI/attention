@@ -7,7 +7,7 @@ import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
 } from "./launchAtmosphereEffects.js?v=20260421a";
-import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260421a";
+import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260424b";
 
 /**
  * Inline dimensions (km) — your values kept as-is.
@@ -1030,6 +1030,37 @@ function updateRcsJetVisuals(jets, requestedJets, active, authority, pulseHz = 2
   }
 }
 
+function updateBoosterGridFinVisuals(gridFinVisuals, snapshot = null) {
+  if (!Array.isArray(gridFinVisuals) || gridFinVisuals.length === 0) return;
+  const deflectionDeg = snapshot
+    ? clamp(Number(snapshot.boosterGridFinDeflectionDeg) || 0, 0, 32)
+    : 0;
+  const authority = snapshot
+    ? clamp(Number(snapshot.boosterGridFinAuthority) || 0, 0, 1)
+    : 0;
+  const phase = String(snapshot?.boosterPhase || "").toLowerCase();
+  const deployed = !phase.includes("caught") && !phase.includes("landed");
+  const visualDeflectionRad = (deflectionDeg * Math.PI / 180) * (0.25 + (0.75 * authority));
+  const breathingRad = deployed && authority > 0.01
+    ? Math.sin((Date.now() / 1000) * 5.6) * 0.012 * authority
+    : 0;
+
+  for (const fin of gridFinVisuals) {
+    if (!fin?.rotation) continue;
+    const baseY = Number.isFinite(Number(fin.userData?.baseRotationY))
+      ? Number(fin.userData.baseRotationY)
+      : fin.rotation.y;
+    const baseZ = Number.isFinite(Number(fin.userData?.baseRotationZ))
+      ? Number(fin.userData.baseRotationZ)
+      : 0;
+    const sign = Number.isFinite(Number(fin.userData?.deflectionSign))
+      ? Number(fin.userData.deflectionSign)
+      : 1;
+    fin.rotation.y = baseY;
+    fin.rotation.z = baseZ + (sign * visualDeflectionRad) + breathingRad;
+  }
+}
+
 function createInlineNavigationBeaconVisual(THREE, hostGroup, radius, topY) {
   if (!THREE || !hostGroup || !(radius > 0) || !Number.isFinite(topY)) return null;
   const group = new THREE.Group();
@@ -1179,6 +1210,9 @@ export function createInlineBoosterVisual(THREE, distanceScale) {
       boosterGroup,
       mainEnginePlume,
       rcsJets,
+      gridFinVisuals: Array.isArray(boosterVisual.gridFinAssemblies)
+        ? boosterVisual.gridFinAssemblies
+        : [],
       boosterFuelVisual,
       atmosphereEffects: createLaunchAtmosphereEffects(THREE, {
         stage0BodyHeightScene: boosterHeight,
@@ -1197,6 +1231,7 @@ export function applyInlineBoosterManeuverVisuals(boosterState, snapshot = null)
   if (!snapshot) {
     setEnginePlumeVisual(boosterState.mainEnginePlume, false, 0, 1);
     updateRcsJetVisuals(boosterState.rcsJets, [], false, 0, 10);
+    updateBoosterGridFinVisuals(boosterState.gridFinVisuals, null);
     return;
   }
 
@@ -1269,6 +1304,8 @@ export function applyInlineBoosterManeuverVisuals(boosterState, snapshot = null)
     authority,
     Math.max(6, Number(phaseProfile?.rcsPulseHz) || 20),
   );
+
+  updateBoosterGridFinVisuals(boosterState.gridFinVisuals, snapshot);
 }
 
 export function applyInlineBoosterFuelVisuals(boosterState, options = null) {
@@ -1547,9 +1584,12 @@ export function applyInlineStarshipVisualStage(stageState, stageIndex, snapshot 
         ? Boolean(snapshot.boosterActive)
         : stageTwoActive
     );
+  const shipReferenceHotstageActive = Boolean(snapshot?.hotstageActive)
+    && stageTwoActive
+    && !Boolean(snapshot?.boosterActive);
   const distanceScale = Number(stageState?.distanceScale) || 1;
   if (Number.isFinite(stageState.detachedShipCenterY) && Number.isFinite(stageState.fullShipCenterY)) {
-    stageState.shipGroup.position.y = detached
+    stageState.shipGroup.position.y = (detached || shipReferenceHotstageActive)
       ? stageState.detachedShipCenterY
       : Number(stageState.fullShipCenterY);
   }

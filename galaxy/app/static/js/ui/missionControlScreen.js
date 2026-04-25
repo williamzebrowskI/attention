@@ -2103,6 +2103,16 @@ export function createMissionControlScreenController(options = {}) {
           tone: guidanceInertNoPropellant ? "critical" : "nominal",
         };
       }
+      if (snapshot.boosterCrashed) {
+        return {
+          title: "Booster Lost",
+          detail: String(snapshot.boosterTerminalReason || "surface impact").trim(),
+          meta: Number.isFinite(Number(snapshot.boosterImpactSpeedKmS))
+            ? `Impact ${formatNumber(snapshot.boosterImpactSpeedKmS * 1000, 1)} m/s`
+            : "Terminal recovery failure",
+          tone: "critical",
+        };
+      }
       if (snapshot.boosterActive && !snapshot.boosterLanded) {
         return {
           title: "Track Booster Recovery",

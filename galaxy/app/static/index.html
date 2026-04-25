@@ -4,21 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solar System Live Map</title>
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260421f" />
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260425a" />
   </head>
   <body>
     <canvas id="scene"></canvas>
-    <button id="launch-control-button" class="launch-floating-button" type="button" aria-pressed="false">Launch</button>
-    <button id="launch-return-button" class="launch-floating-button launch-return-button" type="button" aria-pressed="false">Return to Ship</button>
-    <button id="launch-reset-button" class="launch-floating-button launch-reset-button" type="button" aria-pressed="false">Reset</button>
-    <button id="launch-delete-button" class="launch-floating-button launch-delete-button" type="button" aria-pressed="false">Delete Selected</button>
-    <button id="launch-tanker-button" class="launch-floating-button launch-tanker-button" type="button" aria-pressed="false">Launch Tanker</button>
-    <button id="launch-mission-control-button" class="launch-floating-button launch-mission-control-button" type="button" aria-pressed="false">Mission Control</button>
+    <nav class="flight-command-dock" aria-label="Flight commands">
+      <div class="flight-command-dock-label">
+        <span class="flight-command-kicker">Flight Operations</span>
+        <strong>Runtime Console</strong>
+      </div>
+      <div class="flight-command-actions">
+        <button id="launch-control-button" class="launch-floating-button flight-command-primary" type="button" aria-pressed="false">Launch</button>
+        <button id="launch-return-button" class="launch-floating-button launch-return-button" type="button" aria-pressed="false">Return to Ship</button>
+        <button id="launch-tanker-button" class="launch-floating-button launch-tanker-button" type="button" aria-pressed="false">Launch Tanker</button>
+        <button id="launch-mission-control-button" class="launch-floating-button launch-mission-control-button" type="button" aria-pressed="false">Mission Control</button>
+        <button id="launch-reset-button" class="launch-floating-button launch-reset-button" type="button" aria-pressed="false">Reset</button>
+        <button id="launch-delete-button" class="launch-floating-button launch-delete-button flight-command-danger" type="button" aria-pressed="false">Delete Selected</button>
+      </div>
+    </nav>
     <div id="planet-info" class="planet-info"></div>
-    <aside id="body-legend" class="body-legend" aria-label="Solar system bodies">
+    <aside id="body-legend" class="body-legend" aria-label="Navigation console">
       <div class="legend-header">
         <div class="legend-header-row">
-          <p class="body-legend-title">Solar System Navigator</p>
+          <p class="body-legend-title">Navigation Console</p>
           <button
             id="body-legend-toggle"
             type="button"
@@ -30,52 +38,61 @@
             -
           </button>
         </div>
-        <p class="body-legend-subtitle">Select planets, moons, and spacecraft to inspect and track.</p>
+        <p class="body-legend-subtitle">Browse the solar system or manage active flight operations.</p>
       </div>
       <div id="body-legend-content" class="legend-content">
-        <div class="legend-controls">
-          <div class="observation-panel" aria-label="Observation controls">
-            <p class="body-legend-title">Observation</p>
-            <label class="observation-label" for="observation-mode">Mode</label>
-            <select id="observation-mode" class="observation-select">
-              <option value="body_lock">Body Lock</option>
-              <option value="free">Free Camera</option>
-              <option value="surface">Surface Observer</option>
-            </select>
-            <div id="surface-observer-row" class="surface-observer-row">
-              <label class="observation-label" for="surface-observer-target">Observer</label>
-              <select id="surface-observer-target" class="observation-select">
-                <option value="philadelphia">Philadelphia, Earth</option>
-                <option value="my_location">My Location (Live)</option>
-                <option value="launch_pad">Launch Pad</option>
-                <option value="iss">ISS</option>
-                <option value="moon_surface">Moon Surface</option>
+        <section id="solar-navigation-panel" class="legend-domain-panel legend-solar-panel" aria-label="Solar system navigation">
+          <p class="body-legend-title">Solar System Navigation</p>
+          <p class="legend-domain-subtitle">Observation modes, physics overlays, planets, and moons.</p>
+          <div class="legend-controls">
+            <div class="observation-panel" aria-label="Observation controls">
+              <p class="body-legend-title">Observation</p>
+              <label class="observation-label" for="observation-mode">Mode</label>
+              <select id="observation-mode" class="observation-select">
+                <option value="body_lock">Body Lock</option>
+                <option value="free">Free Camera</option>
+                <option value="surface">Surface Observer</option>
               </select>
+              <div id="surface-observer-row" class="surface-observer-row">
+                <label class="observation-label" for="surface-observer-target">Observer</label>
+                <select id="surface-observer-target" class="observation-select">
+                  <option value="philadelphia">Philadelphia, Earth</option>
+                  <option value="my_location">My Location (Live)</option>
+                  <option value="launch_pad">Launch Pad</option>
+                  <option value="iss">ISS</option>
+                  <option value="moon_surface">Moon Surface</option>
+                </select>
+              </div>
+              <p id="observation-status" class="observation-status"></p>
             </div>
-            <p id="observation-status" class="observation-status"></p>
+            <div id="physics-panel" class="physics-panel" aria-label="Physics overlays">
+              <p id="physics-panel-title" class="body-legend-title">Earth Physics Overlays</p>
+              <div class="physics-toggle-row">
+                <span class="physics-toggle-label">Tidal Force</span>
+                <button id="physics-toggle-tidal" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+              </div>
+              <div class="physics-toggle-row">
+                <span class="physics-toggle-label">Lagrange Points</span>
+                <button id="physics-toggle-lagrange" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+              </div>
+              <div class="physics-toggle-row">
+                <span class="physics-toggle-label">Atmosphere Physics</span>
+                <button id="physics-toggle-atmosphere" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
+              </div>
+              <p id="physics-overlay-status" class="observation-status"></p>
+            </div>
           </div>
-          <div id="physics-panel" class="physics-panel" aria-label="Physics overlays">
-            <p id="physics-panel-title" class="body-legend-title">Earth Physics Overlays</p>
-            <div class="physics-toggle-row">
-              <span class="physics-toggle-label">Tidal Force</span>
-              <button id="physics-toggle-tidal" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
-            </div>
-            <div class="physics-toggle-row">
-              <span class="physics-toggle-label">Lagrange Points</span>
-              <button id="physics-toggle-lagrange" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
-            </div>
-            <div class="physics-toggle-row">
-              <span class="physics-toggle-label">Atmosphere Physics</span>
-              <button id="physics-toggle-atmosphere" class="physics-toggle-button" type="button" aria-pressed="false">Off</button>
-            </div>
-            <p id="physics-overlay-status" class="observation-status"></p>
+          <div class="legend-body-header">
+            <p class="body-legend-title">Bodies</p>
+            <p id="legend-body-count" class="legend-body-count"></p>
           </div>
-        </div>
-        <div class="legend-body-header">
-          <p class="body-legend-title">Bodies</p>
-          <p id="legend-body-count" class="legend-body-count"></p>
-        </div>
-        <div id="body-legend-list" class="body-legend-list"></div>
+          <div id="body-legend-list" class="body-legend-list"></div>
+        </section>
+        <section id="spaceflight-panel" class="legend-domain-panel legend-spaceflight-panel" aria-label="Spaceflight operations">
+          <p class="body-legend-title">Spaceflight Operations</p>
+          <p class="legend-domain-subtitle">Vehicle tracking, launches, fleet controls, and active spacecraft.</p>
+          <div id="spaceflight-panel-content" class="legend-spaceflight-content"></div>
+        </section>
       </div>
     </aside>
     <section id="mission-control-screen" class="mission-control-screen" aria-hidden="true">
@@ -322,6 +339,6 @@
         </div>
       </div>
     </aside>
-    <script type="module" src="/static/js/app.js?v=20260422k"></script>
+    <script type="module" src="/static/js/app.js?v=20260425a"></script>
   </body>
 </html>

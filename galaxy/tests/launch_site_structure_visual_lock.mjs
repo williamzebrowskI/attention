@@ -40,6 +40,32 @@ function main() {
   });
   assert(catchTarget < ascentTarget, `expected catch mode to close chopsticks, got ${catchTarget} vs ${ascentTarget}`);
 
+  const farCatchTarget = resolveLaunchStructureArmTarget({
+    stackPresent: false,
+    launchPhase: "coast",
+    boosterPhase: "catch-burn",
+    boosterCatchTotalRangeKm: 1.9,
+    boosterCatchLateralRangeKm: 0.4,
+    boosterCatchVerticalErrorKm: 0.5,
+    boosterCatchLateralSpeedKmS: 0.04,
+    boosterCatchVerticalSpeedKmS: -0.08,
+    boosterBodyUpAlignment: 0.92,
+  });
+  assert(farCatchTarget > catchTarget, `expected arms to wait wider for far catch approach, got ${farCatchTarget}`);
+
+  const captureTarget = resolveLaunchStructureArmTarget({
+    stackPresent: false,
+    launchPhase: "coast",
+    boosterPhase: "catch-burn",
+    boosterCatchTotalRangeKm: 0.04,
+    boosterCatchLateralRangeKm: 0.018,
+    boosterCatchVerticalErrorKm: 0.006,
+    boosterCatchLateralSpeedKmS: 0.004,
+    boosterCatchVerticalSpeedKmS: -0.010,
+    boosterBodyUpAlignment: 0.99,
+  });
+  assert(captureTarget < catchTarget, `expected arms to close only for upright capture, got ${captureTarget}`);
+
   const caughtTarget = resolveLaunchStructureArmTarget({
     boosterPhase: "caught",
     boosterLanded: true,

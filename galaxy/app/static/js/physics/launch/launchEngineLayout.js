@@ -10,6 +10,70 @@ function finiteNonNegativeInteger(value, fallback = 0) {
   return Math.max(0, Math.round(numeric));
 }
 
+function finiteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function descriptorIndex(descriptor) {
+  const numeric = Number(descriptor?.index);
+  return Number.isInteger(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function addVector(a, b) {
+  return {
+    x: (Number(a?.x) || 0) + (Number(b?.x) || 0),
+    y: (Number(a?.y) || 0) + (Number(b?.y) || 0),
+    z: (Number(a?.z) || 0) + (Number(b?.z) || 0),
+  };
+}
+
+function crossVector(a, b) {
+  return {
+    x: ((Number(a?.y) || 0) * (Number(b?.z) || 0)) - ((Number(a?.z) || 0) * (Number(b?.y) || 0)),
+    y: ((Number(a?.z) || 0) * (Number(b?.x) || 0)) - ((Number(a?.x) || 0) * (Number(b?.z) || 0)),
+    z: ((Number(a?.x) || 0) * (Number(b?.y) || 0)) - ((Number(a?.y) || 0) * (Number(b?.x) || 0)),
+  };
+}
+
+function descriptorPositionBodyM(descriptor, fallbackY = 0) {
+  const positionBodyM = descriptor?.positionBodyM && typeof descriptor.positionBodyM === "object"
+    ? descriptor.positionBodyM
+    : descriptor;
+  return {
+    x: finiteNumber(positionBodyM?.x, 0),
+    y: finiteNumber(positionBodyM?.y, finiteNumber(fallbackY, 0)),
+    z: finiteNumber(positionBodyM?.z, 0),
+  };
+}
+
+function thrustForDescriptorN({
+  descriptor,
+  activeOrderIndex = 0,
+  engineThrustNByIndex = null,
+  activeEngineThrustsN = null,
+  fallbackPerEngineThrustN = 0,
+} = {}) {
+  const index = descriptorIndex(descriptor);
+  if (index !== null && Array.isArray(engineThrustNByIndex)) {
+    const indexedThrustN = Number(engineThrustNByIndex[index]);
+    if (Number.isFinite(indexedThrustN)) {
+      return Math.max(0, indexedThrustN);
+    }
+  }
+  if (Array.isArray(activeEngineThrustsN)) {
+    const activeThrustN = Number(activeEngineThrustsN[activeOrderIndex]);
+    if (Number.isFinite(activeThrustN)) {
+      return Math.max(0, activeThrustN);
+    }
+  }
+  const descriptorThrustN = Number(descriptor?.thrustN);
+  if (Number.isFinite(descriptorThrustN)) {
+    return Math.max(0, descriptorThrustN);
+  }
+  return Math.max(0, Number(fallbackPerEngineThrustN) || 0);
+}
+
 function createCircularEngineDescriptors({
   prefix,
   count,
@@ -189,4 +253,55 @@ export function resolveActiveEngineSelection({
     desiredCount,
     activeCount: activeIndices.length,
   };
+}
+
+export function computeEngineClusterBodyTorqueNm({
+  descriptors = [],
+  activeDescriptors = null,
+  activeIndices = null,
+  engineThrustNByIndex = null,
+  activeEngineThrustsN = null,
+  fallbackPerEngineThrustN = 0,
+  forceDirectionBody = { x: 0, y: 1, z: 0 },
+  fallbackY = 0,
+} = {}) {
+  const descriptorList = Array.isArray(descriptors) ? descriptors : [];
+  const activeList = Array.isArray(activeDescriptors) && activeDescriptors.length > 0
+    ? activeDescriptors
+    : (
+      Array.isArray(activeIndices)
+        ? activeIndices
+          .map((index) => {
+            const numericIndex = Number(index);
+            return Number.isInteger(numericIndex) && numericIndex >= 0
+              ? descriptorList[numericIndex]
+              : null;
+          })
+          .filter(Boolean)
+        : descriptorList
+    );
+  const forceDirection = {
+    x: finiteNumber(forceDirectionBody?.x, 0),
+    y: finiteNumber(forceDirectionBody?.y, 1),
+    z: finiteNumber(forceDirectionBody?.z, 0),
+  };
+  return activeList.reduce((sum, descriptor, activeOrderIndex) => {
+    const thrustN = thrustForDescriptorN({
+      descriptor,
+      activeOrderIndex,
+      engineThrustNByIndex,
+      activeEngineThrustsN,
+      fallbackPerEngineThrustN,
+    });
+    if (!(thrustN > 0)) {
+      return sum;
+    }
+    const positionBodyM = descriptorPositionBodyM(descriptor, fallbackY);
+    const forceBodyN = {
+      x: forceDirection.x * thrustN,
+      y: forceDirection.y * thrustN,
+      z: forceDirection.z * thrustN,
+    };
+    return addVector(sum, crossVector(positionBodyM, forceBodyN));
+  }, { x: 0, y: 0, z: 0 });
 }

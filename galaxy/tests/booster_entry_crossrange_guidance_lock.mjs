@@ -48,14 +48,14 @@ function main() {
     bodyAntiTangentAlignment: 0.42,
     bodyUpAlignment: -0.12,
   });
-  assert(ballisticGuidance.phase === "ballistic-descent", `expected ballistic-descent, got ${ballisticGuidance.phase}`);
-  assert(ballisticGuidance.siteTargetingEnabled === true, "expected ballistic descent to use aerodynamic site targeting");
+  assert(ballisticGuidance.phase === "descent-coast", `expected descent-coast, got ${ballisticGuidance.phase}`);
+  assert(ballisticGuidance.siteTargetingEnabled === true, "expected high-altitude descent coast to use aerodynamic site targeting");
   assert(ballisticGuidance.siteVectorWeight >= 0.23, `expected meaningful ballistic site-vector weight, got ${ballisticGuidance.siteVectorWeight}`);
   assert(ballisticGuidance.siteVelocityWeight >= 0.14, `expected meaningful ballistic site-velocity weight, got ${ballisticGuidance.siteVelocityWeight}`);
 
   const entryBurn = computeBoosterRecoveryCommand({
     currentPhase: "entry-align",
-    altitudeKm: 42,
+    altitudeKm: 36,
     radialSpeedKmS: -0.26,
     tangentialSpeedKmS: 0.84,
     launchSiteRangeKm: 18,

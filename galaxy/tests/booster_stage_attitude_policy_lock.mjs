@@ -116,7 +116,7 @@ function main() {
   assert(boostback.phase === "boostback", `expected boostback, got ${boostback.phase}`);
   assertCommandMatchesPolicy(boostback);
 
-  const entryAlign = computeBoosterRecoveryCommand({
+  const highAltitudeDescentCoast = computeBoosterRecoveryCommand({
     currentPhase: "entry-align",
     altitudeKm: 86,
     radialSpeedKmS: -0.10,
@@ -132,12 +132,12 @@ function main() {
     bodyAntiTangentAlignment: 0.34,
     bodyUpAlignment: -0.18,
   });
-  assert(entryAlign.phase === "entry-align", `expected entry-align, got ${entryAlign.phase}`);
-  assertCommandMatchesPolicy(entryAlign);
+  assert(highAltitudeDescentCoast.phase === "descent-coast", `expected descent-coast, got ${highAltitudeDescentCoast.phase}`);
+  assertCommandMatchesPolicy(highAltitudeDescentCoast);
 
-  const entryBurn = computeBoosterRecoveryCommand({
+  const terminalIntercept = computeBoosterRecoveryCommand({
     currentPhase: "entry-align",
-    altitudeKm: 42,
+    altitudeKm: 36,
     radialSpeedKmS: -0.26,
     tangentialSpeedKmS: 0.84,
     launchSiteRangeKm: 18,
@@ -149,8 +149,8 @@ function main() {
     dynamicPressurePa: 19_000,
     bodyUpAlignment: 0.62,
   });
-  assert(entryBurn.phase === "entry-burn", `expected entry-burn, got ${entryBurn.phase}`);
-  assertCommandMatchesPolicy(entryBurn);
+  assert(terminalIntercept.phase === "terminal-intercept", `expected terminal-intercept, got ${terminalIntercept.phase}`);
+  assertCommandMatchesPolicy(terminalIntercept);
 
   const descentCoast = computeBoosterRecoveryCommand({
     currentPhase: "entry-burn",
@@ -198,29 +198,29 @@ function main() {
     remainingPropellantKg: 202_000,
     reserveLandingPropellantKg: 160_000,
     dynamicPressurePa: 1_600,
-    bodyUpAlignment: 0.82,
+    bodyUpAlignment: 0.92,
   });
-  assert(catchApproach.phase === "catch-approach", `expected catch-approach, got ${catchApproach.phase}`);
+  assert(catchApproach.phase === "terminal-intercept", `expected terminal-intercept for loose tower corridor, got ${catchApproach.phase}`);
   assertCommandMatchesPolicy(catchApproach);
 
-  const catchBurn = computeBoosterRecoveryCommand({
+  const landingBrake = computeBoosterRecoveryCommand({
     currentPhase: "catch-approach",
-    altitudeKm: 3.2,
-    radialSpeedKmS: -0.04,
-    tangentialSpeedKmS: 0.03,
-    launchSiteRangeKm: 1.8,
-    launchSiteLateralRangeKm: 1.2,
-    launchSiteLateralClosingSpeedKmS: 0.04,
-    catchTotalRangeKm: 1.6,
-    catchLateralRangeKm: 1.1,
-    catchVerticalErrorKm: 0.15,
-    catchLateralSpeedKmS: 0.08,
-    catchVerticalSpeedKmS: -0.03,
-    catchApproachSpeedKmS: 0.09,
-    catchEastErrorKm: 0.8,
-    catchNorthErrorKm: 0.7,
-    catchEastSpeedKmS: 0.04,
-    catchNorthSpeedKmS: 0.03,
+    altitudeKm: 8.2,
+    radialSpeedKmS: -1.24,
+    tangentialSpeedKmS: 0.08,
+    launchSiteRangeKm: 8.6,
+    launchSiteLateralRangeKm: 2.2,
+    launchSiteLateralClosingSpeedKmS: 0.42,
+    catchTotalRangeKm: 8.4,
+    catchLateralRangeKm: 2.1,
+    catchVerticalErrorKm: 8.1,
+    catchLateralSpeedKmS: 0.54,
+    catchVerticalSpeedKmS: -1.24,
+    catchApproachSpeedKmS: 1.35,
+    catchEastErrorKm: 1.8,
+    catchNorthErrorKm: 1.1,
+    catchEastSpeedKmS: -0.48,
+    catchNorthSpeedKmS: -0.20,
     catchClosingSpeedKmS: 0.03,
     towerRelativeActive: true,
     catchPositionSigmaKm: 0.004,
@@ -231,10 +231,41 @@ function main() {
     dynamicPressurePa: 600,
     bodyUpAlignment: 0.96,
   });
+  assert(landingBrake.phase === "landing-burn", `expected 13-engine landing-burn brake before precision catch, got ${landingBrake.phase}`);
+  assertCommandMatchesPolicy(landingBrake);
+
+  const catchBurn = computeBoosterRecoveryCommand({
+    currentPhase: "landing-burn",
+    altitudeKm: 0.95,
+    radialSpeedKmS: -0.025,
+    tangentialSpeedKmS: 0.02,
+    launchSiteRangeKm: 0.72,
+    launchSiteLateralRangeKm: 0.26,
+    launchSiteLateralClosingSpeedKmS: 0.018,
+    catchTotalRangeKm: 0.70,
+    catchLateralRangeKm: 0.24,
+    catchVerticalErrorKm: 0.55,
+    catchLateralSpeedKmS: 0.035,
+    catchVerticalSpeedKmS: -0.025,
+    catchApproachSpeedKmS: 0.045,
+    catchEastErrorKm: 0.17,
+    catchNorthErrorKm: 0.16,
+    catchEastSpeedKmS: 0.020,
+    catchNorthSpeedKmS: 0.018,
+    catchClosingSpeedKmS: 0.025,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.004,
+    catchVelocitySigmaKmS: 0.00004,
+    timeSinceSeparationSec: 388,
+    remainingPropellantKg: 197_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 540,
+    bodyUpAlignment: 0.985,
+  });
   assert(catchBurn.phase === "catch-burn", `expected catch-burn, got ${catchBurn.phase}`);
   assertCommandMatchesPolicy(catchBurn);
 
-  const landingBurn = computeBoosterRecoveryCommand({
+  const outsideCatchSolution = computeBoosterRecoveryCommand({
     currentPhase: "descent-coast",
     altitudeKm: 0.3,
     radialSpeedKmS: -0.04,
@@ -248,8 +279,8 @@ function main() {
     dynamicPressurePa: 400,
     bodyUpAlignment: 0.97,
   });
-  assert(landingBurn.phase === "landing-burn", `expected landing-burn, got ${landingBurn.phase}`);
-  assertCommandMatchesPolicy(landingBurn);
+  assert(outsideCatchSolution.phase === "terminal-intercept", `expected terminal-intercept outside the physical catch solution, got ${outsideCatchSolution.phase}`);
+  assertCommandMatchesPolicy(outsideCatchSolution);
 
   console.log("PASS booster-stage-attitude-policy-lock");
 }

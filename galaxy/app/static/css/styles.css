@@ -2601,7 +2601,23 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
+}
+
+.legend-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.legend-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.legend-content::-webkit-scrollbar-thumb {
+  background: rgba(122, 165, 199, 0.38);
+  border-radius: 999px;
 }
 
 .body-legend-title {
@@ -2659,6 +2675,52 @@ body {
   display: grid;
   gap: 8px;
   flex: 0 0 auto;
+}
+
+.legend-domain-panel {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(88, 162, 224, 0.28);
+  background:
+    linear-gradient(180deg, rgba(11, 21, 33, 0.84), rgba(7, 13, 22, 0.76));
+}
+
+.legend-domain-panel.legend-collapsible {
+  margin: 0;
+}
+
+.legend-domain-panel > .legend-collapsible-header {
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(118, 182, 224, 0.16);
+}
+
+.legend-domain-panel.collapsed > .legend-collapsible-header {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.legend-domain-panel > .legend-collapsible-body {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.legend-domain-subtitle {
+  margin: 0;
+  color: #97bbda;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-size: 10px;
+  line-height: 1.28;
+}
+
+.legend-spaceflight-content {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
 }
 
 .legend-collapsible {
@@ -2844,7 +2906,7 @@ body {
   z-index: 1;
   flex: 1;
   min-height: 0;
-  max-height: none;
+  max-height: min(34vh, 320px);
   overflow-y: auto;
   padding: 2px 2px 0;
   scrollbar-gutter: stable;
@@ -4607,5 +4669,616 @@ body {
 
   .mission-control-sequence-block {
     flex-basis: auto;
+  }
+}
+
+/* Flight view redesign */
+
+:root {
+  --flight-bg: rgba(5, 8, 12, 0.72);
+  --flight-bg-strong: rgba(8, 12, 18, 0.9);
+  --flight-bg-soft: rgba(14, 19, 27, 0.78);
+  --flight-line: rgba(148, 166, 184, 0.28);
+  --flight-line-strong: rgba(190, 204, 216, 0.5);
+  --flight-text: #edf4fb;
+  --flight-muted: #9aaab9;
+  --flight-dim: #667586;
+  --flight-blue: #67c8ff;
+  --flight-amber: #f3b64d;
+  --flight-green: #66d28f;
+  --flight-red: #ff6b6b;
+  --flight-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+  --flight-nav-width: min(318px, calc(50vw - 42px));
+  --flight-inspector-width: min(370px, calc(50vw - 42px));
+}
+
+body {
+  font-family: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.42), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.46)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.58), transparent 20%, transparent 76%, rgba(0, 0, 0, 0.48));
+}
+
+.flight-command-dock {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 22;
+  width: min(760px, calc(100vw - 380px));
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--flight-line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(17, 22, 29, 0.88), rgba(7, 10, 15, 0.86));
+  box-shadow: var(--flight-shadow);
+  backdrop-filter: blur(16px);
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.flight-command-dock-label {
+  min-width: 132px;
+  padding: 0 8px 0 4px;
+  border-right: 1px solid rgba(148, 166, 184, 0.2);
+  color: var(--flight-text);
+  line-height: 1.1;
+}
+
+.flight-command-kicker {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--flight-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.flight-command-dock-label strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.flight-command-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.flight-command-dock .launch-floating-button {
+  position: static;
+  inset: auto;
+  min-width: 0;
+  height: 36px;
+  max-width: 132px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 1 auto;
+  margin: 0;
+  padding: 0 12px;
+  border-radius: 6px;
+  border-color: rgba(148, 166, 184, 0.32);
+  background: rgba(18, 25, 34, 0.88);
+  color: var(--flight-text);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: none;
+}
+
+.flight-command-dock .launch-floating-button:hover:not(:disabled) {
+  border-color: var(--flight-line-strong);
+  background: rgba(29, 38, 50, 0.94);
+}
+
+.flight-command-dock .launch-floating-button.on {
+  border-color: rgba(243, 182, 77, 0.76);
+  background: rgba(59, 42, 15, 0.92);
+  color: #ffe5ad;
+}
+
+.flight-command-dock .flight-command-primary {
+  min-width: 94px;
+  border-color: rgba(103, 200, 255, 0.58);
+  background: linear-gradient(180deg, rgba(28, 92, 130, 0.9), rgba(15, 50, 75, 0.92));
+  color: #f4fbff;
+}
+
+.flight-command-dock .flight-command-danger {
+  border-color: rgba(255, 107, 107, 0.34);
+  color: #ffd6d6;
+}
+
+.flight-command-dock .launch-floating-button:disabled {
+  opacity: 0.46;
+  color: rgba(218, 228, 238, 0.64);
+}
+
+.body-legend {
+  top: 86px;
+  left: 18px;
+  right: auto;
+  width: var(--flight-nav-width);
+  height: min(840px, calc(100vh - 110px));
+  height: min(840px, calc(100svh - 110px));
+  max-height: calc(100vh - 110px);
+  max-height: calc(100svh - 110px);
+  padding: 10px;
+  border-radius: 8px;
+  border-color: var(--flight-line);
+  background: linear-gradient(180deg, rgba(11, 16, 23, 0.92), rgba(5, 8, 13, 0.9));
+  box-shadow: var(--flight-shadow);
+  backdrop-filter: blur(16px);
+  z-index: 16;
+}
+
+.body-legend.collapsed {
+  width: min(260px, calc(50vw - 42px));
+}
+
+.legend-header {
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid rgba(148, 166, 184, 0.18);
+}
+
+.body-legend-title,
+.legend-group-title,
+.legend-inline-section-title,
+.legend-vehicle-label {
+  color: var(--flight-text);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+}
+
+.body-legend-subtitle,
+.legend-domain-subtitle,
+.legend-button-meta,
+.observation-label,
+.physics-toggle-label,
+.legend-vehicle-mission-label,
+.legend-vehicle-fuel-label,
+.legend-vehicle-trajectory-label {
+  color: var(--flight-muted);
+}
+
+.legend-content {
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.legend-controls {
+  gap: 8px;
+}
+
+.legend-domain-panel {
+  border-color: rgba(148, 166, 184, 0.22);
+  background: rgba(9, 14, 21, 0.74);
+}
+
+.legend-domain-panel > .legend-collapsible-header {
+  border-bottom-color: rgba(148, 166, 184, 0.16);
+}
+
+.legend-spaceflight-content .legend-vehicle-panel {
+  margin-top: 0;
+}
+
+.observation-panel,
+.physics-panel,
+.legend-group,
+.legend-vehicle-panel,
+.legend-mission-control,
+.legend-launch-debug,
+.legend-launch-event-log,
+.legend-gravity-panel {
+  border-radius: 8px;
+  border-color: rgba(148, 166, 184, 0.2);
+  background: rgba(12, 17, 24, 0.72);
+}
+
+.observation-panel,
+.physics-panel {
+  padding: 9px;
+}
+
+.legend-group {
+  padding: 8px;
+}
+
+.legend-body-header {
+  padding: 0 2px;
+}
+
+.body-legend-list {
+  padding-right: 4px;
+}
+
+.legend-button {
+  min-height: 42px;
+  border-radius: 6px;
+  border-color: rgba(148, 166, 184, 0.2);
+  background: rgba(17, 23, 32, 0.72);
+  color: var(--flight-text);
+}
+
+.legend-button:hover {
+  border-color: rgba(103, 200, 255, 0.42);
+  background: rgba(24, 33, 45, 0.9);
+}
+
+.legend-button.selected {
+  border-color: rgba(102, 210, 143, 0.72);
+  background:
+    linear-gradient(90deg, rgba(102, 210, 143, 0.16), transparent 72%),
+    rgba(13, 29, 22, 0.94);
+  color: #eafff0;
+}
+
+.legend-button.selected .legend-button-meta {
+  color: rgba(211, 239, 221, 0.82);
+}
+
+.legend-button.status-ready::after {
+  background: var(--flight-green);
+  box-shadow: 0 0 9px rgba(102, 210, 143, 0.68);
+}
+
+.legend-button.status-fueling::after {
+  background: var(--flight-blue);
+  box-shadow: 0 0 9px rgba(103, 200, 255, 0.68);
+}
+
+.legend-button.fallback::after {
+  background: var(--flight-red);
+  box-shadow: 0 0 9px rgba(255, 107, 107, 0.68);
+}
+
+.observation-select,
+.legend-vehicle-mission-select {
+  border-radius: 6px;
+  border-color: rgba(148, 166, 184, 0.28);
+  background: rgba(4, 8, 14, 0.86);
+  color: var(--flight-text);
+}
+
+.legend-vehicle-view-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.legend-vehicle-view-button,
+.physics-toggle-button,
+.legend-gravity-toggle,
+.legend-vehicle-fuel-toggle,
+.legend-vehicle-trajectory-toggle,
+.legend-toggle,
+.legend-collapsible-toggle,
+.legend-body-toggle,
+.planet-info-toggle {
+  border-radius: 6px;
+  border-color: rgba(148, 166, 184, 0.3);
+  background: rgba(17, 23, 32, 0.9);
+  color: var(--flight-text);
+}
+
+.legend-vehicle-view-button.on,
+.physics-toggle-button.on,
+.legend-gravity-toggle.on,
+.legend-vehicle-fuel-toggle.on,
+.legend-vehicle-trajectory-toggle.on {
+  border-color: rgba(243, 182, 77, 0.76);
+  background: rgba(59, 42, 15, 0.92);
+  color: #ffe5ad;
+}
+
+.legend-vehicle-view-button.wreckage {
+  border-color: rgba(255, 107, 107, 0.56);
+  background: rgba(55, 18, 18, 0.9);
+  color: #ffd9d9;
+}
+
+.legend-vehicle-view-button.wreckage.on {
+  border-color: rgba(255, 170, 95, 0.82);
+  background: rgba(82, 31, 20, 0.94);
+  color: #ffe0c4;
+}
+
+.legend-mission-control.active {
+  border-color: rgba(103, 200, 255, 0.46);
+}
+
+.legend-mission-metric,
+.legend-status-badge {
+  border-radius: 6px;
+}
+
+.legend-launch-status,
+.legend-mission-control-status,
+.legend-mission-empty,
+.legend-mission-metric .v,
+.legend-launch-event-log {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+.planet-info {
+  top: 86px;
+  right: 18px;
+  bottom: auto;
+  left: auto;
+  z-index: 15;
+  width: var(--flight-inspector-width);
+  max-width: none;
+  max-height: calc(100vh - 380px);
+  max-height: calc(100svh - 380px);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  border-color: var(--flight-line);
+  background: linear-gradient(180deg, rgba(12, 17, 24, 0.92), rgba(5, 8, 13, 0.9));
+  box-shadow: var(--flight-shadow);
+  color: var(--flight-text);
+  backdrop-filter: blur(16px);
+  transform: translateY(-4px);
+  transition: opacity 140ms linear, transform 160ms ease;
+}
+
+.planet-info.visible {
+  transform: translateY(0);
+}
+
+.planet-info.collapsed {
+  width: min(320px, calc(50vw - 42px));
+  max-width: none;
+  max-height: none;
+}
+
+.planet-info-header {
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(148, 166, 184, 0.18);
+}
+
+.planet-info .title {
+  color: var(--flight-text);
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.planet-info-content {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+  display: grid;
+  gap: 6px;
+  scrollbar-gutter: stable;
+}
+
+.planet-info-content::-webkit-scrollbar,
+.legend-mission-metrics::-webkit-scrollbar,
+.legend-launch-event-log::-webkit-scrollbar {
+  width: 8px;
+}
+
+.planet-info-content::-webkit-scrollbar-track,
+.legend-mission-metrics::-webkit-scrollbar-track,
+.legend-launch-event-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.planet-info-content::-webkit-scrollbar-thumb,
+.legend-mission-metrics::-webkit-scrollbar-thumb,
+.legend-launch-event-log::-webkit-scrollbar-thumb {
+  background: rgba(148, 166, 184, 0.42);
+  border-radius: 999px;
+}
+
+.planet-info .line {
+  margin: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(148, 166, 184, 0.14);
+  border-radius: 6px;
+  background: rgba(9, 13, 20, 0.58);
+  color: #d7e5f0;
+  font-size: 11px;
+  line-height: 1.28;
+}
+
+.planet-info-content .line:first-child {
+  margin-top: 0;
+}
+
+.planet-info .line.launch-line {
+  border-color: rgba(103, 200, 255, 0.16);
+  background: rgba(8, 17, 27, 0.72);
+  color: #cfe7f8;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.launch-booster-engine-hud {
+  right: calc(var(--flight-inspector-width) + 36px);
+  bottom: 18px;
+  z-index: 17;
+  width: 220px;
+  min-height: 248px;
+  padding: 8px;
+  border: 1px solid rgba(148, 166, 184, 0.2);
+  border-radius: 8px;
+  background: rgba(5, 8, 13, 0.72);
+  backdrop-filter: blur(14px);
+}
+
+.launch-booster-engine-hud-metric {
+  border-radius: 6px;
+  background: rgba(12, 17, 24, 0.82);
+}
+
+@media (min-width: 1500px) {
+  :root {
+    --flight-nav-width: 340px;
+    --flight-inspector-width: 390px;
+  }
+
+  .body-legend {
+    width: var(--flight-nav-width);
+  }
+
+  .planet-info {
+    width: var(--flight-inspector-width);
+  }
+
+  .flight-command-dock {
+    width: min(840px, calc(100vw - 860px));
+  }
+}
+
+@media (max-width: 1180px) {
+  :root {
+    --flight-nav-width: min(300px, 44vw);
+    --flight-inspector-width: min(340px, 44vw);
+  }
+
+  .flight-command-dock {
+    left: 14px;
+    right: 14px;
+    width: auto;
+    transform: none;
+  }
+
+  .body-legend {
+    top: 88px;
+    width: var(--flight-nav-width);
+  }
+
+  .planet-info {
+    top: 88px;
+    width: var(--flight-inspector-width);
+    max-height: calc(100vh - 360px);
+    max-height: calc(100svh - 360px);
+  }
+
+  .launch-booster-engine-hud {
+    right: 18px;
+  }
+
+  .flight-command-dock-label {
+    min-width: 118px;
+  }
+}
+
+@media (max-width: 880px) {
+  body::after {
+    background:
+      linear-gradient(180deg, rgba(0, 0, 0, 0.62), transparent 26%, transparent 70%, rgba(0, 0, 0, 0.64));
+  }
+
+  .flight-command-dock {
+    top: 10px;
+    left: 10px;
+    right: auto;
+    width: min(370px, calc(100vw - 20px)) !important;
+    max-width: min(370px, calc(100vw - 20px));
+    grid-template-columns: 1fr;
+    gap: 7px;
+    padding: 8px;
+    overflow: hidden;
+  }
+
+  .flight-command-dock-label {
+    display: flex;
+    min-width: 0;
+    padding: 0 0 7px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 166, 184, 0.18);
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+
+  .flight-command-kicker {
+    margin: 0;
+  }
+
+  .flight-command-dock-label strong {
+    display: none;
+  }
+
+  .flight-command-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .flight-command-dock .launch-floating-button {
+    width: 100%;
+    height: 34px;
+    min-width: 0 !important;
+    max-width: none;
+    padding: 0 8px;
+    font-size: 10px;
+  }
+
+  .body-legend {
+    top: 176px;
+    left: 10px;
+    right: auto;
+    width: min(370px, calc(100vw - 20px)) !important;
+    height: min(38vh, calc(100svh - 260px));
+    max-height: min(38vh, calc(100svh - 260px));
+    padding: 9px;
+  }
+
+  .body-legend.collapsed {
+    width: auto;
+  }
+
+  .planet-info {
+    top: auto;
+    left: 10px;
+    right: auto;
+    bottom: 10px;
+    width: min(370px, calc(100vw - 20px)) !important;
+    max-height: 32vh;
+    padding: 9px;
+  }
+
+  .planet-info.collapsed {
+    width: auto;
+  }
+
+  .planet-info .line {
+    font-size: 10px;
+  }
+
+  .launch-booster-engine-hud {
+    display: none;
   }
 }

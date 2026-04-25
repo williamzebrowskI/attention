@@ -215,6 +215,7 @@ export function addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
   const gridFinY = (0.5 * boosterHeight) - (radius * 1.04);
   const gridFinCount = 3;
   const gridFinPhase = Math.PI * 0.5;
+  const gridFinAssemblies = [];
   for (let i = 0; i < gridFinCount; i += 1) {
     const angle = ((i / gridFinCount) * Math.PI * 2) + gridFinPhase;
     const finAssembly = new THREE.Group();
@@ -268,7 +269,12 @@ export function addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
       Math.sin(angle) * (radius + (gridFinDepth * 0.42)),
     );
     finAssembly.rotation.y = angle;
+    finAssembly.userData.baseRotationY = angle;
+    finAssembly.userData.baseRotationZ = 0;
+    finAssembly.userData.deflectionSign = i === 0 ? 1 : (i === 1 ? -1 : 1);
+    finAssembly.userData.gridFinIndex = i;
     boosterGroup.add(finAssembly);
+    gridFinAssemblies.push(finAssembly);
 
     const catchPinRadius = clamp(radius * 0.026, radius * 0.013, radius * 0.039);
     const catchPinLength = clamp(radius * 0.25, radius * 0.12, radius * 0.34);
@@ -328,5 +334,6 @@ export function addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
     engineExitY,
     bellRadius,
     bellHeight,
+    gridFinAssemblies,
   };
 }

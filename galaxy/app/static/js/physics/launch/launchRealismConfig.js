@@ -1,5 +1,30 @@
 import { STARSHIP_STACK_DIMENSIONS_KM } from "./launchConfig.js";
 
+const BOOSTER_GRID_FIN_AREA_M2 = 8.0;
+const BOOSTER_GRID_FIN_RADIUS_M = STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.52;
+const BOOSTER_GRID_FIN_Y_M = STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.43;
+
+function makeBoosterGridFin(name, angleDeg, rollMix) {
+  const angleRad = angleDeg * Math.PI / 180;
+  const radialX = Math.cos(angleRad);
+  const radialZ = Math.sin(angleRad);
+  return Object.freeze({
+    name,
+    areaM2: BOOSTER_GRID_FIN_AREA_M2,
+    positionBodyM: Object.freeze({
+      x: BOOSTER_GRID_FIN_RADIUS_M * radialX,
+      y: BOOSTER_GRID_FIN_Y_M,
+      z: BOOSTER_GRID_FIN_RADIUS_M * radialZ,
+    }),
+    forceAxisBody: Object.freeze({ x: radialX, y: 0, z: radialZ }),
+    controlMix: Object.freeze({
+      pitch: radialZ,
+      yaw: -radialX,
+      roll: rollMix,
+    }),
+  });
+}
+
 export const LAUNCH_REALISM_CONFIG = Object.freeze({
   wind: Object.freeze({
     layers: Object.freeze([
@@ -74,59 +99,18 @@ export const LAUNCH_REALISM_CONFIG = Object.freeze({
   gridFins: Object.freeze({
     booster: Object.freeze({
       totalAreaM2: 24.0,
-      liftSlopePerRad: 2.35,
-      maxDeflectionDeg: 28,
-      leverArmM: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.34,
+      liftSlopePerRad: 2.55,
+      maxDeflectionDeg: 32,
+      leverArmM: BOOSTER_GRID_FIN_Y_M,
       bodyLengthM: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000,
-      baseDampingPerS: 0.85,
+      baseDampingPerS: 1.02,
       qMinPa: 1_000,
-      qPeakPa: 18_000,
-      qFadePa: 70_000,
+      qPeakPa: 16_000,
+      qFadePa: 76_000,
       fins: Object.freeze([
-        Object.freeze({
-          name: "top",
-          areaM2: 6.0,
-          positionBodyM: Object.freeze({
-            x: 0,
-            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
-            z: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
-          }),
-          forceAxisBody: Object.freeze({ x: 0, y: 0, z: 1 }),
-          controlMix: Object.freeze({ pitch: 1.0, yaw: 0.0, roll: 0.45 }),
-        }),
-        Object.freeze({
-          name: "bottom",
-          areaM2: 6.0,
-          positionBodyM: Object.freeze({
-            x: 0,
-            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
-            z: -STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
-          }),
-          forceAxisBody: Object.freeze({ x: 0, y: 0, z: -1 }),
-          controlMix: Object.freeze({ pitch: 1.0, yaw: 0.0, roll: -0.45 }),
-        }),
-        Object.freeze({
-          name: "right",
-          areaM2: 6.0,
-          positionBodyM: Object.freeze({
-            x: STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
-            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
-            z: 0,
-          }),
-          forceAxisBody: Object.freeze({ x: 1, y: 0, z: 0 }),
-          controlMix: Object.freeze({ pitch: 0.0, yaw: 1.0, roll: -0.45 }),
-        }),
-        Object.freeze({
-          name: "left",
-          areaM2: 6.0,
-          positionBodyM: Object.freeze({
-            x: -STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 1000 * 0.5,
-            y: STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 1000 * 0.26,
-            z: 0,
-          }),
-          forceAxisBody: Object.freeze({ x: -1, y: 0, z: 0 }),
-          controlMix: Object.freeze({ pitch: 0.0, yaw: 1.0, roll: 0.45 }),
-        }),
+        makeBoosterGridFin("upper", 90, 0.34),
+        makeBoosterGridFin("lower-port", 210, -0.34),
+        makeBoosterGridFin("lower-starboard", 330, 0.34),
       ]),
     }),
   }),
@@ -166,7 +150,7 @@ export const LAUNCH_REALISM_CONFIG = Object.freeze({
       throttleRiseTauSec: 0.42,
       throttleFallTauSec: 0.30,
       gimbalRateDegS: 9.6,
-      maxGimbalDeflectionDeg: 8.0,
+      maxGimbalDeflectionDeg: 15.0,
     }),
   }),
   massModel: Object.freeze({

@@ -187,7 +187,7 @@ function main() {
   );
 
   assert(
-    terminalAttitude.altitudeKm >= 0.005 && terminalAttitude.altitudeKm <= 20.0,
+    terminalAttitude.altitudeKm >= 0.005 && terminalAttitude.altitudeKm <= 38.0,
     `booster_terminal_attitude_e2e: terminal attitude altitude out of band ${JSON.stringify(terminalAttitude)}`,
   );
   assert(

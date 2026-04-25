@@ -54,6 +54,10 @@ export function createHotstageState() {
     boosterReservePropellantKg: 0,
     ignitionStableSec: 0,
     virtualSeparationKm: 0,
+    physicalSeparationKm: 0,
+    physicalSeparationRateKmS: 0,
+    shipReferenceActive: false,
+    shipCenterShiftKm: 0,
     detachReason: "",
   };
 }
@@ -66,6 +70,10 @@ export function resetHotstageState(hotstage) {
   state.boosterReservePropellantKg = 0;
   state.ignitionStableSec = 0;
   state.virtualSeparationKm = 0;
+  state.physicalSeparationKm = 0;
+  state.physicalSeparationRateKmS = 0;
+  state.shipReferenceActive = false;
+  state.shipCenterShiftKm = 0;
   state.detachReason = "";
   return state;
 }
@@ -102,6 +110,8 @@ export function updateHotstageGates(hotstage, {
   phase = "idle",
   stage2ThrustN = 0,
   stage2PeakThrustN = 0,
+  physicalSeparationKm = null,
+  physicalSeparationRateKmS = null,
   dtSeconds = 0,
 } = {}) {
   const state = hotstage && typeof hotstage === "object" ? hotstage : createHotstageState();
@@ -130,6 +140,12 @@ export function updateHotstageGates(hotstage, {
     ? Math.max(0, hotstageSeparationRelativeSpeedKmS() * finiteTimeSinceIgnitionSec)
     : 0;
   state.virtualSeparationKm = virtualSeparationKm;
+  if (Number.isFinite(Number(physicalSeparationKm))) {
+    state.physicalSeparationKm = Math.max(0, Number(physicalSeparationKm));
+  }
+  if (Number.isFinite(Number(physicalSeparationRateKmS))) {
+    state.physicalSeparationRateKmS = Number(physicalSeparationRateKmS);
+  }
 
   const requiredStableSec = hotstageIgnitionStableDurationSec();
   const requiredSeparationKm = hotstageVirtualSeparationMinKm();
@@ -137,7 +153,10 @@ export function updateHotstageGates(hotstage, {
     Number.isFinite(finiteTimeSinceIgnitionSec)
     && finiteTimeSinceIgnitionSec >= overlapSeconds;
   const ignitionStableSatisfied = state.ignitionStableSec >= requiredStableSec;
-  const separationSatisfied = virtualSeparationKm >= requiredSeparationKm;
+  const separationSatisfied = Math.max(
+    virtualSeparationKm,
+    Number(state.physicalSeparationKm) || 0,
+  ) >= requiredSeparationKm;
   const timeoutSec = hotstageDetachTimeoutSec(overlapSeconds);
   const timeoutExceeded =
     Number.isFinite(finiteTimeSinceIgnitionSec)
@@ -153,6 +172,8 @@ export function updateHotstageGates(hotstage, {
     ignitionStableThrustN,
     ignitionStableSec: state.ignitionStableSec,
     virtualSeparationKm,
+    physicalSeparationKm: Number(state.physicalSeparationKm) || 0,
+    physicalSeparationRateKmS: Number(state.physicalSeparationRateKmS) || 0,
     requiredStableSec,
     requiredSeparationKm,
     timeoutSec,
@@ -170,6 +191,9 @@ export function finishHotstageDetach(hotstage, reason = "") {
   state.boosterReservePropellantKg = 0;
   state.ignitionStableSec = 0;
   state.virtualSeparationKm = 0;
+  state.physicalSeparationKm = Math.max(0, Number(state.physicalSeparationKm) || 0);
+  state.physicalSeparationRateKmS = Number(state.physicalSeparationRateKmS) || 0;
+  state.shipReferenceActive = false;
   state.detachReason = String(reason || "");
   return state;
 }

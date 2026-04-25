@@ -1241,6 +1241,7 @@ export function createLaunchFleetController({
   getEarthMassKg,
   getBodyRadiusKm,
   getBodyMassKg,
+  sampleEnvironment,
   sampleEarthAtmosphere,
   sampleLaunchWeather,
   earthAxes,
@@ -1287,16 +1288,28 @@ export function createLaunchFleetController({
     elapsedSeconds = 0,
     windSeed = 0,
   }) {
-    const surfaceSample = sampleEarthSurfaceAtRelativePosition(
+    const runtimeEnvironmentSample = sampleEnvironment?.({
+      timestampMs: nowMs,
+      relativePositionKm: relPos,
+      earthAxes: currentEarthAxes,
+      earthPole: currentEarthAxes?.pole,
+      earthRadiusKm,
+    }) || null;
+    const surfaceSample = runtimeEnvironmentSample?.surface || sampleEarthSurfaceAtRelativePosition(
       relPos,
       currentEarthAxes,
       earthRadiusKm,
-      { includeTerrain: false },
+      { includeTerrain: true },
     );
     const surfaceAltitudeKm = Number(surfaceSample?.altitudeAboveTerrainKm);
-    const altitudeKm = Number.isFinite(surfaceAltitudeKm)
-      ? Math.max(0, surfaceAltitudeKm)
-      : Math.max(0, length(relPos) - earthRadiusKm);
+    const runtimeAltitudeKm = Number(runtimeEnvironmentSample?.altitudeKm);
+    const altitudeKm = Number.isFinite(runtimeAltitudeKm)
+      ? Math.max(0, runtimeAltitudeKm)
+      : (
+        Number.isFinite(surfaceAltitudeKm)
+          ? Math.max(0, surfaceAltitudeKm)
+          : Math.max(0, length(relPos) - earthRadiusKm)
+      );
     const latitudeDeg = Number.isFinite(Number(surfaceSample?.geodeticLatitudeDeg))
       ? Number(surfaceSample.geodeticLatitudeDeg)
       : (Number(surfaceSample?.latitudeDeg) || 0);
@@ -1311,7 +1324,7 @@ export function createLaunchFleetController({
       earthAxes: currentEarthAxes,
       earthPole: currentEarthAxes?.pole,
     };
-    const launchWeatherSample = sampleLaunchWeather?.({
+    const launchWeatherSample = runtimeEnvironmentSample?.launchWeather || sampleLaunchWeather?.({
       timestampMs: nowMs,
       altitudeKm,
       latitudeDeg,
@@ -1323,7 +1336,10 @@ export function createLaunchFleetController({
     return {
       altitudeKm,
       surfaceSample,
-      atmosphereSample: sampleEarthAtmosphere?.(altitudeKm, atmosphereContext) || null,
+      runtimeEnvironmentSample,
+      atmosphereSample: runtimeEnvironmentSample?.atmosphere
+        || sampleEarthAtmosphere?.(altitudeKm, atmosphereContext)
+        || null,
       windSample: sampleWindVectorKmS({
         altitudeKm,
         relPos,

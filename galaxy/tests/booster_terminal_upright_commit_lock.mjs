@@ -30,8 +30,8 @@ function main() {
     `expected aligned late descent to enter terminal-intercept, got ${alignedTerminalDescent.phase}`,
   );
   assert(
-    alignedTerminalDescent.attitudeControlMode === "engines+rcs",
-    `expected aligned late descent to use engines+rcs terminal control, got ${alignedTerminalDescent.attitudeControlMode}`,
+    alignedTerminalDescent.attitudeControlMode === "grid-fins+rcs",
+    `expected aligned late descent to stay unpowered on grid-fins+rcs terminal control, got ${alignedTerminalDescent.attitudeControlMode}`,
   );
   assert(
     alignedTerminalDescent.terminalUprightCommit === true,
@@ -47,8 +47,8 @@ function main() {
     `expected poor body-up alignment to stay in terminal-intercept, got ${misalignedTerminalDescent.phase}`,
   );
   assert(
-    misalignedTerminalDescent.attitudeControlMode === "engines+rcs",
-    `expected poor body-up alignment to promote engines+rcs terminal control, got ${misalignedTerminalDescent.attitudeControlMode}`,
+    misalignedTerminalDescent.attitudeControlMode === "grid-fins+rcs",
+    `expected poor body-up alignment to use unpowered grid-fins+rcs terminal control, got ${misalignedTerminalDescent.attitudeControlMode}`,
   );
   assert(
     misalignedTerminalDescent.terminalUprightCommit === true,

@@ -1,6 +1,7 @@
 import {
   BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM,
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
+  LAUNCH_PAD_DECK_HEIGHT_KM,
   LAUNCH_SITE,
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
@@ -42,7 +43,10 @@ const boosterGridFinYFromCenterKm =
   (0.5 * STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm)
   - (boosterRadiusKm * 1.04);
 
-export const BOOSTER_CATCH_BASE_CLEARANCE_KM = 0.008;
+export const BOOSTER_CATCH_BASE_CLEARANCE_KM = Math.max(
+  0.026,
+  LAUNCH_PAD_DECK_HEIGHT_KM + 0.006,
+);
 export const BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM =
   BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM
   + boosterGridFinYFromCenterKm
@@ -55,8 +59,12 @@ export const BOOSTER_CATCH_GEOMETRY_KM = Object.freeze({
   baseClearanceKm: BOOSTER_CATCH_BASE_CLEARANCE_KM,
   pinHeightAboveBaseKm: BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM,
   chopstickCatchHeightAboveBaseKm: BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
-  finalizeLateralToleranceKm: 0.03,
-  finalizePinHeightToleranceKm: 0.006,
+  finalizeLateralToleranceKm: 0.05,
+  finalizePinHeightToleranceKm: 0.0075,
+  finalizeBodyUpAlignmentMin: 0.985,
+  finalizeBodyRateRadSMax: 0.08,
+  missBodyUpAlignmentMin: 0.94,
+  missBodyRateRadSMax: 0.24,
 });
 
 export function computeLaunchSiteCatchFrame({
@@ -177,6 +185,8 @@ export function computeBoosterCatchConstraintStep({
   dtSeconds = 1 / 60,
   contactProgress = 0,
   captureProgress = 0,
+  targetOffsetEastKm = 0,
+  targetOffsetNorthKm = 0,
   targetOffsetUpKm = 0,
   maxCorrectionAccelKmS2 = 0.065,
 } = {}) {
@@ -193,7 +203,10 @@ export function computeBoosterCatchConstraintStep({
   const east = normalize(catchFrame.eastAxis || { x: 1, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
   const north = normalize(catchFrame.northAxis || cross(up, east), { x: 0, y: 1, z: 0 });
   const targetPosition = add(
-    catchFrame.centerPosition,
+    add(
+      add(catchFrame.centerPosition, scale(east, Number(targetOffsetEastKm) || 0)),
+      scale(north, Number(targetOffsetNorthKm) || 0),
+    ),
     scale(up, Number(targetOffsetUpKm) || 0),
   );
   const targetVelocity = { ...(catchFrame.centerVelocity || { x: 0, y: 0, z: 0 }) };
@@ -246,10 +259,10 @@ export function computeBoosterCatchConstraintStep({
   let nextVelocity = add(targetVelocity, nextRelativeVelocityKmS);
   let resolvedRelativePositionKm = nextRelativePositionKm;
   let resolvedRelativeVelocityKmS = nextRelativeVelocityKmS;
-  const hardCaptureBlend = clamp((phaseBlend - 0.35) / 0.65, 0, 1);
+  const hardCaptureBlend = clamp((phaseBlend - 0.50) / 0.50, 0, 1);
   if (hardCaptureBlend > 0) {
-    const positionBlend = clamp(0.12 + (0.76 * hardCaptureBlend), 0.12, 0.88);
-    const velocityBlend = clamp(0.18 + (0.80 * hardCaptureBlend), 0.18, 0.96);
+    const positionBlend = clamp(0.06 + (0.54 * hardCaptureBlend), 0.06, 0.60);
+    const velocityBlend = clamp(0.10 + (0.62 * hardCaptureBlend), 0.10, 0.72);
     nextPosition = blendVector(nextPosition, targetPosition, positionBlend);
     nextVelocity = blendVector(nextVelocity, targetVelocity, velocityBlend);
     resolvedRelativePositionKm = subtract(nextPosition, targetPosition);

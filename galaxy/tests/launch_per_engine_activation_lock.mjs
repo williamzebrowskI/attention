@@ -1,4 +1,5 @@
 import {
+  computeEngineClusterBodyTorqueNm,
   createSuperHeavyEngineDescriptors,
   resolveActiveEngineSelection,
   superHeavyEngineActivationOrder,
@@ -39,6 +40,32 @@ function main() {
   assert(
     Math.hypot(centroid.x, centroid.z) > 1e-6,
     `expected asymmetric 2-engine centroid offset, got ${JSON.stringify(centroid)}`,
+  );
+
+  const equalFullThrustByIndex = descriptors.map(() => 1_000_000);
+  const fullStackTorqueNm = computeEngineClusterBodyTorqueNm({
+    activeDescriptors: descriptors,
+    engineThrustNByIndex: equalFullThrustByIndex,
+    forceDirectionBody: { x: 0, y: 1, z: 0 },
+  });
+  assert(
+    Math.hypot(fullStackTorqueNm.x, fullStackTorqueNm.z) < 1e-3,
+    `expected equal full-engine axial thrust to balance, got ${JSON.stringify(fullStackTorqueNm)}`,
+  );
+
+  const asymmetricThrustByIndex = descriptors.map(() => 0);
+  for (const index of asymmetricSelection.activeIndices) {
+    asymmetricThrustByIndex[index] = 1_000_000;
+  }
+  const asymmetricTorqueNm = computeEngineClusterBodyTorqueNm({
+    descriptors,
+    activeIndices: asymmetricSelection.activeIndices,
+    engineThrustNByIndex: asymmetricThrustByIndex,
+    forceDirectionBody: { x: 0, y: 1, z: 0 },
+  });
+  assert(
+    Math.hypot(asymmetricTorqueNm.x, asymmetricTorqueNm.z) > 100_000,
+    `expected asymmetric 2-engine axial thrust to create body torque, got ${JSON.stringify(asymmetricTorqueNm)}`,
   );
 
   console.log("PASS launch-per-engine-activation-lock");

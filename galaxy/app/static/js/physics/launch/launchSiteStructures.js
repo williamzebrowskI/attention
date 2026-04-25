@@ -3,12 +3,12 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
-import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js";
+import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js?v=20260424b";
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
 const LAUNCH_STRUCTURE_SURFACE_CLEARANCE_KM = 0.00012;
 
-const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
+export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   slabRadiusKm: 0.028,
   slabHeightKm: 0.0022,
   slabApronRadiusKm: 0.036,
@@ -434,6 +434,11 @@ function createTowerLattice(THREE, towerGroup, profile, darkSteel, stainless) {
 
 function createChopstickArmAssembly(THREE, profile, material) {
   const group = new THREE.Group();
+  const catchPadMaterial = material.clone();
+  if (catchPadMaterial?.color) {
+    catchPadMaterial.color = new THREE.Color(0x15191d);
+  }
+  enforceSolidOpaqueMaterial(THREE, catchPadMaterial);
   const hinge = new THREE.Mesh(
     new THREE.CylinderGeometry(
       profile.chopstickPivotRadiusKm,
@@ -575,6 +580,36 @@ function createChopstickArmAssembly(THREE, profile, material) {
   );
   tipGroup.add(forkCap);
 
+  const catchSaddle = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.chopstickForkLengthKm * 0.55,
+      profile.chopstickForkSpreadKm * 1.28,
+      profile.chopstickRailDepthKm * 2.2,
+    ),
+    catchPadMaterial,
+  );
+  catchSaddle.position.set(
+    -profile.chopstickForkLengthKm * 0.62,
+    0,
+    0,
+  );
+  tipGroup.add(catchSaddle);
+
+  const pinStop = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.chopstickChordThicknessKm * 2.8,
+      profile.chopstickForkSpreadKm * 2.18,
+      profile.chopstickRailDepthKm * 2.55,
+    ),
+    catchPadMaterial,
+  );
+  pinStop.position.set(
+    -profile.chopstickForkLengthKm * 1.08,
+    0,
+    0,
+  );
+  tipGroup.add(pinStop);
+
   const actuatorOuter = createAdjustableCylinder(
     THREE,
     profile.chopstickActuatorRadiusKm,
@@ -600,6 +635,7 @@ function createChopstickArmAssembly(THREE, profile, material) {
     forkLower,
     actuatorOuter,
     actuatorRod,
+    catchPadMaterial,
   };
 }
 
@@ -638,6 +674,16 @@ export function resolveLaunchStructureArmTarget(input = {}) {
   const elapsedSeconds = Number(input.elapsedSeconds);
   const altitudeKm = Number(input.altitudeKm);
   const boosterLanded = Boolean(input.boosterLanded);
+  const boosterCrashed = Boolean(input.boosterCrashed);
+  const catchTotalRangeKm = Number(input.boosterCatchTotalRangeKm);
+  const catchLateralRangeKm = Number(input.boosterCatchLateralRangeKm);
+  const catchVerticalErrorKm = Number(input.boosterCatchVerticalErrorKm);
+  const catchLateralSpeedKmS = Number(input.boosterCatchLateralSpeedKmS);
+  const catchVerticalSpeedKmS = Number(input.boosterCatchVerticalSpeedKmS);
+  const bodyUpAlignment = Number(input.boosterBodyUpAlignment);
+  const hasCatchMetrics = Number.isFinite(catchTotalRangeKm)
+    || Number.isFinite(catchLateralRangeKm)
+    || Number.isFinite(catchVerticalErrorKm);
   const lowAltitude = Number.isFinite(altitudeKm) && altitudeKm < 0.75;
   const launchCommitActive = launchPhase === "powered"
     && (
@@ -646,11 +692,45 @@ export function resolveLaunchStructureArmTarget(input = {}) {
       || (Number.isFinite(elapsedSeconds) && elapsedSeconds >= 0.35)
     );
 
-  if (boosterLanded || boosterPhase.includes("caught")) {
-    return 0.08;
+  if (boosterCrashed) {
+    return 0.74;
   }
-  if (boosterPhase.includes("catch")) {
-    return 0.18;
+  if (boosterLanded || boosterPhase.includes("caught")) {
+    return 0.0;
+  }
+  if (boosterPhase.includes("catch") || boosterPhase.includes("terminal")) {
+    if (hasCatchMetrics) {
+      const totalRange = Number.isFinite(catchTotalRangeKm) ? catchTotalRangeKm : 99;
+      const lateralRange = Number.isFinite(catchLateralRangeKm) ? catchLateralRangeKm : totalRange;
+      const verticalError = Number.isFinite(catchVerticalErrorKm) ? Math.abs(catchVerticalErrorKm) : 99;
+      const lateralSpeed = Number.isFinite(catchLateralSpeedKmS) ? Math.abs(catchLateralSpeedKmS) : 99;
+      const verticalSpeed = Number.isFinite(catchVerticalSpeedKmS) ? Math.abs(catchVerticalSpeedKmS) : 99;
+      const upright = Number.isFinite(bodyUpAlignment) ? bodyUpAlignment : 0;
+      if (
+        totalRange <= 0.12
+        && lateralRange <= 0.055
+        && verticalError <= 0.030
+        && lateralSpeed <= 0.020
+        && verticalSpeed <= 0.035
+        && upright >= 0.965
+      ) {
+        return 0.02;
+      }
+      if (
+        totalRange <= 0.48
+        && lateralRange <= 0.16
+        && verticalError <= 0.14
+        && lateralSpeed <= 0.055
+        && upright >= 0.93
+      ) {
+        return 0.18;
+      }
+      if (totalRange <= 1.8 && verticalError <= 0.7 && upright >= 0.86) {
+        return 0.42;
+      }
+      return 0.78;
+    }
+    return 0.42;
   }
   if (boosterPhase.includes("landing")) {
     return 0.26;
@@ -1140,7 +1220,14 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
 
   return {
     root,
-    materials: [concrete, darkSteel, towerSteel, carriageSteel, darkPaint],
+    materials: [
+      concrete,
+      darkSteel,
+      towerSteel,
+      carriageSteel,
+      darkPaint,
+      ...chopstickAssemblies.map((assembly) => assembly.catchPadMaterial).filter(Boolean),
+    ],
     state: {
       armOpen: 0.24,
       quickDisconnectOpen: 0.1,

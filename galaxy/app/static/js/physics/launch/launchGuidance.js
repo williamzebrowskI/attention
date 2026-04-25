@@ -2,7 +2,7 @@ import {
   LAUNCH_AUTOPILOT_CONFIG,
   LAUNCH_SITE,
   LAUNCH_VEHICLE_CONFIG,
-} from "./launchConfig.js";
+} from "./launchConfig.js?v=20260423h";
 import { atmosphereRelativeVelocityKmS } from "./launchAeroModel.js";
 import {
   add,
@@ -940,17 +940,17 @@ export function computeAutopilotCommand({
     elapsedSeconds: launchElapsedSeconds,
     verticalAscentMaxAltitudeKm,
     gravityTurnEndAltitudeKm: lowOrbitLaunchProfileActive
-      ? Math.max(Number(config.gravityTurnEndAltitudeKm) || 0, 38)
+      ? Math.max(Number(config.gravityTurnEndAltitudeKm) || 0, 30)
       : config.gravityTurnEndAltitudeKm,
     config,
   });
   let direction = ascentProfile.direction;
   const lowOrbitStage1ClimbBias = lowOrbitLaunchProfileActive
     ? clamp(
-      (72 - Math.max(0, Number(orbital?.altitudeKm) || 0)) / 72,
+      (60 - Math.max(0, Number(orbital?.altitudeKm) || 0)) / 60,
       0,
       1,
-    ) * 0.34
+    ) * 0.22
     : 0;
   if (lowOrbitStage1ClimbBias > 1e-6) {
     direction = normalize(
@@ -1270,23 +1270,23 @@ export function computeAutopilotCommand({
         : 0;
       const climbProgress = Math.max(climbAltitudeProgress, apoProgress);
       const minimumClimbWeight = clamp(
-        0.7 - (climbProgress * 0.16),
+        0.56 - (climbProgress * 0.22),
+        0.28,
         0.56,
-        0.7,
       );
       const targetRadialSpeedKmS = clamp(
-        0.4 - (climbProgress * 0.12),
-        0.24,
-        0.4,
+        0.32 - (climbProgress * 0.14),
+        0.12,
+        0.32,
       );
       const radialSpeedDeficit = Math.max(0, targetRadialSpeedKmS - radialSpeedKmS);
       const climbBias = clamp(
-        0.26
-          + (radialSpeedDeficit * 1.1)
-          + ((1 - apoProgress) * 0.16)
-          + ((1 - climbAltitudeProgress) * 0.1),
-        0.26,
-        0.62,
+        0.16
+          + (radialSpeedDeficit * 0.75)
+          + ((1 - apoProgress) * 0.10)
+          + ((1 - climbAltitudeProgress) * 0.08),
+        0.12,
+        0.44,
       );
       direction = normalize(
         add(scale(direction, 1), scale(up, climbBias)),
@@ -1355,9 +1355,9 @@ export function computeAutopilotCommand({
 
   if (lowOrbitLaunchProfileActive && Number(orbital.altitudeKm) < 65) {
     const minClimbWeight = clamp(
-      0.66 - ((Math.max(0, Number(orbital.altitudeKm) || 0) / 65) * 0.4),
-      0.26,
-      0.66,
+      0.48 - ((Math.max(0, Number(orbital.altitudeKm) || 0) / 65) * 0.34),
+      0.10,
+      0.48,
     );
     if (dot(direction, up) < minClimbWeight) {
       direction = limitDirectionAngle({

@@ -3,7 +3,7 @@ import {
   LAUNCH_BOOSTER_CONFIG,
   resolveConfiguredThrustBoundsN,
 } from "./launchConfig.js";
-import { resolveBoosterCatchCommand } from "./boosterCatchGuidance.js";
+import { resolveBoosterCatchCommand } from "./boosterCatchGuidance.js?v=20260425a";
 
 export const BOOSTER_STAGE_ATTITUDE_POLICY = Object.freeze({
   "attached-stack": Object.freeze({
@@ -30,14 +30,23 @@ export const BOOSTER_STAGE_ATTITUDE_POLICY = Object.freeze({
     siteTargetingEnabled: false,
     minRetrogradeWeight: 0.9,
   }),
-  boostback: Object.freeze({
-    positionIntent: "drive-return-corridor-back-to-launch-site",
-    attitudeIntent: "engines-first-return-burn",
-    targetPosture: "retrograde-burn-with-lateral-corridor-shaping",
+  "hotstage-ring-jettison": Object.freeze({
+    positionIntent: "shed-hotstage-hardware-after-boostback",
+    attitudeIntent: "hold-return-attitude-while-ring-separates",
+    targetPosture: "controlled-post-boostback-coast",
     terminalUprightCommit: false,
     qAlphaSteeringEnabled: false,
     siteTargetingEnabled: true,
-    minRetrogradeWeight: 0.95,
+    minRetrogradeWeight: 0.1,
+  }),
+  boostback: Object.freeze({
+    positionIntent: "drive-return-corridor-back-to-launch-site",
+    attitudeIntent: "controlled-return-burn-with-lateral-corridor-shaping",
+    targetPosture: "anti-tangent-biased-boostback",
+    terminalUprightCommit: false,
+    qAlphaSteeringEnabled: false,
+    siteTargetingEnabled: true,
+    minRetrogradeWeight: 0.10,
   }),
   "entry-align": Object.freeze({
     positionIntent: "settle-onto-controlled-entry-corridor",
@@ -76,11 +85,10 @@ export const BOOSTER_STAGE_ATTITUDE_POLICY = Object.freeze({
   }),
   "terminal-intercept": Object.freeze({
     positionIntent: "solve-terminal-corridor-miss-before-catch",
-    attitudeIntent: "upright-engines-assisted-intercept",
+    attitudeIntent: "upright-grid-fin-and-rcs-intercept",
     targetPosture: "upright-terminal-intercept",
     terminalUprightCommit: true,
-    minUpWeight: 0.25,
-    siteTargetingEnabled: true,
+    minUpWeight: 0.88,
   }),
   "catch-approach": Object.freeze({
     positionIntent: "align-with-tower-catch-frame",
@@ -94,14 +102,14 @@ export const BOOSTER_STAGE_ATTITUDE_POLICY = Object.freeze({
     attitudeIntent: "upright-catch-burn",
     targetPosture: "upright-catch-burn",
     terminalUprightCommit: true,
-    minUpWeight: 0.98,
+    minUpWeight: 0.95,
   }),
   "landing-burn": Object.freeze({
-    positionIntent: "kill-final-descent-for-vertical-touchdown",
-    attitudeIntent: "upright-vertical-landing-burn",
-    targetPosture: "upright-landing-burn",
+    positionIntent: "remove-final-descent-energy-before-tower-catch",
+    attitudeIntent: "upright-13-engine-braking-burn",
+    targetPosture: "upright-landing-burn-before-precision-catch",
     terminalUprightCommit: true,
-    minUpWeight: 0.98,
+    minUpWeight: 0.84,
   }),
   "catch-contact": Object.freeze({
     positionIntent: "enter-mechanical-contact-with-chopsticks",
@@ -159,14 +167,23 @@ function resolveBoostbackInterceptDemand({
   altitudeKm = 0,
   radialSpeedKmS = 0,
   timeToGroundSec = 0,
+  towerRelativeActive = false,
 }) {
   const boostbackInterceptTimeSec = radialSpeedKmS >= -0.04
-    ? clamp(62 + (0.42 * altitudeKm), 70, 140)
-    : clamp(Math.max(0, timeToGroundSec) * 0.28, 55, 140);
+    ? clamp(
+      62 + (0.42 * altitudeKm),
+      towerRelativeActive ? 90 : 70,
+      towerRelativeActive ? 180 : 140,
+    )
+    : clamp(
+      Math.max(0, timeToGroundSec) * (towerRelativeActive ? 0.42 : 0.28),
+      towerRelativeActive ? 85 : 55,
+      towerRelativeActive ? 180 : 140,
+    );
   const desiredLateralClosingKmS = clamp(
     Math.max(catchLateralRangeKm, launchSiteLateralRangeKm) / Math.max(boostbackInterceptTimeSec, 1),
-    0.70,
-    2.40,
+    towerRelativeActive ? 0.18 : 0.70,
+    towerRelativeActive ? 0.88 : 2.40,
   );
   const passiveLateralRecoveryKm = Math.max(0, launchSiteLateralClosingSpeedKmS) * boostbackInterceptTimeSec;
   const unrecoveredCatchLateralKm = Math.max(0, catchLateralRangeKm - passiveLateralRecoveryKm);
@@ -211,55 +228,150 @@ function resolveBoostbackPredictiveMetrics({
   catchNorthErrorKm = 0,
   catchEastSpeedKmS = 0,
   catchNorthSpeedKmS = 0,
+  catchVerticalErrorKm = 0,
   catchVerticalSpeedKmS = 0,
   catchLateralRangeKm = 0,
   catchApproachSpeedKmS = 0,
   timeToGroundSec = 0,
+  towerRelativeActive = false,
 }) {
   const lateralRangeKm = Math.hypot(catchEastErrorKm, catchNorthErrorKm);
+  const absCatchVerticalErrorKm = Math.abs(catchVerticalErrorKm);
+  const signedLateralClosingSpeedKmS = lateralRangeKm > 1e-6
+    ? -(
+      (catchEastErrorKm * catchEastSpeedKmS)
+        + (catchNorthErrorKm * catchNorthSpeedKmS)
+    ) / lateralRangeKm
+    : 0;
+  const lateralClosingTimeSec = signedLateralClosingSpeedKmS > 0.03
+    ? lateralRangeKm / signedLateralClosingSpeedKmS
+    : Number.POSITIVE_INFINITY;
+  const predictedVerticalAtLateralInterceptKm = Number.isFinite(lateralClosingTimeSec)
+    ? catchVerticalErrorKm + (catchVerticalSpeedKmS * lateralClosingTimeSec)
+    : Number.POSITIVE_INFINITY;
+  const lateralInterceptTooHighNorm = towerRelativeActive
+    ? clamp((predictedVerticalAtLateralInterceptKm - 8.0) / 34.0, 0, 1)
+    : 0;
+  const towerCorridorHoldRadiusKm = towerRelativeActive
+    ? clamp(
+      0.36 * Math.max(0, absCatchVerticalErrorKm - 2.2),
+      0,
+      altitudeKm > 42 ? 6.0 : 2.8,
+    )
+    : 0;
+  const lateralGuidanceScale = lateralRangeKm > 1e-6
+    ? clamp((lateralRangeKm - towerCorridorHoldRadiusKm) / lateralRangeKm, 0, 1)
+    : 0;
+  const guidedEastErrorKm = catchEastErrorKm * lateralGuidanceScale;
+  const guidedNorthErrorKm = catchNorthErrorKm * lateralGuidanceScale;
+  const eastCrosslineDriftNorm = towerRelativeActive
+    ? clamp((3.0 - Math.abs(guidedEastErrorKm)) / 3.0, 0, 1)
+      * clamp(Math.abs(catchEastSpeedKmS) / 0.18, 0, 1)
+    : 0;
+  const northCrosslineDriftNorm = towerRelativeActive
+    ? clamp((3.0 - Math.abs(guidedNorthErrorKm)) / 3.0, 0, 1)
+      * clamp(Math.abs(catchNorthSpeedKmS) / 0.18, 0, 1)
+    : 0;
+  const crosslineDriftNorm = clamp(
+    Math.max(eastCrosslineDriftNorm, northCrosslineDriftNorm),
+    0,
+    1,
+  );
   const rangeDrivenInterceptSec = clamp(
     (0.26 * Math.max(0, timeToGroundSec))
       + (0.18 * altitudeKm)
       + (0.20 * catchApproachSpeedKmS)
       + 12,
-    55,
-    140,
+    towerRelativeActive ? 96 : 55,
+    towerRelativeActive ? 180 : 140,
   );
   const geometryDrivenInterceptSec = clamp(
     34 + (0.26 * altitudeKm) + (0.18 * lateralRangeKm),
-    50,
-    140,
+    towerRelativeActive ? 92 : 50,
+    towerRelativeActive ? 180 : 140,
   );
-  const interceptTimeSec = clamp(
-    Math.min(rangeDrivenInterceptSec, geometryDrivenInterceptSec),
-    50,
-    140,
+  const towerCorridorInterceptSec = clamp(
+    48
+      + (0.05 * altitudeKm)
+      + (0.020 * lateralRangeKm)
+      + (8 * lateralInterceptTooHighNorm),
+    48,
+    82,
   );
-  const desiredEastSpeedKmS = clamp(
-    -catchEastErrorKm / Math.max(interceptTimeSec, 1),
-    -2.20,
-    2.20,
+  const interceptTimeSec = towerRelativeActive
+    ? towerCorridorInterceptSec
+    : clamp(
+      Math.min(rangeDrivenInterceptSec, geometryDrivenInterceptSec),
+      50,
+      140,
+    );
+  const desiredHorizontalSpeedLimitKmS = towerRelativeActive
+    ? (
+      altitudeKm > 70
+        ? 1.55
+        : altitudeKm > 42
+          ? 1.30
+          : altitudeKm > 24
+            ? 0.95
+            : 0.30
+    )
+    : 2.20;
+  let desiredEastSpeedKmS = clamp(
+    -guidedEastErrorKm / Math.max(interceptTimeSec, 1),
+    -desiredHorizontalSpeedLimitKmS,
+    desiredHorizontalSpeedLimitKmS,
   );
-  const desiredNorthSpeedKmS = clamp(
-    -catchNorthErrorKm / Math.max(interceptTimeSec, 1),
-    -2.20,
-    2.20,
+  let desiredNorthSpeedKmS = clamp(
+    -guidedNorthErrorKm / Math.max(interceptTimeSec, 1),
+    -desiredHorizontalSpeedLimitKmS,
+    desiredHorizontalSpeedLimitKmS,
   );
+  const guidedLateralRangeKm = Math.hypot(guidedEastErrorKm, guidedNorthErrorKm);
+  const terminalTranslateSpeedFloorKmS = (
+    towerRelativeActive
+    && catchLateralRangeKm > towerCorridorHoldRadiusKm
+    && altitudeKm <= 12
+    && guidedLateralRangeKm > 0.08
+  )
+    ? Math.min(
+      desiredHorizontalSpeedLimitKmS,
+      clamp(
+        guidedLateralRangeKm / (altitudeKm > 6 ? 8.0 : 10.0),
+        altitudeKm > 6 ? 0.14 : 0.08,
+        altitudeKm > 6 ? 0.32 : 0.18,
+      ),
+    )
+    : 0;
+  const desiredLateralSpeedKmS = Math.hypot(desiredEastSpeedKmS, desiredNorthSpeedKmS);
+  if (terminalTranslateSpeedFloorKmS > desiredLateralSpeedKmS) {
+    desiredEastSpeedKmS = -guidedEastErrorKm / guidedLateralRangeKm * terminalTranslateSpeedFloorKmS;
+    desiredNorthSpeedKmS = -guidedNorthErrorKm / guidedLateralRangeKm * terminalTranslateSpeedFloorKmS;
+  }
   const eastSpeedErrorKmS = desiredEastSpeedKmS - catchEastSpeedKmS;
   const northSpeedErrorKmS = desiredNorthSpeedKmS - catchNorthSpeedKmS;
   const predictedEastMissKm = catchEastErrorKm + (catchEastSpeedKmS * interceptTimeSec);
   const predictedNorthMissKm = catchNorthErrorKm + (catchNorthSpeedKmS * interceptTimeSec);
   const predictedLateralMissKm = Math.hypot(predictedEastMissKm, predictedNorthMissKm);
+  const predictedCorridorMissKm = towerRelativeActive
+    ? Math.abs(predictedLateralMissKm - towerCorridorHoldRadiusKm)
+    : predictedLateralMissKm;
+  const positionAuthorityScale = towerRelativeActive
+    ? (1 - (0.78 * lateralInterceptTooHighNorm))
+    : 1;
+  const boostbackPositionDivisor = towerRelativeActive ? 42 : 18;
+  const boostbackVelocityDivisor = towerRelativeActive ? 0.34 : 0.60;
   const localDirection = {
     east: clamp(
-      (eastSpeedErrorKmS / 0.60) - (catchEastErrorKm / 18),
-      -1.35,
-      1.35,
+      (eastSpeedErrorKmS / boostbackVelocityDivisor)
+        - ((guidedEastErrorKm / boostbackPositionDivisor) * positionAuthorityScale),
+      -1.55,
+      1.55,
     ),
     north: clamp(
-      (northSpeedErrorKmS / 0.60) - (catchNorthErrorKm / 18),
-      -1.35,
-      1.35,
+      (northSpeedErrorKmS / boostbackVelocityDivisor)
+        - ((guidedNorthErrorKm / boostbackPositionDivisor) * positionAuthorityScale),
+      -1.55,
+      1.55,
     ),
     up: clamp(
       -0.06 + clamp((-catchVerticalSpeedKmS - 0.10) / 0.42, 0, 1) * 0.12,
@@ -276,10 +388,15 @@ function resolveBoostbackPredictiveMetrics({
     predictedEastMissKm,
     predictedNorthMissKm,
     predictedLateralMissKm,
+    predictedCorridorMissKm,
+    predictedVerticalAtLateralInterceptKm,
+    lateralInterceptTooHighNorm,
+    towerCorridorHoldRadiusKm,
+    signedLateralClosingSpeedKmS,
     localDirection,
     lateralDemandNorm: clamp(lateralRangeKm / 75, 0, 1),
     speedDemandNorm: clamp(Math.hypot(eastSpeedErrorKmS, northSpeedErrorKmS) / 0.75, 0, 1),
-    predictiveLateralMissNorm: clamp(predictedLateralMissKm / 42, 0, 1),
+    predictiveLateralMissNorm: clamp(predictedCorridorMissKm / 42, 0, 1),
   };
 }
 
@@ -351,24 +468,71 @@ function resolveTerminalInterceptMetrics({
 }) {
   const rangeTimeSec = catchTotalRangeKm / Math.max(catchApproachSpeedKmS, 0.12);
   const descentTimeSec = Math.abs(catchVerticalErrorKm) / Math.max(Math.abs(catchVerticalSpeedKmS), 0.05);
+  const towerLateralUrgencyNorm = towerRelativeActive
+    ? clamp((catchLateralRangeKm - 3.0) / 8.0, 0, 1)
+    : 0;
+  const descentTimeWeight = towerRelativeActive
+    ? 0.14 - (0.10 * towerLateralUrgencyNorm)
+    : 0.14;
+  const terminalInterceptMaxSec = towerRelativeActive
+    ? (
+      catchLateralRangeKm > 8
+        ? 16
+        : catchLateralRangeKm > 3
+          ? 12
+          : 18
+    )
+    : 60;
   const interceptTimeSec = clamp(
     (0.34 * rangeTimeSec)
-      + (0.14 * descentTimeSec)
+      + (descentTimeWeight * descentTimeSec)
       + (0.12 * altitudeKm)
       + (0.06 * catchLateralRangeKm)
       + 1.0,
     8,
-    towerRelativeActive ? 28 : 60,
+    terminalInterceptMaxSec,
   );
   const desiredHorizontalSpeedLimitKmS = towerRelativeActive
     ? (
-      altitudeKm > 16
-        ? 0.40
-        : altitudeKm > 10
-          ? 0.28
-          : altitudeKm > 6
-            ? 0.18
-            : 0.12
+	      altitudeKm > 16
+	        ? (
+	          catchLateralRangeKm > 12
+	            ? 0.95
+	            : catchLateralRangeKm > 6
+	              ? 0.82
+	              : 0.58
+	        )
+	        : altitudeKm > 10
+	          ? (
+	            catchLateralRangeKm > 8
+	              ? 0.88
+	              : catchLateralRangeKm > 4
+	                ? 0.72
+	                : 0.48
+	          )
+	          : altitudeKm > 6
+	            ? (
+	              catchLateralRangeKm > 8
+	                ? 0.82
+	                : catchLateralRangeKm > 4.0
+	                  ? 0.72
+	                : catchLateralRangeKm > 2.0
+	                  ? 0.54
+	                  : 0.26
+	            )
+	            : altitudeKm > 2.6
+	              ? (
+	                catchLateralRangeKm > 4.0
+	                  ? 0.62
+	                  : catchLateralRangeKm > 3.0
+	                    ? 0.54
+	                  : catchLateralRangeKm > 2.0
+	                    ? 0.44
+	                    : catchLateralRangeKm > 1.2
+	                      ? 0.26
+                      : 0.10
+              )
+              : 0.08
     )
     : (
       altitudeKm > 16
@@ -377,24 +541,108 @@ function resolveTerminalInterceptMetrics({
           ? 0.62
           : 0.38
     );
-  const desiredEastSpeedKmS = clamp(
-    -catchEastErrorKm / Math.max(interceptTimeSec, 1),
+  const absCatchVerticalErrorKm = Math.abs(catchVerticalErrorKm);
+	  const towerCorridorLimitKm = altitudeKm > 42
+	    ? 5.00
+	    : altitudeKm > 28
+	      ? 3.20
+	      : altitudeKm > 18
+	        ? 2.00
+	        : altitudeKm > 10
+	          ? 1.20
+	          : altitudeKm > 6
+	            ? 0.60
+	            : altitudeKm > 3
+	              ? 0.24
+	              : 0.04;
+	  const towerCorridorHoldRadiusKm = towerRelativeActive
+	    ? clamp(
+	      0.020 + (0.08 * Math.max(0, absCatchVerticalErrorKm - 0.4)),
+	      0,
+	      towerCorridorLimitKm,
+	    )
+    : 0;
+  const lateralGuidanceScale = catchLateralRangeKm > 1e-6
+    ? clamp(
+      (catchLateralRangeKm - towerCorridorHoldRadiusKm) / catchLateralRangeKm,
+      -1,
+      1,
+    )
+    : 0;
+  const guidedEastErrorKm = catchEastErrorKm * lateralGuidanceScale;
+  const guidedNorthErrorKm = catchNorthErrorKm * lateralGuidanceScale;
+  const eastCrosslineDriftNorm = towerRelativeActive
+    ? clamp((3.0 - Math.abs(guidedEastErrorKm)) / 3.0, 0, 1)
+      * clamp(Math.abs(catchEastSpeedKmS) / 0.18, 0, 1)
+    : 0;
+  const northCrosslineDriftNorm = towerRelativeActive
+    ? clamp((3.0 - Math.abs(guidedNorthErrorKm)) / 3.0, 0, 1)
+      * clamp(Math.abs(catchNorthSpeedKmS) / 0.18, 0, 1)
+    : 0;
+  const crosslineDriftNorm = clamp(
+    Math.max(eastCrosslineDriftNorm, northCrosslineDriftNorm),
+    0,
+    1,
+  );
+  let desiredEastSpeedKmS = clamp(
+    -guidedEastErrorKm / Math.max(interceptTimeSec, 1),
     -desiredHorizontalSpeedLimitKmS,
     desiredHorizontalSpeedLimitKmS,
   );
-  const desiredNorthSpeedKmS = clamp(
-    -catchNorthErrorKm / Math.max(interceptTimeSec, 1),
+  let desiredNorthSpeedKmS = clamp(
+    -guidedNorthErrorKm / Math.max(interceptTimeSec, 1),
     -desiredHorizontalSpeedLimitKmS,
     desiredHorizontalSpeedLimitKmS,
   );
-  const lateralRangeNorm = clamp(catchLateralRangeKm / 24, 0, 1);
+  const guidedLateralRangeKm = Math.hypot(guidedEastErrorKm, guidedNorthErrorKm);
+  const outsideTowerCorridorKm = Math.max(0, catchLateralRangeKm - towerCorridorHoldRadiusKm);
+  const terminalTranslateSpeedFloorKmS = (
+    towerRelativeActive
+    && outsideTowerCorridorKm > 0.12
+    && altitudeKm <= 14
+    && guidedLateralRangeKm > 1e-6
+  )
+    ? Math.min(
+      desiredHorizontalSpeedLimitKmS,
+      clamp(
+        outsideTowerCorridorKm / (altitudeKm > 8 ? 5.0 : altitudeKm > 5 ? 4.0 : 6.0),
+        altitudeKm > 8 ? 0.22 : altitudeKm > 5 ? 0.24 : 0.12,
+        altitudeKm > 8 ? 0.52 : altitudeKm > 5 ? 0.46 : 0.24,
+      ),
+    )
+    : 0;
+  const desiredLateralSpeedKmS = Math.hypot(desiredEastSpeedKmS, desiredNorthSpeedKmS);
+  if (terminalTranslateSpeedFloorKmS > desiredLateralSpeedKmS) {
+    desiredEastSpeedKmS = -guidedEastErrorKm / guidedLateralRangeKm * terminalTranslateSpeedFloorKmS;
+    desiredNorthSpeedKmS = -guidedNorthErrorKm / guidedLateralRangeKm * terminalTranslateSpeedFloorKmS;
+  }
+  const lateralRangeNorm = clamp(Math.max(0, catchLateralRangeKm - towerCorridorHoldRadiusKm) / 24, 0, 1);
+  const currentLateralSpeedKmS = Math.hypot(catchEastSpeedKmS, catchNorthSpeedKmS);
+  const signedLateralClosingSpeedKmS = catchLateralRangeKm > 1e-6
+    ? -(
+      (catchEastErrorKm * catchEastSpeedKmS)
+        + (catchNorthErrorKm * catchNorthSpeedKmS)
+    ) / catchLateralRangeKm
+    : 0;
+  const lateralClosingTimeSec = catchLateralRangeKm / Math.max(currentLateralSpeedKmS, 0.05);
+  const predictedVerticalAtLateralInterceptKm = catchVerticalErrorKm
+    + (catchVerticalSpeedKmS * lateralClosingTimeSec);
+  const lateralInterceptTooHighNorm = towerRelativeActive
+    ? clamp((predictedVerticalAtLateralInterceptKm - 2.2) / 5.8, 0, 1)
+    : 0;
+  const lateralBrakeNeedNorm = Math.max(
+    lateralRangeNorm,
+    clamp(currentLateralSpeedKmS / 0.42, 0, 1),
+  );
   const desiredVerticalSpeedKmS = -clamp(
-    0.055
-      + (0.0068 * altitudeKm)
-      + (0.30 * lateralRangeNorm)
-      + (0.06 * clamp(catchApproachSpeedKmS / 0.9, 0, 1)),
-    altitudeKm > 9 ? 0.14 : 0.085,
-    altitudeKm > 12 ? 0.38 : altitudeKm > 6 ? 0.30 : 0.20,
+    0.12
+      + (0.016 * altitudeKm)
+      + (0.62 * lateralRangeNorm)
+      + (0.16 * lateralBrakeNeedNorm)
+      + (0.26 * lateralInterceptTooHighNorm)
+      + (0.05 * clamp(catchApproachSpeedKmS / 0.9, 0, 1)),
+    altitudeKm > 9 ? 0.22 : 0.095,
+    altitudeKm > 12 ? 0.92 : altitudeKm > 6 ? 0.72 : 0.38,
   );
   const eastSpeedErrorKmS = desiredEastSpeedKmS - catchEastSpeedKmS;
   const northSpeedErrorKmS = desiredNorthSpeedKmS - catchNorthSpeedKmS;
@@ -404,19 +652,35 @@ function resolveTerminalInterceptMetrics({
   const predictedVerticalMissKm = catchVerticalErrorKm + (catchVerticalSpeedKmS * interceptTimeSec);
   const predictedLateralMissKm = Math.hypot(predictedEastMissKm, predictedNorthMissKm);
   const predictedTotalMissKm = Math.hypot(predictedLateralMissKm, predictedVerticalMissKm);
+  const predictedGuidedEastMissKm = guidedEastErrorKm + (catchEastSpeedKmS * interceptTimeSec);
+  const predictedGuidedNorthMissKm = guidedNorthErrorKm + (catchNorthSpeedKmS * interceptTimeSec);
+  const terminalPositionGainKm = towerRelativeActive ? 12.0 : 5.0;
+  const terminalPredictedMissGainKm = towerRelativeActive
+    ? (
+      altitudeKm > 8
+        ? 2.8
+        : altitudeKm > 4
+          ? 2.2
+          : 1.35
+    )
+    : 4.0;
   const localDirection = {
-    east: clamp(
-      (eastSpeedErrorKmS / Math.max(desiredHorizontalSpeedLimitKmS, 0.12))
-        - (catchEastErrorKm / 2.0),
-      -1.45,
-      1.45,
-    ),
-    north: clamp(
-      (northSpeedErrorKmS / Math.max(desiredHorizontalSpeedLimitKmS, 0.12))
-        - (catchNorthErrorKm / 2.0),
-      -1.45,
-      1.45,
-    ),
+	    east: clamp(
+	      (eastSpeedErrorKmS / Math.max(desiredHorizontalSpeedLimitKmS * 0.55, 0.08))
+	        - (predictedGuidedEastMissKm / terminalPredictedMissGainKm)
+	        - (guidedEastErrorKm / terminalPositionGainKm)
+        - ((catchEastSpeedKmS / 0.18) * eastCrosslineDriftNorm),
+	      -2.40,
+	      2.40,
+	    ),
+	    north: clamp(
+	      (northSpeedErrorKmS / Math.max(desiredHorizontalSpeedLimitKmS * 0.55, 0.08))
+	        - (predictedGuidedNorthMissKm / terminalPredictedMissGainKm)
+	        - (guidedNorthErrorKm / terminalPositionGainKm)
+        - ((catchNorthSpeedKmS / 0.18) * northCrosslineDriftNorm),
+	      -2.40,
+	      2.40,
+	    ),
     up: clamp(
       0.26
         + (verticalSpeedErrorKmS / 0.08)
@@ -447,11 +711,229 @@ function resolveTerminalInterceptMetrics({
     predictedVerticalMissKm,
     predictedLateralMissKm,
     predictedTotalMissKm,
+    predictedVerticalAtLateralInterceptKm,
+    signedLateralClosingSpeedKmS,
+    crosslineDriftNorm,
+    lateralInterceptTooHighNorm,
+    towerCorridorHoldRadiusKm,
     localDirection,
     lateralDemandNorm,
     verticalDemandNorm,
     predictiveLateralMissNorm,
     predictiveVerticalMissNorm,
+  };
+}
+
+function buildUnpoweredTowerTerminalInterceptCommand({
+  altitudeKm = 0,
+  catchLateralRangeKm = 0,
+  catchLateralSpeedKmS = 0,
+  catchVerticalErrorKm = 0,
+  gridFinAuthority = 0,
+  terminalUprightCommitNorm = 0,
+  terminalIntercept = null,
+  towerRelativeActive = false,
+} = {}) {
+  const lateralNorm = clamp(catchLateralRangeKm / 18, 0, 1);
+  const verticalNorm = clamp(Math.abs(catchVerticalErrorKm) / 12, 0, 1);
+  const guidanceBlend = clamp(
+    0.48
+      + (0.24 * (Number(terminalIntercept?.lateralDemandNorm) || 0))
+      + (0.12 * (Number(terminalIntercept?.predictiveLateralMissNorm) || 0))
+      + (towerRelativeActive ? 0.08 : 0),
+    0.48,
+    0.88,
+  );
+  return {
+    phase: "terminal-intercept",
+    guidanceMode: "booster-terminal-intercept",
+    attitudeControlMode: "grid-fins+rcs",
+    qAlphaSteeringEnabled: false,
+    aeroAuthority: clamp(gridFinAuthority, 0, 1),
+    siteTargetingEnabled: !towerRelativeActive,
+    throttle: 0,
+    directionMix: {
+      up: clamp(0.96 - (0.08 * lateralNorm), 0.88, 0.96),
+      retrograde: clamp(0.08 + (0.08 * verticalNorm), 0.08, 0.16),
+      antiTangent: clamp(0.04 + (0.08 * lateralNorm), 0.04, 0.12),
+    },
+    terminalUprightCommit: true,
+    uprightTiltLimitDeg: clamp(
+      8
+        + (0.60 * Math.min(catchLateralRangeKm, 12))
+        + (0.12 * Math.min(Math.abs(catchVerticalErrorKm), 12))
+        + (18 * clamp((catchLateralSpeedKmS - 0.34) / 0.58, 0, 1) * clamp((altitudeKm - 12) / 28, 0, 1)),
+      8,
+      towerRelativeActive
+        ? (altitudeKm > 20.0 ? 44 : (altitudeKm > 2.0 ? 26 : 14))
+        : 30,
+    ),
+    siteVectorWeight: clamp(0.32 + (0.42 * lateralNorm), 0.24, 0.82),
+    siteVelocityWeight: clamp(
+      0.22 + (0.40 * (Number(terminalIntercept?.lateralDemandNorm) || 0)),
+      0.16,
+      0.78,
+    ),
+    padInterceptBlend: clamp(0.42 + (0.34 * guidanceBlend), 0.42, 0.78),
+    padInterceptLateralWeight: clamp(
+      0.58 + (0.58 * (Number(terminalIntercept?.lateralDemandNorm) || 0)),
+      0.58,
+      1.30,
+    ),
+    padDesiredLateralClosingSpeedKmS: clamp(
+      Math.hypot(
+        Number(terminalIntercept?.desiredEastSpeedKmS) || 0,
+        Number(terminalIntercept?.desiredNorthSpeedKmS) || 0,
+      ),
+      0.06,
+      catchLateralRangeKm > 8 ? 0.46 : catchLateralRangeKm > 3 ? 0.32 : 0.18,
+    ),
+    maxSiteSteeringAngleDeg: clamp(16 + (0.34 * Math.min(catchLateralRangeKm, 26)), 16, 30),
+    attitudeResponseScale: 1.54 + (0.52 * terminalUprightCommitNorm),
+    attitudeTargetBlend: clamp(0.90 + (0.06 * terminalUprightCommitNorm), 0.90, 0.975),
+    angularDampingPerS: 1.08 + (0.20 * terminalUprightCommitNorm),
+    maxBodyRateDegS: altitudeKm > 2.0 ? 18.0 : 10.5,
+    predictiveCatchControl: terminalIntercept
+      ? {
+        enabled: true,
+        blend: guidanceBlend,
+        retrogradeBias: clamp(
+          0.06 + (0.08 * (Number(terminalIntercept.lateralDemandNorm) || 0)),
+          0.06,
+          0.20,
+        ),
+        translationOnly: false,
+        translationAuthority: clamp(
+          0.34 + (0.34 * (Number(terminalIntercept.lateralDemandNorm) || 0)),
+          0.34,
+          0.78,
+        ),
+        interceptTimeSec: terminalIntercept.interceptTimeSec,
+        localDirection: {
+          ...(terminalIntercept.localDirection || {}),
+          up: clamp(Number(terminalIntercept.localDirection?.up) || 0, 0.72, 1.0),
+        },
+        desiredEastSpeedKmS: terminalIntercept.desiredEastSpeedKmS,
+        desiredNorthSpeedKmS: terminalIntercept.desiredNorthSpeedKmS,
+        desiredVerticalSpeedKmS: terminalIntercept.desiredVerticalSpeedKmS,
+        predictedEastMissKm: terminalIntercept.predictedEastMissKm,
+        predictedNorthMissKm: terminalIntercept.predictedNorthMissKm,
+        predictedVerticalMissKm: terminalIntercept.predictedVerticalMissKm,
+        predictedLateralMissKm: terminalIntercept.predictedLateralMissKm,
+        predictedTotalMissKm: terminalIntercept.predictedTotalMissKm,
+        predictedVerticalAtLateralInterceptKm: terminalIntercept.predictedVerticalAtLateralInterceptKm,
+      }
+      : null,
+  };
+}
+
+function buildSustainedTowerLandingBurnCommand({
+  altitudeKm = 0,
+  catchLateralRangeKm = 0,
+  catchLateralSpeedKmS = 0,
+  catchVerticalErrorKm = 0,
+  catchVerticalSpeedKmS = 0,
+  catchApproachSpeedKmS = 0,
+  gridFinAuthority = 0,
+  terminalUprightCommitNorm = 0,
+  terminalIntercept = null,
+} = {}) {
+  const lateralRangeNorm = clamp(catchLateralRangeKm / 14, 0, 1);
+  const lateralSpeedNorm = clamp(catchLateralSpeedKmS / 0.42, 0, 1);
+  const verticalBrakeNorm = clamp(
+    (Math.abs(catchVerticalSpeedKmS) - 0.16) / 0.95,
+    0,
+    1,
+  );
+  const energyNorm = clamp(
+    (catchApproachSpeedKmS - 0.35) / 1.25,
+    0,
+    1,
+  );
+  const rawThrottle = clamp(
+    0.42
+      + (0.28 * verticalBrakeNorm)
+      + (0.18 * lateralSpeedNorm)
+      + (0.10 * lateralRangeNorm)
+      + (0.10 * energyNorm),
+    0.42,
+    0.92,
+  );
+  const desiredVerticalSpeedKmS = Number(terminalIntercept?.desiredVerticalSpeedKmS) || -0.38;
+  const slowOrAscendingNorm = clamp(
+    (catchVerticalSpeedKmS - desiredVerticalSpeedKmS + 0.02) / 0.24,
+    0,
+    1,
+  );
+  const lowVerticalEnergyThrottleCap = clamp(
+    0.10
+      + (0.18 * lateralSpeedNorm)
+      + (0.12 * lateralRangeNorm)
+      + (0.08 * clamp(Math.max(0, -catchVerticalErrorKm) / 4, 0, 1)),
+    0.10,
+    0.46,
+  );
+  const throttle = slowOrAscendingNorm > 0
+    ? Math.min(
+      rawThrottle,
+      (rawThrottle * (1 - slowOrAscendingNorm)) + (lowVerticalEnergyThrottleCap * slowOrAscendingNorm),
+    )
+    : rawThrottle;
+  const guidanceBlend = clamp(
+    0.78
+      + (0.10 * lateralRangeNorm)
+      + (0.08 * lateralSpeedNorm),
+    0.78,
+    0.94,
+  );
+  return {
+    phase: "landing-burn",
+    guidanceMode: "booster-landing-burn",
+    attitudeControlMode: "engines+rcs",
+    qAlphaSteeringEnabled: false,
+    aeroAuthority: clamp(gridFinAuthority * 0.25, 0, 0.2),
+    siteTargetingEnabled: false,
+    throttle,
+    directionMix: {
+      up: 0.84,
+      retrograde: 0.12,
+      antiTangent: 0.06,
+    },
+    terminalUprightCommit: true,
+    uprightTiltLimitDeg: clamp(
+      18
+        + (0.55 * Math.min(Math.abs(catchVerticalErrorKm), 10))
+        + (1.30 * Math.min(catchLateralRangeKm, 12))
+        + (10 * lateralSpeedNorm),
+      18,
+      42,
+    ),
+    attitudeResponseScale: 4.85,
+    attitudeTargetBlend: 0.985,
+    angularDampingPerS: 1.95,
+    maxBodyRateDegS: 40.0,
+    predictiveCatchControl: terminalIntercept
+      ? {
+        enabled: true,
+        blend: guidanceBlend,
+        retrogradeBias: clamp(0.16 + (0.16 * lateralSpeedNorm), 0.16, 0.34),
+        translationOnly: false,
+        translationAuthority: clamp(0.56 + (0.26 * lateralRangeNorm), 0.56, 0.86),
+        interceptTimeSec: terminalIntercept.interceptTimeSec,
+        localDirection: {
+          ...(terminalIntercept.localDirection || {}),
+          up: clamp(Number(terminalIntercept.localDirection?.up) || 0, 0.70, 1.08),
+        },
+        desiredEastSpeedKmS: terminalIntercept.desiredEastSpeedKmS,
+        desiredNorthSpeedKmS: terminalIntercept.desiredNorthSpeedKmS,
+        desiredVerticalSpeedKmS: terminalIntercept.desiredVerticalSpeedKmS,
+        predictedEastMissKm: terminalIntercept.predictedEastMissKm,
+        predictedNorthMissKm: terminalIntercept.predictedNorthMissKm,
+        predictedVerticalMissKm: terminalIntercept.predictedVerticalMissKm,
+        predictedLateralMissKm: terminalIntercept.predictedLateralMissKm,
+        predictedTotalMissKm: terminalIntercept.predictedTotalMissKm,
+      }
+      : null,
   };
 }
 
@@ -475,6 +957,13 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const catchNorthSpeedKmS = Number(input.catchNorthSpeedKmS) || 0;
   const catchClosingSpeedKmS = Number(input.catchClosingSpeedKmS) || 0;
   const towerRelativeActive = Boolean(input.towerRelativeActive);
+  const boostbackCatchCorridorActive = towerRelativeActive
+    || (
+      catchTotalRangeKm > 1
+      && catchTotalRangeKm <= 240
+      && catchLateralRangeKm <= 220
+      && Math.abs(catchVerticalErrorKm) > 4
+    );
   const catchPositionSigmaKm = Math.max(0, Number(input.catchPositionSigmaKm) || Number.POSITIVE_INFINITY);
   const catchVelocitySigmaKmS = Math.max(0, Number(input.catchVelocitySigmaKmS) || Number.POSITIVE_INFINITY);
   const elapsedSec = Math.max(0, Number(input.timeSinceSeparationSec) || 0);
@@ -588,6 +1077,23 @@ export function computeBoosterRecoveryCommand(input = {}) {
       || currentPhase === "catch-burn"
       || catchTotalRangeKm <= 18
     );
+  const towerCatchAcquisitionWindow =
+    towerRelativeActive
+    && altitudeKm <= 31
+    && catchTotalRangeKm <= 44
+    && catchLateralRangeKm <= 44
+    && Math.abs(catchVerticalErrorKm) <= 34
+    && propellantKg > (reserveLandingKg * 0.02);
+  const towerCatchReturnProfileActive =
+    towerRelativeActive
+    || boostbackCatchCorridorActive
+    || towerCatchAcquisitionWindow
+    || catchTotalRangeKm <= 160
+    || currentPhase === "descent-coast"
+    || currentPhase === "terminal-intercept"
+    || currentPhase === "catch-approach"
+    || currentPhase === "landing-burn"
+    || currentPhase === "catch-burn";
   const targetUprightAlignment = strictTerminalUprightWindow
     ? 0.92
     : (terminalApproachWindow ? 0.82 : 0.68);
@@ -605,27 +1111,45 @@ export function computeBoosterRecoveryCommand(input = {}) {
           : 0
       ),
     0.45,
-    towerRelativeActive ? 7.8 : 18.5,
+    towerCatchReturnProfileActive ? 1.35 : 18.5,
   );
+  const towerReturnTerminalProfileActive =
+    towerCatchReturnProfileActive
+    || boostbackCatchCorridorActive
+    || catchTotalRangeKm <= 110;
+  const towerCrossingInterceptAltitudeKm = (
+    towerReturnTerminalProfileActive
+    && catchLateralRangeKm <= 18
+    && catchLateralSpeedKmS > 0.55
+  )
+    ? clamp(
+      58
+        + (10 * clamp(catchLateralSpeedKmS / 1.05, 0, 1))
+        + (8 * clamp((18 - catchLateralRangeKm) / 18, 0, 1)),
+      58,
+      76,
+    )
+    : 0;
   const lateTerminalInterceptAltitudeKm = clamp(
     Math.max(
-      towerRelativeActive
+      towerReturnTerminalProfileActive
         ? (
-          10.5
-            + (0.42 * Math.min(catchLateralRangeKm, 12))
-            + (3.6 * clamp(catchLateralSpeedKmS / 0.45, 0, 1))
+          24.0
+            + (0.72 * Math.min(catchLateralRangeKm, 24))
+            + (4.2 * clamp(catchLateralSpeedKmS / 0.45, 0, 1))
         )
         : 5.8,
+      towerCrossingInterceptAltitudeKm,
       landingBurnTriggerAltitudeKm + 0.8,
     ),
-    towerRelativeActive ? 10.5 : 5.8,
-    towerRelativeActive ? 18.0 : 12.5,
+    towerReturnTerminalProfileActive ? 10.5 : 5.8,
+    towerReturnTerminalProfileActive ? 58.0 : 12.5,
   );
 
-  const separationFlipMinSec = 0.9;
-  const separationFlipSettleSec = 2.6;
-  const boostbackMinimumIgnitionSec = 2.8;
-  const boostbackAlignmentGraceSec = 4.2;
+  const separationFlipMinSec = 1.4;
+  const separationFlipSettleSec = 4.8;
+  const boostbackMinimumIgnitionSec = 5.2;
+  const boostbackAlignmentGraceSec = 8.4;
   const highAltitudeEntryFloorKm = Math.max(24, landingBurnTriggerAltitudeKm * 2.6);
   const lowAltitudeEntryFloorKm = Math.max(16, landingBurnTriggerAltitudeKm * 1.35);
   const boostbackContinuationFloorKm = Math.max(12, lowAltitudeEntryFloorKm * 0.80);
@@ -664,6 +1188,7 @@ export function computeBoosterRecoveryCommand(input = {}) {
     altitudeKm,
     radialSpeedKmS,
     timeToGroundSec,
+    towerRelativeActive: boostbackCatchCorridorActive,
   });
   const boostbackPredictiveMetrics = resolveBoostbackPredictiveMetrics({
     altitudeKm,
@@ -671,10 +1196,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
     catchNorthErrorKm,
     catchEastSpeedKmS,
     catchNorthSpeedKmS,
+    catchVerticalErrorKm,
     catchVerticalSpeedKmS,
     catchLateralRangeKm,
     catchApproachSpeedKmS,
     timeToGroundSec,
+    towerRelativeActive: boostbackCatchCorridorActive,
   });
   const aeroCrossrangeDemand = resolveAeroCrossrangeDemand({
     altitudeKm,
@@ -768,7 +1295,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
     0,
     1,
   );
-  const landingBurnCommitted = currentPhase === "landing-burn";
+  const landingBurnCommitted =
+    currentPhase === "landing-burn"
+    || currentPhase === "catch-burn";
   const flipPhaseProgress = clamp(
     (elapsedSec - separationFlipMinSec) / Math.max(separationFlipSettleSec - separationFlipMinSec, 0.1),
     0,
@@ -783,14 +1312,21 @@ export function computeBoosterRecoveryCommand(input = {}) {
       || returnEnergyNorm > 0.2
     );
   const boostbackBurnDurationSec = Math.max(0, elapsedSec - boostbackMinimumIgnitionSec);
-  const maxUsefulBoostbackBurnSec = clamp(
-    70
-      + (0.18 * catchTotalRangeKm)
-      + (34 * clamp(catchLateralSpeedKmS / 0.55, 0, 1))
-      + (22 * clamp(catchLateralRangeKm / 36, 0, 1)),
-    90,
-    240,
-  );
+	  const maxUsefulBoostbackBurnSec = boostbackCatchCorridorActive
+	    ? clamp(
+	      90
+	        + (7 * clamp(catchTotalRangeKm / 180, 0, 1))
+	        + (7 * clamp(catchLateralRangeKm / 140, 0, 1)),
+	      90,
+	      104,
+	    )
+    : clamp(
+      62
+        + (0.08 * catchTotalRangeKm)
+        + (10 * clamp(catchLateralSpeedKmS / 0.55, 0, 1)),
+      62,
+      92,
+    );
   const boostbackDivergenceNorm = clamp(
     (-launchSiteLateralClosingSpeedKmS) / Math.max(boostbackInterceptDemand.desiredLateralClosingKmS, 0.18),
     0,
@@ -804,9 +1340,135 @@ export function computeBoosterRecoveryCommand(input = {}) {
     0,
     1,
   );
+  const boostbackOverClosingNorm = clamp(
+    (
+      launchSiteLateralClosingSpeedKmS
+      - (boostbackInterceptDemand.desiredLateralClosingKmS * 1.05)
+    ) / Math.max(boostbackInterceptDemand.desiredLateralClosingKmS, 0.18),
+    0,
+    1,
+  );
+  const boostbackTowerCorridorHighNorm = boostbackCatchCorridorActive
+    ? Math.max(
+      boostbackPredictiveMetrics.lateralInterceptTooHighNorm,
+      clamp(
+        (boostbackPredictiveMetrics.signedLateralClosingSpeedKmS - 0.54) / 0.36,
+        0,
+        1,
+      ) * clamp(
+        (boostbackPredictiveMetrics.predictedVerticalAtLateralInterceptKm - 5.0) / 26.0,
+        0,
+        1,
+      ),
+    )
+    : 0;
+  const boostbackTargetLateralSpeedKmS = boostbackCatchCorridorActive
+    ? (
+      altitudeKm > 70
+        ? 1.45
+        : altitudeKm > 48
+          ? 1.20
+          : altitudeKm > 34
+            ? 0.86
+            : 0.52
+    )
+    : maxResidualLateralSpeedKmS;
+  const boostbackTargetClosingSpeedKmS = boostbackCatchCorridorActive
+    ? (
+      altitudeKm > 70
+        ? 1.45
+        : altitudeKm > 48
+          ? 1.20
+          : altitudeKm > 34
+            ? 0.86
+            : 0.52
+    )
+    : boostbackInterceptDemand.desiredLateralClosingKmS;
+  const boostbackCorridorOverClosingNorm = boostbackCatchCorridorActive
+    ? clamp(
+      (
+        boostbackPredictiveMetrics.signedLateralClosingSpeedKmS
+        - boostbackTargetClosingSpeedKmS
+      ) / 0.34,
+      0,
+      1,
+    )
+    : 0;
+  const boostbackReturnOverspeedNorm = Math.max(
+    boostbackOverClosingNorm,
+    boostbackCorridorOverClosingNorm,
+    boostbackTowerCorridorHighNorm * 0.55,
+  );
+  const boostbackLateralEnergySolved = catchLateralSpeedKmS <= boostbackTargetLateralSpeedKmS
+    && boostbackPredictiveMetrics.signedLateralClosingSpeedKmS <= boostbackTargetClosingSpeedKmS;
+  const boostbackPredictedCorridorSolved = Boolean(
+    (
+      boostbackCatchCorridorActive
+        ? (
+	          boostbackPredictiveMetrics.predictedCorridorMissKm <= 1.8
+          && boostbackTowerCorridorHighNorm <= 0.42
+          && launchSiteLateralClosingSpeedKmS >= 0.28
+          && boostbackLateralEnergySolved
+        )
+        : (
+          boostbackPredictiveMetrics.predictedLateralMissKm <= 2.6
+          && boostbackOverClosingNorm > 0.12
+        )
+    )
+    && launchSiteLateralRangeKm <= 90
+  );
+  const boostbackNeedsPoweredCorrection = Boolean(
+    boostbackDivergenceNorm > 0.10
+    || boostbackClosingDeficitNorm > 0.10
+    || (
+	      boostbackPredictiveMetrics.predictedCorridorMissKm > 1.8
+      && (
+        boostbackCatchCorridorActive
+          ? boostbackTowerCorridorHighNorm < 0.72
+          : boostbackOverClosingNorm < 0.55
+      )
+    )
+    || (
+      catchLateralSpeedKmS > maxResidualLateralSpeedKmS
+      && (
+        boostbackCatchCorridorActive
+          ? (
+            boostbackTowerCorridorHighNorm > 0.18
+            || catchLateralSpeedKmS > boostbackTargetLateralSpeedKmS
+            || boostbackPredictiveMetrics.signedLateralClosingSpeedKmS > boostbackTargetClosingSpeedKmS
+          )
+          : boostbackOverClosingNorm < 0.72
+      )
+    )
+    || (
+      boostbackCatchCorridorActive
+      && boostbackPredictiveMetrics.predictedLateralMissKm > 10
+      && altitudeKm > 34
+    )
+    || (
+      boostbackCatchCorridorActive
+      && !boostbackLateralEnergySolved
+      && altitudeKm > 32
+    )
+    || (
+      catchLateralRangeKm <= 14
+      && catchLateralSpeedKmS > 0.30
+      && boostbackOverClosingNorm < 0.45
+    )
+    || (
+      catchLateralRangeKm <= 6
+      && catchLateralSpeedKmS > 0.16
+      && boostbackOverClosingNorm < 0.35
+    )
+    || (
+      (catchLateralRangeKm > 4 || launchSiteLateralRangeKm > 3.5)
+      && boostbackOverClosingNorm < 0.22
+	      && boostbackPredictiveMetrics.predictedLateralMissKm > 1.8
+    )
+  );
   const boostbackThinAirWindow =
     altitudeKm > Math.max(lowAltitudeEntryFloorKm, 32)
-    && dynamicPressurePa < 18_000;
+    && dynamicPressurePa < 42_000;
   const boostbackSettledIgnitionEligible = boostbackDemand
     && elapsedSec >= boostbackMinimumIgnitionSec
     && (
@@ -903,28 +1565,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
         && boostbackThinAirWindow
         && hasBoostbackBudget
         && boostbackBurnDurationSec <= maxUsefulBoostbackBurnSec
-        && (
-          boostbackInterceptDemand.demandNorm > 0.12
-          || boostbackDivergenceNorm > 0.10
-          || boostbackClosingDeficitNorm > 0.10
-          || boostbackPredictiveMetrics.speedDemandNorm > 0.18
-          || catchLateralSpeedKmS > maxResidualLateralSpeedKmS
-          || boostbackPredictiveMetrics.predictedLateralMissKm > 3.5
-          || (
-            catchLateralRangeKm <= 14
-            && catchLateralSpeedKmS > 0.30
-          )
-          || (
-            catchLateralRangeKm <= 6
-            && catchLateralSpeedKmS > 0.16
-          )
-          || catchLateralRangeKm > 4
-          || launchSiteLateralRangeKm > 3.5
-          || (
-            launchSiteLateralRangeKm > 1.5
-            && launchSiteLateralClosingSpeedKmS < (boostbackInterceptDemand.desiredLateralClosingKmS * 1.45)
-          )
-        )
+        && !boostbackPredictedCorridorSolved
+        && boostbackNeedsPoweredCorrection
       )
     )
   ) {
@@ -951,23 +1593,46 @@ export function computeBoosterRecoveryCommand(input = {}) {
     1,
     );
       const boostbackBurnAlignment = Math.max(bodyRetrogradeAlignment, flipAlignment);
-    const boostbackThrottleGate = clamp(
+    const boostbackThrottleGateRaw = clamp(
         (boostbackBurnAlignment - 0.18) / 0.42,
         0,
         1,
       );
+      const boostbackThrottleGate = boostbackCatchCorridorActive
+        && boostbackPredictiveMetrics.predictedLateralMissKm > 10
+        ? Math.max(boostbackThrottleGateRaw, 0.55)
+        : boostbackThrottleGateRaw;
       const boostbackSiteTargetingActive = true;
+      const boostbackOverClosingThrottleScale = clamp(
+        1 - (0.42 * Math.max(boostbackOverClosingNorm, boostbackTowerCorridorHighNorm * 0.8)),
+        boostbackCatchCorridorActive ? 0.76 : 0.44,
+        1,
+      );
+      const towerRelativeBoostbackClosingCapKmS = boostbackCatchCorridorActive
+        ? clamp(
+          boostbackTargetClosingSpeedKmS + (0.12 * (1 - boostbackTowerCorridorHighNorm)),
+          0.30,
+          0.94,
+        )
+        : 2.80;
+      const towerRelativeBoostbackClosingFloorKmS = boostbackCatchCorridorActive
+        ? clamp(
+          boostbackTargetClosingSpeedKmS * 0.58,
+          0.12,
+          0.34,
+        )
+        : 0.32;
       return {
         phase: "boostback",
         guidanceMode: "booster-boostback",
         attitudeControlMode: "engines+rcs",
         aeroAuthority: 0,
-        attitudeResponseScale: 3.55 + (0.65 * ignitionBlend),
-        attitudeTargetBlend: 0.88 + (0.08 * ignitionBlend),
-        angularDampingPerS: 0.34 + (0.14 * ignitionBlend),
-        maxBodyRateDegS: 24.0 + (6.0 * ignitionBlend),
+        attitudeResponseScale: 2.05 + (0.55 * ignitionBlend),
+        attitudeTargetBlend: 0.92 + (0.06 * ignitionBlend),
+        angularDampingPerS: 0.62 + (0.22 * ignitionBlend),
+        maxBodyRateDegS: 12.5 + (5.5 * ignitionBlend),
         siteTargetingEnabled: boostbackSiteTargetingActive,
-        maxSiteSteeringAngleDeg: boostbackSiteTargetingActive ? 62 : 0,
+        maxSiteSteeringAngleDeg: boostbackSiteTargetingActive ? 58 : 0,
         qAlphaSteeringEnabled: false,
         throttle: clamp(
           Math.max(
@@ -979,26 +1644,38 @@ export function computeBoosterRecoveryCommand(input = {}) {
                 + (0.10 * boostbackDivergenceNorm)
                 + (0.14 * boostbackPredictiveMetrics.speedDemandNorm)
                 + (0.10 * boostbackPredictiveMetrics.predictiveLateralMissNorm)
+                + (0.08 * boostbackTowerCorridorHighNorm)
                 + (0.06 * ignitionBlend)
-            ) * boostbackThrottleGate,
-            currentPhase === "boostback" && boostbackSiteTargetingActive ? 0.58 : 0,
+            ) * boostbackThrottleGate * boostbackOverClosingThrottleScale,
+            currentPhase === "boostback" && boostbackSiteTargetingActive
+              ? (
+                boostbackCatchCorridorActive
+                  ? (0.72 + (0.18 * (1 - boostbackOverClosingNorm)))
+                  : (0.36 + (0.22 * (1 - boostbackOverClosingNorm)))
+              )
+              : 0,
           ),
           0.22,
           0.98,
         ),
         directionMix: {
-        up: 0.01,
-        retrograde: 1.0,
+        up: 0.08,
+        retrograde: clamp(
+          0.10 + (0.30 * boostbackReturnOverspeedNorm),
+          0.10,
+          0.42,
+        ),
         antiTangent: clamp(
-          0.08
+          1.02
+            - (0.44 * boostbackReturnOverspeedNorm)
             + (
-              0.16
+              0.22
                 * boostbackInterceptDemand.lateralMissNorm
                 * boostbackThrottleGate
                 * (boostbackSiteTargetingActive ? 1 : 0)
             ),
-            boostbackSiteTargetingActive ? 0.08 : 0,
-            0.56,
+            boostbackSiteTargetingActive ? 0.58 : 0.78,
+            1.30,
         ),
         },
         siteVectorWeight: boostbackSiteTargetingActive
@@ -1012,12 +1689,12 @@ export function computeBoosterRecoveryCommand(input = {}) {
           : 0,
         siteVelocityWeight: boostbackSiteTargetingActive
           ? clamp(
-            0.30
-              + (0.30 * boostbackInterceptDemand.closingNeedNorm)
-              + (0.22 * boostbackPredictiveMetrics.speedDemandNorm)
-              + (0.18 * boostbackPredictiveMetrics.speedDemandNorm),
+              0.30
+                + (0.30 * boostbackInterceptDemand.closingNeedNorm)
+                + (0.22 * boostbackPredictiveMetrics.speedDemandNorm)
+                + (0.18 * boostbackPredictiveMetrics.speedDemandNorm),
             0.24,
-            0.92,
+            boostbackCatchCorridorActive ? 1.08 : 0.92,
           )
           : 0,
         padInterceptBlend: boostbackSiteTargetingActive
@@ -1049,8 +1726,8 @@ export function computeBoosterRecoveryCommand(input = {}) {
                 boostbackPredictiveMetrics.desiredNorthSpeedKmS,
               ),
             ),
-            0.32,
-            2.80,
+            towerRelativeBoostbackClosingFloorKmS,
+            towerRelativeBoostbackClosingCapKmS,
           )
           : 0,
         padInterceptTimeSec: boostbackSiteTargetingActive
@@ -1067,12 +1744,14 @@ export function computeBoosterRecoveryCommand(input = {}) {
                 + (0.22 * boostbackPredictiveMetrics.lateralDemandNorm)
                 + (0.12 * boostbackPredictiveMetrics.speedDemandNorm),
               0.46,
-              0.84,
+              boostbackCatchCorridorActive ? 0.92 : 0.84,
             ),
             retrogradeBias: clamp(
-              0.12 + (0.10 * boostbackPredictiveMetrics.speedDemandNorm),
-              0.12,
-              0.28,
+              0.10
+                + (0.10 * boostbackPredictiveMetrics.speedDemandNorm)
+                + (0.08 * boostbackTowerCorridorHighNorm),
+              0.10,
+              boostbackCatchCorridorActive ? 0.28 : 0.24,
             ),
             translationOnly: false,
             interceptTimeSec: boostbackPredictiveMetrics.interceptTimeSec,
@@ -1090,11 +1769,60 @@ export function computeBoosterRecoveryCommand(input = {}) {
       };
   }
 
+  if (
+    (currentPhase === "boostback" || currentPhase === "hotstage-ring-jettison")
+    && boostbackBurnDurationSec <= (maxUsefulBoostbackBurnSec + 2.5)
+  ) {
+    return {
+      phase: "hotstage-ring-jettison",
+      guidanceMode: "booster-hotstage-ring-jettison",
+      attitudeControlMode: "rcs",
+      qAlphaSteeringEnabled: false,
+      aeroAuthority: clamp(gridFinAuthority, 0, 0.18),
+      siteTargetingEnabled: false,
+      throttle: 0,
+      terminalUprightCommit: true,
+      uprightTiltLimitDeg: 24,
+      directionMix: {
+        up: 0.82,
+        retrograde: 0.10,
+        antiTangent: 0.08,
+      },
+      siteVectorWeight: 0.32,
+      siteVelocityWeight: 0.28,
+      padInterceptBlend: 0.28,
+      padInterceptLateralWeight: 0.72,
+      padDesiredLateralClosingSpeedKmS: clamp(
+        boostbackTargetClosingSpeedKmS * 0.75,
+        0.12,
+        0.62,
+      ),
+      maxSiteSteeringAngleDeg: 34,
+      attitudeResponseScale: 1.16,
+      attitudeTargetBlend: 0.84,
+      angularDampingPerS: 0.72,
+      maxBodyRateDegS: 9.0,
+      hotstageRingJettisoned: true,
+    };
+  }
+
+  const entryBurnPriorityWindow = Boolean(
+    aeroEntryWindow
+    && !towerCatchReturnProfileActive
+    && altitudeKm <= 42
+    && dynamicPressurePa >= 8_000
+    && (
+      downwardSpeedKmS > 0.12
+      || tangentialSpeedKmS > 0.55
+    )
+  );
   const highAltitudeTowerCorridorHold =
-    towerRelativeActive
-    && altitudeKm > 28
+    altitudeKm > 28
     && altitudeKm <= 120
-    && catchLateralRangeKm <= 24
+    && catchLateralRangeKm <= 72
+    && !entryBurnPriorityWindow
+    && !(towerCrossingInterceptAltitudeKm > 0 && altitudeKm <= towerCrossingInterceptAltitudeKm)
+    && bodyUpAlignment >= 0.72
     && propellantKg > (reserveLandingKg * 0.08);
   if (highAltitudeTowerCorridorHold) {
     const highAltitudeIntercept = resolveTerminalInterceptMetrics({
@@ -1110,42 +1838,40 @@ export function computeBoosterRecoveryCommand(input = {}) {
       catchVerticalSpeedKmS,
       towerRelativeActive: true,
     });
+    const highAltitudeBrakeNorm = clamp(
+      ((-catchVerticalSpeedKmS - 0.65) / 1.25) * ((70 - altitudeKm) / 42),
+      0,
+      1,
+    );
     return {
-      phase: "terminal-intercept",
-      guidanceMode: "booster-terminal-intercept",
-      attitudeControlMode: "engines+rcs",
+      phase: "descent-coast",
+      guidanceMode: "booster-descent-coast",
+      attitudeControlMode: "grid-fins+rcs",
       qAlphaSteeringEnabled: false,
-      aeroAuthority: clamp(gridFinAuthority * 0.12, 0, 0.12),
+      aeroAuthority: clamp(gridFinAuthority, 0, 1),
       siteTargetingEnabled: true,
-      throttle: clamp(
-        0.22
-          + (0.28 * highAltitudeIntercept.lateralDemandNorm)
-          + (0.18 * clamp(catchLateralSpeedKmS / 0.90, 0, 1))
-          + (0.10 * clamp(Math.abs(catchVerticalSpeedKmS) / 0.30, 0, 1)),
-        0.20,
-        0.58,
-      ),
+      throttle: 0,
       directionMix: {
-        up: 0.18,
-        retrograde: 0.66,
-        antiTangent: 0.12,
+        up: 0.96,
+        retrograde: 0.14 + (0.08 * highAltitudeBrakeNorm),
+        antiTangent: 0.08,
       },
       terminalUprightCommit: true,
-      uprightTiltLimitDeg: clamp(18 + (0.35 * Math.min(catchLateralRangeKm, 18)), 18, 28),
-      siteVectorWeight: 0.72,
-      siteVelocityWeight: 0.68,
-      padInterceptBlend: 0.94,
-      padInterceptLateralWeight: 1.40,
+      uprightTiltLimitDeg: clamp(22 + (0.36 * Math.min(catchLateralRangeKm, 32)), 22, 40),
+      siteVectorWeight: 0.78,
+      siteVelocityWeight: 0.86,
+      padInterceptBlend: 0.96,
+      padInterceptLateralWeight: 1.72,
       padDesiredLateralClosingSpeedKmS: clamp(
         Math.max(
-          0.30,
+          0.18,
           Math.hypot(
             highAltitudeIntercept.desiredEastSpeedKmS,
             highAltitudeIntercept.desiredNorthSpeedKmS,
           ),
         ),
-        0.30,
-        1.40,
+        0.16,
+        altitudeKm > 42 ? 0.92 : 0.54,
       ),
       maxSiteSteeringAngleDeg: 78,
       attitudeResponseScale: 1.34,
@@ -1154,10 +1880,14 @@ export function computeBoosterRecoveryCommand(input = {}) {
       maxBodyRateDegS: 13.5,
       predictiveCatchControl: {
         enabled: true,
-        blend: 0.92,
+        blend: 0.74,
         retrogradeBias: 0.10,
         translationOnly: false,
-        translationAuthority: 0.88,
+        translationAuthority: clamp(
+          0.32 + (0.34 * highAltitudeIntercept.lateralDemandNorm),
+          0.32,
+          0.72,
+        ),
         interceptTimeSec: highAltitudeIntercept.interceptTimeSec,
         localDirection: { ...highAltitudeIntercept.localDirection },
         desiredEastSpeedKmS: highAltitudeIntercept.desiredEastSpeedKmS,
@@ -1172,7 +1902,13 @@ export function computeBoosterRecoveryCommand(input = {}) {
     };
   }
 
-  if (thinAirEntryWindow && altitudeKm <= 108 && currentPhase !== "terminal-intercept") {
+  if (
+    thinAirEntryWindow
+    && altitudeKm <= 108
+    && currentPhase !== "terminal-intercept"
+    && !towerCatchReturnProfileActive
+    && !towerCatchAcquisitionWindow
+  ) {
     const entryAlignNeedNorm = clamp(
       Math.max(
         (0.84 - bodyUpAlignment) / 0.34,
@@ -1245,9 +1981,15 @@ export function computeBoosterRecoveryCommand(input = {}) {
     }
   }
 
-  if (aeroEntryWindow && currentPhase !== "terminal-intercept") {
+  if (
+    aeroEntryWindow
+    && altitudeKm <= 37.0
+    && currentPhase !== "terminal-intercept"
+    && !towerCatchReturnProfileActive
+    && !towerCatchAcquisitionWindow
+  ) {
     const descendingIntoEntry = downwardSpeedKmS > 0.08 && radialSpeedKmS < -0.08;
-    if (!descendingIntoEntry) {
+    if (!descendingIntoEntry && altitudeKm <= 25.8) {
       return {
         phase: "ballistic-descent",
         guidanceMode: "booster-ballistic-settle",
@@ -1316,18 +2058,56 @@ export function computeBoosterRecoveryCommand(input = {}) {
         aeroAuthority: gridFinAuthority,
         terminalUprightCommit: true,
         uprightTiltLimitDeg: clamp(
-          (strictTerminalUprightWindow ? 6 : 9) + (0.08 * Math.min(launchSiteLateralRangeKm, 70)),
+          (strictTerminalUprightWindow ? 6 : 9)
+            + (0.08 * Math.min(launchSiteLateralRangeKm, 70))
+            + (
+              towerRelativeActive
+                ? 24 * clamp((catchLateralSpeedKmS - 0.55) / 0.55, 0, 1)
+                  * clamp((catchLateralRangeKm - 8.0) / 18.0, 0, 1)
+                : 0
+            ),
           strictTerminalUprightWindow ? 6 : 9,
-          24,
+          towerRelativeActive ? 42 : 24,
         ),
         attitudeResponseScale: 1.20 + (0.30 * terminalUprightCommitNorm),
         attitudeTargetBlend: 0.86 + (0.08 * terminalUprightCommitNorm),
         angularDampingPerS: 0.92 + (0.12 * terminalUprightCommitNorm),
         maxBodyRateDegS: 11.5,
-        throttle: clamp(0.34 + (0.40 * entryInterfaceNorm), 0.34, 0.82),
+        throttle: clamp(
+          0.34
+            + (0.40 * entryInterfaceNorm)
+            + (
+              towerRelativeActive
+                ? 0.12 * clamp((catchLateralSpeedKmS - 0.55) / 0.55, 0, 1)
+                  * clamp((catchLateralRangeKm - 8.0) / 18.0, 0, 1)
+                : 0
+            ),
+          0.34,
+          0.86,
+        ),
         directionMix: {
-          up: 0.98,
-          retrograde: 0.12,
+          up: clamp(
+            0.98
+              - (
+                towerRelativeActive
+                  ? 0.38 * clamp((catchLateralSpeedKmS - 0.55) / 0.55, 0, 1)
+                    * clamp((catchLateralRangeKm - 8.0) / 18.0, 0, 1)
+                  : 0
+              ),
+            0.56,
+            0.98,
+          ),
+          retrograde: clamp(
+            0.12
+              + (
+                towerRelativeActive
+                  ? 0.42 * clamp((catchLateralSpeedKmS - 0.55) / 0.55, 0, 1)
+                    * clamp((catchLateralRangeKm - 8.0) / 18.0, 0, 1)
+                  : 0
+              ),
+            0.12,
+            0.56,
+          ),
           antiTangent: clamp(
             0.08 + (0.10 * aeroCrossrangeDemand.crossrangeDemandNorm * aeroCrossrangeDemand.aeroCorrectionNorm),
             0.08,
@@ -1420,15 +2200,56 @@ export function computeBoosterRecoveryCommand(input = {}) {
     };
   }
 
-  const sustainingCatchApproach = currentPhase === "catch-approach" || currentPhase === "catch-burn";
+  const sustainingCatchApproach =
+    currentPhase === "catch-approach"
+    || currentPhase === "terminal-intercept"
+    || currentPhase === "landing-burn"
+    || currentPhase === "catch-burn";
   const sustainCatchCorridor =
     sustainingCatchApproach
     && towerRelativeActive
     && altitudeKm <= 30
-    && catchTotalRangeKm <= 40
-    && catchLateralRangeKm <= 15
-    && Math.abs(catchVerticalErrorKm) <= 28
+    && catchTotalRangeKm <= 44
+    && catchLateralRangeKm <= 44
+    && Math.abs(catchVerticalErrorKm) <= 34
     && propellantKg > (reserveLandingKg * 0.02);
+
+  if (
+    currentPhase === "entry-burn"
+    && towerRelativeActive
+    && altitudeKm > 24
+    && altitudeKm <= 25.8
+    && catchTotalRangeKm <= 50
+    && bodyUpAlignment >= 0.90
+  ) {
+    return {
+      phase: "ballistic-descent",
+      guidanceMode: "booster-ballistic-settle",
+      attitudeControlMode: "grid-fins+rcs",
+      qAlphaSteeringEnabled: false,
+      aeroAuthority: clamp(gridFinAuthority, 0, 1),
+      terminalUprightCommit: true,
+      uprightTiltLimitDeg: 10,
+      attitudeResponseScale: 1.24,
+      attitudeTargetBlend: 0.92,
+      angularDampingPerS: 0.98,
+      maxBodyRateDegS: 11.5,
+      throttle: 0,
+      directionMix: {
+        up: 1.0,
+        retrograde: 0.10,
+        antiTangent: 0.08,
+      },
+      siteTargetingEnabled: true,
+      siteVectorWeight: 0.54,
+      siteVelocityWeight: 0.42,
+      padInterceptBlend: 0.72,
+      padInterceptLateralWeight: 1.0,
+      padDesiredLateralClosingSpeedKmS: 0.42,
+      maxSiteSteeringAngleDeg: 38,
+      predictiveCatchControl: aeroPredictiveCatchControl,
+    };
+  }
 
   let catchCommand = resolveBoosterCatchCommand({
     currentPhase,
@@ -1455,13 +2276,7 @@ export function computeBoosterRecoveryCommand(input = {}) {
     catchVelocitySigmaKmS,
     bodyUpAlignment,
   });
-  const catchCorridorLatch =
-    towerRelativeActive
-    && altitudeKm <= 26
-    && catchTotalRangeKm <= 26
-    && catchLateralRangeKm <= 9
-    && Math.abs(catchVerticalErrorKm) <= 22
-    && propellantKg > (reserveLandingKg * 0.02);
+  const catchCorridorLatch = towerCatchAcquisitionWindow;
   if (!catchCommand && catchCorridorLatch) {
     catchCommand = resolveBoosterCatchCommand({
       currentPhase: sustainingCatchApproach ? currentPhase : "catch-approach",
@@ -1487,10 +2302,49 @@ export function computeBoosterRecoveryCommand(input = {}) {
       catchPositionSigmaKm,
       catchVelocitySigmaKmS,
       bodyUpAlignment,
+      allowFinalBurn: sustainingCatchApproach,
     });
   }
   if (catchCommand) {
     return catchCommand;
+  }
+  const sustainedTowerLandingBurn = Boolean(
+    landingBurnCommitted
+	    && towerRelativeActive
+	    && altitudeKm <= 34.0
+	    && altitudeKm > 0.18
+    && catchTotalRangeKm <= 52
+    && catchLateralRangeKm <= 22
+    && Math.abs(catchVerticalErrorKm) <= 34
+    && catchApproachSpeedKmS <= 2.55
+    && bodyUpAlignment >= 0.88
+    && propellantKg > (reserveLandingKg * 0.02)
+  );
+  if (sustainedTowerLandingBurn) {
+    const landingBurnIntercept = resolveTerminalInterceptMetrics({
+      altitudeKm,
+      catchTotalRangeKm,
+      catchLateralRangeKm,
+      catchVerticalErrorKm,
+      catchApproachSpeedKmS,
+      catchEastErrorKm,
+      catchNorthErrorKm,
+      catchEastSpeedKmS,
+      catchNorthSpeedKmS,
+      catchVerticalSpeedKmS,
+      towerRelativeActive,
+    });
+    return buildSustainedTowerLandingBurnCommand({
+      altitudeKm,
+      catchLateralRangeKm,
+      catchLateralSpeedKmS,
+      catchVerticalErrorKm,
+      catchVerticalSpeedKmS,
+      catchApproachSpeedKmS,
+      gridFinAuthority,
+      terminalUprightCommitNorm,
+      terminalIntercept: landingBurnIntercept,
+    });
   }
 
   const sustainingTerminalIntercept =
@@ -1502,9 +2356,9 @@ export function computeBoosterRecoveryCommand(input = {}) {
   const terminalInterceptWindow =
     altitudeKm > 0.8
     && altitudeKm <= lateTerminalInterceptAltitudeKm
-    && catchTotalRangeKm <= (sustainingTerminalIntercept ? 60.0 : 48.0)
-    && catchLateralRangeKm <= (sustainingTerminalIntercept ? 60.0 : 52.0)
-    && Math.abs(catchVerticalErrorKm) <= (sustainingTerminalIntercept ? 34.0 : 24.0)
+    && catchTotalRangeKm <= (sustainingTerminalIntercept ? 96.0 : 90.0)
+    && catchLateralRangeKm <= (sustainingTerminalIntercept ? 92.0 : 88.0)
+    && Math.abs(catchVerticalErrorKm) <= (sustainingTerminalIntercept ? 74.0 : 68.0)
     && propellantKg > (reserveLandingKg * 0.05)
     && !sustainCatchCorridor;
   if (terminalInterceptWindow) {
@@ -1521,146 +2375,17 @@ export function computeBoosterRecoveryCommand(input = {}) {
       catchVerticalSpeedKmS,
       towerRelativeActive,
     });
-    const terminalAscentPenaltyNorm = clamp((radialSpeedKmS + 0.015) / 0.10, 0, 1);
-    const terminalVerticalThrottleDemandNorm = clamp(
-      (terminalIntercept.desiredVerticalSpeedKmS - catchVerticalSpeedKmS) / 0.18,
-      0,
-      1,
-    );
-    const terminalVerticalHoldPenaltyNorm = Math.max(
-      terminalAscentPenaltyNorm,
-      clamp(
-        (catchVerticalSpeedKmS - terminalIntercept.desiredVerticalSpeedKmS) / 0.20,
-        0,
-        1,
-      ),
-    );
-    const terminalLateralRangeNorm = clamp(catchLateralRangeKm / 24, 0, 1);
-    const uprightInterceptNorm = clamp((bodyUpAlignment - 0.55) / 0.35, 0, 1);
-    return {
-      phase: "terminal-intercept",
-      guidanceMode: "booster-terminal-intercept",
-      attitudeControlMode: "engines+rcs",
-      qAlphaSteeringEnabled: false,
-      aeroAuthority: clamp(gridFinAuthority * 0.18, 0, 0.18),
-      siteTargetingEnabled: true,
-      throttle: clamp(
-        0.14
-          + (0.30 * terminalVerticalThrottleDemandNorm)
-          + (0.24 * terminalIntercept.lateralDemandNorm)
-          + (0.12 * terminalIntercept.predictiveLateralMissNorm)
-          + (0.08 * terminalLateralRangeNorm)
-          - (0.44 * terminalVerticalHoldPenaltyNorm),
-        0.06,
-        0.72 - (0.26 * terminalVerticalHoldPenaltyNorm),
-      ),
-      directionMix: {
-        up: clamp(
-          0.28
-            + (0.22 * (1 - terminalLateralRangeNorm))
-            - (0.56 * terminalVerticalHoldPenaltyNorm),
-          0.10,
-          0.42,
-        ),
-        retrograde: clamp(
-          0.26
-            + (0.16 * terminalLateralRangeNorm)
-            + (0.42 * terminalVerticalHoldPenaltyNorm),
-          0.26,
-          0.76,
-        ),
-        antiTangent: clamp(0.08 + (0.06 * terminalLateralRangeNorm), 0.08, 0.14),
-      },
-      terminalUprightCommit: true,
-      uprightTiltLimitDeg: clamp(
-        (towerRelativeActive ? 12 : 12) + (0.55 * Math.min(catchLateralRangeKm, 20)),
-        towerRelativeActive ? 12 : 12,
-        24,
-      ),
-      siteVectorWeight: clamp(
-        0.34 + (0.32 * terminalLateralRangeNorm),
-        0.34,
-        0.82,
-      ),
-      siteVelocityWeight: clamp(
-        0.28 + (0.28 * terminalIntercept.lateralDemandNorm),
-        0.26,
-        0.66,
-      ),
-      padInterceptBlend: clamp(
-        0.62 + (0.24 * terminalLateralRangeNorm),
-        0.62,
-        0.96,
-      ),
-      padInterceptLateralWeight: clamp(
-        0.78 + (0.40 * terminalIntercept.lateralDemandNorm),
-        0.72,
-        1.18,
-      ),
-      padDesiredLateralClosingSpeedKmS: clamp(
-        Math.max(
-          0.24,
-          Math.hypot(
-            terminalIntercept.desiredEastSpeedKmS,
-            terminalIntercept.desiredNorthSpeedKmS,
-          ),
-        ),
-        0.24,
-        1.20,
-      ),
-      maxSiteSteeringAngleDeg: clamp(
-        26 + (0.55 * Math.min(catchLateralRangeKm, 30)),
-        26,
-        60,
-      ),
-      attitudeResponseScale: 1.28 + (0.34 * Math.max(terminalUprightCommitNorm, 1 - uprightInterceptNorm)),
-      attitudeTargetBlend: 0.90 + (0.05 * terminalUprightCommitNorm),
-      angularDampingPerS: 0.94 + (0.10 * terminalUprightCommitNorm),
-      maxBodyRateDegS: 11.5,
-      predictiveCatchControl: {
-        enabled: true,
-        blend: clamp(
-          0.60
-            + (0.20 * terminalIntercept.lateralDemandNorm)
-            + (0.08 * terminalVerticalThrottleDemandNorm)
-            + (towerRelativeActive ? 0.06 : 0),
-          0.60,
-          0.96,
-        ),
-        retrogradeBias: clamp(
-          0.03 + (0.08 * terminalIntercept.lateralDemandNorm) + (0.10 * terminalVerticalHoldPenaltyNorm),
-          0.03,
-          0.24,
-        ),
-        translationOnly: false,
-        translationAuthority: clamp(
-          0.48
-            + (0.26 * terminalIntercept.lateralDemandNorm)
-            + (towerRelativeActive ? 0.08 : 0),
-          0.48,
-          0.88,
-        ),
-        interceptTimeSec: terminalIntercept.interceptTimeSec,
-        localDirection: {
-          ...terminalIntercept.localDirection,
-          up: clamp(
-            Number(terminalIntercept.localDirection?.up) * (1 - (0.82 * terminalVerticalHoldPenaltyNorm)),
-            0.02,
-            0.84,
-          ),
-        },
-        desiredEastSpeedKmS: terminalIntercept.desiredEastSpeedKmS,
-        desiredNorthSpeedKmS: terminalIntercept.desiredNorthSpeedKmS,
-        desiredVerticalSpeedKmS: terminalIntercept.desiredVerticalSpeedKmS,
-        predictedEastMissKm: terminalIntercept.predictedEastMissKm,
-        predictedNorthMissKm: terminalIntercept.predictedNorthMissKm,
-        predictedVerticalMissKm: terminalIntercept.predictedVerticalMissKm,
-        predictedLateralMissKm: terminalIntercept.predictedLateralMissKm,
-        predictedTotalMissKm: terminalIntercept.predictedTotalMissKm,
-      },
-    };
+    return buildUnpoweredTowerTerminalInterceptCommand({
+      altitudeKm,
+      catchLateralRangeKm,
+      catchLateralSpeedKmS,
+      catchVerticalErrorKm,
+      gridFinAuthority,
+      terminalUprightCommitNorm,
+      terminalIntercept,
+      towerRelativeActive,
+    });
   }
-
   if (
     altitudeKm > landingBurnTriggerAltitudeKm
     && currentPhase !== "terminal-intercept"
@@ -1831,142 +2556,51 @@ export function computeBoosterRecoveryCommand(input = {}) {
       catchVerticalSpeedKmS,
       towerRelativeActive,
     });
-    const terminalAscentPenaltyNorm = clamp((radialSpeedKmS + 0.015) / 0.10, 0, 1);
-    const terminalVerticalThrottleDemandNorm = clamp(
-      (terminalIntercept.desiredVerticalSpeedKmS - catchVerticalSpeedKmS) / 0.18,
-      0,
-      1,
-    );
-    const terminalVerticalHoldPenaltyNorm = Math.max(
-      terminalAscentPenaltyNorm,
-      clamp(
-        (catchVerticalSpeedKmS - terminalIntercept.desiredVerticalSpeedKmS) / 0.20,
-        0,
-        1,
-      ),
-    );
-    const terminalLateralRangeNorm = clamp(catchLateralRangeKm / 24, 0, 1);
-    return {
-      phase: "terminal-intercept",
-      guidanceMode: "booster-terminal-intercept",
-      attitudeControlMode: "engines+rcs",
-      qAlphaSteeringEnabled: false,
-      aeroAuthority: clamp(gridFinAuthority * 0.18, 0, 0.18),
-      siteTargetingEnabled: true,
-      throttle: clamp(
-        0.16
-          + (0.32 * terminalVerticalThrottleDemandNorm)
-          + (0.24 * terminalIntercept.lateralDemandNorm)
-          + (0.12 * terminalIntercept.predictiveLateralMissNorm)
-          + (0.08 * terminalLateralRangeNorm)
-          - (0.46 * terminalVerticalHoldPenaltyNorm),
-        0.06,
-        0.74 - (0.28 * terminalVerticalHoldPenaltyNorm),
-      ),
-      directionMix: {
-        up: clamp(
-          0.30
-            + (0.22 * (1 - terminalLateralRangeNorm))
-            - (0.58 * terminalVerticalHoldPenaltyNorm),
-          0.10,
-          0.44,
-        ),
-        retrograde: clamp(
-          0.26
-            + (0.16 * terminalLateralRangeNorm)
-            + (0.44 * terminalVerticalHoldPenaltyNorm),
-          0.26,
-          0.78,
-        ),
-        antiTangent: clamp(0.08 + (0.06 * terminalLateralRangeNorm), 0.08, 0.14),
-      },
-      terminalUprightCommit: true,
-      uprightTiltLimitDeg: clamp(
-        12 + (0.55 * Math.min(catchLateralRangeKm, 20)),
-        12,
-        22,
-      ),
-      siteVectorWeight: clamp(
-        0.34 + (0.32 * terminalLateralRangeNorm),
-        0.34,
-        0.82,
-      ),
-      siteVelocityWeight: clamp(
-        0.28 + (0.28 * terminalIntercept.lateralDemandNorm),
-        0.26,
-        0.66,
-      ),
-      padInterceptBlend: clamp(
-        0.62 + (0.24 * terminalLateralRangeNorm),
-        0.62,
-        0.96,
-      ),
-      padInterceptLateralWeight: clamp(
-        0.78 + (0.40 * terminalIntercept.lateralDemandNorm),
-        0.72,
-        1.18,
-      ),
-      padDesiredLateralClosingSpeedKmS: clamp(
-        Math.max(
-          0.24,
-          Math.hypot(
-            terminalIntercept.desiredEastSpeedKmS,
-            terminalIntercept.desiredNorthSpeedKmS,
-          ),
-        ),
-        0.24,
-        1.20,
-      ),
-      maxSiteSteeringAngleDeg: clamp(
-        26 + (0.46 * Math.min(catchLateralRangeKm, 26)),
-        26,
-        60,
-      ),
-      attitudeResponseScale: 1.30 + (0.34 * terminalUprightCommitNorm),
-      attitudeTargetBlend: 0.90 + (0.05 * terminalUprightCommitNorm),
-      angularDampingPerS: 0.96 + (0.10 * terminalUprightCommitNorm),
-      maxBodyRateDegS: 11.5,
-      predictiveCatchControl: {
-        enabled: true,
-        blend: clamp(
-          0.68
-            + (0.18 * terminalIntercept.lateralDemandNorm)
-            + (towerRelativeActive ? 0.06 : 0),
-          0.68,
-          0.96,
-        ),
-        retrogradeBias: clamp(
-          0.05 + (0.08 * terminalIntercept.lateralDemandNorm) + (0.10 * terminalVerticalHoldPenaltyNorm),
-          0.05,
-          0.26,
-        ),
-        translationOnly: false,
-        translationAuthority: clamp(
-          0.56
-            + (0.26 * terminalIntercept.lateralDemandNorm)
-            + (towerRelativeActive ? 0.08 : 0),
-          0.56,
-          0.92,
-        ),
-        interceptTimeSec: terminalIntercept.interceptTimeSec,
-        localDirection: {
-          ...terminalIntercept.localDirection,
-          up: clamp(
-            Number(terminalIntercept.localDirection?.up) * (1 - (0.80 * terminalVerticalHoldPenaltyNorm)),
-            0.02,
-            0.84,
-          ),
-        },
-        desiredEastSpeedKmS: terminalIntercept.desiredEastSpeedKmS,
-        desiredNorthSpeedKmS: terminalIntercept.desiredNorthSpeedKmS,
-        desiredVerticalSpeedKmS: terminalIntercept.desiredVerticalSpeedKmS,
-        predictedEastMissKm: terminalIntercept.predictedEastMissKm,
-        predictedNorthMissKm: terminalIntercept.predictedNorthMissKm,
-        predictedVerticalMissKm: terminalIntercept.predictedVerticalMissKm,
-        predictedLateralMissKm: terminalIntercept.predictedLateralMissKm,
-        predictedTotalMissKm: terminalIntercept.predictedTotalMissKm,
-      },
-    };
+    return buildUnpoweredTowerTerminalInterceptCommand({
+      altitudeKm,
+      catchLateralRangeKm,
+      catchLateralSpeedKmS,
+      catchVerticalErrorKm,
+      gridFinAuthority,
+      terminalUprightCommitNorm,
+      terminalIntercept,
+      towerRelativeActive,
+    });
+  }
+
+  const towerCatchFinalBurnCorridor =
+    towerCatchReturnProfileActive
+    && towerRelativeActive
+    && catchTotalRangeKm <= 6.0
+    && catchLateralRangeKm <= 5.0
+    && Math.abs(catchVerticalErrorKm) <= 3.2
+    && catchApproachSpeedKmS <= 0.90
+    && catchLateralSpeedKmS <= 0.38
+    && propellantKg > (reserveLandingKg * 0.02);
+  if (towerCatchReturnProfileActive && !towerCatchFinalBurnCorridor) {
+    const terminalIntercept = resolveTerminalInterceptMetrics({
+      altitudeKm,
+      catchTotalRangeKm,
+      catchLateralRangeKm,
+      catchVerticalErrorKm,
+      catchApproachSpeedKmS,
+      catchEastErrorKm,
+      catchNorthErrorKm,
+      catchEastSpeedKmS,
+      catchNorthSpeedKmS,
+      catchVerticalSpeedKmS,
+      towerRelativeActive,
+    });
+    return buildUnpoweredTowerTerminalInterceptCommand({
+      altitudeKm,
+      catchLateralRangeKm,
+      catchLateralSpeedKmS,
+      catchVerticalErrorKm,
+      gridFinAuthority,
+      terminalUprightCommitNorm,
+      terminalIntercept,
+      towerRelativeActive,
+    });
   }
 
   // Simple terminal guidance profile: reduce target descent as altitude decreases.

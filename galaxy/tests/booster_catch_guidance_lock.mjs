@@ -35,11 +35,11 @@ function main() {
   assert(catchCommand.captureLike === true, "expected terminal catch command to stay catch-like");
   assert(catchCommand.siteTargetingEnabled === false, "expected predictive catch guidance to bypass generic site targeting");
   assert(catchCommand.predictiveCatchControl?.enabled === true, "expected predictive catch control to be active");
-  assert(catchCommand.predictiveCatchControl?.translationOnly === true, "expected catch burn translation to stay off the main thrust vector");
+  assert(catchCommand.predictiveCatchControl?.translationOnly === false, "expected catch burn to allow main-thrust vectoring for final positioning");
   assert(catchCommand.terminalUprightCommit === true, "expected catch burn to commit to upright attitude");
   assert(catchCommand.predictiveCatchControl?.blend >= 0.82, `expected strong terminal catch blend, got ${catchCommand.predictiveCatchControl?.blend}`);
 
-  const catchApproach = resolveBoosterCatchCommand({
+  const earlyTowerCorridor = resolveBoosterCatchCommand({
     altitudeKm: 5.6,
     radialSpeedKmS: -0.06,
     tangentialSpeedKmS: 0.08,
@@ -56,6 +56,25 @@ function main() {
     catchVelocitySigmaKmS: 0.00008,
     bodyUpAlignment: 0.82,
   });
+  assert(!earlyTowerCorridor, "expected kilometer-high loose tower corridor to stay in terminal intercept, not catch approach");
+
+  const catchApproach = resolveBoosterCatchCommand({
+    altitudeKm: 3.2,
+    radialSpeedKmS: -0.08,
+    tangentialSpeedKmS: 0.05,
+    launchSiteRangeKm: 1.4,
+    launchSiteLateralRangeKm: 1.0,
+    catchTotalRangeKm: 1.3,
+    catchLateralRangeKm: 0.95,
+    catchVerticalErrorKm: 0.7,
+    catchLateralSpeedKmS: 0.12,
+    catchVerticalSpeedKmS: -0.08,
+    catchApproachSpeedKmS: 0.15,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.006,
+    catchVelocitySigmaKmS: 0.00008,
+    bodyUpAlignment: 0.90,
+  });
   assert(catchApproach, "expected tower-relative corridor to enter catch approach");
   assert(catchApproach.phase === "catch-approach", `expected catch-approach phase, got ${catchApproach?.phase}`);
   assert(catchApproach.guidanceMode === "booster-catch-approach", `expected booster-catch-approach mode, got ${catchApproach?.guidanceMode}`);
@@ -63,7 +82,7 @@ function main() {
   assert(catchApproach.attitudeControlMode === "grid-fins+rcs", `expected grid-fins+rcs catch approach, got ${catchApproach?.attitudeControlMode}`);
   assert(catchApproach.siteTargetingEnabled === false, "expected catch approach to bypass generic site targeting");
   assert(catchApproach.predictiveCatchControl?.enabled === true, "expected predictive catch approach control");
-  assert(catchApproach.predictiveCatchControl?.translationOnly === true, "expected catch approach translation-only predictive control");
+  assert(catchApproach.predictiveCatchControl?.translationOnly === false, "expected catch approach to steer aero attitude from tower-relative predictive control");
   assert(catchApproach.terminalUprightCommit === true, "expected catch approach to commit upright");
   assert(
     catchApproach.predictiveCatchControl?.predictedLateralMissKm <= 3.1,
@@ -74,8 +93,39 @@ function main() {
     "expected finite predictive intercept time",
   );
 
+  const lateLatchedApproach = resolveBoosterCatchCommand({
+    currentPhase: "catch-approach",
+    sustainOverride: true,
+    sustainRelaxed: true,
+    allowFinalBurn: false,
+    altitudeKm: 4.2,
+    radialSpeedKmS: -0.10,
+    tangentialSpeedKmS: 0.12,
+    launchSiteRangeKm: 4.4,
+    launchSiteLateralRangeKm: 2.3,
+    catchTotalRangeKm: 4.3,
+    catchLateralRangeKm: 2.2,
+    catchVerticalErrorKm: 0.7,
+    catchLateralSpeedKmS: 0.18,
+    catchVerticalSpeedKmS: -0.08,
+    catchApproachSpeedKmS: 0.20,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.006,
+    catchVelocitySigmaKmS: 0.00008,
+    bodyUpAlignment: 0.96,
+  });
+  assert(lateLatchedApproach, "expected late catch corridor latch to acquire catch guidance");
+  assert(
+    lateLatchedApproach.phase === "catch-approach",
+    `expected late latch to hold catch-approach before final burn, got ${lateLatchedApproach?.phase}`,
+  );
+  assert(
+    lateLatchedApproach.throttle === 0,
+    `expected late latch catch-approach to avoid immediate main burn, got ${lateLatchedApproach?.throttle}`,
+  );
+
   const noCatchCommand = resolveBoosterCatchCommand({
-    altitudeKm: 6.8,
+    altitudeKm: 36.8,
     radialSpeedKmS: -0.04,
     tangentialSpeedKmS: 0.03,
     launchSiteRangeKm: 0.09,
@@ -108,10 +158,10 @@ function main() {
     altitudeKm: 4.2,
     radialSpeedKmS: -0.04,
     tangentialSpeedKmS: 0.09,
-    launchSiteRangeKm: 12.0,
-    launchSiteLateralRangeKm: 9.5,
-    catchTotalRangeKm: 12.0,
-    catchLateralRangeKm: 9.5,
+    launchSiteRangeKm: 18.0,
+    launchSiteLateralRangeKm: 15.5,
+    catchTotalRangeKm: 18.0,
+    catchLateralRangeKm: 15.5,
     catchVerticalErrorKm: 0.4,
     catchLateralSpeedKmS: 1.15,
     catchVerticalSpeedKmS: -0.05,
@@ -147,6 +197,8 @@ function main() {
     catchPinHeightErrorKm: 0.001,
     speedKmS: 0.02,
     radialSpeedKmS: -0.01,
+    bodyUpAlignment: 0.992,
+    bodyAngularRateRadS: 0.025,
     catchHoldSec: 0.6,
   });
   assert(finalizeCatch, "expected aligned low-speed booster to finalize as caught");
@@ -167,9 +219,22 @@ function main() {
     catchPinHeightErrorKm: 0.001,
     speedKmS: 0.015,
     radialSpeedKmS: -0.008,
+    bodyUpAlignment: 0.995,
     catchHoldSec: 0.1,
   });
   assert(!noFinalizeShortHold, "expected short catch hold to avoid early catch finalization");
+
+  const noFinalizeSidewaysCatch = shouldFinalizeBoosterCatch({
+    guidanceMode: "booster-catch-burn",
+    launchSiteLateralRangeKm: 0.01,
+    catchPinHeightErrorKm: 0.001,
+    speedKmS: 0.012,
+    radialSpeedKmS: -0.006,
+    bodyUpAlignment: 0.15,
+    bodyAngularRateRadS: 0.02,
+    catchHoldSec: 0.8,
+  });
+  assert(!noFinalizeSidewaysCatch, "expected sideways booster to miss/crash instead of finalizing as caught");
 
   const finalizeCatchFromVerticalError = shouldFinalizeBoosterCatch({
     guidanceMode: "booster-catch-burn",
@@ -177,6 +242,8 @@ function main() {
     catchVerticalErrorKm: 0.0015,
     speedKmS: 0.018,
     radialSpeedKmS: -0.009,
+    bodyUpAlignment: 0.994,
+    bodyAngularRateRadS: 0.03,
     catchHoldSec: 0.7,
   });
   assert(finalizeCatchFromVerticalError, "expected tower-relative vertical error fallback to finalize catch");

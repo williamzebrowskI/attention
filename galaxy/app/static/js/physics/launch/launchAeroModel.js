@@ -78,6 +78,17 @@ function gaussian(x, center, sigma) {
   return Math.exp(-(delta * delta));
 }
 
+function stalledBodyLiftAoaRad(aoaRad) {
+  const safeAoaRad = clamp(Number(aoaRad) || 0, 0, Math.PI);
+  return 0.5 * Math.sin(2 * safeAoaRad);
+}
+
+function stalledBodyCrossflowNorm(aoaRad) {
+  const safeAoaRad = clamp(Number(aoaRad) || 0, 0, Math.PI);
+  const sinAoa = Math.sin(safeAoaRad);
+  return sinAoa * sinAoa;
+}
+
 function dayOfYearUtc(timestampMs) {
   const date = new Date(Number(timestampMs) || Date.now());
   const start = Date.UTC(date.getUTCFullYear(), 0, 1);
@@ -509,19 +520,21 @@ export function computeAerodynamicResponse({
       Math.max(0.05, Number(profile.transonicWaveDragWidth) || 0.16),
     );
   const inducedDragFactor = Math.max(0, Number(profile.inducedDragFactor) || 0);
-  const cl = clamp(clAlphaPerRad * aoaRad, -2.8, 2.8);
+  const effectiveLiftAoaRad = stalledBodyLiftAoaRad(aoaRad);
+  const crossflowNorm = stalledBodyCrossflowNorm(aoaRad);
+  const cl = clamp(clAlphaPerRad * effectiveLiftAoaRad, -1.65, 1.65);
   const poweredDragReliefCd = clamp(Number(throttle) || 0, 0, 1)
     * Math.max(0, Number(profile.powerOnBaseDragFactor) || 0);
   const cd = clamp(
     cd0
       + transonicWaveDragCd
-      + (Number(profile.cdAlpha2) * aoaRad * aoaRad)
+      + (Number(profile.cdAlpha2) * crossflowNorm)
       + (inducedDragFactor * cl * cl)
       - poweredDragReliefCd,
     0.12,
     1.8,
   );
-  const cm = clamp(cmAlphaPerRad * aoaRad, -1.4, 1.4);
+  const cm = clamp(cmAlphaPerRad * effectiveLiftAoaRad, -1.4, 1.4);
 
   const dragAccKmS2 = (qPa * areaM2 * cd) / safeMassKg / 1000;
   const dragAcceleration = scale(relAirDirection, -dragAccKmS2);

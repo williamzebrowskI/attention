@@ -1,4 +1,7 @@
 import {
+  LAUNCH_PAD_DECK_HEIGHT_KM,
+} from "../app/static/js/physics/launch/launchConfig.js";
+import {
   BOOSTER_CATCH_BASE_CLEARANCE_KM,
   BOOSTER_CATCH_GEOMETRY_KM,
   BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
@@ -16,6 +19,10 @@ function main() {
   assert(
     BOOSTER_CATCH_BASE_CLEARANCE_KM > 0,
     `expected positive catch clearance, got ${BOOSTER_CATCH_BASE_CLEARANCE_KM}`,
+  );
+  assert(
+    BOOSTER_CATCH_BASE_CLEARANCE_KM > LAUNCH_PAD_DECK_HEIGHT_KM,
+    `expected caught booster base to hang above the launch mount deck, got ${BOOSTER_CATCH_BASE_CLEARANCE_KM}`,
   );
   assert(
     BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM > BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM,

@@ -141,6 +141,13 @@ function main() {
   let ignition = null;
   let detach = null;
   let afterDetachSnapshot = null;
+  const physicalSeparation = {
+    shipReferenceActiveSeen: false,
+    attachedJointShipReferenceActiveSeen: false,
+    maxPlumeImpingementMN: 0,
+    maxPhysicalSeparationKm: 0,
+    maxAbsPhysicalSeparationRateKmS: 0,
+  };
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -156,6 +163,31 @@ function main() {
     controller.finalizeStep(state, DT_SEC, nowMs);
     nowMs += DT_SEC * 1000;
     const snapshot = controller.statusSnapshot(state);
+    const exported = controller.exportPersistentSnapshot(state, nowMs);
+    const hotstageRuntime = exported?.runtime?.hotstage || {};
+    const attachedJointRuntime = exported?.runtime?.attachedJoint || {};
+
+    if (Boolean(snapshot?.hotstageActive)) {
+      physicalSeparation.shipReferenceActiveSeen ||= Boolean(hotstageRuntime.shipReferenceActive);
+      physicalSeparation.attachedJointShipReferenceActiveSeen ||= Boolean(attachedJointRuntime.shipReferenceActive);
+      physicalSeparation.maxPlumeImpingementMN = Math.max(
+        physicalSeparation.maxPlumeImpingementMN,
+        Number(snapshot?.attachedJointPlumeImpingementMN) || 0,
+        (Number(attachedJointRuntime.plumeImpingementForceN) || 0) / 1e6,
+      );
+      physicalSeparation.maxPhysicalSeparationKm = Math.max(
+        physicalSeparation.maxPhysicalSeparationKm,
+        Math.abs(Number(snapshot?.hotstagePhysicalSeparationKm) || 0),
+        Math.abs(Number(hotstageRuntime.physicalSeparationKm) || 0),
+        Math.abs(Number(attachedJointRuntime.physicalSeparationKm) || 0),
+      );
+      physicalSeparation.maxAbsPhysicalSeparationRateKmS = Math.max(
+        physicalSeparation.maxAbsPhysicalSeparationRateKmS,
+        Math.abs(Number(snapshot?.hotstagePhysicalSeparationRateKmS) || 0),
+        Math.abs(Number(hotstageRuntime.physicalSeparationRateKmS) || 0),
+        Math.abs(Number(attachedJointRuntime.physicalSeparationRateKmS) || 0),
+      );
+    }
 
     if (!ignition && Boolean(snapshot?.hotstageActive)) {
       ignition = {
@@ -163,6 +195,11 @@ function main() {
         altitudeKm: Number(snapshot?.altitudeKm),
         speedKmS: Number(snapshot?.speedKmS),
         guidanceMode: String(snapshot?.guidanceMode || ""),
+        shipReferenceActive: Boolean(hotstageRuntime.shipReferenceActive),
+        attachedJointShipReferenceActive: Boolean(attachedJointRuntime.shipReferenceActive),
+        plumeImpingementMN: Number(snapshot?.attachedJointPlumeImpingementMN) || 0,
+        physicalSeparationKm: Number(snapshot?.hotstagePhysicalSeparationKm) || 0,
+        physicalSeparationRateKmS: Number(snapshot?.hotstagePhysicalSeparationRateKmS) || 0,
       };
     }
     if (!detach && Boolean(snapshot?.boosterActive)) {
@@ -172,6 +209,9 @@ function main() {
         speedKmS: Number(snapshot?.speedKmS),
         boosterAltitudeKm: Number(snapshot?.boosterAltitudeKm),
         boosterGuidanceMode: String(snapshot?.boosterGuidanceMode || ""),
+        physicalSeparationKm: Number(snapshot?.hotstagePhysicalSeparationKm) || 0,
+        physicalSeparationRateKmS: Number(snapshot?.hotstagePhysicalSeparationRateKmS) || 0,
+        shipReferenceActive: Boolean(hotstageRuntime.shipReferenceActive),
       };
     }
     if (
@@ -230,6 +270,20 @@ function main() {
     `earth_orbit_hold_hotstage_realism: expected booster separation flip, got ${detach.boosterGuidanceMode}`,
   );
   assert(
+    physicalSeparation.shipReferenceActiveSeen
+      && physicalSeparation.attachedJointShipReferenceActiveSeen,
+    `earth_orbit_hold_hotstage_realism: hotstage never switched to a physical ship/booster reference ${JSON.stringify(physicalSeparation)}`,
+  );
+  assert(
+    physicalSeparation.maxPlumeImpingementMN > 0.05,
+    `earth_orbit_hold_hotstage_realism: expected measurable hotstage plume loading, got ${JSON.stringify(physicalSeparation)}`,
+  );
+  assert(
+    physicalSeparation.maxPhysicalSeparationKm > 1e-7
+      && physicalSeparation.maxAbsPhysicalSeparationRateKmS > 1e-8,
+    `earth_orbit_hold_hotstage_realism: expected measured physical separation gap/rate, got ${JSON.stringify(physicalSeparation)}`,
+  );
+  assert(
     afterDetachSnapshot.stageIndex === 1,
     `earth_orbit_hold_hotstage_realism: expected stage 2 after detach, got stage ${afterDetachSnapshot.stageIndex}`,
   );
@@ -250,6 +304,7 @@ function main() {
     ignition,
     detach,
     afterDetachSnapshot,
+    physicalSeparation,
   }, null, 2));
   console.log("PASS earth-orbit-hold-hotstage-realism-e2e");
 }

@@ -134,9 +134,11 @@ function main() {
     boosterActive: null,
     boostback: null,
     entryAlign: null,
+    highAltitudeDescentCoast: null,
     entryBurn: null,
-    descentCoast: null,
-    landingBurn: null,
+    ballisticSettle: null,
+    catchApproach: null,
+    catchBurn: null,
   };
   let lastBoosterMode = "";
 
@@ -188,12 +190,16 @@ function main() {
         marks.boostback = mark;
       } else if (!marks.entryAlign && boosterMode.includes("entry-align")) {
         marks.entryAlign = mark;
+      } else if (!marks.highAltitudeDescentCoast && marks.entryAlign && !marks.entryBurn && boosterMode.includes("descent-coast")) {
+        marks.highAltitudeDescentCoast = mark;
       } else if (!marks.entryBurn && boosterMode.includes("entry-burn")) {
         marks.entryBurn = mark;
-      } else if (!marks.descentCoast && boosterMode.includes("descent-coast")) {
-        marks.descentCoast = mark;
-      } else if (!marks.landingBurn && boosterMode.includes("landing-burn")) {
-        marks.landingBurn = mark;
+      } else if (!marks.ballisticSettle && marks.entryBurn && boosterMode.includes("ballistic-settle")) {
+        marks.ballisticSettle = mark;
+      } else if (!marks.catchApproach && boosterMode.includes("catch-approach")) {
+        marks.catchApproach = mark;
+      } else if (!marks.catchBurn && boosterMode.includes("catch-burn")) {
+        marks.catchBurn = mark;
         break;
       }
     }
@@ -234,20 +240,28 @@ function main() {
     `booster_timeline_lock: boostback out of band ${JSON.stringify(marks.boostback)}`,
   );
   assert(
-    within(marks.entryAlign.elapsedSec, 279, 285) && within(marks.entryAlign.altitudeKm, 85, 89),
+    within(marks.entryAlign.elapsedSec, 296, 303) && within(marks.entryAlign.altitudeKm, 67, 72),
     `booster_timeline_lock: entryAlign out of band ${JSON.stringify(marks.entryAlign)}`,
   );
   assert(
-    within(marks.entryBurn.elapsedSec, 347, 353) && within(marks.entryBurn.altitudeKm, 37, 41),
+    within(marks.highAltitudeDescentCoast.elapsedSec, 319, 326) && within(marks.highAltitudeDescentCoast.altitudeKm, 50, 55),
+    `booster_timeline_lock: highAltitudeDescentCoast out of band ${JSON.stringify(marks.highAltitudeDescentCoast)}`,
+  );
+  assert(
+    within(marks.entryBurn.elapsedSec, 335, 342) && within(marks.entryBurn.altitudeKm, 37, 41),
     `booster_timeline_lock: entryBurn out of band ${JSON.stringify(marks.entryBurn)}`,
   );
   assert(
-    within(marks.descentCoast.elapsedSec, 366, 371) && within(marks.descentCoast.altitudeKm, 12, 17),
-    `booster_timeline_lock: descentCoast out of band ${JSON.stringify(marks.descentCoast)}`,
+    within(marks.ballisticSettle.elapsedSec, 372, 376) && within(marks.ballisticSettle.altitudeKm, 27, 30),
+    `booster_timeline_lock: ballisticSettle out of band ${JSON.stringify(marks.ballisticSettle)}`,
   );
   assert(
-    within(marks.landingBurn.elapsedSec, 371, 376) && within(marks.landingBurn.altitudeKm, 7, 9),
-    `booster_timeline_lock: landingBurn out of band ${JSON.stringify(marks.landingBurn)}`,
+    within(marks.catchApproach.elapsedSec, 373, 379) && within(marks.catchApproach.altitudeKm, 27, 30),
+    `booster_timeline_lock: catchApproach out of band ${JSON.stringify(marks.catchApproach)}`,
+  );
+  assert(
+    within(marks.catchBurn.elapsedSec, 416, 422) && within(marks.catchBurn.altitudeKm, 20, 23),
+    `booster_timeline_lock: catchBurn out of band ${JSON.stringify(marks.catchBurn)}`,
   );
 
   assert(
@@ -256,9 +270,11 @@ function main() {
       && marks.hotstageIgnition.elapsedSec < marks.boosterActive.elapsedSec
       && marks.boosterActive.elapsedSec < marks.boostback.elapsedSec
       && marks.boostback.elapsedSec < marks.entryAlign.elapsedSec
-      && marks.entryAlign.elapsedSec < marks.entryBurn.elapsedSec
-      && marks.entryBurn.elapsedSec < marks.descentCoast.elapsedSec
-      && marks.descentCoast.elapsedSec < marks.landingBurn.elapsedSec,
+      && marks.entryAlign.elapsedSec < marks.highAltitudeDescentCoast.elapsedSec
+      && marks.highAltitudeDescentCoast.elapsedSec < marks.entryBurn.elapsedSec
+      && marks.entryBurn.elapsedSec < marks.ballisticSettle.elapsedSec
+      && marks.ballisticSettle.elapsedSec < marks.catchApproach.elapsedSec
+      && marks.catchApproach.elapsedSec < marks.catchBurn.elapsedSec,
     `booster_timeline_lock: milestone ordering invalid ${JSON.stringify(marks)}`,
   );
 

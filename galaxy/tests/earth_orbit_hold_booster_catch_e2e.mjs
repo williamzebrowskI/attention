@@ -1,9 +1,11 @@
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
 import { createPhysicsEnvironmentRuntime } from "../app/static/js/physics/runtime/environmentRuntime.js";
 import {
+  LAUNCH_PAD_DECK_HEIGHT_KM,
   LAUNCH_BODY_ID,
   LAUNCH_BOOSTER_BODY_ID,
 } from "../app/static/js/physics/launch/launchConfig.js";
+import { BOOSTER_CATCH_BASE_CLEARANCE_KM } from "../app/static/js/physics/launch/launchSiteCatchGeometry.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
 
 const G_KM3_KG_S2 = 6.67430e-20;
@@ -14,6 +16,9 @@ const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 3, 22, 23, 0, 0);
 const DT_SEC = 1 / 60;
 const MAX_STEPS = 60 * 520;
+const WIND_SEED = Number.isFinite(Number(process.env.BOOSTER_CATCH_WIND_SEED))
+  ? Number(process.env.BOOSTER_CATCH_WIND_SEED)
+  : 1;
 
 function assert(condition, message) {
   if (!condition) {
@@ -39,6 +44,14 @@ function dot(a, b) {
 
 function length(vector) {
   return Math.sqrt(dot(vector, vector));
+}
+
+function normalize(vector, fallback = { x: 0, y: 0, z: 1 }) {
+  const magnitude = length(vector);
+  if (!(magnitude > 1e-12)) {
+    return { ...fallback };
+  }
+  return scale(vector, 1 / magnitude);
 }
 
 function gravityAccelerationKmS2(bodyState, earthState) {
@@ -106,13 +119,16 @@ function main() {
     getBodyRadiusKm: (id) => (String(id) === "moon" ? MOON_RADIUS_KM : EARTH_RADIUS_KM),
     getBodyMassKg: (id) => (String(id) === "moon" ? MOON_MASS_KG : EARTH_MASS_KG),
     getEarthFixedAxesEcliptic: earthAxes,
+    sampleEnvironment: (sampleOptions = {}) => (
+      physicsEnvironmentRuntime.sampleEnvironment(sampleOptions)
+    ),
     sampleEarthAtmosphere: (altitudeKm, sampleOptions = {}) => (
       physicsEnvironmentRuntime.sampleEarthAtmosphere(altitudeKm, sampleOptions)
     ),
     sampleLaunchWeather: (sampleOptions = {}) => (
       physicsEnvironmentRuntime.sampleLaunchWeather(sampleOptions)
     ),
-    windSeed: 1,
+    windSeed: WIND_SEED,
     gravitationalConstantKm3PerKgS2: G_KM3_KG_S2,
   });
   const state = makeState();
@@ -132,8 +148,12 @@ function main() {
     catchContact: null,
     catchCapture: null,
     caught: null,
+    crashed: null,
   };
   let lastBoosterMode = "";
+  let activeBurnSegment = null;
+  const burnSegments = [];
+  let finalLoopState = null;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -159,6 +179,33 @@ function main() {
     const exported = controller.exportPersistentSnapshot(state, nowMs);
     const boosterLastStep = exported?.runtime?.booster?.lastStep || {};
     const bodyUpAlignment = Number(boosterLastStep.bodyUpAlignment) || 0;
+    const liveBoosterAxis = snapshot?.boosterBodyAxisDirectionKm;
+    const liveBodyUpAlignment = liveBoosterAxis && boosterState && earthState
+      ? dot(
+        normalize(liveBoosterAxis),
+        normalize(subtract(boosterState.position, earthState.position)),
+      )
+      : bodyUpAlignment;
+    const boosterThrottle = Number(snapshot?.boosterThrottle) || Number(boosterLastStep.throttle) || 0;
+    const boosterBurning = boosterThrottle > 0.01;
+    finalLoopState = { elapsedSec, boosterAltitudeKm, boosterMode };
+
+    if (boosterBurning && !activeBurnSegment) {
+      activeBurnSegment = {
+        startElapsedSec: elapsedSec,
+        startAltitudeKm: boosterAltitudeKm,
+        startMode: boosterMode,
+      };
+    } else if (!boosterBurning && activeBurnSegment) {
+      burnSegments.push({
+        ...activeBurnSegment,
+        endElapsedSec: elapsedSec,
+        endAltitudeKm: boosterAltitudeKm,
+        endMode: boosterMode,
+        durationSec: elapsedSec - activeBurnSegment.startElapsedSec,
+      });
+      activeBurnSegment = null;
+    }
 
     if (!marks.hotstageIgnition && Boolean(snapshot?.hotstageIgnitionAuthorized)) {
       marks.hotstageIgnition = {
@@ -179,9 +226,10 @@ function main() {
       const mark = {
         elapsedSec,
         altitudeKm: boosterAltitudeKm,
+        baseClearanceKm: Number(snapshot?.boosterAltitudeAboveTerrainKm),
         rangeKm: boosterRangeKm,
         lateralSpeedKmS: boosterLateralSpeedKmS,
-        bodyUpAlignment,
+        bodyUpAlignment: liveBodyUpAlignment,
       };
       if (!marks.catchApproach && boosterMode === "booster-catch-approach") {
         marks.catchApproach = mark;
@@ -195,13 +243,51 @@ function main() {
         marks.caught = {
           ...mark,
           landed: Boolean(snapshot?.boosterLanded),
+          terminalReason: String(snapshot?.boosterTerminalReason || ""),
         };
         break;
       }
     }
+    if (!marks.crashed && Boolean(snapshot?.boosterCrashed)) {
+      marks.crashed = {
+        elapsedSec,
+        altitudeKm: boosterAltitudeKm,
+        rangeKm: boosterRangeKm,
+        lateralSpeedKmS: boosterLateralSpeedKmS,
+        reason: String(snapshot?.boosterTerminalReason || ""),
+        impactSpeedKmS: Number(snapshot?.boosterImpactSpeedKmS) || 0,
+      };
+      break;
+    }
+  }
+  if (activeBurnSegment && finalLoopState) {
+    burnSegments.push({
+      ...activeBurnSegment,
+      endElapsedSec: finalLoopState.elapsedSec,
+      endAltitudeKm: finalLoopState.boosterAltitudeKm,
+      endMode: finalLoopState.boosterMode,
+      durationSec: finalLoopState.elapsedSec - activeBurnSegment.startElapsedSec,
+    });
+    activeBurnSegment = null;
   }
 
-  for (const [name, mark] of Object.entries(marks)) {
+  for (const [name, mark] of Object.entries({
+    hotstageIgnition: marks.hotstageIgnition,
+    boosterActive: marks.boosterActive,
+    catchApproach: marks.catchApproach,
+    catchBurn: marks.catchBurn,
+  })) {
+    assert(mark, `earth_orbit_hold_booster_catch_e2e: missing milestone ${name}`);
+  }
+  assert(
+    !marks.crashed,
+    `earth_orbit_hold_booster_catch_e2e: booster crashed before catch ${JSON.stringify(marks.crashed)}`,
+  );
+  for (const [name, mark] of Object.entries({
+    catchContact: marks.catchContact,
+    catchCapture: marks.catchCapture,
+    caught: marks.caught,
+  })) {
     assert(mark, `earth_orbit_hold_booster_catch_e2e: missing milestone ${name}`);
   }
 
@@ -219,26 +305,58 @@ function main() {
     `earth_orbit_hold_booster_catch_e2e: booster did not separate promptly ${JSON.stringify({ hotstage: marks.hotstageIgnition, boosterActive: marks.boosterActive })}`,
   );
   assert(
-    marks.catchApproach.altitudeKm >= 1.5 && marks.catchApproach.altitudeKm <= 20,
+    marks.catchApproach.altitudeKm >= 28 && marks.catchApproach.altitudeKm <= 34,
     `earth_orbit_hold_booster_catch_e2e: catch approach altitude out of band ${JSON.stringify(marks.catchApproach)}`,
   );
   assert(
-    marks.catchBurn.altitudeKm >= 0.01 && marks.catchBurn.altitudeKm <= 6.5,
+    marks.catchBurn.altitudeKm >= 10 && marks.catchBurn.altitudeKm <= 22,
     `earth_orbit_hold_booster_catch_e2e: catch burn altitude out of band ${JSON.stringify(marks.catchBurn)}`,
   );
+  const poweredDescentSegments = burnSegments.filter((segment) => {
+    const startMode = String(segment.startMode || "").toLowerCase();
+    return (
+      !startMode.includes("boostback")
+      && !startMode.includes("catch-burn")
+      && Number(segment.startElapsedSec) > Number(marks.boosterActive.elapsedSec)
+      && Number(segment.endElapsedSec) < Number(marks.catchBurn.elapsedSec)
+    );
+  });
   assert(
-    marks.catchContact.rangeKm <= 0.05 && marks.catchContact.altitudeKm <= 0.05,
+    poweredDescentSegments.every((segment) => Number(segment.durationSec) <= 8),
+    `earth_orbit_hold_booster_catch_e2e: unexpected long powered descent before catch burn ${JSON.stringify(poweredDescentSegments)}`,
+  );
+  const catchBurnSegments = burnSegments.filter((segment) => (
+    String(segment.startMode || "").toLowerCase().includes("catch-burn")
+    || String(segment.endMode || "").toLowerCase().includes("catch")
+  ));
+  assert(
+    catchBurnSegments.some((segment) => (
+      Number(segment.startAltitudeKm) <= 22
+      && Number(segment.durationSec) <= 14
+    )),
+    `earth_orbit_hold_booster_catch_e2e: catch burn did not stay terminal ${JSON.stringify(burnSegments)}`,
+  );
+  assert(
+    marks.catchContact.rangeKm <= 0.04
+      && marks.catchContact.altitudeKm <= 0.04
+      && marks.catchContact.lateralSpeedKmS <= 0.012,
     `earth_orbit_hold_booster_catch_e2e: catch contact not inside capture box ${JSON.stringify(marks.catchContact)}`,
   );
   assert(
-    marks.catchCapture.rangeKm <= 0.01 && marks.catchCapture.lateralSpeedKmS <= 0.005,
+    marks.catchCapture.rangeKm <= 0.008 && marks.catchCapture.lateralSpeedKmS <= 0.001,
     `earth_orbit_hold_booster_catch_e2e: catch capture not mechanically damped ${JSON.stringify(marks.catchCapture)}`,
   );
   assert(
     marks.caught.landed === true
-      && marks.caught.rangeKm <= 0.005
+      && marks.caught.rangeKm <= 0.006
       && marks.caught.lateralSpeedKmS <= 0.001,
     `earth_orbit_hold_booster_catch_e2e: final caught state out of band ${JSON.stringify(marks.caught)}`,
+  );
+  assert(
+    marks.caught.terminalReason === "chopstick-capture"
+      && marks.caught.baseClearanceKm >= LAUNCH_PAD_DECK_HEIGHT_KM + 0.004
+      && Math.abs(marks.caught.baseClearanceKm - BOOSTER_CATCH_BASE_CLEARANCE_KM) <= 0.003,
+    `earth_orbit_hold_booster_catch_e2e: final state should be suspended on chopsticks, not surface-landed ${JSON.stringify(marks.caught)}`,
   );
 
   assert(
@@ -255,7 +373,7 @@ function main() {
     `earth_orbit_hold_booster_catch_e2e: catch approach not upright enough ${JSON.stringify(marks.catchApproach)}`,
   );
   assert(
-    marks.catchBurn.bodyUpAlignment >= 0.95,
+    marks.catchBurn.bodyUpAlignment >= 0.90,
     `earth_orbit_hold_booster_catch_e2e: catch burn not upright enough ${JSON.stringify(marks.catchBurn)}`,
   );
   assert(

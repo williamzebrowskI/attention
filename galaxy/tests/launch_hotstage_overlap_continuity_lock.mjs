@@ -12,8 +12,8 @@ const EARTH_RADIUS_KM = 6371.0084;
 const MOON_MASS_KG = 7.342e22;
 const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
-const DT_SEC = 1;
-const MAX_STEPS = 1200;
+const DT_SEC = 1 / 10;
+const MAX_STEPS = 12000;
 
 function assert(condition, message) {
   if (!condition) {

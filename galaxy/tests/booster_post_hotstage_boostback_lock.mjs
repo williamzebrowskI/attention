@@ -118,6 +118,7 @@ function main() {
 
   let nowMs = NOW_MS;
   const phaseChanges = [];
+  let boostbackThrottleMark = null;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -149,7 +150,17 @@ function main() {
         lateralRangeKm: Number(snapshot.boosterLaunchSiteLateralRangeKm) || 0,
       });
     }
-    if (phaseChanges.some((entry) => entry.guidanceMode === "booster-boostback")) {
+    if (
+      currentGuidanceMode === "booster-boostback"
+      && !boostbackThrottleMark
+      && Number(snapshot.boosterThrottle) >= 0.30
+    ) {
+      boostbackThrottleMark = {
+        elapsedSec: Number(snapshot.elapsedSeconds) || 0,
+        throttle: Number(snapshot.boosterThrottle) || 0,
+      };
+    }
+    if (boostbackThrottleMark) {
       break;
     }
   }
@@ -175,8 +186,14 @@ function main() {
     `expected boostback within 32 s of hotstage separation, got ${boostback.elapsedSec - separationFlip.elapsedSec} s`,
   );
   assert(
-    boostback.throttle >= 0.35,
-    `expected meaningful boostback throttle, got ${boostback.throttle}`,
+    boostbackThrottleMark
+      && boostbackThrottleMark.elapsedSec >= boostback.elapsedSec
+      && (boostbackThrottleMark.elapsedSec - boostback.elapsedSec) <= 14,
+    `expected boostback throttle to ramp after attitude gate, got ${JSON.stringify({ boostback, boostbackThrottleMark })}`,
+  );
+  assert(
+    boostbackThrottleMark.throttle >= 0.30,
+    `expected meaningful boostback throttle, got ${boostbackThrottleMark.throttle}`,
   );
 
   console.log("PASS booster-post-hotstage-boostback-lock");

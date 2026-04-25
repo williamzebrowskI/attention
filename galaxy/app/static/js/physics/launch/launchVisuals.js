@@ -10,7 +10,7 @@ import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
 } from "./launchAtmosphereEffects.js?v=20260421a";
-import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260421a";
+import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260424b";
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;

@@ -257,10 +257,10 @@ export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
     mixtureRatioNominal: 3.6,
     mixtureRatioTransientRange: 0.18,
   }),
-  // Public sources clearly establish 33 Raptors and 4 grid fins, but do not
-  // publish a clean official Super Heavy side-thruster count/spec sheet. We
-  // keep the existing six modeled hardpoints and treat this RCS cluster as a
-  // high-fidelity hot-gas proxy calibrated to the current control envelope.
+  // Public sources clearly establish the 33 Raptor booster cluster, but do not
+  // publish a clean official Super Heavy side-thruster count/spec sheet. The
+  // current V3-style model uses three larger grid fins and keeps the existing
+  // six modeled RCS hardpoints as a hot-gas proxy calibrated to the control envelope.
   rcsThrusterCount: 6,
   rcsThrustSeaLevelN: 19_200,
   rcsThrustVacuumN: 21_000,
