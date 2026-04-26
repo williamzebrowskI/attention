@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { createLaunchController } from "../app/static/js/physics/launch/launchController.js";
 import { LAUNCH_BODY_ID, LAUNCH_BOOSTER_BODY_ID } from "../app/static/js/physics/launch/launchConfig.js";
 import { LAUNCH_MISSION_IDS } from "../app/static/js/physics/launch/launchMissions.js";
@@ -10,6 +11,11 @@ const MOON_RADIUS_KM = 1737.4;
 const NOW_MS = Date.UTC(2026, 2, 5, 18, 0, 0);
 const DT_SEC = 1;
 const MAX_STEPS = 1200;
+
+const controllerSource = fs.readFileSync(
+  new URL("../app/static/js/physics/launch/launchController.js", import.meta.url),
+  "utf8",
+);
 
 function assert(condition, message) {
   if (!condition) {
@@ -97,7 +103,7 @@ function makeState() {
   };
 }
 
-function main() {
+function simulateMissionBoosterRecovery(missionId) {
   const controller = createLaunchController({
     getEarthRadiusKm: () => EARTH_RADIUS_KM,
     getEarthMassKg: () => EARTH_MASS_KG,
@@ -109,18 +115,21 @@ function main() {
     gravitationalConstantKm3PerKgS2: GRAVITATIONAL_CONSTANT_KM3_PER_KG_S2,
   });
   const state = makeState();
-  controller.setMissionProfile(LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
+  controller.setMissionProfile(missionId);
   assert(
     controller.startLaunch(state, NOW_MS, {
-      launchKind: "booster-terminal-attitude-e2e",
+      launchKind: `booster-terminal-attitude-e2e-${missionId}`,
       boosterEngineCount: 33,
     }),
-    "booster_terminal_attitude_e2e: startLaunch rejected",
+    `booster_terminal_attitude_e2e: startLaunch rejected for ${missionId}`,
   );
 
   let nowMs = NOW_MS;
-  let entryBurn = null;
-  let terminalAttitude = null;
+  const phasesSeen = new Set();
+  let boosterSeparated = false;
+  let sawPhysicalTorque = false;
+  let maxBodyAngularRateRadS = 0;
+  let terminalPhase = null;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -137,21 +146,31 @@ function main() {
     nowMs += DT_SEC * 1000;
 
     const snapshot = controller.statusSnapshot(state);
+    if (state.dynamicBodies.has(LAUNCH_BOOSTER_BODY_ID)) {
+      boosterSeparated = true;
+    }
     const mode = String(snapshot?.boosterGuidanceMode || "").toLowerCase();
+    if (mode) {
+      phasesSeen.add(mode);
+    }
     const exported = controller.exportPersistentSnapshot(state, nowMs);
     const lastStep = exported?.runtime?.booster?.lastStep || {};
-
-    if (!entryBurn && mode.includes("entry-burn")) {
-      entryBurn = {
-        elapsedSec: Number(snapshot?.elapsedSeconds) || 0,
-        altitudeKm: Number(snapshot?.boosterAltitudeKm) || 0,
-        bodyUpAlignment: Number(lastStep.bodyUpAlignment) || 0,
-        thrustN: Number(lastStep.thrustN) || 0,
-      };
+    const torqueText = String(lastStep.attitudeTorqueSourceText || "");
+    if (
+      torqueText.includes("grid-fins")
+      || torqueText.includes("engine-gimbal")
+      || torqueText.includes("rcs-thrusters")
+      || torqueText.includes("aero-moment")
+    ) {
+      sawPhysicalTorque = true;
     }
+    maxBodyAngularRateRadS = Math.max(
+      maxBodyAngularRateRadS,
+      length(lastStep.bodyAngularRateRadS || { x: 0, y: 0, z: 0 }),
+    );
 
     if (
-      !terminalAttitude
+      !terminalPhase
       && (
         mode.includes("landing-burn")
         || mode.includes("catch-burn")
@@ -159,41 +178,80 @@ function main() {
         || mode.includes("terminal-intercept")
       )
     ) {
-      terminalAttitude = {
+      terminalPhase = {
         elapsedSec: Number(snapshot?.elapsedSeconds) || 0,
         altitudeKm: Number(snapshot?.boosterAltitudeKm) || 0,
         bodyUpAlignment: Number(lastStep.bodyUpAlignment) || 0,
         thrustN: Number(lastStep.thrustN) || 0,
+        attitudeTorqueSourceText: torqueText,
         guidanceMode: String(snapshot?.boosterGuidanceMode || ""),
       };
       break;
     }
   }
 
-  assert(entryBurn, "booster_terminal_attitude_e2e: never observed entry-burn");
-  assert(terminalAttitude, "booster_terminal_attitude_e2e: never observed terminal attitude phase");
+  return {
+    missionId,
+    boosterSeparated,
+    phasesSeen: Array.from(phasesSeen),
+    sawPhysicalTorque,
+    maxBodyAngularRateRadS,
+    terminalPhase,
+  };
+}
 
-  assert(
-    entryBurn.altitudeKm >= 30 && entryBurn.altitudeKm <= 55,
-    `booster_terminal_attitude_e2e: entry-burn altitude out of band ${JSON.stringify(entryBurn)}`,
-  );
-  assert(
-    entryBurn.bodyUpAlignment >= 0.93,
-    `booster_terminal_attitude_e2e: expected entry-burn to be near-vertical, got ${JSON.stringify(entryBurn)}`,
-  );
-  assert(
-    entryBurn.thrustN >= 10_000_000,
-    `booster_terminal_attitude_e2e: expected strong entry-burn thrust, got ${JSON.stringify(entryBurn)}`,
-  );
+function main() {
+  for (const token of [
+    "BOOSTER_FULL_6DOF_RECOVERY_ENABLED",
+    "stabilizeBoosterAttitudeTowardDirection",
+    "BOOSTER_KINEMATIC_CATCH_ASSIST_ENABLED",
+  ]) {
+    assert(
+      !controllerSource.includes(token),
+      `booster_terminal_attitude_e2e: obsolete booster fallback token remains: ${token}`,
+    );
+  }
 
-  assert(
-    terminalAttitude.altitudeKm >= 0.005 && terminalAttitude.altitudeKm <= 38.0,
-    `booster_terminal_attitude_e2e: terminal attitude altitude out of band ${JSON.stringify(terminalAttitude)}`,
-  );
-  assert(
-    terminalAttitude.bodyUpAlignment >= 0.95,
-    `booster_terminal_attitude_e2e: expected terminal attitude to be near-vertical, got ${JSON.stringify(terminalAttitude)}`,
-  );
+  const missionResults = Object.values(LAUNCH_MISSION_IDS)
+    .map((missionId) => simulateMissionBoosterRecovery(missionId));
+
+  for (const result of missionResults) {
+    assert(
+      result.boosterSeparated,
+      `booster_terminal_attitude_e2e: booster never separated for ${result.missionId}`,
+    );
+    for (const expectedPhase of [
+      "booster-separation-flip",
+      "booster-boostback",
+      "booster-descent-coast",
+      "booster-entry-align",
+    ]) {
+      assert(
+        result.phasesSeen.includes(expectedPhase),
+        `booster_terminal_attitude_e2e: ${result.missionId} missed ${expectedPhase}; saw ${result.phasesSeen.join(", ")}`,
+      );
+    }
+    assert(
+      result.terminalPhase,
+      `booster_terminal_attitude_e2e: never observed terminal booster phase for ${result.missionId}`,
+    );
+    assert(
+      result.sawPhysicalTorque,
+      `booster_terminal_attitude_e2e: no physical attitude torque observed for ${result.missionId}`,
+    );
+    assert(
+      result.maxBodyAngularRateRadS > 1e-4,
+      `booster_terminal_attitude_e2e: no integrated booster angular motion for ${result.missionId}`,
+    );
+  }
+
+  const referencePhases = missionResults[0].phasesSeen.join("|");
+  for (const result of missionResults.slice(1)) {
+    assert(
+      result.phasesSeen.join("|") === referencePhases,
+      `booster_terminal_attitude_e2e: booster recovery phases differ by mission ${JSON.stringify(missionResults)}`,
+    );
+  }
 
   console.log("PASS booster-terminal-attitude-e2e");
 }

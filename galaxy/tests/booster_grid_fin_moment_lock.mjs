@@ -44,6 +44,14 @@ function main() {
     massModel: { inertiaNormalized: 1.0 },
   });
   assert(denseAir.active, "expected dense-air fin model to be active");
+  assert(
+    Array.isArray(denseAir.finStates) && denseAir.finStates.length === 4,
+    `expected four current Super Heavy grid fins in aero control, got ${denseAir.finStates?.length || 0}`,
+  );
+  assert(
+    denseAir.finStates.some((finState) => Math.abs(Number(finState.deflectionDeg) || 0) > 0.1),
+    "expected at least one grid fin to command a real steering deflection",
+  );
   assert(denseAir.momentNm > thinAir.momentNm * 20, `expected strong moment growth in dense air, got ${denseAir.momentNm} vs ${thinAir.momentNm}`);
   assert(denseAir.angularAccelerationRadS2 > thinAir.angularAccelerationRadS2 * 20, `expected strong angular accel growth in dense air, got ${denseAir.angularAccelerationRadS2} vs ${thinAir.angularAccelerationRadS2}`);
 

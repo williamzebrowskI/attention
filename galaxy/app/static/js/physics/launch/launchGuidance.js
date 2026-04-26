@@ -2,7 +2,7 @@ import {
   LAUNCH_AUTOPILOT_CONFIG,
   LAUNCH_SITE,
   LAUNCH_VEHICLE_CONFIG,
-} from "./launchConfig.js?v=20260423h";
+} from "./launchConfig.js?v=20260425c";
 import { atmosphereRelativeVelocityKmS } from "./launchAeroModel.js";
 import {
   add,
@@ -613,27 +613,8 @@ function stateDrivenAscentProfile({
     );
   let towerClearLimited = false;
   if (towerClearActive) {
-    const trueVerticalAltitudeKm = Math.max(0.03, towerClearAltitudeKm * 0.4);
-    if (altitudeKm <= trueVerticalAltitudeKm) {
-      direction = up;
-      towerClearLimited = true;
-    } else {
-    const towerClearProgress = smoothStep01(altitudeKm / Math.max(towerClearAltitudeKm, 1e-6));
-    const towerClearMaxPitchDeg = clamp(
-      Number(config.towerClearMaxPitchDeg) || 3.5,
-      0.5,
-      10,
-    );
-    const towerClearPitchDeg = 0.6 + (towerClearProgress * (towerClearMaxPitchDeg - 0.6));
-    const towerClearLimitedDirection = limitDirectionAngle({
-      desiredDirection: direction,
-      referenceDirection: up,
-      maxAngleRad: rad(towerClearPitchDeg),
-      fallback: up,
-    });
-    direction = towerClearLimitedDirection.direction;
-    towerClearLimited = towerClearLimitedDirection.limited;
-    }
+    direction = up;
+    towerClearLimited = true;
   }
   const earlyAscentPitchLimitEndAltitudeKm = Math.max(
     verticalAscentMaxAltitudeKm,
@@ -654,7 +635,7 @@ function stateDrivenAscentProfile({
       1,
       15,
     );
-    const earlyAscentPitchDeg = 0.8 + (earlyAscentPitchProgress * (earlyAscentMaxPitchDeg - 0.8));
+    const earlyAscentPitchDeg = 0.65 + (earlyAscentPitchProgress * (earlyAscentMaxPitchDeg - 0.65));
     const earlyAscentLimitedDirection = limitDirectionAngle({
       desiredDirection: direction,
       referenceDirection: up,
@@ -663,6 +644,17 @@ function stateDrivenAscentProfile({
     });
     direction = earlyAscentLimitedDirection.direction;
     earlyAscentPitchLimited = earlyAscentLimitedDirection.limited;
+    const minimumVisiblePitchoverDeg = 2.35 * smoothStep01((altitudeKm - 0.55) / 0.25);
+    const currentPitchDeg = Math.acos(clamp(dot(direction, up), -1, 1)) * (180 / Math.PI);
+    if (minimumVisiblePitchoverDeg > 1e-6 && currentPitchDeg < minimumVisiblePitchoverDeg) {
+      direction = normalize(
+        add(
+          scale(up, Math.cos(rad(minimumVisiblePitchoverDeg))),
+          scale(tangent, Math.sin(rad(minimumVisiblePitchoverDeg))),
+        ),
+        direction,
+      );
+    }
   }
   return {
     direction,
@@ -950,7 +942,7 @@ export function computeAutopilotCommand({
       (60 - Math.max(0, Number(orbital?.altitudeKm) || 0)) / 60,
       0,
       1,
-    ) * 0.22
+    ) * 0.0
     : 0;
   if (lowOrbitStage1ClimbBias > 1e-6) {
     direction = normalize(

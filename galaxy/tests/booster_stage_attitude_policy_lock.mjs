@@ -132,7 +132,7 @@ function main() {
     bodyAntiTangentAlignment: 0.34,
     bodyUpAlignment: -0.18,
   });
-  assert(highAltitudeDescentCoast.phase === "descent-coast", `expected descent-coast, got ${highAltitudeDescentCoast.phase}`);
+  assert(highAltitudeDescentCoast.phase === "entry-align", `expected entry-align, got ${highAltitudeDescentCoast.phase}`);
   assertCommandMatchesPolicy(highAltitudeDescentCoast);
 
   const terminalIntercept = computeBoosterRecoveryCommand({

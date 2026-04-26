@@ -5,7 +5,13 @@ import {
   LAUNCH_SITE,
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
-import { LAUNCH_STRUCTURE_PROFILE_KM } from "./launchSiteStructures.js?v=20260424f";
+import {
+  BOOSTER_CURRENT_GRID_FIN_ANGLES_DEG,
+  BOOSTER_CURRENT_GRID_FIN_CENTER_RADIUS_M,
+  BOOSTER_CURRENT_GRID_FIN_THICKNESS_M,
+  BOOSTER_CURRENT_GRID_FIN_Y_M,
+} from "./launchRealismConfig.js";
+import { LAUNCH_STRUCTURE_PROFILE_KM } from "./launchSiteStructures.js?v=20260425h";
 import {
   createCapsuleRigidBody,
   createStaticBoxCollider,
@@ -167,7 +173,117 @@ export function createLaunchSiteStaticPhysicsObjects({
   const towerCenterEastKm = boosterRadiusKm + profile.towerOffsetKm + (0.5 * profile.towerWidthKm);
   const colliders = [];
   const towerMaterial = { restitution: 0.035, friction: 0.82 };
+  const padHardwareMaterial = { restitution: 0.04, friction: 0.86 };
   const catchHardwareMaterial = { restitution: 0.02, friction: 0.95 };
+  const slabBaseHeightKm = profile.slabHeightKm + profile.slabApronHeightKm;
+  const mountBodyHeightKm = profile.mountDeckHeightKm - slabBaseHeightKm;
+
+  colliders.push(staticBoxForLaunchSite({
+    id: "orbital-launch-mount-pad2-cuboid-body",
+    role: "orbital-launch-mount",
+    frame,
+    earthState,
+    earthAxes,
+    eastKm: 0,
+    upKm: slabBaseHeightKm + (0.5 * mountBodyHeightKm),
+    halfExtentsKm: {
+      x: 0.5 * profile.mountBodyWidthKm,
+      y: 0.5 * profile.mountBodyDepthKm,
+      z: 0.5 * mountBodyHeightKm,
+    },
+    material: padHardwareMaterial,
+  }));
+  colliders.push(staticBoxForLaunchSite({
+    id: "orbital-launch-mount-water-cooled-deck",
+    role: "orbital-launch-mount",
+    frame,
+    earthState,
+    earthAxes,
+    eastKm: 0,
+    upKm:
+      profile.mountDeckHeightKm
+      + (0.5 * profile.waterCooledDeckThicknessKm),
+    halfExtentsKm: {
+      x: 0.5 * profile.waterCooledDeckWidthKm,
+      y: 0.5 * profile.waterCooledDeckDepthKm,
+      z: 0.5 * profile.waterCooledDeckThicknessKm,
+    },
+    material: padHardwareMaterial,
+  }));
+  colliders.push(staticBoxForLaunchSite({
+    id: "orbital-launch-mount-flame-trench",
+    role: "flame-trench",
+    frame,
+    earthState,
+    earthAxes,
+    eastKm: 0,
+    northKm: -0.5 * profile.flameBucketDepthKm,
+    upKm: 0.5 * profile.flameTrenchMouthHeightKm,
+    halfExtentsKm: {
+      x: 0.5 * profile.flameTrenchMouthWidthKm,
+      y: 0.5 * (profile.flameBucketDepthKm + profile.flameTrenchMouthDepthKm),
+      z: 0.5 * profile.flameTrenchMouthHeightKm,
+    },
+    material: padHardwareMaterial,
+  }));
+  colliders.push(staticBoxForLaunchSite({
+    id: "pad2-service-bunker",
+    role: "launch-mount-service-bunker",
+    frame,
+    earthState,
+    earthAxes,
+    eastKm: profile.mountServiceBunkerEastKm,
+    northKm: profile.mountServiceBunkerNorthKm,
+    upKm: profile.slabHeightKm + (0.5 * profile.mountServiceBunkerHeightKm),
+    halfExtentsKm: {
+      x: 0.5 * profile.mountServiceBunkerWidthKm,
+      y: 0.5 * profile.mountServiceBunkerDepthKm,
+      z: 0.5 * profile.mountServiceBunkerHeightKm,
+    },
+    material: padHardwareMaterial,
+  }));
+
+  for (let i = 0; i < profile.boosterQuickDisconnectCount; i += 1) {
+    colliders.push(staticBoxForLaunchSite({
+      id: `pad2-booster-quick-disconnect-${i + 1}`,
+      role: "booster-quick-disconnect",
+      frame,
+      earthState,
+      earthAxes,
+      eastKm: profile.boosterQuickDisconnectEastKm,
+      northKm:
+        profile.boosterQuickDisconnectNorthKm
+        + ((i - ((profile.boosterQuickDisconnectCount - 1) * 0.5)) * profile.boosterQuickDisconnectSpacingKm),
+      upKm: profile.mountDeckHeightKm + (0.5 * profile.boosterQuickDisconnectHoodHeightKm),
+      halfExtentsKm: {
+        x: 0.5 * profile.boosterQuickDisconnectHoodWidthKm,
+        y: 0.5 * profile.boosterQuickDisconnectHoodDepthKm,
+        z: 0.5 * profile.boosterQuickDisconnectHoodHeightKm,
+      },
+      material: padHardwareMaterial,
+    }));
+  }
+
+  for (let i = 0; i < profile.delugeTankCount; i += 1) {
+    colliders.push(staticBoxForLaunchSite({
+      id: `deluge-tank-${i + 1}`,
+      role: "deluge-tank-farm",
+      frame,
+      earthState,
+      earthAxes,
+      eastKm:
+        profile.delugeTankOffsetEastKm
+        + ((i - ((profile.delugeTankCount - 1) * 0.5)) * profile.delugeTankSpacingKm),
+      northKm: profile.delugeTankOffsetNorthKm,
+      upKm: 0.5 * profile.delugeTankHeightKm,
+      halfExtentsKm: {
+        x: profile.delugeTankRadiusKm,
+        y: profile.delugeTankRadiusKm,
+        z: 0.5 * profile.delugeTankHeightKm,
+      },
+      material: towerMaterial,
+    }));
+  }
 
   if (includeTower) {
     colliders.push(staticBoxForLaunchSite({
@@ -313,26 +429,22 @@ export function queryLaunchSiteObjectContacts({
 
 function boosterCatchPinDefinitionsKm() {
   const radiusKm = STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5;
-  const gridFinHeightKm = clamp(
-    radiusKm * 0.96,
-    radiusKm * 0.46,
-    radiusKm * 1.22,
-  );
-  const gridFinYFromCenterKm =
-    (0.5 * STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm)
-    - (radiusKm * 1.04);
+  const gridFinThicknessKm = BOOSTER_CURRENT_GRID_FIN_THICKNESS_M / 1000;
+  const gridFinYFromCenterKm = BOOSTER_CURRENT_GRID_FIN_Y_M / 1000;
   const catchPinRadiusKm = clamp(radiusKm * 0.026, radiusKm * 0.013, radiusKm * 0.039);
   const catchPinLengthKm = clamp(radiusKm * 0.25, radiusKm * 0.12, radiusKm * 0.34);
-  const radialCenterKm = radiusKm + (catchPinLengthKm * 0.34);
-  return [
-    { name: "upper-catch-pin", angleRad: Math.PI * 0.5 },
-    { name: "lower-port-catch-pin", angleRad: (Math.PI * 7) / 6 },
-    { name: "lower-starboard-catch-pin", angleRad: (Math.PI * 11) / 6 },
-  ].map((pin) => ({
+  const radialCenterKm = Math.max(
+    radiusKm + (catchPinLengthKm * 0.34),
+    (BOOSTER_CURRENT_GRID_FIN_CENTER_RADIUS_M / 1000) - (catchPinLengthKm * 0.55),
+  );
+  return BOOSTER_CURRENT_GRID_FIN_ANGLES_DEG.map((angleDeg, index) => ({
+    name: `grid-fin-${index + 1}-catch`,
+    angleRad: angleDeg * Math.PI / 180,
+  })).map((pin) => ({
     ...pin,
     yFromReferenceKm:
       gridFinYFromCenterKm
-      + (gridFinHeightKm * 0.35),
+      - (gridFinThicknessKm * 1.55),
     radialCenterKm,
     radiusKm: catchPinRadiusKm,
     lengthKm: catchPinLengthKm,

@@ -3,8 +3,11 @@ import {
   EARTH_SIDEREAL_ANGULAR_RATE_RAD_S,
   LAUNCH_PAD_DECK_HEIGHT_KM,
   LAUNCH_SITE,
-  STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
+import {
+  BOOSTER_CURRENT_GRID_FIN_THICKNESS_M,
+  BOOSTER_CURRENT_GRID_FIN_Y_M,
+} from "./launchRealismConfig.js";
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 import {
   add,
@@ -16,32 +19,8 @@ import {
   subtract,
 } from "./launchMath.js";
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function lerp(a, b, t) {
-  return a + ((b - a) * t);
-}
-
-function blendVector(a, b, t) {
-  const blend = clamp(Number(t) || 0, 0, 1);
-  return {
-    x: lerp(a?.x || 0, b?.x || 0, blend),
-    y: lerp(a?.y || 0, b?.y || 0, blend),
-    z: lerp(a?.z || 0, b?.z || 0, blend),
-  };
-}
-
-const boosterRadiusKm = STARSHIP_STACK_DIMENSIONS_KM.diameterKm * 0.5;
-const boosterGridFinHeightKm = clamp(
-  boosterRadiusKm * 0.96,
-  boosterRadiusKm * 0.46,
-  boosterRadiusKm * 1.22,
-);
-const boosterGridFinYFromCenterKm =
-  (0.5 * STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm)
-  - (boosterRadiusKm * 1.04);
+const boosterGridFinThicknessKm = BOOSTER_CURRENT_GRID_FIN_THICKNESS_M / 1000;
+const boosterGridFinYFromCenterKm = BOOSTER_CURRENT_GRID_FIN_Y_M / 1000;
 
 export const BOOSTER_CATCH_BASE_CLEARANCE_KM = Math.max(
   0.026,
@@ -50,7 +29,7 @@ export const BOOSTER_CATCH_BASE_CLEARANCE_KM = Math.max(
 export const BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM =
   BOOSTER_REFERENCE_OFFSET_FROM_BASE_KM
   + boosterGridFinYFromCenterKm
-  + (boosterGridFinHeightKm * 0.35);
+  - (boosterGridFinThicknessKm * 1.55);
 
 export const BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM =
   BOOSTER_CATCH_BASE_CLEARANCE_KM + BOOSTER_CATCH_PIN_HEIGHT_ABOVE_BASE_KM;
@@ -176,121 +155,5 @@ export function computeBoosterCatchRelativeState({
     upAxisKm: up,
     eastAxisKm: east,
     northAxisKm: north,
-  };
-}
-
-export function computeBoosterCatchConstraintStep({
-  boosterState,
-  catchFrame,
-  dtSeconds = 1 / 60,
-  contactProgress = 0,
-  captureProgress = 0,
-  targetOffsetEastKm = 0,
-  targetOffsetNorthKm = 0,
-  targetOffsetUpKm = 0,
-  maxCorrectionAccelKmS2 = 0.065,
-} = {}) {
-  if (!boosterState?.position || !boosterState?.velocity || !catchFrame?.centerPosition || !catchFrame?.centerVelocity) {
-    return null;
-  }
-  const safeDt = clamp(Number(dtSeconds) || 0, 1 / 240, 0.25);
-  const phaseBlend = clamp(
-    Math.max(Number(contactProgress) || 0, Number(captureProgress) || 0),
-    0,
-    1,
-  );
-  const up = normalize(catchFrame.surfaceNormal || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
-  const east = normalize(catchFrame.eastAxis || { x: 1, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
-  const north = normalize(catchFrame.northAxis || cross(up, east), { x: 0, y: 1, z: 0 });
-  const targetPosition = add(
-    add(
-      add(catchFrame.centerPosition, scale(east, Number(targetOffsetEastKm) || 0)),
-      scale(north, Number(targetOffsetNorthKm) || 0),
-    ),
-    scale(up, Number(targetOffsetUpKm) || 0),
-  );
-  const targetVelocity = { ...(catchFrame.centerVelocity || { x: 0, y: 0, z: 0 }) };
-  const relativePositionKm = subtract(boosterState.position, targetPosition);
-  const relativeVelocityKmS = subtract(boosterState.velocity, targetVelocity);
-  const eastErrorKm = dot(relativePositionKm, east);
-  const northErrorKm = dot(relativePositionKm, north);
-  const verticalErrorKm = dot(relativePositionKm, up);
-  const eastSpeedKmS = dot(relativeVelocityKmS, east);
-  const northSpeedKmS = dot(relativeVelocityKmS, north);
-  const verticalSpeedKmS = dot(relativeVelocityKmS, up);
-  const lateralKp = 3.2 + (4.8 * phaseBlend);
-  const lateralKd = 4.4 + (2.8 * phaseBlend);
-  const verticalKp = 2.4 + (3.6 * phaseBlend);
-  const verticalKd = 3.6 + (2.6 * phaseBlend);
-  let eastAccelKmS2 = -((lateralKp * eastErrorKm) + (lateralKd * eastSpeedKmS));
-  let northAccelKmS2 = -((lateralKp * northErrorKm) + (lateralKd * northSpeedKmS));
-  let verticalAccelKmS2 = -((verticalKp * verticalErrorKm) + (verticalKd * verticalSpeedKmS));
-  const axisAccelLimitKmS2 = Math.max(0.01, Number(maxCorrectionAccelKmS2) || 0.065);
-  eastAccelKmS2 = clamp(eastAccelKmS2, -axisAccelLimitKmS2, axisAccelLimitKmS2);
-  northAccelKmS2 = clamp(northAccelKmS2, -axisAccelLimitKmS2, axisAccelLimitKmS2);
-  verticalAccelKmS2 = clamp(verticalAccelKmS2, -axisAccelLimitKmS2, axisAccelLimitKmS2);
-  let correctionAccelerationKmS2 = add(
-    add(scale(east, eastAccelKmS2), scale(north, northAccelKmS2)),
-    scale(up, verticalAccelKmS2),
-  );
-  const accelMagnitudeKmS2 = length(correctionAccelerationKmS2);
-  if (accelMagnitudeKmS2 > axisAccelLimitKmS2) {
-    const accelScale = axisAccelLimitKmS2 / accelMagnitudeKmS2;
-    eastAccelKmS2 *= accelScale;
-    northAccelKmS2 *= accelScale;
-    verticalAccelKmS2 *= accelScale;
-    correctionAccelerationKmS2 = scale(correctionAccelerationKmS2, accelScale);
-  }
-  const nextEastSpeedKmS = eastSpeedKmS + (eastAccelKmS2 * safeDt);
-  const nextNorthSpeedKmS = northSpeedKmS + (northAccelKmS2 * safeDt);
-  const nextVerticalSpeedKmS = verticalSpeedKmS + (verticalAccelKmS2 * safeDt);
-  const nextEastErrorKm = eastErrorKm + (nextEastSpeedKmS * safeDt);
-  const nextNorthErrorKm = northErrorKm + (nextNorthSpeedKmS * safeDt);
-  const nextVerticalErrorKm = verticalErrorKm + (nextVerticalSpeedKmS * safeDt);
-  const nextRelativePositionKm = add(
-    add(scale(east, nextEastErrorKm), scale(north, nextNorthErrorKm)),
-    scale(up, nextVerticalErrorKm),
-  );
-  const nextRelativeVelocityKmS = add(
-    add(scale(east, nextEastSpeedKmS), scale(north, nextNorthSpeedKmS)),
-    scale(up, nextVerticalSpeedKmS),
-  );
-  let nextPosition = add(targetPosition, nextRelativePositionKm);
-  let nextVelocity = add(targetVelocity, nextRelativeVelocityKmS);
-  let resolvedRelativePositionKm = nextRelativePositionKm;
-  let resolvedRelativeVelocityKmS = nextRelativeVelocityKmS;
-  const hardCaptureBlend = clamp((phaseBlend - 0.50) / 0.50, 0, 1);
-  if (hardCaptureBlend > 0) {
-    const positionBlend = clamp(0.06 + (0.54 * hardCaptureBlend), 0.06, 0.60);
-    const velocityBlend = clamp(0.10 + (0.62 * hardCaptureBlend), 0.10, 0.72);
-    nextPosition = blendVector(nextPosition, targetPosition, positionBlend);
-    nextVelocity = blendVector(nextVelocity, targetVelocity, velocityBlend);
-    resolvedRelativePositionKm = subtract(nextPosition, targetPosition);
-    resolvedRelativeVelocityKmS = subtract(nextVelocity, targetVelocity);
-  }
-  const lateralErrorKm = Math.hypot(
-    dot(resolvedRelativePositionKm, east),
-    dot(resolvedRelativePositionKm, north),
-  );
-  const totalErrorKm = length(resolvedRelativePositionKm);
-  const totalSpeedKmS = length(resolvedRelativeVelocityKmS);
-  return {
-    position: nextPosition,
-    velocity: nextVelocity,
-    targetPosition,
-    targetVelocity,
-    correctionAccelerationKmS2,
-    lateralErrorKm,
-    verticalErrorKm: nextVerticalErrorKm,
-    totalErrorKm,
-    totalSpeedKmS,
-    relativePositionKm: resolvedRelativePositionKm,
-    relativeVelocityKmS: resolvedRelativeVelocityKmS,
-    eastErrorKm: dot(resolvedRelativePositionKm, east),
-    northErrorKm: dot(resolvedRelativePositionKm, north),
-    eastSpeedKmS: dot(resolvedRelativeVelocityKmS, east),
-    northSpeedKmS: dot(resolvedRelativeVelocityKmS, north),
-    verticalSpeedKmS: dot(resolvedRelativeVelocityKmS, up),
-    closureNorm: clamp(0.25 + (0.75 * phaseBlend), 0.25, 1),
   };
 }

@@ -5,7 +5,7 @@ import {
   scale,
   subtract,
 } from "./launchMath.js";
-import { computeBoosterCatchRelativeState } from "./launchSiteCatchGeometry.js?v=20260424b";
+import { computeBoosterCatchRelativeState } from "./launchSiteCatchGeometry.js?v=20260425c";
 
 function waveNoise(seed = 0, timeSec = 0) {
   const phase = (Number(seed) || 0) * 1.61803398875;

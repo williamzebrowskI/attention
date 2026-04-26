@@ -137,6 +137,9 @@ let sawTowerClear = false;
 let sawPitchProgram = false;
 let towerClearAltitudeKm = Number.NaN;
 let maxEarlyLateralDisplacementKm = 0;
+let maxTowerClearCommandPitchDeg = 0;
+let maxTowerClearBodyPitchDeg = 0;
+let maxPrePitchKickCommandPitchDeg = 0;
 
 for (let step = 0; step < 20; step += 1) {
   controller.prepareStep(state, DT_SEC, nowMs);
@@ -161,6 +164,22 @@ for (let step = 0; step < 20; step += 1) {
       length(lateralDisplacement),
     );
   }
+  if (Number(snapshot?.altitudeAboveTerrainKm) < 0.12) {
+    maxTowerClearCommandPitchDeg = Math.max(
+      maxTowerClearCommandPitchDeg,
+      Number(snapshot?.commandedPitchFromVerticalDeg) || 0,
+    );
+    maxTowerClearBodyPitchDeg = Math.max(
+      maxTowerClearBodyPitchDeg,
+      Number(snapshot?.bodyPitchFromVerticalDeg) || 0,
+    );
+  }
+  if (Number(snapshot?.altitudeAboveTerrainKm) < 0.35) {
+    maxPrePitchKickCommandPitchDeg = Math.max(
+      maxPrePitchKickCommandPitchDeg,
+      Number(snapshot?.commandedPitchFromVerticalDeg) || 0,
+    );
+  }
   if (guidanceMode.includes("autopilot-pad-release")) {
     sawPadRelease = true;
   }
@@ -182,6 +201,18 @@ assert(
 assert(
   maxEarlyLateralDisplacementKm < 0.03,
   `expected early pad release to remain nearly vertical, got lateral displacement ${maxEarlyLateralDisplacementKm} km`,
+);
+assert(
+  maxTowerClearCommandPitchDeg < 0.5,
+  `expected tower-clear command to stay vertical, got ${maxTowerClearCommandPitchDeg} deg`,
+);
+assert(
+  maxTowerClearBodyPitchDeg < 0.75,
+  `expected tower-clear body to stay vertical, got ${maxTowerClearBodyPitchDeg} deg`,
+);
+assert(
+  maxPrePitchKickCommandPitchDeg < 0.75,
+  `expected pre-pitch-kick command to stay vertical, got ${maxPrePitchKickCommandPitchDeg} deg`,
 );
 assert(sawPitchProgram, "expected ascent to transition from pad/tower-clear into pitch-program");
 console.log("launch-pad-sequence-lock: ok");

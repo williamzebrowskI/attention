@@ -27,6 +27,12 @@ function createMoonGncRuntime() {
     lastSolveReason: "",
     lastCommandMode: "",
     solution: null,
+    solutionStatePositionKm: null,
+    solutionStateVelocityKmS: null,
+    solutionStateTimestampSec: null,
+    solutionStateDriftKm: null,
+    solutionStateDriftKmS: null,
+    solutionInvalidatedForStateDrift: false,
     predictedMissDistanceKm: null,
     predictedPeriluneAltitudeKm: null,
     bPlaneErrorKm: null,
@@ -121,7 +127,13 @@ function normalizeMoonFilterSnapshot(filterSnapshot = null) {
   normalized.lastTimestampSec = Number.isFinite(Number(filterSnapshot.lastTimestampSec))
     ? Number(filterSnapshot.lastTimestampSec)
     : null;
+  normalized.lastMeasurementTimestampSec = Number.isFinite(Number(filterSnapshot.lastMeasurementTimestampSec))
+    ? Number(filterSnapshot.lastMeasurementTimestampSec)
+    : null;
   normalized.lastControlAccelKmS2 = cloneVector(filterSnapshot.lastControlAccelKmS2);
+  normalized.imuBiasAccelKmS2 = finiteVector(filterSnapshot.imuBiasAccelKmS2)
+    ? cloneVector(filterSnapshot.imuBiasAccelKmS2)
+    : null;
   if (filterSnapshot.lastMeasurement && typeof filterSnapshot.lastMeasurement === "object") {
     normalized.lastMeasurement = {
       ...filterSnapshot.lastMeasurement,
@@ -146,6 +158,21 @@ function normalizeMoonFilterSnapshot(filterSnapshot = null) {
       velocitySigmaKmS: Number.isFinite(Number(filterSnapshot.lastMeasurement.velocitySigmaKmS))
         ? Number(filterSnapshot.lastMeasurement.velocitySigmaKmS)
         : null,
+      dsnCadenceSec: Number.isFinite(Number(filterSnapshot.lastMeasurement.dsnCadenceSec))
+        ? Number(filterSnapshot.lastMeasurement.dsnCadenceSec)
+        : null,
+      dsnLightTimeSec: Number.isFinite(Number(filterSnapshot.lastMeasurement.dsnLightTimeSec))
+        ? Number(filterSnapshot.lastMeasurement.dsnLightTimeSec)
+        : null,
+      measurementAgeSec: Number.isFinite(Number(filterSnapshot.lastMeasurement.measurementAgeSec))
+        ? Number(filterSnapshot.lastMeasurement.measurementAgeSec)
+        : null,
+      measurementTimestampSec: Number.isFinite(Number(filterSnapshot.lastMeasurement.measurementTimestampSec))
+        ? Number(filterSnapshot.lastMeasurement.measurementTimestampSec)
+        : null,
+      nextMeasurementDueSec: Number.isFinite(Number(filterSnapshot.lastMeasurement.nextMeasurementDueSec))
+        ? Number(filterSnapshot.lastMeasurement.nextMeasurementDueSec)
+        : null,
     };
   }
   return normalized;
@@ -168,6 +195,22 @@ export function normalizePlannerRuntimeSnapshot(nextSnapshot = null) {
         lastSolveReason: String(gnc.lastSolveReason || ""),
         lastCommandMode: String(gnc.lastCommandMode || ""),
         solution: normalizeMoonGncSolution(gnc.solution),
+        solutionStatePositionKm: finiteVector(gnc.solutionStatePositionKm)
+          ? cloneVector(gnc.solutionStatePositionKm)
+          : null,
+        solutionStateVelocityKmS: finiteVector(gnc.solutionStateVelocityKmS)
+          ? cloneVector(gnc.solutionStateVelocityKmS)
+          : null,
+        solutionStateTimestampSec: Number.isFinite(Number(gnc.solutionStateTimestampSec))
+          ? Number(gnc.solutionStateTimestampSec)
+          : null,
+        solutionStateDriftKm: Number.isFinite(Number(gnc.solutionStateDriftKm))
+          ? Number(gnc.solutionStateDriftKm)
+          : null,
+        solutionStateDriftKmS: Number.isFinite(Number(gnc.solutionStateDriftKmS))
+          ? Number(gnc.solutionStateDriftKmS)
+          : null,
+        solutionInvalidatedForStateDrift: Boolean(gnc.solutionInvalidatedForStateDrift),
         predictedMissDistanceKm: Number.isFinite(Number(gnc.predictedMissDistanceKm))
           ? Number(gnc.predictedMissDistanceKm)
           : null,

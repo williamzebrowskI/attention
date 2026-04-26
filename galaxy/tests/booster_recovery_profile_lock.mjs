@@ -120,9 +120,9 @@ function main() {
     bodyAntiTangentAlignment: 0.34,
     bodyUpAlignment: -0.18,
   });
-  assert(highAltitudeDescentCoast.phase === "descent-coast", `expected descent-coast, got ${highAltitudeDescentCoast.phase}`);
-  assert(highAltitudeDescentCoast.throttle === 0, `expected descent-coast throttle 0, got ${highAltitudeDescentCoast.throttle}`);
-  assert(highAltitudeDescentCoast.siteTargetingEnabled === false, "expected high-altitude descent coast to suppress site targeting until tower-relative navigation is active");
+  assert(highAltitudeDescentCoast.phase === "entry-align", `expected entry-align, got ${highAltitudeDescentCoast.phase}`);
+  assert(highAltitudeDescentCoast.throttle === 0, `expected entry-align throttle 0, got ${highAltitudeDescentCoast.throttle}`);
+  assert(highAltitudeDescentCoast.siteTargetingEnabled === false, "expected thin-air entry alignment to suppress site targeting until grid-fin authority builds");
 
   const terminalIntercept = computeBoosterRecoveryCommand({
     currentPhase: "entry-align",
@@ -199,7 +199,51 @@ function main() {
   assert(terminalCatchApproach.siteTargetingEnabled === false, "expected terminal intercept to use the tower-relative catch frame instead of pad site targeting");
   assert(terminalCatchApproach.qAlphaSteeringEnabled === false, "expected terminal intercept to bypass q-alpha throttle suppression");
   assert(terminalCatchApproach.predictiveCatchControl?.enabled === true, "expected predictive catch control in terminal catch approach");
-  assert(terminalCatchApproach.predictiveCatchControl?.translationOnly === false, "expected terminal intercept to steer physical attitude/aero, not fake translate");
+  assert(terminalCatchApproach.predictiveCatchControl?.translationAuthority > 0, "expected terminal intercept to steer physical attitude/aero, not fake translate");
+
+  const earlyTowerCorridorTranslation = computeBoosterRecoveryCommand({
+    currentPhase: "descent-coast",
+    altitudeKm: 64,
+    radialSpeedKmS: -0.22,
+    tangentialSpeedKmS: 0.36,
+    launchSiteRangeKm: 12,
+    launchSiteLateralRangeKm: 8,
+    launchSiteLateralClosingSpeedKmS: 0.05,
+    catchTotalRangeKm: 12.8,
+    catchLateralRangeKm: 9.5,
+    catchVerticalErrorKm: 63.9,
+    catchLateralSpeedKmS: 0.20,
+    catchVerticalSpeedKmS: -0.22,
+    catchApproachSpeedKmS: 0.30,
+    catchEastErrorKm: 8.1,
+    catchNorthErrorKm: 5.0,
+    catchEastSpeedKmS: 0.15,
+    catchNorthSpeedKmS: 0.12,
+    catchClosingSpeedKmS: 0.08,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.006,
+    catchVelocitySigmaKmS: 0.00008,
+    timeSinceSeparationSec: 260,
+    remainingPropellantKg: 230_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 9_000,
+    bodyUpAlignment: 0.88,
+  });
+  assert(earlyTowerCorridorTranslation.phase === "descent-coast", `expected early tower corridor to stay in unpowered descent, got ${earlyTowerCorridorTranslation.phase}`);
+  assert(earlyTowerCorridorTranslation.predictiveCatchControl?.enabled === true, "expected early tower corridor predictive control");
+  assert(earlyTowerCorridorTranslation.predictiveCatchControl?.interceptTimeSec <= 16, `expected earlier lateral intercept deadline, got ${earlyTowerCorridorTranslation.predictiveCatchControl?.interceptTimeSec}`);
+  assert(earlyTowerCorridorTranslation.predictiveCatchControl?.translationAuthority >= 0.62, `expected strong early lateral translation authority, got ${earlyTowerCorridorTranslation.predictiveCatchControl?.translationAuthority}`);
+  assert(
+    Math.hypot(
+      earlyTowerCorridorTranslation.predictiveCatchControl?.desiredEastSpeedKmS || 0,
+      earlyTowerCorridorTranslation.predictiveCatchControl?.desiredNorthSpeedKmS || 0,
+    ) >= 0.35,
+    "expected early tower corridor to command meaningful lateral closing speed",
+  );
+  assert(
+    Number(earlyTowerCorridorTranslation.predictiveCatchControl?.localDirection?.up) <= 0.10,
+    `expected early corridor steering to favor lateral translation, got up=${earlyTowerCorridorTranslation.predictiveCatchControl?.localDirection?.up}`,
+  );
 
   const towerCorridorDescent = computeBoosterRecoveryCommand({
     currentPhase: "descent-coast",
@@ -234,6 +278,42 @@ function main() {
   assert(towerCorridorDescent.predictiveCatchControl?.enabled === true, "expected predictive catch control in tower corridor");
   assert(towerCorridorDescent.attitudeControlMode === "grid-fins+rcs", `expected unpowered grid-fins+rcs terminal intercept, got ${towerCorridorDescent.attitudeControlMode}`);
   assert(towerCorridorDescent.terminalUprightCommit === true, "expected tower-corridor catch approach to commit upright");
+
+  const lateralLandingBurn = computeBoosterRecoveryCommand({
+    currentPhase: "landing-burn",
+    altitudeKm: 5.2,
+    radialSpeedKmS: -0.32,
+    tangentialSpeedKmS: 0.05,
+    launchSiteRangeKm: 3.4,
+    launchSiteLateralRangeKm: 3.0,
+    launchSiteLateralClosingSpeedKmS: 0.10,
+    catchTotalRangeKm: 4.7,
+    catchLateralRangeKm: 3.4,
+    catchVerticalErrorKm: 5.1,
+    catchLateralSpeedKmS: 0.12,
+    catchVerticalSpeedKmS: -0.30,
+    catchApproachSpeedKmS: 0.33,
+    catchEastErrorKm: 2.9,
+    catchNorthErrorKm: 1.8,
+    catchEastSpeedKmS: -0.05,
+    catchNorthSpeedKmS: -0.02,
+    catchClosingSpeedKmS: 0.02,
+    towerRelativeActive: true,
+    catchPositionSigmaKm: 0.004,
+    catchVelocitySigmaKmS: 0.00004,
+    timeSinceSeparationSec: 386,
+    remainingPropellantKg: 198_000,
+    reserveLandingPropellantKg: 160_000,
+    dynamicPressurePa: 700,
+    bodyUpAlignment: 0.96,
+  });
+  assert(lateralLandingBurn.phase === "landing-burn", `expected landing burn while still outside the lateral catch box, got ${lateralLandingBurn.phase}`);
+  assert(lateralLandingBurn.throttle >= 0.70, `expected landing burn to preserve vertical braking throttle, got ${lateralLandingBurn.throttle}`);
+  assert(lateralLandingBurn.predictiveCatchControl?.translationAuthority >= 0.84, `expected landing burn lateral translation authority, got ${lateralLandingBurn.predictiveCatchControl?.translationAuthority}`);
+  assert(
+    Number(lateralLandingBurn.predictiveCatchControl?.localDirection?.up) <= 0.72,
+    `expected landing burn to leave lateral steering room, got up=${lateralLandingBurn.predictiveCatchControl?.localDirection?.up}`,
+  );
 
   const landingBurn = computeBoosterRecoveryCommand({
     currentPhase: "descent-coast",

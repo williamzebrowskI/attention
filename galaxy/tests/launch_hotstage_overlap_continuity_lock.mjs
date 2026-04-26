@@ -125,6 +125,8 @@ function main() {
   let detachSeen = false;
   let persistentBoosterRef = null;
   let boosterSeenAttached = false;
+  let snapshotShipReferenceSeen = false;
+  let snapshotAttachedJointShipReferenceSeen = false;
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     controller.prepareStep(state, DT_SEC, nowMs);
@@ -151,6 +153,8 @@ function main() {
 
     if (snapshot?.hotstageActive) {
       overlapSeen = true;
+      snapshotShipReferenceSeen ||= Boolean(snapshot.hotstageShipReferenceActive);
+      snapshotAttachedJointShipReferenceSeen ||= Boolean(snapshot.attachedJointShipReferenceActive);
       assert(!snapshot?.boosterActive, "launch_hotstage_overlap_continuity: booster should not be physically detached during overlap");
     }
 
@@ -191,6 +195,10 @@ function main() {
   }
 
   assert(overlapSeen, "launch_hotstage_overlap_continuity: never observed hotstage overlap");
+  assert(
+    snapshotShipReferenceSeen && snapshotAttachedJointShipReferenceSeen,
+    "launch_hotstage_overlap_continuity: snapshots never exposed the physical ship-reference handoff",
+  );
   assert(detachSeen, "launch_hotstage_overlap_continuity: never observed hotstage detach");
 
   console.log("PASS launch-hotstage-overlap-continuity-lock");

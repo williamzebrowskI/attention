@@ -9,6 +9,8 @@ import {
   subtract,
 } from "../navigationMath.js";
 
+const LIGHT_SPEED_KM_S = 299_792.458;
+
 function finiteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : Number(fallback);
@@ -37,34 +39,91 @@ function buildShipMeasurementFrame(positionKm, velocityKmS) {
   return { radial, alongTrack, crossTrack };
 }
 
+function sensorCadenceSec({
+  rangeKm,
+  moonRangeKm,
+  estimatorConfig = {},
+} = {}) {
+  const nearCadenceSec = Math.max(5, finiteNumber(estimatorConfig.dsnNearCadenceSec, 45));
+  const coastCadenceSec = Math.max(nearCadenceSec, finiteNumber(estimatorConfig.dsnCoastCadenceSec, 180));
+  const nearEarth = rangeKm <= Math.max(1, finiteNumber(estimatorConfig.opticalNavEarthRangeKm, 180_000));
+  const nearMoon = moonRangeKm <= Math.max(1, finiteNumber(estimatorConfig.opticalNavMoonRangeKm, 120_000));
+  return nearEarth || nearMoon ? nearCadenceSec : coastCadenceSec;
+}
+
 export function synthesizeMoonNavigationMeasurement({
   shipEarthPositionKm = null,
   shipEarthVelocityKmS = null,
   moonEarthPositionKm = null,
   timestampSec = Number.NaN,
   estimatorConfig = {},
+  previousMeasurementTimestampSec = Number.NaN,
 } = {}) {
   if (!finiteVector(shipEarthPositionKm) || !finiteVector(shipEarthVelocityKmS)) {
     return null;
   }
   const nowSec = finiteNumber(timestampSec, 0);
   const rangeKm = Math.max(1e-6, length(shipEarthPositionKm));
+  const moonRangeKm = finiteVector(moonEarthPositionKm)
+    ? length(subtract(moonEarthPositionKm, shipEarthPositionKm))
+    : Number.POSITIVE_INFINITY;
+  const cadenceSec = sensorCadenceSec({ rangeKm, moonRangeKm, estimatorConfig });
+  const previousTimestampSec = finiteNumber(previousMeasurementTimestampSec, Number.NaN);
+  const dsnLightTimeSec = rangeKm / LIGHT_SPEED_KM_S;
+  const opticalMoonNavActive = moonRangeKm <= Math.max(1, finiteNumber(estimatorConfig.opticalNavMoonRangeKm, 120_000));
+  const opticalEarthNavActive = rangeKm <= Math.max(1, finiteNumber(estimatorConfig.opticalNavEarthRangeKm, 180_000));
+  const measurementDue = (
+    !Number.isFinite(previousTimestampSec)
+    || nowSec < previousTimestampSec
+    || (nowSec - previousTimestampSec) >= cadenceSec
+  );
+  if (!measurementDue) {
+    const measurementAgeSec = Math.max(0, nowSec - previousTimestampSec) + dsnLightTimeSec;
+    return {
+      fresh: false,
+      positionKm: null,
+      velocityKmS: null,
+      diagnostics: {
+        source: "starship_fused_imu_dsn_star_tracker_optnav",
+        sensorSuite: "imu-propagation+dsn-cadence+star-tracker+optical-nav",
+        fresh: false,
+        dsnCadenceSec: cadenceSec,
+        dsnLightTimeSec,
+        measurementAgeSec,
+        measurementTimestampSec: previousTimestampSec,
+        nextMeasurementDueSec: previousTimestampSec + cadenceSec,
+        opticalMoonNavActive,
+        opticalEarthNavActive,
+      },
+    };
+  }
   const frame = buildShipMeasurementFrame(shipEarthPositionKm, shipEarthVelocityKmS);
   const moonLineOfSight = finiteVector(moonEarthPositionKm)
     ? normalize(subtract(moonEarthPositionKm, shipEarthPositionKm), frame.alongTrack)
     : frame.alongTrack;
   const rangeSigmaKm = Math.max(0.001, finiteNumber(estimatorConfig.measurementPositionSigmaKm, 0.2));
   const rateSigmaKmS = Math.max(1e-6, finiteNumber(estimatorConfig.measurementVelocitySigmaKmS, 0.0002));
-  const losSigmaDeg = Math.max(0.001, finiteNumber(estimatorConfig.measurementLosSigmaDeg, 0.012));
+  const starTrackerLosSigmaDeg = Math.max(
+    0.001,
+    finiteNumber(estimatorConfig.starTrackerLosSigmaDeg, finiteNumber(estimatorConfig.measurementLosSigmaDeg, 0.012)),
+  );
+  const opticalLosSigmaDeg = Math.max(0.001, finiteNumber(estimatorConfig.opticalNavLosSigmaDeg, 0.004));
+  const losSigmaDeg = Math.min(
+    Math.max(0.001, finiteNumber(estimatorConfig.measurementLosSigmaDeg, 0.012)),
+    opticalMoonNavActive || opticalEarthNavActive ? opticalLosSigmaDeg : starTrackerLosSigmaDeg,
+  );
   const losSigmaRad = losSigmaDeg * (Math.PI / 180);
-  const crossTrackSigmaKm = Math.max(rangeSigmaKm * 0.25, rangeKm * losSigmaRad);
-  const alongTrackSigmaKm = Math.max(rangeSigmaKm * 0.5, crossTrackSigmaKm * 0.45);
+  const lightTimeSigmaKm = Math.max(0, dsnLightTimeSec * finiteNumber(estimatorConfig.dsnLightTimeUncertaintyScale, 0.0015));
+  const effectiveRangeSigmaKm = Math.max(rangeSigmaKm, rangeSigmaKm + lightTimeSigmaKm);
+  const angularRangeKm = opticalMoonNavActive ? Math.max(1, moonRangeKm) : rangeKm;
+  const crossTrackSigmaKm = Math.max(effectiveRangeSigmaKm * 0.25, angularRangeKm * losSigmaRad);
+  const alongTrackSigmaKm = Math.max(effectiveRangeSigmaKm * 0.5, crossTrackSigmaKm * 0.45);
   const crossTrackVelSigmaKmS = Math.max(rateSigmaKmS, crossTrackSigmaKm / 50000);
 
   const baseSeed = nowSec * 0.01731;
   const positionNoise = add(
     add(
-      scale(frame.radial, hashNoise(baseSeed + 11.7) * rangeSigmaKm),
+      scale(frame.radial, hashNoise(baseSeed + 11.7) * effectiveRangeSigmaKm),
       scale(frame.alongTrack, hashNoise(baseSeed + 27.9) * alongTrackSigmaKm),
     ),
     scale(frame.crossTrack, hashNoise(baseSeed + 43.1) * crossTrackSigmaKm),
@@ -97,6 +156,7 @@ export function synthesizeMoonNavigationMeasurement({
     : 0;
 
   return {
+    fresh: true,
     positionKm: measuredPositionKm,
     velocityKmS: measuredVelocityKmS,
     positionSigmaKm: {
@@ -110,13 +170,24 @@ export function synthesizeMoonNavigationMeasurement({
       crossTrack: crossTrackVelSigmaKmS,
     },
     diagnostics: {
-      source: "simulated_dsn_star_tracker",
+      source: "starship_fused_imu_dsn_star_tracker_optnav",
+      sensorSuite: "imu-propagation+dsn-cadence+star-tracker+optical-nav",
+      fresh: true,
       rangeKm: measuredRangeKm,
       rangeRateKmS: measuredRangeRateKmS,
       moonLosErrorDeg,
-      rangeSigmaKm,
+      rangeSigmaKm: effectiveRangeSigmaKm,
       rangeRateSigmaKmS: rateSigmaKmS,
       lineOfSightSigmaDeg: losSigmaDeg,
+      starTrackerLineOfSightSigmaDeg: starTrackerLosSigmaDeg,
+      opticalLineOfSightSigmaDeg: opticalLosSigmaDeg,
+      opticalMoonNavActive,
+      opticalEarthNavActive,
+      dsnCadenceSec: cadenceSec,
+      dsnLightTimeSec,
+      measurementAgeSec: dsnLightTimeSec,
+      measurementTimestampSec: nowSec,
+      nextMeasurementDueSec: nowSec + cadenceSec,
     },
   };
 }

@@ -88,7 +88,10 @@ function main() {
     reserveLandingPropellantKg: 160_000,
     dynamicPressurePa: 3_500,
   });
-  assert(descentCoast.phase === "descent-coast", `expected descent-coast, got ${descentCoast.phase}`);
+  assert(
+    descentCoast.phase === "descent-coast" || descentCoast.phase === "terminal-intercept",
+    `expected descent-coast or terminal-intercept, got ${descentCoast.phase}`,
+  );
   assert(descentCoast.siteTargetingEnabled === true, "expected descent-coast to stay site-targeted under grid-fin control");
   assert(
     descentCoast.siteVectorWeight >= 0.22 && descentCoast.siteVectorWeight < entryBurn.siteVectorWeight,

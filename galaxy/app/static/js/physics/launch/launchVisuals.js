@@ -10,15 +10,19 @@ import {
   applyLaunchAtmosphereEffects,
   createLaunchAtmosphereEffects,
 } from "./launchAtmosphereEffects.js?v=20260421a";
-import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260424b";
+import { addSharedSuperHeavyBoosterVisuals } from "./superHeavyBoosterVisual.js?v=20260425d";
 
 const STARSHIP_RCS_JET_COLOR = 0xaed7ff;
 const STARSHIP_MAIN_ENGINE_PLUME_COLOR = 0xffe0b0;
-const STARSHIP_NAV_BEACON_COLOR = 0xff3d2a;
-const STARSHIP_NAV_BEACON_PERIOD_SEC = 2.4;
-const STARSHIP_NAV_BEACON_MIN_ALPHA = 0.12;
-const STARSHIP_NAV_BEACON_MAX_ALPHA = 0.98;
 const MAIN_ENGINE_PLUME_BRIGHTNESS_SCALE = 0.68;
+const STARSHIP_UPPER_STAGE_VISUAL_PROFILE = Object.freeze({
+  assetId: "accurate-starship-upper-stage-exterior",
+  stainlessHex: 0xe1e5e4,
+  stainlessEmissiveHex: 0x11151b,
+  heatShieldHex: 0x0c0f14,
+  heatShieldEmissiveHex: 0x030508,
+  engineSkirtHex: 0x20262d,
+});
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -199,62 +203,6 @@ function createRcsJetVisuals(THREE, shipGroup, radius, shipHeight) {
   return jets;
 }
 
-function createNavigationBeaconVisual(THREE, hostGroup, radius, topY) {
-  if (!THREE || !hostGroup || !(radius > 0) || !Number.isFinite(topY)) {
-    return null;
-  }
-  const group = new THREE.Group();
-  group.position.set(0, topY, 0);
-  group.renderOrder = 34;
-  group.visible = true;
-
-  const coreRadius = clamp(radius * 0.09, radius * 0.04, radius * 0.14);
-  const haloRadius = coreRadius * 2.8;
-  const coreMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(STARSHIP_NAV_BEACON_COLOR),
-    transparent: true,
-    opacity: STARSHIP_NAV_BEACON_MIN_ALPHA,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-  });
-  const haloMaterial = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(0xff7a56),
-    transparent: true,
-    opacity: STARSHIP_NAV_BEACON_MIN_ALPHA * 0.6,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-    side: THREE.DoubleSide,
-  });
-
-  const core = new THREE.Mesh(
-    new THREE.SphereGeometry(coreRadius, 12, 12),
-    coreMaterial,
-  );
-  core.renderOrder = 35;
-  group.add(core);
-
-  const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(haloRadius, 12, 12),
-    haloMaterial,
-  );
-  halo.scale.set(1, 0.64, 1);
-  halo.renderOrder = 34;
-  group.add(halo);
-
-  hostGroup.add(group);
-  return {
-    group,
-    core,
-    halo,
-    coreMaterial,
-    haloMaterial,
-    periodSec: STARSHIP_NAV_BEACON_PERIOD_SEC,
-    phaseOffsetSec: Math.random() * STARSHIP_NAV_BEACON_PERIOD_SEC,
-  };
-}
-
 function createHotstageVentPlumes(THREE, shipGroup, radius, anchorY) {
   if (!THREE || !shipGroup || !(radius > 0) || !Number.isFinite(anchorY)) {
     return null;
@@ -307,33 +255,6 @@ function createHotstageVentPlumes(THREE, shipGroup, radius, anchorY) {
     baseLength,
     baseRadius,
   };
-}
-
-function updateNavigationBeaconVisual(stageState) {
-  const beacon = stageState?.navigationBeacon;
-  if (!beacon?.group || !beacon?.coreMaterial || !beacon?.haloMaterial) {
-    return;
-  }
-  const periodSec = Math.max(0.2, Number(beacon.periodSec) || STARSHIP_NAV_BEACON_PERIOD_SEC);
-  const phaseOffsetSec = Number.isFinite(Number(beacon.phaseOffsetSec))
-    ? Number(beacon.phaseOffsetSec)
-    : 0;
-  const cycle = (((Date.now() / 1000) + phaseOffsetSec) % periodSec) / periodSec;
-  const blink = Math.pow(Math.max(0, Math.sin(cycle * Math.PI)), 1.8);
-  const alpha = STARSHIP_NAV_BEACON_MIN_ALPHA
-    + ((STARSHIP_NAV_BEACON_MAX_ALPHA - STARSHIP_NAV_BEACON_MIN_ALPHA) * blink);
-  const haloAlpha = clamp(alpha * 0.72, 0.05, 0.88);
-  const haloScale = 0.84 + (blink * 0.5);
-  beacon.group.visible = true;
-  beacon.coreMaterial.opacity = alpha;
-  beacon.haloMaterial.opacity = haloAlpha;
-  if (beacon.core?.scale) {
-    const coreScale = 0.92 + (blink * 0.22);
-    beacon.core.scale.set(coreScale, coreScale, coreScale);
-  }
-  if (beacon.halo?.scale) {
-    beacon.halo.scale.set(haloScale, haloScale * 0.64, haloScale);
-  }
 }
 
 function updateHotstageVentPlumes(stageState, snapshot) {
@@ -536,14 +457,14 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
     return { meshes: [], plume: null };
   }
 
-  const outerBellRadius = clamp(radius * 0.165, radius * 0.078, radius * 0.2);
-  const outerBellHeight = clamp(radius * 0.26, radius * 0.12, radius * 0.31);
+  const outerBellRadius = clamp(radius * 0.22, radius * 0.12, radius * 0.26);
+  const outerBellHeight = clamp(radius * 0.42, radius * 0.22, radius * 0.5);
 
-  const innerBellRadius = clamp(outerBellRadius * 0.82, outerBellRadius * 0.7, outerBellRadius * 0.9);
-  const innerBellHeight = clamp(outerBellHeight * 0.82, outerBellHeight * 0.72, outerBellHeight * 0.9);
+  const innerBellRadius = clamp(outerBellRadius * 0.62, radius * 0.09, outerBellRadius * 0.72);
+  const innerBellHeight = clamp(outerBellHeight * 0.62, radius * 0.18, outerBellHeight * 0.72);
 
-  const outerRingRadius = clamp(radius * 0.44, radius * 0.16, radius * 0.5);
-  const innerRingRadius = clamp(radius * 0.21, radius * 0.08, radius * 0.27);
+  const outerRingRadius = clamp(radius * 0.47, radius * 0.26, radius * 0.54);
+  const innerRingRadius = clamp(radius * 0.16, radius * 0.08, radius * 0.22);
 
   const engineY = -0.5 * shipHeight;
   const vacExitY = engineY + (outerBellHeight * 0.12);
@@ -565,6 +486,7 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
     const z = Math.sin(angle) * outerRingRadius;
 
     const bell = new THREE.Mesh(vacBellGeom, material.clone());
+    bell.name = `starship_vacuum_raptor_${i + 1}`;
     bell.material.side = THREE.DoubleSide;
     bell.position.set(x, vacExitY, z);
     shipGroup.add(bell);
@@ -578,6 +500,7 @@ function addShipEngineCluster(THREE, shipGroup, material, radius, shipHeight) {
     const z = Math.sin(angle) * innerRingRadius;
 
     const bell = new THREE.Mesh(seaBellGeom, material.clone());
+    bell.name = `starship_sea_level_raptor_${i + 1}`;
     bell.material.side = THREE.DoubleSide;
     bell.position.set(x, seaExitY, z);
     shipGroup.add(bell);
@@ -678,11 +601,11 @@ function createStarshipMetalTextureSet(THREE) {
     2048,
     (ctx, width, height) => {
       const gradient = ctx.createLinearGradient(0, 0, width, 0);
-      gradient.addColorStop(0, "#aeb8c6");
-      gradient.addColorStop(0.16, "#d9e0ea");
-      gradient.addColorStop(0.52, "#9eaab9");
-      gradient.addColorStop(0.82, "#d5dde8");
-      gradient.addColorStop(1, "#a7b3c2");
+      gradient.addColorStop(0, "#a7b0b8");
+      gradient.addColorStop(0.14, "#eef1ed");
+      gradient.addColorStop(0.46, "#9aa3aa");
+      gradient.addColorStop(0.76, "#dfe5e4");
+      gradient.addColorStop(1, "#a0abb2");
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 0, width, height);
 
@@ -690,8 +613,9 @@ function createStarshipMetalTextureSet(THREE) {
         const x = Math.floor(seededNoise(i, 1, 3) * width);
         const alpha = 0.02 + (seededNoise(i, 2, 7) * 0.1);
         const lineWidth = 1 + Math.floor(seededNoise(i, 3, 11) * 2);
-        const brightness = 182 + Math.floor(seededNoise(i, 4, 13) * 55);
-        ctx.strokeStyle = `rgba(${brightness}, ${brightness}, ${brightness}, ${alpha.toFixed(4)})`;
+        const brightness = 176 + Math.floor(seededNoise(i, 4, 13) * 66);
+        const warmth = 4 + Math.floor(seededNoise(i, 8, 19) * 8);
+        ctx.strokeStyle = `rgba(${brightness + warmth}, ${brightness + Math.floor(warmth * 0.7)}, ${brightness}, ${alpha.toFixed(4)})`;
         ctx.lineWidth = lineWidth;
         ctx.beginPath();
         ctx.moveTo(x, 0);
@@ -699,9 +623,17 @@ function createStarshipMetalTextureSet(THREE) {
         ctx.stroke();
       }
 
+      for (let i = 0; i < 26; i += 1) {
+        const y = Math.floor(seededNoise(i, 12, 29) * height);
+        const bandHeight = 4 + Math.floor(seededNoise(i, 13, 31) * 12);
+        const alpha = 0.018 + (seededNoise(i, 14, 37) * 0.038);
+        ctx.fillStyle = `rgba(190, 178, 154, ${alpha.toFixed(4)})`;
+        ctx.fillRect(0, y, width, bandHeight);
+      }
+
       const ringSpacing = Math.floor(height / 24);
       for (let y = ringSpacing; y < height; y += ringSpacing) {
-        ctx.strokeStyle = "rgba(76, 84, 96, 0.36)";
+        ctx.strokeStyle = "rgba(58, 64, 72, 0.4)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(0, y);
@@ -711,7 +643,7 @@ function createStarshipMetalTextureSet(THREE) {
 
       const panelSpacing = Math.floor(width / 14);
       for (let x = panelSpacing; x < width; x += panelSpacing) {
-        ctx.strokeStyle = "rgba(86, 96, 112, 0.2)";
+        ctx.strokeStyle = "rgba(72, 82, 92, 0.24)";
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(x, 0);
@@ -803,30 +735,46 @@ function createStarshipTileTextureSet(THREE) {
     2048,
     1024,
     (ctx, width, height) => {
-      ctx.fillStyle = "#0a0d13";
+      ctx.fillStyle = "#07090d";
       ctx.fillRect(0, 0, width, height);
-      const tileW = Math.max(8, Math.floor(width / 120));
-      const tileH = Math.max(8, Math.floor(height / 62));
-      for (let y = 0; y < height; y += tileH) {
-        for (let x = 0; x < width; x += tileW) {
-          const shade = Math.floor(20 + (seededNoise(x * 0.5, y * 0.8, 41) * 26));
-          ctx.fillStyle = `rgb(${shade}, ${shade + 1}, ${shade + 4})`;
-          ctx.fillRect(x, y, tileW - 1, tileH - 1);
+      const tileW = Math.max(10, Math.floor(width / 116));
+      const tileH = Math.max(9, Math.floor(height / 58));
+      for (let row = 0, y = 0; y < height + tileH; row += 1, y += tileH) {
+        const stagger = (row % 2) * (tileW * 0.5);
+        for (let x = -tileW; x < width + tileW; x += tileW) {
+          const sx = x + stagger;
+          const shade = Math.floor(12 + (seededNoise(sx * 0.5, y * 0.8, 41) * 25));
+          const cool = Math.floor(seededNoise(sx * 0.33, y * 0.44, 43) * 7);
+          const chamfer = Math.max(2, Math.floor(tileW * 0.18));
+          ctx.beginPath();
+          ctx.moveTo(sx + chamfer, y + 1);
+          ctx.lineTo(sx + tileW - chamfer - 1, y + 1);
+          ctx.lineTo(sx + tileW - 1, y + Math.floor(tileH * 0.5));
+          ctx.lineTo(sx + tileW - chamfer - 1, y + tileH - 1);
+          ctx.lineTo(sx + chamfer, y + tileH - 1);
+          ctx.lineTo(sx + 1, y + Math.floor(tileH * 0.5));
+          ctx.closePath();
+          ctx.fillStyle = `rgb(${shade}, ${shade + cool}, ${shade + cool + 4})`;
+          ctx.fill();
         }
       }
-      ctx.strokeStyle = "rgba(78, 88, 104, 0.28)";
+      ctx.strokeStyle = "rgba(82, 92, 105, 0.34)";
       ctx.lineWidth = 1;
-      for (let y = 0; y < height; y += tileH) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-      for (let x = 0; x < width; x += tileW) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
+      for (let row = 0, y = 0; y < height + tileH; row += 1, y += tileH) {
+        const stagger = (row % 2) * (tileW * 0.5);
+        for (let x = -tileW; x < width + tileW; x += tileW) {
+          const sx = x + stagger;
+          const chamfer = Math.max(2, Math.floor(tileW * 0.18));
+          ctx.beginPath();
+          ctx.moveTo(sx + chamfer, y + 1);
+          ctx.lineTo(sx + tileW - chamfer - 1, y + 1);
+          ctx.lineTo(sx + tileW - 1, y + Math.floor(tileH * 0.5));
+          ctx.lineTo(sx + tileW - chamfer - 1, y + tileH - 1);
+          ctx.lineTo(sx + chamfer, y + tileH - 1);
+          ctx.lineTo(sx + 1, y + Math.floor(tileH * 0.5));
+          ctx.closePath();
+          ctx.stroke();
+        }
       }
     },
     { srgb: true },
@@ -857,6 +805,195 @@ function createStarshipTileTextureSet(THREE) {
   );
 
   return { map, roughnessMap };
+}
+
+function createPartialLatheSurfaceGeometry(
+  THREE,
+  profile,
+  radialSegments = 64,
+  thetaStart = 0,
+  thetaLength = Math.PI * 2,
+) {
+  const points = Array.isArray(profile)
+    ? profile.filter((point) => point && point.radius >= 0 && Number.isFinite(point.y))
+    : [];
+  if (!THREE || points.length < 2) {
+    return new THREE.BufferGeometry();
+  }
+
+  const segments = Math.max(3, Math.round(Number(radialSegments) || 64));
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  const rowSize = points.length;
+  for (let i = 0; i <= segments; i += 1) {
+    const u = i / segments;
+    const theta = thetaStart + (thetaLength * u);
+    const cos = Math.cos(theta);
+    const sin = Math.sin(theta);
+    for (let j = 0; j < rowSize; j += 1) {
+      const v = rowSize > 1 ? j / (rowSize - 1) : 0;
+      const radius = Math.max(0, Number(points[j].radius) || 0);
+      positions.push(cos * radius, points[j].y, sin * radius);
+      uvs.push(u, v);
+    }
+  }
+
+  for (let i = 0; i < segments; i += 1) {
+    for (let j = 0; j < rowSize - 1; j += 1) {
+      const a = (i * rowSize) + j;
+      const b = ((i + 1) * rowSize) + j;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function sweptPaddlePoints(span, chord, sweep = 0) {
+  const rootHalf = span * 0.5;
+  const tipHalf = span * 0.36;
+  const sweepOffset = sweep * span;
+  return [
+    { y: -rootHalf, z: -chord * 0.45 },
+    { y: rootHalf, z: -chord * 0.45 },
+    { y: tipHalf + sweepOffset, z: chord * 0.55 },
+    { y: -tipHalf + sweepOffset, z: chord * 0.55 },
+  ];
+}
+
+function createSweptPaddleGeometry(THREE, span, chord, thickness, sweep = 0) {
+  const points = sweptPaddlePoints(span, chord, sweep);
+  const halfThickness = Math.max(1e-9, thickness * 0.5);
+  const positions = [];
+  const uvs = [];
+  for (const x of [halfThickness, -halfThickness]) {
+    for (const point of points) {
+      positions.push(x, point.y, point.z);
+      uvs.push((point.z / chord) + 0.5, (point.y / span) + 0.5);
+    }
+  }
+  const indices = [
+    0, 1, 2, 0, 2, 3,
+    4, 6, 5, 4, 7, 6,
+  ];
+  for (let i = 0; i < points.length; i += 1) {
+    const next = (i + 1) % points.length;
+    indices.push(i, next, next + 4, i, next + 4, i + 4);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createSweptPaddlePlateGeometry(THREE, span, chord, xOffset, sweep = 0) {
+  const points = sweptPaddlePoints(span, chord, sweep);
+  const positions = [];
+  const uvs = [];
+  for (const point of points) {
+    positions.push(xOffset, point.y, point.z);
+    uvs.push((point.z / chord) + 0.5, (point.y / span) + 0.5);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex([0, 1, 2, 0, 2, 3]);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function addPayloadDoorOutline(THREE, hostGroup, {
+  radius,
+  y,
+  width,
+  height,
+  material,
+}) {
+  if (!THREE || !hostGroup || !material || !(radius > 0) || !(width > 0) || !(height > 0)) {
+    return null;
+  }
+  const group = new THREE.Group();
+  const line = clamp(radius * 0.01, radius * 0.004, radius * 0.016);
+  const z = radius * 1.014;
+  const verticalGeom = new THREE.BoxGeometry(line, height, line);
+  const horizontalGeom = new THREE.BoxGeometry(width, line, line);
+  for (const side of [-1, 1]) {
+    const sideRail = new THREE.Mesh(verticalGeom, material);
+    sideRail.position.set(side * (width * 0.5), y, z);
+    group.add(sideRail);
+  }
+  for (const side of [-1, 1]) {
+    const endRail = new THREE.Mesh(horizontalGeom, material);
+    endRail.position.set(0, y + (side * height * 0.5), z);
+    group.add(endRail);
+  }
+  hostGroup.add(group);
+  return group;
+}
+
+function addStarshipFlapAssembly(THREE, hostGroup, {
+  side,
+  y,
+  radius,
+  span,
+  chord,
+  thickness,
+  sweep,
+  stainless,
+  tileBlack,
+  darkSteel,
+  name,
+}) {
+  if (!THREE || !hostGroup || !stainless || !tileBlack || !darkSteel || !(radius > 0)) {
+    return null;
+  }
+
+  const group = new THREE.Group();
+  group.name = name || "starship_body_flap";
+  group.position.set(side * (radius + (thickness * 0.42)), y, 0);
+  group.rotation.z = side * rad(10);
+  group.rotation.y = side * rad(4);
+
+  const core = new THREE.Mesh(
+    createSweptPaddleGeometry(THREE, span, chord, thickness, sweep),
+    stainless,
+  );
+  group.add(core);
+
+  const tilePanel = new THREE.Mesh(
+    createSweptPaddlePlateGeometry(THREE, span * 0.96, chord * 0.96, side * thickness * 0.54, sweep),
+    tileBlack,
+  );
+  tilePanel.renderOrder = 16;
+  group.add(tilePanel);
+
+  const hinge = new THREE.Mesh(
+    new THREE.CylinderGeometry(thickness * 0.34, thickness * 0.34, chord * 0.86, 14, 1, false),
+    darkSteel,
+  );
+  hinge.rotation.x = Math.PI * 0.5;
+  hinge.position.x = -side * (thickness * 0.64);
+  group.add(hinge);
+
+  const rootFairing = new THREE.Mesh(
+    new THREE.BoxGeometry(thickness * 0.9, span * 0.22, chord * 0.24),
+    darkSteel,
+  );
+  rootFairing.position.set(-side * (thickness * 0.52), 0, -chord * 0.34);
+  group.add(rootFairing);
+
+  hostGroup.add(group);
+  return group;
 }
 
 function createEngineTextureSet(THREE) {
@@ -939,19 +1076,19 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   const engine = createEngineTextureSet(THREE);
 
   const stainless = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0xffffff),
+    color: new THREE.Color(STARSHIP_UPPER_STAGE_VISUAL_PROFILE.stainlessHex),
     map: metal.map,
     normalMap: metal.normalMap,
     roughnessMap: metal.roughnessMap,
     metalnessMap: metal.metalnessMap,
-    roughness: 0.24,
-    metalness: 0.94,
-    emissive: new THREE.Color(0x12161d),
+    roughness: 0.28,
+    metalness: 0.9,
+    emissive: new THREE.Color(STARSHIP_UPPER_STAGE_VISUAL_PROFILE.stainlessEmissiveHex),
     emissiveIntensity: 0.05,
   });
   enforceSolidOpaqueMaterial(THREE, stainless);
   const darkSteel = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0xe6eef8),
+    color: new THREE.Color(STARSHIP_UPPER_STAGE_VISUAL_PROFILE.engineSkirtHex),
     map: engine.map,
     roughnessMap: engine.roughnessMap,
     roughness: 0.52,
@@ -961,19 +1098,24 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   });
   enforceSolidOpaqueMaterial(THREE, darkSteel);
   const tileBlack = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0xffffff),
+    color: new THREE.Color(STARSHIP_UPPER_STAGE_VISUAL_PROFILE.heatShieldHex),
     map: tiles.map,
     roughnessMap: tiles.roughnessMap,
-    roughness: 0.86,
-    metalness: 0.06,
-    emissive: new THREE.Color(0x05070c),
+    roughness: 0.9,
+    metalness: 0.03,
+    emissive: new THREE.Color(STARSHIP_UPPER_STAGE_VISUAL_PROFILE.heatShieldEmissiveHex),
     emissiveIntensity: 0.04,
   });
   enforceSolidOpaqueMaterial(THREE, tileBlack);
+  tileBlack.side = THREE.DoubleSide;
   tileBlack.polygonOffset = true;
   tileBlack.polygonOffsetFactor = -2;
   tileBlack.polygonOffsetUnits = -2;
-  const materials = [stainless, darkSteel, tileBlack];
+  const materials = [
+    stainless,
+    darkSteel,
+    tileBlack,
+  ];
 
   const stackRoot = new THREE.Group();
 
@@ -984,22 +1126,24 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   const shipHullGroup = new THREE.Group();
   shipGroup.add(shipHullGroup);
 
+  const noseTipRadius = radius * 0.13;
   const shipHullProfile = [];
   const cylindricalSteps = 24;
   for (let i = 0; i <= cylindricalSteps; i += 1) {
     const t = i / cylindricalSteps;
     const y = shipBodyBottomY + (shipCylinderHeight * t);
-    const localRadius = radius * (1 - (0.012 * t));
-    shipHullProfile.push(new THREE.Vector2(localRadius, y));
+    shipHullProfile.push(new THREE.Vector2(radius, y));
   }
-  const noseSteps = 20;
+  const noseSteps = 28;
+  const noseProfile = [];
   for (let i = 1; i <= noseSteps; i += 1) {
     const t = i / noseSteps;
-    const theta = t * (Math.PI * 0.5);
-    const y = shipBodyTopY + (Math.sin(theta) * shipNoseHeight);
-    const radialFactor = Math.pow(Math.cos(theta), 1.5);
-    const localRadius = radius * (0.95 * radialFactor);
-    shipHullProfile.push(new THREE.Vector2(Math.max(localRadius, radius * 0.03), y));
+    const y = shipBodyTopY + (shipNoseHeight * t);
+    const ogiveBlend = Math.pow(Math.cos(t * Math.PI * 0.5), 0.44);
+    const localRadius = noseTipRadius + ((radius - noseTipRadius) * ogiveBlend);
+    const point = new THREE.Vector2(localRadius, y);
+    shipHullProfile.push(point);
+    noseProfile.push({ radius: localRadius, y });
   }
 
   const shipHull = new THREE.Mesh(
@@ -1035,86 +1179,49 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
   }
 
   const noseTip = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 0.034, 26, 18),
+    new THREE.SphereGeometry(noseTipRadius, 32, 18),
     stainless,
   );
-  noseTip.position.y = shipBodyTopY + shipNoseHeight + (radius * 0.012);
+  noseTip.scale.y = 0.64;
+  noseTip.position.y = shipBodyTopY + shipNoseHeight;
   shipHullGroup.add(noseTip);
-  const navigationBeacon = createNavigationBeaconVisual(
-    THREE,
-    shipGroup,
-    radius,
-    noseTip.position.y + (radius * 0.12),
-  );
-
-  // Use a real windward-side shell instead of a second nearly-coplanar hull.
-  // The old overlapping shell caused persistent z-fighting that read as
-  // transparency/flicker at true scale.
+  const heatShieldThetaStart = Math.PI;
+  const heatShieldThetaLength = Math.PI;
   const heatShieldBody = new THREE.Mesh(
-    new THREE.CylinderGeometry(
-      radius * 1.008,
-      radius * 0.998,
-      shipCylinderHeight * 0.95,
-      64,
-      1,
-      true,
-      -Math.PI * 0.5,
-      Math.PI,
-    ),
+    createPartialLatheSurfaceGeometry(THREE, [
+      { radius: radius * 1.01, y: shipBodyBottomY + (radius * 0.28) },
+      { radius: radius * 1.01, y: shipBodyTopY + (radius * 0.06) },
+    ], 72, heatShieldThetaStart, heatShieldThetaLength),
     tileBlack,
   );
-  heatShieldBody.position.y = shipBodyBottomY + (0.5 * shipCylinderHeight);
-  heatShieldBody.rotation.y = Math.PI * 0.5;
   shipHullGroup.add(heatShieldBody);
 
   const heatShieldNose = new THREE.Mesh(
-    new THREE.ConeGeometry(
-      radius * 0.94,
-      shipNoseHeight * 1.02,
-      48,
-      1,
-      true,
-      -Math.PI * 0.5,
-      Math.PI,
+    createPartialLatheSurfaceGeometry(
+      THREE,
+      [
+        { radius: radius * 1.012, y: shipBodyTopY - (radius * 0.02) },
+        ...noseProfile.map((point) => ({
+          radius: Math.max(noseTipRadius * 1.02, point.radius * 1.012),
+          y: point.y,
+        })),
+      ],
+      72,
+      heatShieldThetaStart,
+      heatShieldThetaLength,
     ),
     tileBlack,
   );
-  heatShieldNose.position.y = shipBodyTopY + (0.5 * shipNoseHeight);
-  heatShieldNose.rotation.y = Math.PI * 0.5;
   shipHullGroup.add(heatShieldNose);
+  shipHullGroup.userData.starshipUpperStageHeatShieldPatchCount = 0;
 
-  const chines = new THREE.Group();
-  const chineHeight = clamp(shipNoseHeight * 1.08, shipNoseHeight * 0.78, shipNoseHeight * 1.25);
-  const chineThickness = clamp(radius * 0.038, radius * 0.02, radius * 0.06);
-  const chineLength = clamp(radius * 0.58, radius * 0.42, radius * 0.74);
-  for (let i = 0; i < 2; i += 1) {
-    const side = i === 0 ? -1 : 1;
-    const chine = new THREE.Mesh(
-      new THREE.BoxGeometry(chineThickness, chineHeight, chineLength),
-      stainless,
-    );
-    chine.position.set(
-      side * (radius * 0.84),
-      shipBodyTopY + (shipNoseHeight * 0.16),
-      0,
-    );
-    chine.rotation.z = side * rad(17);
-    chine.rotation.y = side * rad(6);
-    chines.add(chine);
-  }
-  shipHullGroup.add(chines);
-
-  const payloadDoorSeam = new THREE.Mesh(
-    new THREE.BoxGeometry(radius * 0.012, shipCylinderHeight * 0.42, radius * 0.72),
-    darkSteel,
-  );
-  payloadDoorSeam.position.set(
-    radius * 0.996,
-    shipBodyBottomY + (shipCylinderHeight * 0.68),
-    0,
-  );
-  payloadDoorSeam.rotation.y = rad(4);
-  shipHullGroup.add(payloadDoorSeam);
+  addPayloadDoorOutline(THREE, shipHullGroup, {
+    radius,
+    y: shipBodyBottomY + (shipCylinderHeight * 0.62),
+    width: radius * 0.76,
+    height: shipCylinderHeight * 0.34,
+    material: darkSteel,
+  });
 
   const weldSeamFractions = [0.08, 0.16, 0.24, 0.33, 0.42, 0.5, 0.58, 0.66, 0.74, 0.82, 0.9];
   const seamTubeRadius = clamp(radius * 0.0044, radius * 0.002, radius * 0.007);
@@ -1128,50 +1235,66 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
     shipHullGroup.add(seam);
   }
 
-  const flapThickness = clamp(radius * 0.058, radius * 0.028, radius * 0.09);
-  const aftFlapSpan = clamp(shipCylinderHeight * 0.2, radius * 0.86, shipCylinderHeight * 0.26);
-  const foreFlapSpan = clamp(shipCylinderHeight * 0.16, radius * 0.62, shipCylinderHeight * 0.2);
-  const aftFlapChord = clamp(radius * 1.12, radius * 0.8, radius * 1.34);
-  const foreFlapChord = clamp(radius * 0.82, radius * 0.58, radius * 0.96);
-  const aftFlapY = shipBodyBottomY + (shipCylinderHeight * 0.17);
-  const foreFlapY = shipBodyBottomY + (shipCylinderHeight * 0.8);
+  const flapThickness = clamp(radius * 0.1, radius * 0.052, radius * 0.13);
+  const aftFlapSpan = clamp(shipCylinderHeight * 0.22, radius * 1.08, shipCylinderHeight * 0.28);
+  const foreFlapSpan = clamp(shipCylinderHeight * 0.16, radius * 0.72, shipCylinderHeight * 0.21);
+  const aftFlapChord = clamp(radius * 1.48, radius * 1.05, radius * 1.68);
+  const foreFlapChord = clamp(radius * 1.12, radius * 0.82, radius * 1.32);
+  const aftFlapY = shipBodyBottomY + (shipCylinderHeight * 0.15);
+  const foreFlapY = shipBodyBottomY + (shipCylinderHeight * 0.86);
   for (let i = 0; i < 2; i += 1) {
     const side = i === 0 ? -1 : 1;
-
-    const aft = new THREE.Mesh(
-      new THREE.BoxGeometry(flapThickness, aftFlapSpan, aftFlapChord),
+    addStarshipFlapAssembly(THREE, shipGroup, {
+      side,
+      y: aftFlapY,
+      radius,
+      span: aftFlapSpan,
+      chord: aftFlapChord,
+      thickness: flapThickness,
+      sweep: -0.08,
+      stainless,
+      tileBlack,
       darkSteel,
-    );
-    aft.position.set(side * (radius + (flapThickness * 0.45)), aftFlapY, 0);
-    aft.rotation.z = side * rad(12);
-    aft.rotation.y = side * rad(4);
-    shipGroup.add(aft);
-
-    const aftHinge = new THREE.Mesh(
-      new THREE.CylinderGeometry(flapThickness * 0.32, flapThickness * 0.32, aftFlapChord * 0.9, 12, 1, false),
+      name: side < 0 ? "starship_aft_flap_port" : "starship_aft_flap_starboard",
+    });
+    addStarshipFlapAssembly(THREE, shipGroup, {
+      side,
+      y: foreFlapY,
+      radius,
+      span: foreFlapSpan,
+      chord: foreFlapChord,
+      thickness: flapThickness * 0.86,
+      sweep: 0.12,
+      stainless,
+      tileBlack,
       darkSteel,
-    );
-    aftHinge.rotation.x = Math.PI * 0.5;
-    aftHinge.position.set(side * radius * 0.992, aftFlapY, 0);
-    shipGroup.add(aftHinge);
-
-    const fore = new THREE.Mesh(
-      new THREE.BoxGeometry(flapThickness * 0.88, foreFlapSpan, foreFlapChord),
-      darkSteel,
-    );
-    fore.position.set(side * (radius + (flapThickness * 0.4)), foreFlapY, 0);
-    fore.rotation.z = side * rad(18);
-    fore.rotation.y = side * rad(6);
-    shipGroup.add(fore);
-
-    const foreHinge = new THREE.Mesh(
-      new THREE.CylinderGeometry(flapThickness * 0.3, flapThickness * 0.3, foreFlapChord * 0.9, 12, 1, false),
-      darkSteel,
-    );
-    foreHinge.rotation.x = Math.PI * 0.5;
-    foreHinge.position.set(side * radius * 0.992, foreFlapY, 0);
-    shipGroup.add(foreHinge);
+      name: side < 0 ? "starship_forward_flap_port" : "starship_forward_flap_starboard",
+    });
   }
+
+  const engineSkirtHeight = clamp(radius * 1.18, radius * 0.86, shipCylinderHeight * 0.22);
+  const engineSkirt = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 1.025, radius * 1.04, engineSkirtHeight, 64, 1, true),
+    darkSteel,
+  );
+  engineSkirt.name = "starship_dark_engine_skirt";
+  engineSkirt.position.y = shipBodyBottomY + (engineSkirtHeight * 0.5);
+  shipGroup.add(engineSkirt);
+
+  const skirtLip = new THREE.Mesh(
+    new THREE.TorusGeometry(radius * 1.02, radius * 0.026, 10, 64),
+    darkSteel,
+  );
+  skirtLip.rotation.x = Math.PI * 0.5;
+  skirtLip.position.y = shipBodyBottomY + (radius * 0.045);
+  shipGroup.add(skirtLip);
+
+  const engineDeck = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 0.72, radius * 0.72, radius * 0.065, 48, 1, false),
+    darkSteel,
+  );
+  engineDeck.position.y = shipBodyBottomY + (radius * 0.15);
+  shipGroup.add(engineDeck);
 
   const shipEngineState = addShipEngineCluster(THREE, shipGroup, darkSteel, radius, shipHeight);
 
@@ -1195,6 +1318,8 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
 
   stackRoot.userData.starshipAssetSource = "local_procedural_starship_stack";
   stackRoot.userData.starshipTextureResolution = "procedural_hd";
+  stackRoot.userData.starshipVisualProfile = STARSHIP_UPPER_STAGE_VISUAL_PROFILE.assetId;
+  stackRoot.userData.starshipVisualReference = "SpaceX Starship upper-stage exterior";
 
   return {
     root: stackRoot,
@@ -1205,7 +1330,6 @@ function createProceduralStarshipStackVisual(THREE, distanceScale) {
       fullBoosterCenterY,
       fullShipCenterY,
       detachedShipCenterY,
-      navigationBeacon,
       hotstageVentPlumes: createHotstageVentPlumes(
         THREE,
         shipGroup,
@@ -1526,12 +1650,20 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
   const snapshotBodyId = String(snapshot?.bodyId || "");
   const fleetVehicle = snapshotBodyId.startsWith("earth_mission_ship_")
     || snapshotBodyId.startsWith("earth_refuel_tanker_");
+  const hasExplicitShipReference = snapshot && (
+    Object.prototype.hasOwnProperty.call(snapshot, "hotstageShipReferenceActive")
+    || Object.prototype.hasOwnProperty.call(snapshot, "attachedJointShipReferenceActive")
+  );
+  const hasBoosterActive = snapshot
+    && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive");
+  const shipReferenceActive = Boolean(snapshot?.hotstageShipReferenceActive)
+    || Boolean(snapshot?.attachedJointShipReferenceActive);
   const detached = fleetVehicle
     ? stageTwoActive
     : (
-      snapshot && Object.prototype.hasOwnProperty.call(snapshot, "boosterActive")
-        ? Boolean(snapshot.boosterActive)
-        : stageTwoActive
+      hasExplicitShipReference
+        ? (shipReferenceActive || Boolean(snapshot?.boosterActive))
+        : (hasBoosterActive ? Boolean(snapshot.boosterActive) : stageTwoActive)
     );
   if (
     Number.isFinite(stageState.detachedShipCenterY)
@@ -1543,7 +1675,6 @@ export function applyStarshipVisualStage(stageState, stageIndex, snapshot = null
   }
   updateMainEnginePlumes(stageState, stageIndex, snapshot);
   updateRcsJetVisuals(stageState, snapshot);
-  updateNavigationBeaconVisual(stageState);
   updateHotstageVentPlumes(stageState, snapshot);
 }
 

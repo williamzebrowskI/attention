@@ -137,6 +137,10 @@ export const LAUNCH_VEHICLE_CONFIG = Object.freeze({
   dragCoefficient: 0.32,
   guidance: Object.freeze({
     enforceVerticalAscent: true,
+    // Starbase ascent should pitch offshore over the Gulf instead of inland.
+    // Public profiles do not publish the exact azimuth, so model a conservative
+    // east-northeast Gulf corridor that clears the tower before building downrange speed.
+    ascentCorridorName: "Starbase Gulf offshore corridor",
     ascentHeadingDegFromEast: 18,
     pitchoverStartSec: 12,
     pitchoverDurationSec: 170,
@@ -257,10 +261,10 @@ export const LAUNCH_BOOSTER_CONFIG = Object.freeze({
     mixtureRatioNominal: 3.6,
     mixtureRatioTransientRange: 0.18,
   }),
-  // Public sources clearly establish the 33 Raptor booster cluster, but do not
-  // publish a clean official Super Heavy side-thruster count/spec sheet. The
-  // current V3-style model uses three larger grid fins and keeps the existing
-  // six modeled RCS hardpoints as a hot-gas proxy calibrated to the control envelope.
+  // Public sources clearly establish the 33 Raptor booster cluster and the
+  // next-generation three-grid-fin booster layout, but do not publish a clean
+  // official Super Heavy side-thruster count/spec sheet. Keep the six modeled
+  // RCS hardpoints as a hot-gas proxy calibrated to the control envelope.
   rcsThrusterCount: 6,
   rcsThrustSeaLevelN: 19_200,
   rcsThrustVacuumN: 21_000,
@@ -293,15 +297,14 @@ export const LAUNCH_AUTOPILOT_CONFIG = Object.freeze({
   targetOrbitAltitudeKm: 250,
   targetAltitudeToleranceKm: 8,
   verticalAscentMaxAltitudeKm: 1.0,
-  earlyAscentPitchLimitEndAltitudeKm: 2.6,
-  earlyAscentMaxPitchDeg: 12.0,
+  earlyAscentPitchLimitEndAltitudeKm: 3.5,
+  earlyAscentMaxPitchDeg: 8.0,
   padReleaseDurationSec: 1.3,
   towerClearAltitudeKm: 0.12,
   towerClearMaxDurationSec: 8.5,
-  towerClearMaxPitchDeg: 6.0,
-  pitchKickStartAltitudeKm: 0.12,
-  pitchKickEndAltitudeKm: 2.8,
-  pitchKickMaxDeg: 17.5,
+  pitchKickStartAltitudeKm: 0.35,
+  pitchKickEndAltitudeKm: 1.7,
+  pitchKickMaxDeg: 20.0,
   progradeTrackMinAirSpeedKmS: 0.12,
   ascentAoALimitDeg: 7.5,
   towerClearAoALimitDeg: 3.5,
@@ -332,6 +335,35 @@ export const LAUNCH_RCS_CONFIG = Object.freeze({
   moonCoastTurnRateDegS: 3.0,
   maxAccelerationKmS2: 0.00004,
   minReferenceSpeedKmS: 0.05,
+  starshipPropellantCapacityKg: 18_000,
+  starshipThrusterVacuumN: 48_000,
+  starshipThrusterSeaLevelN: 43_000,
+  starshipIspVacuumS: 300,
+  starshipIspSeaLevelS: 285,
+  starshipSensorPositionSigmaKm: 0.012,
+  starshipSensorVelocitySigmaKmS: 0.000025,
+  starshipSensorAttitudeSigmaDeg: 0.035,
+  starshipSensorUpdateHz: 8,
+  starshipCombustion: Object.freeze({
+    nominalChamberPressurePa: 3_100_000,
+    turbopumpIdleNorm: 0.20,
+    ignitionPumpThreshold: 0.055,
+    turbopumpRiseTauSec: 0.035,
+    turbopumpFallTauSec: 0.055,
+    chamberRiseTauSec: 0.03,
+    chamberFallTauSec: 0.045,
+    minStableThrottle: 0.055,
+    combustionEfficiencyFloor: 0.72,
+    exhaustTemperatureIdleK: 610,
+    exhaustTemperatureNominalK: 1950,
+    mixtureRatioNominal: 3.4,
+    mixtureRatioTransientRange: 0.08,
+    lowThrottleAmbientPressurePaMin: 45_000,
+    lowThrottleFlameoutSec: 0.75,
+    restartCooldownSec: 0.08,
+    hotRelightDamageScale: 0.03,
+    failureHealthFloor: 0.34,
+  }),
 });
 
 export const LAUNCH_MOON_COAST_TRIM_CONFIG = Object.freeze({

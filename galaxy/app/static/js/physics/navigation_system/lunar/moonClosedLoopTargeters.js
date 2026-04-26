@@ -281,6 +281,12 @@ function ensureMoonGncRuntime(moonRuntime) {
       lastSolveReason: "",
       lastCommandMode: "",
       solution: null,
+      solutionStatePositionKm: null,
+      solutionStateVelocityKmS: null,
+      solutionStateTimestampSec: null,
+      solutionStateDriftKm: null,
+      solutionStateDriftKmS: null,
+      solutionInvalidatedForStateDrift: false,
       predictedMissDistanceKm: null,
       predictedPeriluneAltitudeKm: null,
       bPlaneErrorKm: null,
@@ -339,6 +345,38 @@ function storeBallisticCoastCandidate({
   runtime.ballisticCoastEvalSec = Number.isFinite(nowSec)
     ? nowSec
     : runtime.ballisticCoastEvalSec;
+}
+
+function buildNavigationQualityDiagnostics(filterState = null) {
+  const measurement = filterState?.lastMeasurement || null;
+  return {
+    navigationSource: String(measurement?.source || ""),
+    navigationSensorSuite: String(measurement?.sensorSuite || ""),
+    navigationFreshMeasurement: typeof measurement?.fresh === "boolean"
+      ? Boolean(measurement.fresh)
+      : null,
+    navigationMeasurementAgeSec: Number.isFinite(Number(measurement?.measurementAgeSec))
+      ? Number(measurement.measurementAgeSec)
+      : null,
+    navigationDsnCadenceSec: Number.isFinite(Number(measurement?.dsnCadenceSec))
+      ? Number(measurement.dsnCadenceSec)
+      : null,
+    navigationDsnLightTimeSec: Number.isFinite(Number(measurement?.dsnLightTimeSec))
+      ? Number(measurement.dsnLightTimeSec)
+      : null,
+    navigationPositionSigmaKm: Number.isFinite(Number(measurement?.positionSigmaKm))
+      ? Number(measurement.positionSigmaKm)
+      : null,
+    navigationVelocitySigmaKmS: Number.isFinite(Number(measurement?.velocitySigmaKmS))
+      ? Number(measurement.velocitySigmaKmS)
+      : null,
+    navigationOpticalMoonNavActive: typeof measurement?.opticalMoonNavActive === "boolean"
+      ? Boolean(measurement.opticalMoonNavActive)
+      : null,
+    navigationOpticalEarthNavActive: typeof measurement?.opticalEarthNavActive === "boolean"
+      ? Boolean(measurement.opticalEarthNavActive)
+      : null,
+  };
 }
 
 function resolveBallisticCoastCandidate({
@@ -413,6 +451,7 @@ function resolveBallisticCoastCandidate({
 function storeClosedLoopSolveResult({
   runtime = null,
   solution = null,
+  initialState = null,
   nowSec = Number.NaN,
   solveReason = "",
 } = {}) {
@@ -420,11 +459,68 @@ function storeClosedLoopSolveResult({
     return;
   }
   runtime.solution = solution;
+  runtime.solutionStatePositionKm = finiteVector(initialState?.positionKm)
+    ? { ...initialState.positionKm }
+    : null;
+  runtime.solutionStateVelocityKmS = finiteVector(initialState?.velocityKmS)
+    ? { ...initialState.velocityKmS }
+    : null;
+  runtime.solutionStateTimestampSec = Number.isFinite(nowSec) ? nowSec : null;
+  if (!runtime.solutionInvalidatedForStateDrift) {
+    runtime.solutionStateDriftKm = 0;
+    runtime.solutionStateDriftKmS = 0;
+  }
   runtime.lastSolveSec = Number.isFinite(nowSec) ? nowSec : runtime.lastSolveSec;
   runtime.lastSolveReason = String(
     solveReason
     || (solution ? "nbody-closed-loop-optimal" : "nbody-no-solution"),
   );
+}
+
+function evaluateClosedLoopSolutionStateDrift({
+  runtime = null,
+  initialState = null,
+  nowSec = Number.NaN,
+  phase = "",
+} = {}) {
+  if (
+    !runtime?.solution
+    || !finiteVector(runtime.solutionStatePositionKm)
+    || !finiteVector(runtime.solutionStateVelocityKmS)
+    || !finiteVector(initialState?.positionKm)
+    || !finiteVector(initialState?.velocityKmS)
+  ) {
+    return {
+      stale: false,
+      positionDriftKm: 0,
+      velocityDriftKmS: 0,
+      ageSec: 0,
+    };
+  }
+  const positionDriftKm = length(subtract(initialState.positionKm, runtime.solutionStatePositionKm));
+  const velocityDriftKmS = length(subtract(initialState.velocityKmS, runtime.solutionStateVelocityKmS));
+  const ageSec = Number.isFinite(nowSec) && Number.isFinite(Number(runtime.solutionStateTimestampSec))
+    ? Math.max(0, nowSec - Number(runtime.solutionStateTimestampSec))
+    : 0;
+  const phaseName = String(phase || "").trim();
+  const nearBurn = (
+    phaseName === "tli_burn"
+    || phaseName === "lunar_insertion"
+    || phaseName === "tei_burn"
+    || phaseName === "earth_capture"
+  );
+  const positionLimitKm = nearBurn
+    ? Math.max(25, 0.28 * Math.max(0, ageSec))
+    : Math.max(250, 1.2 * Math.max(0, ageSec));
+  const velocityLimitKmS = nearBurn
+    ? 0.025
+    : 0.08;
+  return {
+    stale: positionDriftKm > positionLimitKm || velocityDriftKmS > velocityLimitKmS,
+    positionDriftKm,
+    velocityDriftKmS,
+    ageSec,
+  };
 }
 
 function restoreClosedLoopSourceModelCache({
@@ -487,6 +583,14 @@ function solveBestClosedLoopTransfer({
       storeClosedLoopSolveResult({
         runtime,
         solution: workerResponse.solution,
+        initialState: {
+          positionKm: finiteVector(workerResponse.initialStatePositionKm)
+            ? workerResponse.initialStatePositionKm
+            : initialState.positionKm,
+          velocityKmS: finiteVector(workerResponse.initialStateVelocityKmS)
+            ? workerResponse.initialStateVelocityKmS
+            : initialState.velocityKmS,
+        },
         nowSec: Number.isFinite(Number(workerResponse.solvedAtSec))
           ? Number(workerResponse.solvedAtSec)
           : nowSec,
@@ -502,6 +606,24 @@ function solveBestClosedLoopTransfer({
     }
   }
   const lastSolveSec = finiteNumber(runtime?.lastSolveSec, Number.NaN);
+  if (runtime && typeof runtime === "object") {
+    runtime.solutionInvalidatedForStateDrift = false;
+  }
+  const solutionDrift = evaluateClosedLoopSolutionStateDrift({
+    runtime,
+    initialState,
+    nowSec,
+    phase,
+  });
+  if (runtime?.solution) {
+    runtime.solutionStateDriftKm = solutionDrift.positionDriftKm;
+    runtime.solutionStateDriftKmS = solutionDrift.velocityDriftKmS;
+    runtime.solutionInvalidatedForStateDrift = Boolean(solutionDrift.stale);
+    if (solutionDrift.stale) {
+      runtime.solution = null;
+      runtime.lastSolveReason = "nbody-solution-invalidated-estimate-drift";
+    }
+  }
   const solveDue = !runtime?.solution || !Number.isFinite(lastSolveSec) || !Number.isFinite(nowSec) || ((nowSec - lastSolveSec) >= cadenceSec);
   if (!solveDue && runtime?.solution) {
     return { solution: runtime.solution, solvedThisStep };
@@ -573,6 +695,7 @@ function solveBestClosedLoopTransfer({
   storeClosedLoopSolveResult({
     runtime,
     solution: best,
+    initialState,
     nowSec,
     solveReason: best ? "nbody-closed-loop-optimal" : "nbody-no-solution",
   });
@@ -801,6 +924,7 @@ export function planMoonClosedLoopMissionCommand({
   if (!gncRuntime || !finiteVector(estimatedPositionKm) || !finiteVector(estimatedVelocityKmS)) {
     return null;
   }
+  const navigationDiagnostics = buildNavigationQualityDiagnostics(moonRuntime?.filter);
   const nowSec = Number(timestampSec);
   const sources = buildMoonGuidanceSourceModel({ targetVectors, metrics, plannerConfig });
   restoreClosedLoopSourceModelCache({
@@ -1084,6 +1208,7 @@ export function planMoonClosedLoopMissionCommand({
         direction: normalize(add(scale(toMoon, 0.7), scale(tangent, 0.3)), toMoon),
         mode: fallbackMode,
         diagnostics: {
+          ...navigationDiagnostics,
           requestedMode: "nbody-closed-loop-gnc",
           solveReady: false,
         },
@@ -1659,6 +1784,7 @@ export function planMoonClosedLoopMissionCommand({
     return {
       ...command,
       diagnostics: {
+        ...navigationDiagnostics,
         requestedMode: "nbody-closed-loop-differential-gnc",
         missDistanceKm: gncRuntime.predictedMissDistanceKm,
         missGateKm,
@@ -1690,6 +1816,13 @@ export function planMoonClosedLoopMissionCommand({
         coastCorridorAccepted: passiveCoastEligibility.corridorAccepted,
         coastCorridorWeakClosing: passiveCoastEligibility.weakClosing,
         coastCorridorDiverging: passiveCoastEligibility.diverging,
+        solutionStateDriftKm: Number.isFinite(Number(gncRuntime.solutionStateDriftKm))
+          ? Number(gncRuntime.solutionStateDriftKm)
+          : null,
+        solutionStateDriftKmS: Number.isFinite(Number(gncRuntime.solutionStateDriftKmS))
+          ? Number(gncRuntime.solutionStateDriftKmS)
+          : null,
+        solutionInvalidatedForStateDrift: Boolean(gncRuntime.solutionInvalidatedForStateDrift),
         solveReady: true,
       },
     };
@@ -1777,6 +1910,7 @@ export function planMoonClosedLoopMissionCommand({
     return {
       ...command,
       diagnostics: {
+        ...navigationDiagnostics,
         requestedMode: phaseName === "tei_burn"
           ? "nbody-tei-targeter"
           : "nbody-earth-return-differential-gnc",
@@ -1788,6 +1922,13 @@ export function planMoonClosedLoopMissionCommand({
           ? best.closestClosingSpeedKmS
           : earthClosingSpeedKmS,
         burnDurationSec: Number.isFinite(best.burnDurationSec) ? best.burnDurationSec : null,
+        solutionStateDriftKm: Number.isFinite(Number(gncRuntime.solutionStateDriftKm))
+          ? Number(gncRuntime.solutionStateDriftKm)
+          : null,
+        solutionStateDriftKmS: Number.isFinite(Number(gncRuntime.solutionStateDriftKmS))
+          ? Number(gncRuntime.solutionStateDriftKmS)
+          : null,
+        solutionInvalidatedForStateDrift: Boolean(gncRuntime.solutionInvalidatedForStateDrift),
         solveReady: true,
       },
     };
@@ -1826,6 +1967,7 @@ export function planMoonClosedLoopMissionCommand({
       direction: best.burnDirection,
       mode: "navsys:gnc-lunar-capture-retrograde",
       diagnostics: {
+        ...navigationDiagnostics,
         requestedMode: "nbody-loi-targeter",
         deltaVNeedKmS: best.deltaVNeedKmS,
         burnDurationSec: best.burnDurationSec,
@@ -1846,6 +1988,10 @@ export function planMoonClosedLoopMissionCommand({
       throttle: 0,
       direction: tangent,
       mode: "navsys:gnc-lunar-orbit-hold",
+      diagnostics: {
+        ...navigationDiagnostics,
+        requestedMode: "nbody-lunar-orbit-hold",
+      },
     };
   }
 
@@ -1879,6 +2025,7 @@ export function planMoonClosedLoopMissionCommand({
       direction: best.burnDirection,
       mode: "navsys:gnc-earth-capture",
       diagnostics: {
+        ...navigationDiagnostics,
         requestedMode: "nbody-earth-capture-targeter",
         deltaVNeedKmS: best.deltaVNeedKmS,
         burnDurationSec: best.burnDurationSec,

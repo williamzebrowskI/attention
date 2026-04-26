@@ -4,7 +4,7 @@
  *
  * Public references describe:
  * - Starship: 4 hot-gas thrusters below payload-bay region, + 2 on the oxygen-tank section.
- * - Super Heavy: public references clearly show four grid fins and the booster return profile,
+ * - Super Heavy: public references establish the next-generation three-grid-fin booster profile,
  *   but do not publish a clean official side-thruster count/spec sheet. We therefore keep the
  *   six modeled Super Heavy RCS hardpoints here as an inference from the visible booster layout.
  *

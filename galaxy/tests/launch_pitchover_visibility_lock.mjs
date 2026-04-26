@@ -147,6 +147,18 @@ for (let step = 0; step < MAX_STEPS; step += 1) {
         elapsedSec: Number(snapshot?.elapsedSeconds) || 0,
         altitudeKm,
         tiltDeg,
+        telemetryCommandPitchDeg: Number.isFinite(Number(snapshot?.commandedPitchFromVerticalDeg))
+          ? Number(snapshot.commandedPitchFromVerticalDeg)
+          : null,
+        telemetryBodyPitchDeg: Number.isFinite(Number(snapshot?.bodyPitchFromVerticalDeg))
+          ? Number(snapshot.bodyPitchFromVerticalDeg)
+          : null,
+        ascentCorridorName: String(snapshot?.ascentCorridorName || ""),
+        ascentHeadingDegFromEast: Number.isFinite(Number(snapshot?.ascentHeadingDegFromEast))
+          ? Number(snapshot.ascentHeadingDegFromEast)
+          : null,
+        hasGuidanceRequestedDirection: Boolean(snapshot?.guidanceRequestedDirectionKm),
+        hasBodyAxisDirection: Boolean(snapshot?.bodyAxisDirectionKm),
         guidanceMode,
       };
     }
@@ -180,6 +192,24 @@ assert(
 assert(
   marks["1"].guidanceMode.includes("pitch-program"),
   `launch_pitchover_visibility_lock: expected pitch-program guidance by 1 km, got ${marks["1"].guidanceMode}`,
+);
+assert(
+  marks["1"].hasGuidanceRequestedDirection && marks["1"].hasBodyAxisDirection,
+  "launch_pitchover_visibility_lock: expected ascent attitude vectors in launch snapshot by 1 km",
+);
+assert(
+  Number.isFinite(marks["1"].telemetryCommandPitchDeg) && marks["1"].telemetryCommandPitchDeg >= 1.4,
+  `launch_pitchover_visibility_lock: expected commanded pitch telemetry by 1 km, got ${marks["1"].telemetryCommandPitchDeg}`,
+);
+assert(
+  Number.isFinite(marks["1"].telemetryBodyPitchDeg) && marks["1"].telemetryBodyPitchDeg >= 1.4,
+  `launch_pitchover_visibility_lock: expected body pitch telemetry by 1 km, got ${marks["1"].telemetryBodyPitchDeg}`,
+);
+assert(
+  String(marks["1"].ascentCorridorName).includes("Gulf")
+    && marks["1"].ascentHeadingDegFromEast > 0
+    && marks["1"].ascentHeadingDegFromEast < 45,
+  `launch_pitchover_visibility_lock: expected Gulf offshore ascent corridor telemetry, got ${marks["1"].ascentCorridorName} ${marks["1"].ascentHeadingDegFromEast}`,
 );
 
 console.log("launch-pitchover-visibility-lock: ok");

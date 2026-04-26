@@ -1,4 +1,4 @@
-import { BOOSTER_CATCH_GEOMETRY_KM } from "./launchSiteCatchGeometry.js?v=20260424b";
+import { BOOSTER_CATCH_GEOMETRY_KM } from "./launchSiteCatchGeometry.js?v=20260425c";
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -10,7 +10,7 @@ const BOOSTER_CATCH_CONFIG = Object.freeze({
   maxApproachLateralKm: 44.0,
   maxApproachVerticalErrorKm: 34.0,
   maxApproachSpeedKmS: 2.35,
-  minApproachBodyUpAlignment: 0.90,
+  minApproachBodyUpAlignment: 0.88,
   minFinalBurnBodyUpAlignment: 0.82,
   maxPositionSigmaKm: 0.030,
   maxVelocitySigmaKmS: 0.00045,
@@ -88,19 +88,30 @@ function resolvePredictiveCatchMetrics({
                   : 2.2
     )
     : interceptTimeSec;
+  const unpoweredTerminalLateralDeadlineSec = altitudeKm > 24
+    ? 22
+    : altitudeKm > 18
+      ? 16
+      : altitudeKm > 10
+        ? 10.5
+        : altitudeKm > 6
+          ? 7.0
+          : altitudeKm > 3
+            ? 4.8
+            : 2.8;
   const effectiveInterceptTimeSec = poweredFinalBurnActive
     ? Math.min(interceptTimeSec, terminalLateralDeadlineSec)
-    : interceptTimeSec;
+    : Math.min(interceptTimeSec, unpoweredTerminalLateralDeadlineSec);
   const towerCorridorLimitKm = altitudeKm > 28
-    ? (phaseText === "landing-burn" ? 3.40 : 6.40)
+    ? (phaseText === "landing-burn" ? 2.30 : 4.40)
     : altitudeKm > 18
-      ? (phaseText === "landing-burn" ? 3.60 : 4.20)
+      ? (phaseText === "landing-burn" ? 1.55 : 2.80)
       : altitudeKm > 10
-        ? (phaseText === "landing-burn" ? 3.10 : 2.40)
+        ? (phaseText === "landing-burn" ? 0.82 : 1.50)
         : altitudeKm > 6
-          ? (phaseText === "landing-burn" ? 2.20 : 1.10)
+          ? (phaseText === "landing-burn" ? 0.36 : 0.72)
           : altitudeKm > 3
-            ? (phaseText === "landing-burn" ? 1.20 : 0.42)
+            ? (phaseText === "landing-burn" ? 0.14 : 0.25)
             : 0.04;
   const unpoweredTowerCorridorHoldRadiusKm = clamp(
     (phaseText === "landing-burn" ? 0.22 : 0.020)
@@ -192,10 +203,10 @@ function resolvePredictiveCatchMetrics({
       desiredLateralSpeedLimitKmS,
       clamp(
         outsideTowerCorridorKm / (
-          altitudeKm > 24 ? 8.0 : altitudeKm > 20 ? 5.5 : altitudeKm > 14 ? 3.2 : altitudeKm > 8 ? 3.0 : altitudeKm > 5 ? 3.8 : altitudeKm > 2 ? 4.8 : 5.2
+          altitudeKm > 24 ? 5.4 : altitudeKm > 20 ? 4.2 : altitudeKm > 14 ? 2.8 : altitudeKm > 8 ? 2.6 : altitudeKm > 5 ? 3.2 : altitudeKm > 2 ? 4.2 : 5.2
         ),
-        altitudeKm > 24 ? 0.62 : altitudeKm > 20 ? 0.56 : altitudeKm > 14 ? 0.48 : altitudeKm > 8 ? 0.42 : altitudeKm > 5 ? 0.26 : altitudeKm > 2 ? 0.18 : 0.14,
-        altitudeKm > 24 ? 0.92 : altitudeKm > 20 ? 0.88 : altitudeKm > 14 ? 0.88 : altitudeKm > 8 ? 0.76 : altitudeKm > 5 ? 0.52 : altitudeKm > 2 ? 0.42 : 0.34,
+        altitudeKm > 24 ? 0.72 : altitudeKm > 20 ? 0.66 : altitudeKm > 14 ? 0.58 : altitudeKm > 8 ? 0.50 : altitudeKm > 5 ? 0.34 : altitudeKm > 2 ? 0.22 : 0.14,
+        altitudeKm > 24 ? 1.05 : altitudeKm > 20 ? 0.98 : altitudeKm > 14 ? 0.94 : altitudeKm > 8 ? 0.82 : altitudeKm > 5 ? 0.58 : altitudeKm > 2 ? 0.46 : 0.34,
       ),
     )
     : 0;
@@ -403,7 +414,7 @@ export function resolveBoosterCatchCommand(input = {}) {
     && catchApproachSpeedKmS <= BOOSTER_CATCH_CONFIG.finalBurnApproachSpeedKmS
     && bodyUpAlignment >= BOOSTER_CATCH_CONFIG.minFinalBurnBodyUpAlignment
 	  );
-  const stagedBurnStartAltitudeKm = sustainingPoweredCatchBurn ? 30.5 : 20.5;
+  const stagedBurnStartAltitudeKm = sustainingPoweredCatchBurn ? 30.5 : 28.5;
 	  const stagedLandingBurnWindow = Boolean(
 	    allowFinalBurn
 	    && sustainingCatchApproach
@@ -412,12 +423,12 @@ export function resolveBoosterCatchCommand(input = {}) {
     && altitudeKm > BOOSTER_CATCH_CONFIG.finalBurnAltitudeKm
     && catchLateralRangeKm <= (
       altitudeKm > 24.0
-        ? 20.0
+        ? 32.0
         : altitudeKm > 14.0
-        ? 20.0
+        ? 28.0
         : altitudeKm > 8.0
-          ? 14.0
-          : (sustainingPoweredCatchBurn ? 14.0 : 6.0)
+          ? 20.0
+          : (sustainingPoweredCatchBurn ? 16.0 : 8.0)
     )
     && Math.abs(catchVerticalErrorKm) <= (
       altitudeKm > 24.0
@@ -459,7 +470,7 @@ export function resolveBoosterCatchCommand(input = {}) {
   );
   if (
     altitudeKm <= 30
-    && catchLateralRangeKm > (altitudeKm > 24 ? 20 : 12)
+    && catchLateralRangeKm > (altitudeKm > 24 ? 32 : altitudeKm > 14 ? 28 : 20)
   ) {
     return null;
   }
@@ -467,8 +478,8 @@ export function resolveBoosterCatchCommand(input = {}) {
     altitudeKm <= 24
     && catchLateralRangeKm > (
       sustainingCatchApproach
-        ? (altitudeKm > 14 ? 14 : 10)
-        : 8
+        ? (altitudeKm > 14 ? 28 : 20)
+        : (altitudeKm > 14 ? 18 : 12)
     )
     && !stagedLandingBurnCandidate
     && !(
@@ -481,7 +492,7 @@ export function resolveBoosterCatchCommand(input = {}) {
   }
   if (
     altitudeKm <= 10
-    && catchLateralRangeKm > 5.0
+    && catchLateralRangeKm > (sustainingPoweredCatchBurn ? 16.0 : 10.0)
     && !highCorridorBurnLatch
     && !stagedLandingBurnCandidate
   ) {
@@ -491,7 +502,7 @@ export function resolveBoosterCatchCommand(input = {}) {
     altitudeKm <= 8
     && (
       catchLateralRangeKm > (
-        sustainingPoweredCatchBurn ? 5.0 : (sustainingCatchApproach ? 2.8 : 2.2)
+        sustainingPoweredCatchBurn ? 16.0 : (sustainingCatchApproach ? 8.0 : 4.0)
       )
       || catchLateralSpeedKmS > (sustainingCatchApproach ? 0.85 : 0.32)
     )
@@ -525,7 +536,7 @@ export function resolveBoosterCatchCommand(input = {}) {
     altitudeKm <= 6
     && (
       catchLateralRangeKm > (
-        sustainingPoweredCatchBurn ? 4.2 : (sustainingCatchApproach ? 2.4 : 2.8)
+        sustainingPoweredCatchBurn ? 14.0 : (sustainingCatchApproach ? 6.0 : 3.6)
       )
       || catchLateralSpeedKmS > (sustainingCatchApproach ? 0.58 : 0.34)
     )
@@ -538,7 +549,7 @@ export function resolveBoosterCatchCommand(input = {}) {
     altitudeKm <= 4
     && (
       catchLateralRangeKm > (
-        sustainingPoweredCatchBurn ? 10.0 : (sustainingCatchApproach ? 1.2 : 1.4)
+        sustainingPoweredCatchBurn ? 12.0 : (sustainingCatchApproach ? 4.0 : 2.4)
       )
       || catchLateralSpeedKmS > (
         sustainingPoweredCatchBurn ? 0.46 : (sustainingCatchApproach ? 0.34 : 0.24)
@@ -625,13 +636,23 @@ export function resolveBoosterCatchCommand(input = {}) {
     return null;
   }
 	  const minimumApproachBodyUpAlignment = highCorridorBurnLatch
-	    ? 0.50
+	    ? BOOSTER_CATCH_CONFIG.minFinalBurnBodyUpAlignment
 	    : sustainingPoweredCatchBurn
-	      ? 0.50
+	      ? BOOSTER_CATCH_CONFIG.minFinalBurnBodyUpAlignment
 	      : latchedCatchApproach
 	        ? BOOSTER_CATCH_CONFIG.minLatchedBodyUpAlignment
 	        : BOOSTER_CATCH_CONFIG.minApproachBodyUpAlignment;
   if (bodyUpAlignment < minimumApproachBodyUpAlignment) {
+    return null;
+  }
+  if (
+    !sustainingCatchApproach
+    && altitudeKm <= 8.0
+    && (
+      catchTotalRangeKm > 2.20
+      || catchLateralRangeKm > 1.25
+    )
+  ) {
     return null;
   }
 
@@ -701,9 +722,7 @@ export function resolveBoosterCatchCommand(input = {}) {
     && catchLateralRangeKm <= 0.45
     && Math.abs(catchVerticalErrorKm) <= 0.20
     && catchApproachSpeedKmS <= 0.16;
-	  const finalBurnBodyUpAlignmentMin = currentPhase === "catch-burn"
-	    ? 0.50
-	    : BOOSTER_CATCH_CONFIG.minFinalBurnBodyUpAlignment;
+	  const finalBurnBodyUpAlignmentMin = BOOSTER_CATCH_CONFIG.minFinalBurnBodyUpAlignment;
   const finalBurnEligible =
     allowFinalBurn
     && bodyUpAlignment >= finalBurnBodyUpAlignmentMin
@@ -757,9 +776,10 @@ export function resolveBoosterCatchCommand(input = {}) {
       )
     );
 
+  const precisionCatchBurnBodyUpMin = BOOSTER_CATCH_CONFIG.minFinalBurnBodyUpAlignment;
   const precisionCatchBurnEligible = Boolean(
     finalBurnEligible
-    && bodyUpAlignment >= 0.82
+    && bodyUpAlignment >= precisionCatchBurnBodyUpMin
     && (
       (
         catchTotalRangeKm <= 0.42
@@ -767,6 +787,7 @@ export function resolveBoosterCatchCommand(input = {}) {
         && Math.abs(catchVerticalErrorKm) <= 0.45
         && catchApproachSpeedKmS <= 0.14
         && catchLateralSpeedKmS <= 0.08
+        && Math.abs(catchVerticalSpeedKmS) <= 0.08
       )
       || (
 	        currentPhase === "catch-burn"
@@ -775,17 +796,35 @@ export function resolveBoosterCatchCommand(input = {}) {
 	        && Math.abs(catchVerticalErrorKm) <= 24.0
 	        && catchApproachSpeedKmS <= 1.20
 	        && catchLateralSpeedKmS <= 0.60
+	        && catchVerticalSpeedKmS >= -0.14
 	        && catchVerticalSpeedKmS <= 0.20
 	      )
       || (
         (currentPhase === "landing-burn" || currentPhase === "catch-burn")
-        && altitudeKm <= (currentPhase === "landing-burn" ? 16.0 : 22.0)
-        && catchTotalRangeKm <= (currentPhase === "catch-burn" ? 18.0 : 18.0)
-        && catchLateralRangeKm <= (currentPhase === "catch-burn" ? 5.6 : 4.8)
-        && Math.abs(catchVerticalErrorKm) <= (currentPhase === "catch-burn" ? 18.0 : 18.0)
-        && catchApproachSpeedKmS <= (currentPhase === "catch-burn" ? 1.25 : 1.18)
-        && catchLateralSpeedKmS <= (currentPhase === "catch-burn" ? 0.58 : 0.50)
-        && catchVerticalSpeedKmS <= 0.08
+        && (
+          (
+            currentPhase === "catch-burn"
+            && altitudeKm <= 22.0
+            && catchTotalRangeKm <= 22.0
+            && catchLateralRangeKm <= 12.0
+            && Math.abs(catchVerticalErrorKm) <= 18.0
+            && catchApproachSpeedKmS <= 1.25
+            && catchLateralSpeedKmS <= 0.58
+            && catchVerticalSpeedKmS >= -0.36
+            && catchVerticalSpeedKmS <= 0.08
+          )
+          || (
+            currentPhase === "landing-burn"
+            && altitudeKm <= 1.20
+            && catchTotalRangeKm <= 0.90
+            && catchLateralRangeKm <= 0.35
+            && Math.abs(catchVerticalErrorKm) <= 0.75
+            && catchApproachSpeedKmS <= 0.20
+            && catchLateralSpeedKmS <= 0.08
+            && catchVerticalSpeedKmS >= -0.08
+            && catchVerticalSpeedKmS <= 0.06
+          )
+        )
       )
     )
   );
@@ -827,10 +866,25 @@ export function resolveBoosterCatchCommand(input = {}) {
     finalBurnEligible ? 0.82 : 0.56,
     finalBurnEligible ? 0.96 : 0.82,
   );
+  const signedLateralClosingSpeedKmS = catchLateralRangeKm > 1e-6
+    ? -(
+      (catchEastErrorKm * catchEastSpeedKmS)
+        + (catchNorthErrorKm * catchNorthSpeedKmS)
+    ) / catchLateralRangeKm
+    : 0;
+  const landingBurnForwardTranslateNorm = phase === "landing-burn"
+    ? clamp(
+      ((catchLateralRangeKm - 1.0) / 3.5)
+        * clamp(signedLateralClosingSpeedKmS / 0.08, 0, 1),
+      0,
+      1,
+    )
+    : 0;
   const retrogradeBias = clamp(
     (finalBurnEligible ? 0.18 : 0.10)
-      + (0.18 * predictive.lateralDemandNorm),
-    finalBurnEligible ? 0.14 : 0.08,
+      + (0.18 * predictive.lateralDemandNorm)
+      - (0.26 * landingBurnForwardTranslateNorm),
+    phase === "landing-burn" ? 0.04 : (finalBurnEligible ? 0.14 : 0.08),
     finalBurnEligible ? 0.36 : 0.20,
   );
   const finalBurnBrakeNorm = clamp(
@@ -850,6 +904,7 @@ export function resolveBoosterCatchCommand(input = {}) {
     stagedLandingBurnCandidate
     || highCorridorBrakeBurnEligible
     || sustainedFinalBurnEligible
+    || (currentPhase === "catch-burn" && catchLateralRangeKm > 1.2)
   );
   const finalBurnSlowOrAscendingNorm = clamp(
     (catchVerticalSpeedKmS - predictive.desiredVerticalSpeedKmS + 0.015) / 0.12,
@@ -865,6 +920,20 @@ export function resolveBoosterCatchCommand(input = {}) {
   const highCorridorLateralSettledNorm = highCorridorFinalBurn
     ? clamp((0.26 - catchLateralSpeedKmS) / 0.16, 0, 1)
     : 1;
+  const landingBurnVerticalUrgencyNorm = phase === "landing-burn"
+    ? clamp((-catchVerticalSpeedKmS - 0.28) / 0.46, 0, 1)
+    : 1;
+  const landingBurnLateralTranslationNorm = phase === "landing-burn"
+    ? clamp(
+      Math.max(
+        (catchLateralRangeKm - 1.2) / 3.6,
+        catchLateralSpeedKmS / 0.22,
+      )
+        * (1 - (0.78 * landingBurnVerticalUrgencyNorm)),
+      0,
+      1,
+    )
+    : 0;
   const crosslineCorrectionFloor = Number(predictive.crosslineDriftNorm || 0) > 0.10
     && altitudeKm > 3.2
     ? clamp(0.04 + (0.10 * Number(predictive.crosslineDriftNorm || 0)), 0.04, 0.14)
@@ -908,14 +977,17 @@ export function resolveBoosterCatchCommand(input = {}) {
         0.02,
         0.14,
       );
+      const ballisticSettleThrottleNorm = highCorridorBallisticSettleNorm
+        * clamp((1.65 - catchLateralRangeKm) / 0.65, 0, 1);
       throttle = Math.min(
         throttle,
-        (throttle * (1 - highCorridorBallisticSettleNorm))
-          + (ballisticSettleThrottleCap * highCorridorBallisticSettleNorm),
+        (throttle * (1 - ballisticSettleThrottleNorm))
+          + (ballisticSettleThrottleCap * ballisticSettleThrottleNorm),
       );
     }
   }
   if (finalBurnEligible && phase === "landing-burn") {
+    const downwardSpeedKmS = Math.max(0, -catchVerticalSpeedKmS);
     throttle = Math.max(
       throttle,
       clamp(
@@ -925,9 +997,18 @@ export function resolveBoosterCatchCommand(input = {}) {
         0.42,
         0.86,
       ),
+      clamp(
+        0.50 + (0.42 * clamp((downwardSpeedKmS - 0.22) / 0.52, 0, 1)),
+        0.50,
+        0.92,
+      ),
     );
     const verticalSpeedExcessKmS = catchVerticalSpeedKmS - predictive.desiredVerticalSpeedKmS;
-    if (verticalSpeedExcessKmS > 0.015) {
+    if (
+      verticalSpeedExcessKmS > 0.015
+      && catchVerticalSpeedKmS > -0.18
+      && catchLateralRangeKm <= 1.35
+    ) {
       const positiveVerticalNorm = clamp((verticalSpeedExcessKmS - 0.015) / 0.14, 0, 1);
       const lateralBrakeAllowance = 0.18 * finalBurnLateralBrakeNorm;
       throttle = Math.min(
@@ -983,17 +1064,34 @@ export function resolveBoosterCatchCommand(input = {}) {
       35.0,
     ) + closeLateralVelocityBrakeTiltDeg
     : highCorridorTiltLimitDeg;
+  const landingBurnCorridorTiltBoostDeg = phase === "landing-burn"
+    ? 14.0
+      * clamp((catchLateralRangeKm - 1.4) / 3.2, 0, 1)
+      * clamp((altitudeKm - 2.5) / 8.0, 0, 1)
+    : 0;
+  const landingBurnMaxTiltDeg = phase === "landing-burn"
+    ? (
+      altitudeKm > 6
+        ? 52.0
+        : altitudeKm > 3
+          ? 46.0
+          : altitudeKm > 1.5
+            ? 34.0
+            : 24.0
+    )
+    : 42.0;
   const landingBurnTiltLimitClampedDeg = phase === "landing-burn"
     ? clamp(
-      landingBurnTiltLimitDeg,
+      landingBurnTiltLimitDeg + landingBurnCorridorTiltBoostDeg,
       18.0,
-      42.0,
+      landingBurnMaxTiltDeg,
     )
     : highCorridorTiltLimitDeg;
   const highCorridorTerminalTightenNorm = highCorridorFinalBurn
     ? clamp(
       Math.max(
-        (5.0 - altitudeKm) / 3.0,
+        ((5.0 - altitudeKm) / 3.0)
+          * clamp((1.2 - catchLateralRangeKm) / 1.2, 0, 1),
         (2.2 - catchTotalRangeKm) / 2.2,
         ((1.1 - catchLateralRangeKm) / 1.1) * highCorridorLateralSettledNorm,
       ),
@@ -1027,10 +1125,11 @@ export function resolveBoosterCatchCommand(input = {}) {
     throttle: finalBurnEligible ? throttle : 0,
     directionMix: {
       up: finalBurnEligible ? (phase === "landing-burn" ? 0.86 : 1.0) : 0.92,
-      retrograde: finalBurnEligible ? (phase === "landing-burn" ? 0.10 : 0.06) : 0.12,
+      retrograde: finalBurnEligible
+        ? (phase === "landing-burn" ? 0.10 - (0.06 * landingBurnForwardTranslateNorm) : 0.06)
+        : 0.12,
       antiTangent: finalBurnEligible ? (phase === "landing-burn" ? 0.06 : 0.02) : 0.08,
     },
-    captureLike: true,
     terminalUprightCommit: true,
     uprightTiltLimitDeg: finalBurnEligible
       ? finalBurnTiltLimitDeg
@@ -1055,7 +1154,6 @@ export function resolveBoosterCatchCommand(input = {}) {
       enabled: true,
       blend,
       retrogradeBias,
-      translationOnly: false,
       translationAuthority: clamp(
         (
           0.46
@@ -1075,22 +1173,24 @@ export function resolveBoosterCatchCommand(input = {}) {
           ...predictive.localDirection,
           up: clamp(
             Number(predictive.localDirection?.up) || 0,
-	            phase === "landing-burn"
-	              ? 0.72
-	              : (
-		                catchLateralRangeKm > 2.0
-		                  ? 0.36
-	                  : catchLateralRangeKm > 0.45 || catchLateralSpeedKmS > 0.045
-	                    ? 0.56
-	                  : 0.92
-	              ),
-	            phase === "landing-burn" ? 1.10 : (
-		              catchLateralRangeKm > 2.0
-		                ? 0.58
-	                : catchLateralRangeKm > 0.45 || catchLateralSpeedKmS > 0.045
-	                  ? 0.76
-	                : 1.10
-	            ),
+            phase === "landing-burn"
+              ? 0.66 - (0.10 * landingBurnLateralTranslationNorm)
+              : (
+                catchLateralRangeKm > 2.0
+                  ? 0.36
+                  : catchLateralRangeKm > 0.45 || catchLateralSpeedKmS > 0.045
+                    ? 0.56
+                    : 0.92
+              ),
+            phase === "landing-burn"
+              ? 1.02 - (0.30 * landingBurnLateralTranslationNorm)
+              : (
+                catchLateralRangeKm > 2.0
+                  ? 0.58
+                  : catchLateralRangeKm > 0.45 || catchLateralSpeedKmS > 0.045
+                    ? 0.76
+                    : 1.10
+              ),
           ),
         }
         : { ...predictive.localDirection },

@@ -126,8 +126,12 @@ function testMoonFilterStateAndCovariance() {
   assert(Number.isFinite(Number(runtime.moon.filter.covariance?.px)), "filter_state: covariance px missing");
   assert(Number.isFinite(Number(runtime.moon.filter.covariance?.vx)), "filter_state: covariance vx missing");
   assert(
-    String(runtime.moon.filter.lastMeasurement?.source || "") === "simulated_dsn_star_tracker",
+    String(runtime.moon.filter.lastMeasurement?.source || "") === "starship_fused_imu_dsn_star_tracker_optnav",
     `filter_state: unexpected measurement source ${runtime.moon.filter.lastMeasurement?.source}`,
+  );
+  assert(
+    String(runtime.moon.filter.lastMeasurement?.sensorSuite || "").includes("dsn-cadence"),
+    "filter_state: expected fused DSN/star-tracker/optical navigation suite",
   );
   assert(
     Number.isFinite(Number(runtime.moon.filter.lastMeasurement?.positionResidualKm)),

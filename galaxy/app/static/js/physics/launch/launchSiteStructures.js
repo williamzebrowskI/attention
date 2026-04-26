@@ -3,10 +3,19 @@ import {
   STARSHIP_REFERENCE_OFFSET_FROM_BASE_KM,
   STARSHIP_STACK_DIMENSIONS_KM,
 } from "./launchConfig.js";
-import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js?v=20260424b";
+import { BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM } from "./launchSiteCatchGeometry.js?v=20260425c";
 import { surfacePointRelativeKmAtLatLon } from "../surface/earthSurfacePhysics.js";
 
 const LAUNCH_STRUCTURE_SURFACE_CLEARANCE_KM = 0.00012;
+
+export const STARBASE_2026_PUBLIC_LAUNCH_SITE_FEATURES = Object.freeze({
+  profileName: "starbase-2026-public-pad2-compatible",
+  tower: "open-lattice-launch-and-catch-tower-with-carriage-cables-and-lightning-mast",
+  mount: "pad2-cuboid-orbital-launch-mount-with-water-cooled-top-deck-and-flame-trench",
+  catchSystem: "shorter-two-arm-chopstick-carriage-with-catch-rails-bumpers-and-actuators",
+  quickDisconnect: "ship-quick-disconnect-swing-arm-and-umbilical-head",
+  groundSystems: "deluge-tank-farm-pipes-and-pad-apron-cues",
+});
 
 export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   slabRadiusKm: 0.028,
@@ -14,6 +23,14 @@ export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   slabApronRadiusKm: 0.036,
   slabApronHeightKm: 0.001,
   mountDeckRadiusKm: 0.0185,
+  mountBodyWidthKm: 0.034,
+  mountBodyDepthKm: 0.030,
+  mountOpeningRadiusKm: 0.0108,
+  mountServiceBunkerWidthKm: 0.017,
+  mountServiceBunkerDepthKm: 0.012,
+  mountServiceBunkerHeightKm: 0.010,
+  mountServiceBunkerEastKm: 0.027,
+  mountServiceBunkerNorthKm: -0.018,
   mountDeckThicknessKm: 0.004,
   mountDeckHeightKm: 0.020,
   mountRingTubeKm: 0.0015,
@@ -21,15 +38,36 @@ export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   mountPedestalHeightKm: 0.0105,
   mountSkirtRadiusKm: 0.0215,
   mountSkirtHeightKm: 0.0056,
+  waterCooledDeckRadiusKm: 0.0168,
+  waterCooledDeckWidthKm: 0.030,
+  waterCooledDeckDepthKm: 0.026,
+  waterCooledDeckThicknessKm: 0.0012,
+  waterOutletRadiusKm: 0.00042,
+  waterOutletCount: 24,
+  flameBucketRidgeWidthKm: 0.0135,
+  flameBucketRidgeDepthKm: 0.0012,
+  flameBucketRidgeHeightKm: 0.0022,
   flamePlateRadiusKm: 0.013,
   flamePlateHeightKm: 0.0016,
-  flameBucketWidthKm: 0.009,
-  flameBucketDepthKm: 0.009,
-  flameBucketHeightKm: 0.0056,
+  flameBucketWidthKm: 0.012,
+  flameBucketDepthKm: 0.026,
+  flameBucketHeightKm: 0.0072,
+  flameTrenchMouthWidthKm: 0.018,
+  flameTrenchMouthDepthKm: 0.008,
+  flameTrenchMouthHeightKm: 0.0045,
   holdClampHeightKm: 0.009,
   holdClampWidthKm: 0.003,
   holdClampDepthKm: 0.005,
   holdClampOffsetKm: 0.0095,
+  boosterQuickDisconnectCount: 2,
+  boosterQuickDisconnectHoodWidthKm: 0.0048,
+  boosterQuickDisconnectHoodDepthKm: 0.006,
+  boosterQuickDisconnectHoodHeightKm: 0.0048,
+  boosterQuickDisconnectPlateWidthKm: 0.0028,
+  boosterQuickDisconnectPlateHeightKm: 0.0032,
+  boosterQuickDisconnectEastKm: 0.015,
+  boosterQuickDisconnectNorthKm: -0.017,
+  boosterQuickDisconnectSpacingKm: 0.008,
   mountLegCount: 6,
   mountLegThicknessKm: 0.0025,
   mountLegFootRadiusKm: 0.022,
@@ -41,6 +79,8 @@ export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   towerColumnThicknessKm: 0.0018,
   towerBraceThicknessKm: 0.001,
   towerCrossLevelCount: 16,
+  towerDeckLevelCount: 7,
+  towerDeckThicknessKm: 0.00055,
   towerBaseWidthKm: 0.022,
   towerBaseDepthKm: 0.021,
   towerBaseHeightKm: 0.010,
@@ -68,11 +108,11 @@ export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   carriageCapThicknessKm: 0.0018,
   carriageRollerRadiusKm: 0.0011,
   chopstickCatchHeightKm: BOOSTER_CHOPSTICK_CATCH_HEIGHT_ABOVE_BASE_KM,
-  chopstickArmMinLengthKm: 0.010,
-  chopstickArmMaxLengthKm: 0.024,
+  chopstickArmMinLengthKm: 0.0085,
+  chopstickArmMaxLengthKm: 0.021,
   chopstickArmThicknessKm: 0.0019,
   chopstickArmDepthKm: 0.0038,
-  chopstickArmSpacingKm: 0.010,
+  chopstickArmSpacingKm: 0.0114,
   chopstickBoxHeightKm: 0.0056,
   chopstickBoxDepthKm: 0.0044,
   chopstickChordThicknessKm: 0.00088,
@@ -95,6 +135,14 @@ export const LAUNCH_STRUCTURE_PROFILE_KM = Object.freeze({
   quickDisconnectHeadWidthKm: 0.0035,
   quickDisconnectHeadHeightKm: 0.0026,
   quickDisconnectHeadDepthKm: 0.0026,
+  delugeTankCount: 4,
+  delugeTankRadiusKm: 0.0036,
+  delugeTankHeightKm: 0.014,
+  delugeTankOffsetEastKm: -0.042,
+  delugeTankOffsetNorthKm: 0.036,
+  delugeTankSpacingKm: 0.0082,
+  delugePipeRadiusKm: 0.00042,
+  delugePipeHeightKm: 0.0014,
   armRatePerSec: 1.4,
 });
 
@@ -782,6 +830,10 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     Object.entries(LAUNCH_STRUCTURE_PROFILE_KM).map(([key, value]) => (
       key === "mountLegCount"
         || key === "towerCrossLevelCount"
+        || key === "towerDeckLevelCount"
+        || key === "waterOutletCount"
+        || key === "delugeTankCount"
+        || key === "boosterQuickDisconnectCount"
         || key === "armRatePerSec"
         || key === "chopstickTrussPanelCount"
         ? [key, value]
@@ -838,6 +890,25 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     polygonOffsetUnits: 1,
   });
   enforceSolidOpaqueMaterial(THREE, darkPaint);
+  const waterSystemSteel = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0xd8e2ed),
+    roughness: 0.56,
+    metalness: 0.56,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  enforceSolidOpaqueMaterial(THREE, waterSystemSteel);
+  const delugeBlue = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x74bde8),
+    emissive: new THREE.Color(0x10364f),
+    roughness: 0.44,
+    metalness: 0.18,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  enforceSolidOpaqueMaterial(THREE, delugeBlue);
 
   // Keep the launch table as a few solid masses instead of stacked thin plates.
   const slabBaseHeightKm = profile.slabHeightKm + profile.slabApronHeightKm;
@@ -853,34 +924,76 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   slab.position.y = 0.5 * slabBaseHeightKm;
   structureGroup.add(slab);
 
-  const pedestal = new THREE.Mesh(
-    new THREE.CylinderGeometry(
-      profile.mountSkirtRadiusKm,
-      profile.mountSkirtRadiusKm * 1.06,
-      profile.mountDeckHeightKm - slabBaseHeightKm,
-      28,
+  const mountBodyHeightKm = profile.mountDeckHeightKm - slabBaseHeightKm;
+  const mountBody = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.mountBodyWidthKm,
+      mountBodyHeightKm,
+      profile.mountBodyDepthKm,
     ),
     darkSteel,
   );
-  pedestal.position.y = slabBaseHeightKm + (0.5 * (profile.mountDeckHeightKm - slabBaseHeightKm));
-  structureGroup.add(pedestal);
+  mountBody.position.y = slabBaseHeightKm + (0.5 * mountBodyHeightKm);
+  structureGroup.add(mountBody);
 
   const mountDeckBaseY = profile.mountDeckHeightKm - profile.mountDeckThicknessKm;
   const mountTable = new THREE.Mesh(
-    new THREE.CylinderGeometry(
-      profile.mountDeckRadiusKm,
-      profile.mountDeckRadiusKm,
+    new THREE.BoxGeometry(
+      profile.mountBodyWidthKm * 1.04,
       profile.mountDeckThicknessKm,
-      28,
+      profile.mountBodyDepthKm * 1.04,
     ),
     carriageSteel,
   );
   mountTable.position.y = mountDeckBaseY + (0.5 * profile.mountDeckThicknessKm);
   structureGroup.add(mountTable);
 
+  const waterCooledDeck = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.waterCooledDeckWidthKm,
+      profile.waterCooledDeckThicknessKm,
+      profile.waterCooledDeckDepthKm,
+    ),
+    waterSystemSteel,
+  );
+  waterCooledDeck.position.y = mountDeckBaseY + profile.mountDeckThicknessKm + (0.5 * profile.waterCooledDeckThicknessKm);
+  structureGroup.add(waterCooledDeck);
+
+  const engineOpening = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      profile.mountOpeningRadiusKm,
+      profile.mountOpeningRadiusKm,
+      profile.waterCooledDeckThicknessKm * 1.22,
+      40,
+    ),
+    darkPaint,
+  );
+  engineOpening.position.y = waterCooledDeck.position.y + (0.08 * profile.waterCooledDeckThicknessKm);
+  structureGroup.add(engineOpening);
+
+  for (let i = 0; i < profile.waterOutletCount; i += 1) {
+    const angle = (i / profile.waterOutletCount) * Math.PI * 2;
+    const outletRadius = profile.waterCooledDeckRadiusKm * (i % 2 === 0 ? 0.48 : 0.72);
+    const outlet = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        profile.waterOutletRadiusKm,
+        profile.waterOutletRadiusKm,
+        profile.waterCooledDeckThicknessKm * 1.35,
+        8,
+      ),
+      delugeBlue,
+    );
+    outlet.position.set(
+      Math.cos(angle) * outletRadius,
+      waterCooledDeck.position.y + (0.52 * profile.waterCooledDeckThicknessKm),
+      Math.sin(angle) * outletRadius,
+    );
+    structureGroup.add(outlet);
+  }
+
   const flameTrench = new THREE.Mesh(
     new THREE.BoxGeometry(
-      profile.flameBucketWidthKm * 1.25,
+      profile.flameBucketWidthKm * 1.55,
       profile.flameBucketHeightKm * 1.15,
       profile.flameBucketDepthKm * 1.25,
     ),
@@ -888,6 +1001,65 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   );
   flameTrench.position.y = slabBaseHeightKm + (0.42 * profile.flameBucketHeightKm);
   structureGroup.add(flameTrench);
+
+  const flameBucketRidge = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.flameBucketRidgeWidthKm,
+      profile.flameBucketRidgeHeightKm,
+      profile.flameBucketRidgeDepthKm,
+    ),
+    waterSystemSteel,
+  );
+  flameBucketRidge.position.y = slabBaseHeightKm + (0.92 * profile.flameBucketHeightKm);
+  structureGroup.add(flameBucketRidge);
+
+  for (const zSign of [-1, 1]) {
+    const flameBucketSlope = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.flameBucketWidthKm * 1.35,
+        profile.flameBucketRidgeHeightKm * 0.62,
+        profile.flameBucketDepthKm * 0.54,
+      ),
+      darkPaint,
+    );
+    flameBucketSlope.position.set(
+      0,
+      slabBaseHeightKm + (0.7 * profile.flameBucketHeightKm),
+      zSign * (0.29 * profile.flameBucketDepthKm),
+    );
+    flameBucketSlope.rotation.x = zSign * 0.24;
+    structureGroup.add(flameBucketSlope);
+  }
+
+  const flameTrenchMouth = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.flameTrenchMouthWidthKm,
+      profile.flameTrenchMouthHeightKm,
+      profile.flameTrenchMouthDepthKm,
+    ),
+    darkPaint,
+  );
+  flameTrenchMouth.position.set(
+    0,
+    slabBaseHeightKm + (0.25 * profile.flameTrenchMouthHeightKm),
+    -0.5 * (profile.flameBucketDepthKm + profile.flameTrenchMouthDepthKm),
+  );
+  structureGroup.add(flameTrenchMouth);
+
+  const serviceBunker = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      profile.mountServiceBunkerWidthKm,
+      profile.mountServiceBunkerHeightKm,
+      profile.mountServiceBunkerDepthKm,
+    ),
+    darkSteel,
+  );
+  serviceBunker.position.set(
+    profile.mountServiceBunkerEastKm,
+    profile.slabHeightKm + (0.5 * profile.mountServiceBunkerHeightKm),
+    profile.mountServiceBunkerNorthKm,
+  );
+  structureGroup.add(serviceBunker);
 
   for (let i = 0; i < profile.mountLegCount; i += 1) {
     const angle = (i / profile.mountLegCount) * Math.PI * 2;
@@ -930,6 +1102,95 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
     structureGroup.add(clampMesh);
   }
 
+  const boosterQuickDisconnectHoods = new THREE.Group();
+  boosterQuickDisconnectHoods.position.set(
+    profile.boosterQuickDisconnectEastKm,
+    profile.mountDeckHeightKm + (0.5 * profile.boosterQuickDisconnectHoodHeightKm),
+    profile.boosterQuickDisconnectNorthKm,
+  );
+  structureGroup.add(boosterQuickDisconnectHoods);
+  for (let i = 0; i < profile.boosterQuickDisconnectCount; i += 1) {
+    const zOffset = (i - ((profile.boosterQuickDisconnectCount - 1) * 0.5))
+      * profile.boosterQuickDisconnectSpacingKm;
+    const hood = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.boosterQuickDisconnectHoodWidthKm,
+        profile.boosterQuickDisconnectHoodHeightKm,
+        profile.boosterQuickDisconnectHoodDepthKm,
+      ),
+      darkSteel,
+    );
+    hood.position.z = zOffset;
+    boosterQuickDisconnectHoods.add(hood);
+
+    const qdPlate = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.boosterQuickDisconnectPlateWidthKm,
+        profile.boosterQuickDisconnectPlateHeightKm,
+        profile.boosterQuickDisconnectHoodDepthKm * 0.24,
+      ),
+      carriageSteel,
+    );
+    qdPlate.position.set(
+      -0.52 * profile.boosterQuickDisconnectHoodWidthKm,
+      0,
+      zOffset - (0.5 * profile.boosterQuickDisconnectHoodDepthKm),
+    );
+    boosterQuickDisconnectHoods.add(qdPlate);
+  }
+
+  const delugeTankGroup = new THREE.Group();
+  delugeTankGroup.position.set(
+    profile.delugeTankOffsetEastKm,
+    0,
+    profile.delugeTankOffsetNorthKm,
+  );
+  structureGroup.add(delugeTankGroup);
+  for (let i = 0; i < profile.delugeTankCount; i += 1) {
+    const tank = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        profile.delugeTankRadiusKm,
+        profile.delugeTankRadiusKm,
+        profile.delugeTankHeightKm,
+        20,
+      ),
+      waterSystemSteel,
+    );
+    tank.position.set(
+      (i - ((profile.delugeTankCount - 1) * 0.5)) * profile.delugeTankSpacingKm,
+      0.5 * profile.delugeTankHeightKm,
+      0,
+    );
+    delugeTankGroup.add(tank);
+
+    const tankCap = new THREE.Mesh(
+      new THREE.SphereGeometry(profile.delugeTankRadiusKm, 20, 10, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      waterSystemSteel,
+    );
+    tankCap.position.copy(tank.position);
+    tankCap.position.y += 0.5 * profile.delugeTankHeightKm;
+    delugeTankGroup.add(tankCap);
+  }
+
+  const delugePipeStart = new THREE.Vector3(
+    profile.delugeTankOffsetEastKm,
+    profile.delugePipeHeightKm,
+    profile.delugeTankOffsetNorthKm,
+  );
+  const delugePipeEnd = new THREE.Vector3(
+    -profile.waterCooledDeckRadiusKm * 0.72,
+    profile.delugePipeHeightKm,
+    profile.waterCooledDeckRadiusKm * 0.35,
+  );
+  addStrutBetweenPoints(
+    THREE,
+    structureGroup,
+    delugePipeStart,
+    delugePipeEnd,
+    profile.delugePipeRadiusKm * 2,
+    waterSystemSteel,
+  );
+
   const towerGroup = new THREE.Group();
   towerGroup.position.set(
     radius + profile.towerOffsetKm + (0.5 * profile.towerWidthKm),
@@ -952,20 +1213,42 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   );
   towerGroup.add(towerBase);
 
-  const towerCore = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      profile.towerWidthKm,
-      profile.towerHeightKm - profile.towerBaseHeightKm,
-      profile.towerDepthKm,
-    ),
-    towerSteel,
-  );
-  towerCore.position.set(
-    0,
-    0.5 * profile.towerBaseHeightKm,
-    0,
-  );
-  towerGroup.add(towerCore);
+  for (const x of [-0.25, 0.25]) {
+    const towerBaseAccessOpening = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.towerBaseWidthKm * 0.18,
+        profile.towerBaseHeightKm * 0.46,
+        profile.towerBraceThicknessKm * 0.55,
+      ),
+      darkPaint,
+    );
+    towerBaseAccessOpening.position.set(
+      x * profile.towerBaseWidthKm,
+      towerBase.position.y - (0.08 * profile.towerBaseHeightKm),
+      -0.5 * profile.towerBaseDepthKm - (0.06 * profile.towerBraceThicknessKm),
+    );
+    towerGroup.add(towerBaseAccessOpening);
+  }
+
+  createTowerLattice(THREE, towerGroup, profile, darkSteel, towerSteel);
+
+  for (let i = 1; i <= profile.towerDeckLevelCount; i += 1) {
+    const t = i / (profile.towerDeckLevelCount + 1);
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        profile.towerWidthKm * 0.95,
+        profile.towerDeckThicknessKm,
+        profile.towerDepthKm * 1.04,
+      ),
+      darkSteel,
+    );
+    deck.position.set(
+      0,
+      -0.5 * profile.towerHeightKm + (profile.towerHeightKm * t),
+      0,
+    );
+    towerGroup.add(deck);
+  }
 
   const serviceSpine = new THREE.Mesh(
     new THREE.BoxGeometry(
@@ -1212,6 +1495,7 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
   structureGroup.add(quickDisconnectUmbilical);
 
   root.userData.launchStructureSource = "spacex_style_launch_tower_chopsticks";
+  root.userData.publicProfile = STARBASE_2026_PUBLIC_LAUNCH_SITE_FEATURES.profileName;
   root.traverse((node) => {
     if (node?.isMesh) {
       node.frustumCulled = false;
@@ -1226,6 +1510,8 @@ export function createLaunchSiteStructureVisual(THREE, distanceScale) {
       towerSteel,
       carriageSteel,
       darkPaint,
+      waterSystemSteel,
+      delugeBlue,
       ...chopstickAssemblies.map((assembly) => assembly.catchPadMaterial).filter(Boolean),
     ],
     state: {

@@ -19,7 +19,7 @@ import {
   STANDARD_GRAVITY_M_S2,
   resolveConfiguredEngineCounts,
   resolveConfiguredThrustBoundsN,
-} from "./launchConfig.js?v=20260423h";
+} from "./launchConfig.js?v=20260426a";
 import {
   computeEngineClusterBodyTorqueNm,
   createSuperHeavyEngineDescriptors,
@@ -28,28 +28,33 @@ import {
   starshipStage2EngineActivationOrder,
   superHeavyEngineActivationOrder,
 } from "./launchEngineLayout.js";
-import { BOOSTER_THRUSTER_LAYOUT } from "./thrusterLayout.js";
+import {
+  BOOSTER_THRUSTER_LAYOUT,
+  STARSHIP_THRUSTER_LAYOUT,
+} from "./thrusterLayout.js";
 import {
   createEngineCombustionClusterState,
   hydrateEngineCombustionClusterState,
   transferEngineCombustionClusterState,
   updateEngineCombustionClusterState,
 } from "./launchCombustionModel.js";
-import { computeBoosterRecoveryCommand } from "./boosterRecovery.js?v=20260425a";
-import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js?v=20260425a";
+import {
+  computeBoosterRecoveryCommand,
+  resolveBoosterRecoveryHardwareState,
+} from "./boosterRecovery.js?v=20260425f";
+import { shouldFinalizeBoosterCatch } from "./boosterCatchGuidance.js?v=20260425c";
 import {
   BOOSTER_CATCH_BASE_CLEARANCE_KM,
   BOOSTER_CATCH_GEOMETRY_KM,
   computeBoosterCatchPinHeightErrorKm,
-  computeBoosterCatchConstraintStep,
   computeBoosterCatchRelativeState,
   computeLaunchSiteCatchFrame,
-} from "./launchSiteCatchGeometry.js?v=20260424g";
+} from "./launchSiteCatchGeometry.js?v=20260425c";
 import {
   contactImpulseDirection,
   queryBoosterCatchPointContacts,
   queryLaunchSiteObjectContacts,
-} from "./launchSitePhysicsObjects.js?v=20260424h";
+} from "./launchSitePhysicsObjects.js?v=20260425h";
 import {
   DEFAULT_LAUNCH_MISSION_ID,
   LAUNCH_MISSION_IDS,
@@ -91,7 +96,7 @@ import {
   orbitInsertionWithinTolerance as orbitInsertionWithinToleranceModel,
   orbitalStateFromRelative as orbitalStateFromRelativeModel,
   throttleForState as throttleForStateModel,
-} from "./launchGuidance.js?v=20260423h";
+} from "./launchGuidance.js?v=20260425c";
 import {
   computeMissionAutopilotCommand as computeMissionAutopilotCommandModel,
   defaultMissionPhaseForProfileId as defaultMissionPhaseForProfileIdModel,
@@ -211,6 +216,11 @@ const HOTSTAGE_PLUME_IMPINGEMENT_FORCE_RATIO = 0.028;
 const HOTSTAGE_INTERSTAGE_CONTACT_BAND_KM = 0.0012;
 const HOTSTAGE_INTERSTAGE_CONTACT_RESTITUTION = 0.18;
 const MISSION_PHASE_ADVISORY_HOLD_SEC = 0.35;
+const STARSHIP_GNC_NAV_SOURCE = "starship-gnc-ekf-sim";
+const STARSHIP_RCS_PROPELLANT_CAPACITY_KG = Math.max(
+  0,
+  Number(LAUNCH_RCS_CONFIG.starshipPropellantCapacityKg) || 18_000,
+);
 
 function canonicalMoonMissionPhase(phase) {
   return normalizeMissionPhase(phase, LAUNCH_MISSION_IDS.MOON_ORBIT_RETURN);
@@ -315,8 +325,7 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(fallbackNumeric) ? fallbackNumeric : 0;
 }
 
-const BOOSTER_FULL_6DOF_RECOVERY_ENABLED = true;
-const BOOSTER_KINEMATIC_CATCH_ASSIST_ENABLED = false;
+const STAGE_FULL_6DOF_ASCENT_ENABLED = true;
 
 function composeCatchFramePosition(catchFrame, supportOffsetKm = null) {
   if (!catchFrame?.centerPosition) {
@@ -419,6 +428,28 @@ function createAttachedStackJointState() {
     shipReferenceActive: false,
     shipMassKg: 0,
     boosterMassKg: 0,
+  };
+}
+
+function createStarshipStateGuardState() {
+  return {
+    cleanFreeFlightActive: false,
+    cleanFreeFlightElapsedSec: null,
+    cleanFreeFlightReason: "",
+    directPositionCorrectionCount: 0,
+    directVelocityCorrectionCount: 0,
+    blockedPositionCorrectionCount: 0,
+    blockedVelocityCorrectionCount: 0,
+    postCleanFreeFlightPositionCorrectionCount: 0,
+    postCleanFreeFlightVelocityCorrectionCount: 0,
+    maxPostCleanFreeFlightPositionCorrectionKm: 0,
+    maxPostCleanFreeFlightVelocityCorrectionKmS: 0,
+    lastCorrectionReason: "",
+    lastCorrectionKind: "",
+    lastCorrectionElapsedSec: null,
+    lastBlockedReason: "",
+    lastBlockedKind: "",
+    lastBlockedElapsedSec: null,
   };
 }
 
@@ -1097,65 +1128,411 @@ function rcsAngularJetSelection(controlDemandBody = { x: 0, y: 0, z: 0 }) {
   return jets;
 }
 
-function computeRcsAssist({
-  stageIndex,
+function createStarshipNavigationState() {
+  return {
+    source: STARSHIP_GNC_NAV_SOURCE,
+    sensorNoiseActive: true,
+    positionSigmaKm: Math.max(0, Number(LAUNCH_RCS_CONFIG.starshipSensorPositionSigmaKm) || 0.012),
+    velocitySigmaKmS: Math.max(0, Number(LAUNCH_RCS_CONFIG.starshipSensorVelocitySigmaKmS) || 0.000025),
+    attitudeSigmaDeg: Math.max(0, Number(LAUNCH_RCS_CONFIG.starshipSensorAttitudeSigmaDeg) || 0.035),
+    updateHz: Math.max(1, Number(LAUNCH_RCS_CONFIG.starshipSensorUpdateHz) || 8),
+    positionErrorKm: { x: 0, y: 0, z: 0 },
+    velocityErrorKmS: { x: 0, y: 0, z: 0 },
+    attitudeErrorDeg: { x: 0, y: 0, z: 0 },
+    estimatedRelativePositionKm: null,
+    estimatedRelativeVelocityKmS: null,
+    estimatedBodyAxisDirectionKm: null,
+    lastUpdateSec: 0,
+  };
+}
+
+function resetStarshipNavigationState(state = null) {
+  return {
+    ...createStarshipNavigationState(),
+    ...(state && typeof state === "object" ? {
+      source: STARSHIP_GNC_NAV_SOURCE,
+      sensorNoiseActive: true,
+      positionSigmaKm: Math.max(0, Number(state.positionSigmaKm) || Number(LAUNCH_RCS_CONFIG.starshipSensorPositionSigmaKm) || 0.012),
+      velocitySigmaKmS: Math.max(0, Number(state.velocitySigmaKmS) || Number(LAUNCH_RCS_CONFIG.starshipSensorVelocitySigmaKmS) || 0.000025),
+      attitudeSigmaDeg: Math.max(0, Number(state.attitudeSigmaDeg) || Number(LAUNCH_RCS_CONFIG.starshipSensorAttitudeSigmaDeg) || 0.035),
+      updateHz: Math.max(1, Number(state.updateHz) || Number(LAUNCH_RCS_CONFIG.starshipSensorUpdateHz) || 8),
+    } : {}),
+  };
+}
+
+function deterministicNoiseUnit(seed = 1, index = 0, salt = 0) {
+  const raw = Math.sin(
+    ((Number(seed) || 1) * 12.9898)
+    + ((Number(index) || 0) * 78.233)
+    + ((Number(salt) || 0) * 37.719),
+  ) * 43758.5453123;
+  return ((raw - Math.floor(raw)) * 2) - 1;
+}
+
+function deterministicSmoothNoise(seed = 1, timeSec = 0, salt = 0, updateHz = 8) {
+  const hz = Math.max(1, Number(updateHz) || 8);
+  const sample = Math.max(0, Number(timeSec) || 0) * hz;
+  const sampleIndex = Math.floor(sample);
+  const t = sample - sampleIndex;
+  const smoothT = t * t * (3 - (2 * t));
+  const a = deterministicNoiseUnit(seed, sampleIndex, salt);
+  const b = deterministicNoiseUnit(seed, sampleIndex + 1, salt);
+  return a + ((b - a) * smoothT);
+}
+
+function updateStarshipNavigationState(state = null, {
+  relPos,
+  relVel,
+  bodyAxisDirection,
+  seed = 1,
+  elapsedSeconds = 0,
+} = {}) {
+  const nav = state && typeof state === "object"
+    ? state
+    : createStarshipNavigationState();
+  nav.source = STARSHIP_GNC_NAV_SOURCE;
+  nav.sensorNoiseActive = true;
+  nav.positionSigmaKm = Math.max(0, Number(nav.positionSigmaKm) || Number(LAUNCH_RCS_CONFIG.starshipSensorPositionSigmaKm) || 0.012);
+  nav.velocitySigmaKmS = Math.max(0, Number(nav.velocitySigmaKmS) || Number(LAUNCH_RCS_CONFIG.starshipSensorVelocitySigmaKmS) || 0.000025);
+  nav.attitudeSigmaDeg = Math.max(0, Number(nav.attitudeSigmaDeg) || Number(LAUNCH_RCS_CONFIG.starshipSensorAttitudeSigmaDeg) || 0.035);
+  nav.updateHz = Math.max(1, Number(nav.updateHz) || Number(LAUNCH_RCS_CONFIG.starshipSensorUpdateHz) || 8);
+  const timeSec = Math.max(0, Number(elapsedSeconds) || 0);
+  nav.positionErrorKm = {
+    x: deterministicSmoothNoise(seed, timeSec, 101, nav.updateHz) * nav.positionSigmaKm,
+    y: deterministicSmoothNoise(seed, timeSec, 102, nav.updateHz) * nav.positionSigmaKm,
+    z: deterministicSmoothNoise(seed, timeSec, 103, nav.updateHz) * nav.positionSigmaKm,
+  };
+  nav.velocityErrorKmS = {
+    x: deterministicSmoothNoise(seed, timeSec, 201, nav.updateHz) * nav.velocitySigmaKmS,
+    y: deterministicSmoothNoise(seed, timeSec, 202, nav.updateHz) * nav.velocitySigmaKmS,
+    z: deterministicSmoothNoise(seed, timeSec, 203, nav.updateHz) * nav.velocitySigmaKmS,
+  };
+  nav.attitudeErrorDeg = {
+    x: deterministicSmoothNoise(seed, timeSec, 301, nav.updateHz) * nav.attitudeSigmaDeg,
+    y: deterministicSmoothNoise(seed, timeSec, 302, nav.updateHz) * nav.attitudeSigmaDeg,
+    z: deterministicSmoothNoise(seed, timeSec, 303, nav.updateHz) * nav.attitudeSigmaDeg,
+  };
+  nav.estimatedRelativePositionKm = add(relPos || { x: 0, y: 0, z: 0 }, nav.positionErrorKm);
+  nav.estimatedRelativeVelocityKmS = add(relVel || { x: 0, y: 0, z: 0 }, nav.velocityErrorKmS);
+  const axisNoiseRad = rad(Math.max(
+    Math.abs(nav.attitudeErrorDeg.x),
+    Math.abs(nav.attitudeErrorDeg.y),
+    Math.abs(nav.attitudeErrorDeg.z),
+  ));
+  const rawBodyAxis = normalize(bodyAxisDirection || { x: 0, y: 0, z: 1 }, { x: 0, y: 0, z: 1 });
+  nav.estimatedBodyAxisDirectionKm = normalize(
+    add(rawBodyAxis, scale(normalize(nav.positionErrorKm, { x: 1, y: 0, z: 0 }), axisNoiseRad)),
+    rawBodyAxis,
+  );
+  nav.lastUpdateSec = timeSec;
+  return nav;
+}
+
+function ensureStarshipRcsRuntimeState(runtimeState = null) {
+  if (!runtimeState || typeof runtimeState !== "object") {
+    return;
+  }
+  if (!(Number(runtimeState.stageRcsInitialPropellantKg) > 0)) {
+    runtimeState.stageRcsInitialPropellantKg = STARSHIP_RCS_PROPELLANT_CAPACITY_KG;
+    runtimeState.stageRcsPropellantKg = STARSHIP_RCS_PROPELLANT_CAPACITY_KG;
+  } else {
+    runtimeState.stageRcsPropellantKg = clamp(
+      Number(runtimeState.stageRcsPropellantKg) || 0,
+      0,
+      runtimeState.stageRcsInitialPropellantKg,
+    );
+  }
+  runtimeState.stageNavigation = updateStarshipNavigationState(
+    runtimeState.stageNavigation || createStarshipNavigationState(),
+    {
+      relPos: { x: 0, y: 0, z: 0 },
+      relVel: { x: 0, y: 0, z: 0 },
+      bodyAxisDirection: runtimeState.stageActuator?.directionActual || { x: 0, y: 0, z: 1 },
+      seed: runtimeState.windSeed || 1,
+      elapsedSeconds: runtimeState.elapsedSeconds || 0,
+    },
+  );
+  runtimeState.stageRcsCombustion = runtimeState.stageRcsCombustion || createStage2RcsCombustionClusterState();
+}
+
+function resetStarshipRcsRuntimeState(runtimeState = null) {
+  if (!runtimeState || typeof runtimeState !== "object") {
+    return;
+  }
+  runtimeState.stageRcsPropellantKg = STARSHIP_RCS_PROPELLANT_CAPACITY_KG;
+  runtimeState.stageRcsInitialPropellantKg = STARSHIP_RCS_PROPELLANT_CAPACITY_KG;
+  runtimeState.stageNavigation = createStarshipNavigationState();
+  runtimeState.stageRcsCombustion = createStage2RcsCombustionClusterState();
+}
+
+function zeroStarshipRcsControlState(extra = {}) {
+  return {
+    accelerationKmS2: { x: 0, y: 0, z: 0 },
+    active: false,
+    errorDeg: 0,
+    authority: 0,
+    linearAuthority: 0,
+    angularAuthority: 0,
+    jets: [],
+    commandedThrusterIds: [],
+    commandedThrusterIndices: [],
+    activeThrusterIds: [],
+    activeThrusterIndices: [],
+    thrustN: 0,
+    burnKg: 0,
+    burnRateKgS: 0,
+    propellantKg: 0,
+    initialPropellantKg: 0,
+    fuelFraction: null,
+    bodyForceN: { x: 0, y: 0, z: 0 },
+    bodyTorqueNm: { x: 0, y: 0, z: 0 },
+    angularAccelerationRadS2: 0,
+    dampingPerS: 0,
+    thrusterThrustNByIndex: [],
+    chamberPressurePaByIndex: [],
+    exhaustTemperatureKByIndex: [],
+    combustionEfficiencyByIndex: [],
+    turbopumpNormByIndex: [],
+    avgChamberPressurePa: 0,
+    maxChamberPressurePa: 0,
+    avgCombustionEfficiency: 0,
+    avgTurbopumpNorm: 0,
+    maxExhaustTemperatureK: 0,
+    navSource: STARSHIP_GNC_NAV_SOURCE,
+    navSensorNoiseActive: true,
+    navPositionSigmaKm: Number(LAUNCH_RCS_CONFIG.starshipSensorPositionSigmaKm) || 0.012,
+    navVelocitySigmaKmS: Number(LAUNCH_RCS_CONFIG.starshipSensorVelocitySigmaKmS) || 0.000025,
+    navAttitudeSigmaDeg: Number(LAUNCH_RCS_CONFIG.starshipSensorAttitudeSigmaDeg) || 0.035,
+    ...extra,
+  };
+}
+
+function computeStarshipRcsControlState({
+  runtimeState,
+  stageIndex = 0,
+  bodyKind = "stage1",
   desiredDirection,
+  relPos,
   relVel,
   up,
+  attitudeState = null,
+  controlErrorsBody,
+  omegaBodyRadS = null,
   controlAuthorityScale = 1,
+  aeroAuthority = 0,
+  massKg = 0,
+  massModel = null,
+  pressurePa = 0,
+  dtSeconds = 0,
 }) {
-  if (!LAUNCH_RCS_CONFIG.enabled || stageIndex < LAUNCH_RCS_CONFIG.minStageIndex) {
-    return {
-      accelerationKmS2: { x: 0, y: 0, z: 0 },
-      active: false,
-      errorDeg: 0,
-      authority: 0,
-      jets: [],
-    };
+  if (
+    !LAUNCH_RCS_CONFIG.enabled
+    || stageIndex < LAUNCH_RCS_CONFIG.minStageIndex
+    || bodyKind !== "stage2"
+    || !runtimeState
+  ) {
+    return zeroStarshipRcsControlState();
   }
-
-  const speedKmS = length(relVel);
+  ensureStarshipRcsRuntimeState(runtimeState);
+  const safeMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(massKg) || MIN_ROCKET_MASS_KG);
+  const dt = Math.max(0, Number(dtSeconds) || 0);
+  const bodyAxis = boosterBodyAxisWorld(attitudeState);
+  runtimeState.stageNavigation = updateStarshipNavigationState(
+    runtimeState.stageNavigation,
+    {
+      relPos,
+      relVel,
+      bodyAxisDirection: bodyAxis,
+      seed: (Number(runtimeState.windSeed) || 1) + 701,
+      elapsedSeconds: Number(runtimeState.elapsedSeconds) || 0,
+    },
+  );
+  const nav = runtimeState.stageNavigation;
+  const observedRelVel = nav.estimatedRelativeVelocityKmS || relVel || { x: 0, y: 0, z: 0 };
+  const speedKmS = length(observedRelVel);
   const forward = speedKmS > LAUNCH_RCS_CONFIG.minReferenceSpeedKmS
-    ? normalize(relVel, desiredDirection || up || { x: 0, y: 1, z: 0 })
-    : normalize(desiredDirection || up || { x: 0, y: 1, z: 0 });
+    ? normalize(observedRelVel, bodyAxis)
+    : normalize(nav.estimatedBodyAxisDirectionKm || bodyAxis, desiredDirection || up || bodyAxis);
   const desired = normalize(desiredDirection || forward, forward);
   const errorRad = angleBetweenRadians(forward, desired);
   const errorDeg = degrees(errorRad);
-  const deadbandDeg = LAUNCH_RCS_CONFIG.deadbandDeg;
-  const fullAuthorityDeg = Math.max(deadbandDeg + 0.1, LAUNCH_RCS_CONFIG.fullAuthorityDeg);
-  const authority = clamp((errorDeg - deadbandDeg) / (fullAuthorityDeg - deadbandDeg), 0, 1);
-  if (!(authority > 0)) {
-    return {
-      accelerationKmS2: { x: 0, y: 0, z: 0 },
-      active: false,
-      errorDeg,
-      authority: 0,
-      jets: [],
-    };
-  }
+  const deadbandDeg = Number(LAUNCH_RCS_CONFIG.deadbandDeg) || 0.8;
+  const fullAuthorityDeg = Math.max(deadbandDeg + 0.1, Number(LAUNCH_RCS_CONFIG.fullAuthorityDeg) || 10);
+  const aeroSuppression = Math.max(0.22, 1 - (0.45 * clamp(Number(aeroAuthority) || 0, 0, 1)));
+  const authorityScale = clamp(Number(controlAuthorityScale) || 1, 0.35, 1.4);
+  const linearAuthority = clamp(
+    ((errorDeg - deadbandDeg) / (fullAuthorityDeg - deadbandDeg)) * authorityScale * aeroSuppression,
+    0,
+    1,
+  );
+  const lateralCorrectionWorld = subtract(desired, scale(forward, dot(desired, forward)));
+  const linearDemandBody = unitOrNull(lateralCorrectionWorld)
+    ? rotateWorldVectorToBoosterBody(lateralCorrectionWorld, attitudeState)
+    : { x: 0, y: 0, z: 0 };
+  const linearDemandUnit = unitOrNull(linearDemandBody);
 
-  const lateralCorrection = subtract(desired, scale(forward, dot(desired, forward)));
-  const correctionDir = unitOrNull(lateralCorrection);
-  if (!correctionDir) {
+  const navErrorBodyRad = {
+    x: rad(Number(nav.attitudeErrorDeg?.x) || 0),
+    y: rad(Number(nav.attitudeErrorDeg?.y) || 0),
+    z: rad(Number(nav.attitudeErrorDeg?.z) || 0),
+  };
+  const sensedErrorsBody = {
+    pitchErrorRad: finiteNumber(controlErrorsBody?.pitchErrorRad, 0) + navErrorBodyRad.x,
+    rollErrorRad: finiteNumber(controlErrorsBody?.rollErrorRad, 0) + navErrorBodyRad.y,
+    yawErrorRad: finiteNumber(controlErrorsBody?.yawErrorRad, 0) + navErrorBodyRad.z,
+  };
+  const angularErrorRad = Math.hypot(
+    sensedErrorsBody.pitchErrorRad,
+    sensedErrorsBody.rollErrorRad,
+    sensedErrorsBody.yawErrorRad,
+  );
+  const angularErrorDeg = degrees(angularErrorRad);
+  const angularAuthority = clamp(
+    ((angularErrorDeg - deadbandDeg) / (fullAuthorityDeg - deadbandDeg))
+      * authorityScale
+      * aeroSuppression,
+    0,
+    1,
+  );
+  const omegaBody = {
+    x: finiteNumber(omegaBodyRadS?.x, 0),
+    y: finiteNumber(omegaBodyRadS?.y, 0),
+    z: finiteNumber(omegaBodyRadS?.z, 0),
+  };
+  const angularDemandBody = clampVectorMagnitude({
+    x: (1.65 * sensedErrorsBody.pitchErrorRad) - (0.26 * omegaBody.x),
+    y: (1.15 * sensedErrorsBody.rollErrorRad) - (0.22 * omegaBody.y),
+    z: (1.65 * sensedErrorsBody.yawErrorRad) - (0.26 * omegaBody.z),
+  }, Math.max(0.12, rad(22)));
+  const angularDemandUnit = unitOrNull(angularDemandBody);
+  const descriptors = starshipRcsThrusterDescriptors();
+  const scoredThrusters = descriptors.map((descriptor, index) => {
+    const directionBody = normalize(descriptor.directionBody, { x: 0, y: 1, z: 0 });
+    const positionBodyM = descriptor.positionBodyM || descriptor;
+    const torquePerNewton = cross(positionBodyM, directionBody);
+    const torqueUnit = unitOrNull(torquePerNewton);
+    const linearScore = linearDemandUnit ? dot(directionBody, linearDemandUnit) : 0;
+    const angularScore = angularDemandUnit && torqueUnit ? dot(torqueUnit, angularDemandUnit) : 0;
+    const score = (0.74 * linearAuthority * linearScore) + (1.0 * angularAuthority * angularScore);
     return {
-      accelerationKmS2: { x: 0, y: 0, z: 0 },
-      active: false,
-      errorDeg,
-      authority: 0,
-      jets: [],
+      index,
+      id: descriptor.id,
+      score,
+      throttle: clamp(score * 1.18, 0, 1),
     };
+  }).filter((entry) => entry.score > 0.06 && entry.throttle > 0.02);
+  const commandedThrusterIndices = scoredThrusters.map((entry) => entry.index);
+  const commandedThrusterIds = scoredThrusters.map((entry) => entry.id);
+  const maxCommandedThrottle = scoredThrusters.reduce(
+    (maxThrottle, entry) => Math.max(maxThrottle, entry.throttle),
+    0,
+  );
+  const propellantBeforeKg = Math.max(0, Number(runtimeState.stageRcsPropellantKg) || 0);
+  const canFire = propellantBeforeKg > 1e-6 && (linearAuthority > 1e-4 || angularAuthority > 1e-4);
+  runtimeState.stageRcsCombustion = updateEngineCombustionClusterState(
+    runtimeState.stageRcsCombustion || createStage2RcsCombustionClusterState(),
+    {
+      config: starshipRcsCombustionConfig(),
+      dtSeconds: dt,
+      pressurePa,
+      throttleCommand: canFire ? maxCommandedThrottle : 0,
+      desiredEngineIndices: canFire ? commandedThrusterIndices : [],
+    },
+  ) || createStage2RcsCombustionClusterState();
+  const rcsCombustion = runtimeState.stageRcsCombustion;
+  const requestedBurnKg = Math.max(0, Number(rcsCombustion.burnRateKgS) || 0) * dt;
+  const burnKg = Math.min(propellantBeforeKg, requestedBurnKg);
+  const propellantScale = requestedBurnKg > 1e-9
+    ? clamp(burnKg / requestedBurnKg, 0, 1)
+    : (propellantBeforeKg > 0 ? 1 : 0);
+  runtimeState.stageRcsPropellantKg = Math.max(0, propellantBeforeKg - burnKg);
+  const activeThrusterIndices = Array.isArray(rcsCombustion.activeIndices)
+    ? [...rcsCombustion.activeIndices]
+    : [];
+  let bodyForceN = { x: 0, y: 0, z: 0 };
+  let bodyTorqueNm = { x: 0, y: 0, z: 0 };
+  for (const index of activeThrusterIndices) {
+    const descriptor = descriptors[index];
+    if (!descriptor) {
+      continue;
+    }
+    const thrustN = Math.max(0, Number(rcsCombustion.engineThrustNByIndex?.[index]) || 0) * propellantScale;
+    if (!(thrustN > 0)) {
+      continue;
+    }
+    const directionBody = normalize(descriptor.directionBody, { x: 0, y: 1, z: 0 });
+    const forceBodyN = scale(directionBody, thrustN);
+    bodyForceN = add(bodyForceN, forceBodyN);
+    bodyTorqueNm = add(bodyTorqueNm, cross(descriptor.positionBodyM || descriptor, forceBodyN));
   }
-
-  const accelerationMagnitude = LAUNCH_RCS_CONFIG.maxAccelerationKmS2
-    * authority
-    * clamp(Number(controlAuthorityScale) || 1, 0.4, 1.4);
-  const accelerationKmS2 = scale(correctionDir, accelerationMagnitude);
+  const accelerationKmS2 = scale(
+    rotateVectorByQuaternion(bodyForceN, attitudeState?.orientation || quaternionIdentity()),
+    (1 / safeMassKg) / 1000,
+  );
+  const inertia = stagePrincipalInertiaKgM2(bodyKind, safeMassKg, massModel?.inertiaNormalized);
+  const angularAccelerationRadS2 = Math.hypot(
+    bodyTorqueNm.x / Math.max(inertia.x, 1e-6),
+    bodyTorqueNm.y / Math.max(inertia.y, 1e-6),
+    bodyTorqueNm.z / Math.max(inertia.z, 1e-6),
+  );
+  const thrustN = length(bodyForceN);
+  const activeThrusterIds = activeThrusterIndices
+    .map((index) => descriptors[index]?.id)
+    .filter(Boolean);
+  const initialPropellantKg = Math.max(0, Number(runtimeState.stageRcsInitialPropellantKg) || 0);
+  const fuelFraction = initialPropellantKg > 1e-6
+    ? clamp((Number(runtimeState.stageRcsPropellantKg) || 0) / initialPropellantKg, 0, 1)
+    : null;
   return {
     accelerationKmS2,
-    active: true,
-    errorDeg,
-    authority,
-    jets: rcsJetSelection(correctionDir, forward, up),
+    active: activeThrusterIndices.length > 0 && (thrustN > 1 || angularAccelerationRadS2 > 1e-8),
+    errorDeg: Math.max(errorDeg, angularErrorDeg),
+    authority: clamp(Math.max(linearAuthority, angularAuthority), 0, 1),
+    linearAuthority,
+    angularAuthority,
+    jets: activeThrusterIds,
+    commandedThrusterIds,
+    commandedThrusterIndices,
+    activeThrusterIds,
+    activeThrusterIndices,
+    thrustN,
+    burnKg,
+    burnRateKgS: Math.max(0, Number(rcsCombustion.burnRateKgS) || 0),
+    propellantKg: Math.max(0, Number(runtimeState.stageRcsPropellantKg) || 0),
+    initialPropellantKg,
+    fuelFraction,
+    bodyForceN,
+    bodyTorqueNm,
+    angularAccelerationRadS2,
+    dampingPerS: 0,
+    thrusterThrustNByIndex: Array.isArray(rcsCombustion.engineThrustNByIndex)
+      ? rcsCombustion.engineThrustNByIndex.map((value) => (Number(value) || 0) * propellantScale)
+      : [],
+    chamberPressurePaByIndex: Array.isArray(rcsCombustion.chamberPressurePaByIndex)
+      ? [...rcsCombustion.chamberPressurePaByIndex]
+      : [],
+    exhaustTemperatureKByIndex: Array.isArray(rcsCombustion.exhaustTemperatureKByIndex)
+      ? [...rcsCombustion.exhaustTemperatureKByIndex]
+      : [],
+    combustionEfficiencyByIndex: Array.isArray(rcsCombustion.combustionEfficiencyByIndex)
+      ? [...rcsCombustion.combustionEfficiencyByIndex]
+      : [],
+    turbopumpNormByIndex: Array.isArray(rcsCombustion.turbopumpNormByIndex)
+      ? [...rcsCombustion.turbopumpNormByIndex]
+      : [],
+    avgChamberPressurePa: Number(rcsCombustion.avgChamberPressurePa) || 0,
+    maxChamberPressurePa: Number(rcsCombustion.maxChamberPressurePa) || 0,
+    avgCombustionEfficiency: Number(rcsCombustion.avgCombustionEfficiency) || 0,
+    avgTurbopumpNorm: Number(rcsCombustion.avgTurbopumpNorm) || 0,
+    maxExhaustTemperatureK: Number(rcsCombustion.maxExhaustTemperatureK) || 0,
+    navSource: String(nav.source || STARSHIP_GNC_NAV_SOURCE),
+    navSensorNoiseActive: Boolean(nav.sensorNoiseActive),
+    navPositionSigmaKm: Number(nav.positionSigmaKm) || 0,
+    navVelocitySigmaKmS: Number(nav.velocitySigmaKmS) || 0,
+    navAttitudeSigmaDeg: Number(nav.attitudeSigmaDeg) || 0,
+    navPositionErrorKm: cloneLaunchVector(nav.positionErrorKm),
+    navVelocityErrorKmS: cloneLaunchVector(nav.velocityErrorKmS),
+    navAttitudeErrorDeg: cloneLaunchVector(nav.attitudeErrorDeg),
   };
 }
 
@@ -1272,6 +1649,31 @@ function stageRadiusMeters() {
   return Math.max(1, Number(STARSHIP_STACK_DIMENSIONS_KM.diameterKm) || 0) * 500;
 }
 
+function stageBodyLengthMeters(bodyKind = "stage1") {
+  if (bodyKind === "stage2") {
+    return stage2BodyLengthMeters();
+  }
+  return Math.max(
+    1,
+    (Number(STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm) || 0)
+      + (Number(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm) || 0),
+  ) * 1000;
+}
+
+function stagePrincipalInertiaKgM2(bodyKind = "stage1", massKg = 0, inertiaNormalized = 1) {
+  const safeMassKg = Math.max(1, Number(massKg) || 0);
+  const radiusM = stageRadiusMeters();
+  const lengthM = stageBodyLengthMeters(bodyKind);
+  const inertiaScale = Math.max(0.25, Number(inertiaNormalized) || 1);
+  const transverse = safeMassKg * ((3 * radiusM * radiusM) + (lengthM * lengthM)) / 12 * inertiaScale;
+  const axial = 0.5 * safeMassKg * radiusM * radiusM * inertiaScale;
+  return {
+    x: transverse,
+    y: axial,
+    z: transverse,
+  };
+}
+
 function defaultBoosterEngineCountSelection() {
   const stage1Config = stageAtIndex(0);
   const counts = resolveConfiguredEngineCounts(
@@ -1327,7 +1729,7 @@ function boosterRecoveryConfigWithEngineOverride(boosterEngineCountOverride = nu
   };
 }
 
-function boosterRecoveryEngineCountForPhase(commandPhase = "", boosterEngineCountOverride = null) {
+export function boosterRecoveryEngineCountForPhase(commandPhase = "", boosterEngineCountOverride = null) {
   const phase = String(commandPhase || "").toLowerCase();
   const selectedCount = normalizeBoosterEngineCountSelection(boosterEngineCountOverride);
   if (phase === "boostback") {
@@ -1340,7 +1742,7 @@ function boosterRecoveryEngineCountForPhase(commandPhase = "", boosterEngineCoun
     return Math.max(1, Math.min(selectedCount, 3));
   }
   if (phase === "catch-burn") {
-    return Math.max(1, Math.min(selectedCount, 13));
+    return Math.max(1, Math.min(selectedCount, 3));
   }
   if (phase === "landing-burn") {
     return Math.max(1, Math.min(selectedCount, 13));
@@ -1415,15 +1817,34 @@ function normalizedThrusterLayoutDescriptors(layout, radiusM, bodyLengthM) {
     const zR = Number(spec?.anchor?.zR) || 0;
     const rawYH = Number(spec?.anchor?.yH) || 0;
     const yNorm = rawYH >= 0 && rawYH <= 1 ? rawYH - 0.5 : rawYH;
-    return {
-      id,
-      ring: "rcs",
-      orderInRing: index,
+    const positionBodyM = {
       x: xR * radiusM,
       y: yNorm * bodyLengthM,
       z: zR * radiusM,
     };
+    const directionBody = normalize(
+      spec?.direction || { x: 0, y: 0, z: 0 },
+      { x: 0, y: 1, z: 0 },
+    );
+    return {
+      id,
+      ring: "rcs",
+      orderInRing: index,
+      x: positionBodyM.x,
+      y: positionBodyM.y,
+      z: positionBodyM.z,
+      positionBodyM,
+      directionBody,
+    };
   });
+}
+
+function starshipRcsThrusterDescriptors() {
+  return normalizedThrusterLayoutDescriptors(
+    STARSHIP_THRUSTER_LAYOUT,
+    stageRadiusMeters(),
+    stage2BodyLengthMeters(),
+  );
 }
 
 function boosterRcsThrusterDescriptors() {
@@ -1432,6 +1853,24 @@ function boosterRcsThrusterDescriptors() {
     boosterRadiusMeters(),
     boosterBodyLengthMeters(),
   );
+}
+
+function starshipRcsCombustionConfig() {
+  const thrusterCount = Math.max(1, starshipRcsThrusterDescriptors().length);
+  const vacuumThrusterN = Math.max(1, Number(LAUNCH_RCS_CONFIG.starshipThrusterVacuumN) || 48_000);
+  const seaLevelThrusterN = Math.max(
+    1,
+    Number(LAUNCH_RCS_CONFIG.starshipThrusterSeaLevelN) || (vacuumThrusterN * 0.9),
+  );
+  return {
+    engineCount: thrusterCount,
+    nominalEngineCount: thrusterCount,
+    thrustSeaLevelN: seaLevelThrusterN * thrusterCount,
+    thrustVacuumN: vacuumThrusterN * thrusterCount,
+    ispSeaLevelS: Math.max(1, Number(LAUNCH_RCS_CONFIG.starshipIspSeaLevelS) || 285),
+    ispVacuumS: Math.max(1, Number(LAUNCH_RCS_CONFIG.starshipIspVacuumS) || 300),
+    combustion: LAUNCH_RCS_CONFIG.starshipCombustion,
+  };
 }
 
 function boosterRcsCombustionConfig() {
@@ -1443,6 +1882,16 @@ function boosterRcsCombustionConfig() {
     ispSeaLevelS: Math.max(0, Number(LAUNCH_BOOSTER_CONFIG.rcsIspSeaLevelS) || 0),
     ispVacuumS: Math.max(0, Number(LAUNCH_BOOSTER_CONFIG.rcsIspVacuumS) || 0),
     combustion: LAUNCH_BOOSTER_CONFIG.rcsCombustion,
+  };
+}
+
+function stage2RcsCombustionClusterOptions() {
+  const descriptors = starshipRcsThrusterDescriptors();
+  return {
+    descriptors,
+    activationOrder: descriptors.map((_, index) => index),
+    config: starshipRcsCombustionConfig(),
+    fallbackEngineCount: descriptors.length,
   };
 }
 
@@ -1462,6 +1911,10 @@ function createStage1CombustionClusterState(boosterEngineCountOverride = null) {
 
 function createStage2CombustionClusterState() {
   return createEngineCombustionClusterState(stage2CombustionClusterOptions());
+}
+
+function createStage2RcsCombustionClusterState() {
+  return createEngineCombustionClusterState(stage2RcsCombustionClusterOptions());
 }
 
 function createBoosterCombustionClusterState(boosterEngineCountOverride = null) {
@@ -1503,6 +1956,10 @@ function applyBoosterAttitudeSnapshot(snapshot = null, fallbackAxisWorld = { x: 
     z: finiteNumber(merged.omegaBodyRadS?.z, 0),
   };
   return merged;
+}
+
+function resetAttitudeStateToAxis(axisWorld = { x: 0, y: 0, z: 1 }) {
+  return createBoosterAttitudeState(axisWorld);
 }
 
 function boosterPrincipalInertiaKgM2(massKg = 0, inertiaNormalized = 1) {
@@ -1656,6 +2113,7 @@ function computeBoosterAttitudeControlErrors({
 
 function integrateBoosterAttitudeState(attitudeState, {
   torqueWorldNm = { x: 0, y: 0, z: 0 },
+  bodyKind = "booster",
   massKg = 0,
   inertiaNormalized = 1,
   angularDampingPerS = 0,
@@ -1667,7 +2125,9 @@ function integrateBoosterAttitudeState(attitudeState, {
   if (!(dt > 0)) {
     return state;
   }
-  const inertia = boosterPrincipalInertiaKgM2(massKg, inertiaNormalized);
+  const inertia = bodyKind === "booster"
+    ? boosterPrincipalInertiaKgM2(massKg, inertiaNormalized)
+    : stagePrincipalInertiaKgM2(bodyKind, massKg, inertiaNormalized);
   const invInertia = {
     x: 1 / Math.max(inertia.x, 1e-6),
     y: 1 / Math.max(inertia.y, 1e-6),
@@ -1718,51 +2178,6 @@ function integrateBoosterAttitudeState(attitudeState, {
   return state;
 }
 
-function stabilizeBoosterAttitudeTowardDirection(attitudeState, {
-  targetDirectionWorld = { x: 0, y: 0, z: 1 },
-  dtSeconds = 0,
-  maxBodyRateRadS = null,
-} = {}) {
-  const state = attitudeState || createBoosterAttitudeState(targetDirectionWorld);
-  const dt = Math.max(0, Number(dtSeconds) || 0);
-  if (!(dt > 0)) {
-    return state;
-  }
-  const currentAxis = boosterBodyAxisWorld(state);
-  const targetAxis = normalize(targetDirectionWorld, currentAxis);
-  const errorRad = angleBetweenRadians(currentAxis, targetAxis);
-  if (!(errorRad > 1e-9)) {
-    state.orientation = normalizeQuaternion(
-      quaternionFromUnitVectors({ x: 0, y: 1, z: 0 }, targetAxis),
-      state.orientation,
-    );
-    state.omegaBodyRadS = { x: 0, y: 0, z: 0 };
-    return state;
-  }
-  const maxRateRadS = (
-    Number.isFinite(Number(maxBodyRateRadS)) && Number(maxBodyRateRadS) > 0
-      ? Number(maxBodyRateRadS)
-      : rad(45)
-  );
-  const stepRad = Math.min(errorRad, maxRateRadS * dt);
-  const blend = clamp(stepRad / Math.max(errorRad, 1e-9), 0, 1);
-  const blendedAxis = normalize(
-    mixVectors(currentAxis, targetAxis, blend),
-    currentAxis,
-  );
-  state.orientation = normalizeQuaternion(
-    quaternionFromUnitVectors({ x: 0, y: 1, z: 0 }, blendedAxis),
-    state.orientation,
-  );
-  const impliedRateRadS = stepRad / Math.max(dt, 1e-6);
-  state.omegaBodyRadS = {
-    x: 0,
-    y: 0,
-    z: clamp(impliedRateRadS, 0, maxRateRadS),
-  };
-  return state;
-}
-
 function scaleAngularControlState(controlState, scaleFactor = 1) {
   const scaleClamped = clamp(Number(scaleFactor) || 0, 0, 3.5);
   const base = controlState || {};
@@ -1800,6 +2215,143 @@ function updateBoosterThrottleState(actuatorState, {
   state.throttleCommand = requestedThrottleClamped;
   state.throttleActual = state.throttleActual + ((requestedThrottleClamped - state.throttleActual) * alpha);
   return state;
+}
+
+function updateStageThrottleState(actuatorState, {
+  requestedThrottle = 0,
+  dtSeconds = 0,
+  massModel = null,
+}) {
+  const state = actuatorState || createActuatorState({ x: 0, y: 0, z: 1 });
+  const cfg = LAUNCH_REALISM_CONFIG.actuator.stage;
+  const massState = massModel || createMassModelState();
+  const requestedThrottleClamped = clamp(Number(requestedThrottle) || 0, 0, 1);
+  const dt = Math.max(0, Number(dtSeconds) || 0);
+  const inertiaScale = clamp(
+    (
+      (0.72 + (0.58 * (Number(massState.inertiaNormalized) || 1)))
+      / Math.max(Number(massState.controlAuthorityScale) || 1, 0.25)
+    ),
+    0.45,
+    1.9,
+  );
+  const riseTau = Math.max(0.06, (Number(cfg.throttleRiseTauSec) || 0.52) * inertiaScale);
+  const fallTau = Math.max(0.05, (Number(cfg.throttleFallTauSec) || 0.34) * inertiaScale);
+  const throttleTau = requestedThrottleClamped >= state.throttleActual ? riseTau : fallTau;
+  const alpha = clamp(dt / throttleTau, 0, 1);
+  state.throttleCommand = requestedThrottleClamped;
+  state.throttleActual = state.throttleActual + ((requestedThrottleClamped - state.throttleActual) * alpha);
+  return state;
+}
+
+function zeroAngularControlState(extra = {}) {
+  return {
+    authority: 0,
+    momentNm: 0,
+    bodyTorqueNm: { x: 0, y: 0, z: 0 },
+    angularAccelerationRadS2: 0,
+    dampingPerS: 0,
+    ...extra,
+  };
+}
+
+function computeStageEngineAngularControlState({
+  bodyKind = "stage1",
+  controlErrorsBody,
+  omegaBodyRadS = null,
+  throttle = 0,
+  massKg = 0,
+  massModel = null,
+  engineState = null,
+}) {
+  const maxGimbalDeflectionRad = rad(
+    Number(LAUNCH_REALISM_CONFIG.actuator?.stage?.maxGimbalDeflectionDeg) || 6,
+  );
+  if (!(throttle > 1e-6) || !(maxGimbalDeflectionRad > 1e-6)) {
+    return zeroAngularControlState({ thrustDirectionBody: { x: 0, y: 1, z: 0 } });
+  }
+  const thrustN = Math.max(0, Number(engineState?.thrustN) || 0);
+  const activeCount = Math.max(1, Number(engineState?.activeCount) || 0);
+  const fullThrustN = Math.max(
+    0,
+    (Number(engineState?.fullPerEngineThrustN) || 0) * activeCount,
+  );
+  if (!(thrustN > 0)) {
+    return zeroAngularControlState({ thrustDirectionBody: { x: 0, y: 1, z: 0 } });
+  }
+  const enginePlaneNorm = Number(
+    bodyKind === "stage2"
+      ? LAUNCH_REALISM_CONFIG.massModel?.stage2?.enginePlaneNorm
+      : LAUNCH_REALISM_CONFIG.massModel?.stage1?.enginePlaneNorm,
+  );
+  const comNorm = clamp(Number(massModel?.comNormalized) || 0.5, 0, 1);
+  const leverArmM = Math.max(
+    0.1,
+    Math.abs(comNorm - (Number.isFinite(enginePlaneNorm) ? enginePlaneNorm : 0.04))
+      * stageBodyLengthMeters(bodyKind),
+  );
+  const omegaBody = {
+    x: finiteNumber(omegaBodyRadS?.x, 0),
+    y: finiteNumber(omegaBodyRadS?.y, 0),
+    z: finiteNumber(omegaBodyRadS?.z, 0),
+  };
+  const proportionalGain = Math.max(
+    0.1,
+    Number(LAUNCH_REALISM_CONFIG.actuator?.stage?.attitudeProportionalGain) || 1,
+  );
+  const rateDampingGain = Math.max(
+    0,
+    Number(LAUNCH_REALISM_CONFIG.actuator?.stage?.attitudeRateDampingGain) || 0.24,
+  );
+  const axisCommand = clampVectorMagnitude({
+    x: (proportionalGain * finiteNumber(controlErrorsBody?.pitchErrorRad, 0))
+      - (rateDampingGain * omegaBody.x),
+    y: 0,
+    z: (proportionalGain * finiteNumber(controlErrorsBody?.yawErrorRad, 0))
+      - (rateDampingGain * omegaBody.z),
+  }, maxGimbalDeflectionRad);
+  const deflectionMagRad = Math.hypot(axisCommand.x, axisCommand.z);
+  if (!(deflectionMagRad > 1e-6)) {
+    return zeroAngularControlState({ thrustDirectionBody: { x: 0, y: 1, z: 0 } });
+  }
+  const thrustDirectionBody = normalize({
+    x: Math.sin(axisCommand.z),
+    y: Math.cos(Math.hypot(axisCommand.x, axisCommand.z)),
+    z: -Math.sin(axisCommand.x),
+  }, { x: 0, y: 1, z: 0 });
+  const controlForceDirectionBody = {
+    x: thrustDirectionBody.x,
+    y: thrustDirectionBody.y - 1,
+    z: thrustDirectionBody.z,
+  };
+  const engines = Array.isArray(engineState?.activeDescriptors) && engineState.activeDescriptors.length > 0
+    ? engineState.activeDescriptors
+    : [{ positionBodyM: { x: 0, y: -leverArmM, z: 0 } }];
+  const thrustPerEngineN = thrustN / Math.max(1, engines.length);
+  const bodyTorqueNm = computeEngineClusterBodyTorqueNm({
+    activeDescriptors: engines,
+    engineThrustNByIndex: engineState?.engineThrustNByIndex,
+    activeEngineThrustsN: Array.isArray(engineState?.activeEngineThrustsN)
+      ? engineState.activeEngineThrustsN
+      : null,
+    fallbackPerEngineThrustN: thrustPerEngineN,
+    forceDirectionBody: controlForceDirectionBody,
+    fallbackY: -leverArmM,
+  });
+  const momentNm = Math.hypot(bodyTorqueNm.x, bodyTorqueNm.z);
+  const inertia = stagePrincipalInertiaKgM2(bodyKind, massKg, massModel?.inertiaNormalized);
+  const maxMomentNm = Math.max(fullThrustN, thrustN) * leverArmM * Math.sin(maxGimbalDeflectionRad);
+  return {
+    authority: clamp(momentNm / Math.max(maxMomentNm, 1e-6), 0, 1),
+    momentNm,
+    bodyTorqueNm,
+    angularAccelerationRadS2: Math.hypot(
+      bodyTorqueNm.x / Math.max(inertia.x, 1e-6),
+      bodyTorqueNm.z / Math.max(inertia.z, 1e-6),
+    ),
+    dampingPerS: 0,
+    thrustDirectionBody,
+  };
 }
 
 function computeBoosterEngineAngularControlState({
@@ -2113,6 +2665,18 @@ function cloneLaunchVectorOrNull(value) {
   return finiteLaunchVectorValue(value) ? cloneLaunchVector(value) : null;
 }
 
+function launchDirectionPitchFromVerticalDeg(direction, up) {
+  if (!finiteLaunchVectorValue(direction) || !finiteLaunchVectorValue(up)) {
+    return null;
+  }
+  const safeDirection = unitOrNull(direction);
+  const safeUp = unitOrNull(up);
+  if (!safeDirection || !safeUp) {
+    return null;
+  }
+  return Math.acos(clamp(dot(safeDirection, safeUp), -1, 1)) * (180 / Math.PI);
+}
+
 function telemetryFromState({
   gravitationalConstantKm3PerKgS2,
   earthMassKg,
@@ -2279,6 +2843,18 @@ function telemetryFromState({
     avgTurbopumpNorm: Number(runtime.lastStep?.avgTurbopumpNorm) || 0,
     maxExhaustTemperatureK: Number(runtime.lastStep?.maxExhaustTemperatureK) || 0,
     stagePropellantKg: Math.max(0, Number(runtime.stagePropellantKg) || 0),
+    rcsPropellantKg: Math.max(0, Number(runtime.lastStep?.rcsPropellantKg ?? runtime.stageRcsPropellantKg) || 0),
+    rcsInitialPropellantKg: Math.max(
+      0,
+      Number(runtime.lastStep?.rcsInitialPropellantKg ?? runtime.stageRcsInitialPropellantKg) || 0,
+    ),
+    rcsFuelFraction: Number.isFinite(Number(runtime.lastStep?.rcsFuelFraction))
+      ? clamp(Number(runtime.lastStep.rcsFuelFraction), 0, 1)
+      : (
+        Number(runtime.stageRcsInitialPropellantKg) > 1e-6
+          ? clamp((Number(runtime.stageRcsPropellantKg) || 0) / Number(runtime.stageRcsInitialPropellantKg), 0, 1)
+          : null
+      ),
     dynamicPressurePa,
     angleOfAttackDeg: Number(runtime.lastStep?.angleOfAttackDeg) || 0,
     qAlphaPaRad: Number(runtime.lastStep?.qAlphaPaRad) || 0,
@@ -2286,6 +2862,15 @@ function telemetryFromState({
     dragCoefficient: Number(runtime.lastStep?.dragCoefficient) || 0,
     liftCoefficient: Number(runtime.lastStep?.liftCoefficient) || 0,
     gimbalErrorDeg: Number(runtime.lastStep?.gimbalErrorDeg) || 0,
+    attitudeTorqueSources: Array.isArray(runtime.lastStep?.attitudeTorqueSources)
+      ? [...runtime.lastStep.attitudeTorqueSources]
+      : [],
+    attitudeTorqueSourceText: String(runtime.lastStep?.attitudeTorqueSourceText || ""),
+    bodyAngularRateRadS: cloneLaunchVectorOrNull(runtime.lastStep?.bodyAngularRateRadS),
+    thrustVectorDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.thrustVectorDirectionKm),
+    engineGimbalAuthority: Number(runtime.lastStep?.engineGimbalAuthority) || 0,
+    rcsAngularAuthority: Number(runtime.lastStep?.rcsAngularAuthority) || 0,
+    aeroMomentActive: Boolean(runtime.lastStep?.aeroMomentActive),
     windSpeedKmS: Number(runtime.lastStep?.windSpeedKmS) || 0,
     windEastMS: Number(runtime.lastStep?.windEastMS) || 0,
     windNorthMS: Number(runtime.lastStep?.windNorthMS) || 0,
@@ -2304,6 +2889,16 @@ function telemetryFromState({
     longitudeDeg: Number.isFinite(Number(surfaceSample?.longitudeDeg))
       ? Number(surfaceSample.longitudeDeg)
       : null,
+    ascentCorridorName: String(LAUNCH_VEHICLE_CONFIG.guidance?.ascentCorridorName || ""),
+    ascentHeadingDegFromEast: finiteOrNull(LAUNCH_VEHICLE_CONFIG.guidance?.ascentHeadingDegFromEast),
+    commandedPitchFromVerticalDeg: launchDirectionPitchFromVerticalDeg(
+      runtime.lastStep?.requestedDirectionKm,
+      orbital.up,
+    ),
+    bodyPitchFromVerticalDeg: launchDirectionPitchFromVerticalDeg(
+      runtime.lastStep?.bodyAxisDirectionKm,
+      orbital.up,
+    ),
     guidanceMode: runtime.lastStep?.guidanceMode || "idle",
     guidanceRequestedDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.requestedDirectionKm),
     bodyAxisDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.bodyAxisDirectionKm),
@@ -2331,10 +2926,63 @@ function telemetryFromState({
     rcsActive: Boolean(runtime.lastStep?.rcsActive),
     rcsErrorDeg: Number(runtime.lastStep?.rcsErrorDeg) || 0,
     rcsAuthority: Number(runtime.lastStep?.rcsAuthority) || 0,
+    rcsLinearAuthority: Number(runtime.lastStep?.rcsLinearAuthority) || 0,
+    rcsAngularAuthority: Number(runtime.lastStep?.rcsAngularAuthority) || 0,
+    rcsAccelerationKmS2: cloneLaunchVectorOrNull(runtime.lastStep?.rcsAccelerationKmS2),
+    rcsAccelerationMagKmS2: Number(runtime.lastStep?.rcsAccelerationMagKmS2) || 0,
+    rcsThrustN: Number(runtime.lastStep?.rcsThrustN) || 0,
+    rcsBurnKg: Number(runtime.lastStep?.rcsBurnKg) || 0,
+    rcsBurnRateKgS: Number(runtime.lastStep?.rcsBurnRateKgS) || 0,
     rcsJets: Array.isArray(runtime.lastStep?.rcsJets) ? [...runtime.lastStep.rcsJets] : [],
+    rcsCommandedThrusterIds: Array.isArray(runtime.lastStep?.rcsCommandedThrusterIds)
+      ? [...runtime.lastStep.rcsCommandedThrusterIds]
+      : [],
+    rcsCommandedThrusterIndices: Array.isArray(runtime.lastStep?.rcsCommandedThrusterIndices)
+      ? [...runtime.lastStep.rcsCommandedThrusterIndices]
+      : [],
+    rcsActiveThrusterIds: Array.isArray(runtime.lastStep?.rcsActiveThrusterIds)
+      ? [...runtime.lastStep.rcsActiveThrusterIds]
+      : [],
+    rcsActiveThrusterIndices: Array.isArray(runtime.lastStep?.rcsActiveThrusterIndices)
+      ? [...runtime.lastStep.rcsActiveThrusterIndices]
+      : [],
+    rcsBodyForceN: cloneLaunchVectorOrNull(runtime.lastStep?.rcsBodyForceN),
+    rcsBodyTorqueNm: cloneLaunchVectorOrNull(runtime.lastStep?.rcsBodyTorqueNm),
+    rcsThrusterThrustNByIndex: Array.isArray(runtime.lastStep?.rcsThrusterThrustNByIndex)
+      ? [...runtime.lastStep.rcsThrusterThrustNByIndex]
+      : [],
+    rcsChamberPressurePaByIndex: Array.isArray(runtime.lastStep?.rcsChamberPressurePaByIndex)
+      ? [...runtime.lastStep.rcsChamberPressurePaByIndex]
+      : [],
+    rcsExhaustTemperatureKByIndex: Array.isArray(runtime.lastStep?.rcsExhaustTemperatureKByIndex)
+      ? [...runtime.lastStep.rcsExhaustTemperatureKByIndex]
+      : [],
+    rcsCombustionEfficiencyByIndex: Array.isArray(runtime.lastStep?.rcsCombustionEfficiencyByIndex)
+      ? [...runtime.lastStep.rcsCombustionEfficiencyByIndex]
+      : [],
+    rcsTurbopumpNormByIndex: Array.isArray(runtime.lastStep?.rcsTurbopumpNormByIndex)
+      ? [...runtime.lastStep.rcsTurbopumpNormByIndex]
+      : [],
+    rcsAvgChamberPressurePa: Number(runtime.lastStep?.rcsAvgChamberPressurePa) || 0,
+    rcsMaxChamberPressurePa: Number(runtime.lastStep?.rcsMaxChamberPressurePa) || 0,
+    rcsAvgCombustionEfficiency: Number(runtime.lastStep?.rcsAvgCombustionEfficiency) || 0,
+    rcsAvgTurbopumpNorm: Number(runtime.lastStep?.rcsAvgTurbopumpNorm) || 0,
+    rcsMaxExhaustTemperatureK: Number(runtime.lastStep?.rcsMaxExhaustTemperatureK) || 0,
+    navSource: String(runtime.lastStep?.navSource || runtime.stageNavigation?.source || ""),
+    navSensorNoiseActive: Boolean(runtime.lastStep?.navSensorNoiseActive ?? runtime.stageNavigation?.sensorNoiseActive),
+    navPositionSigmaKm: Number(runtime.lastStep?.navPositionSigmaKm ?? runtime.stageNavigation?.positionSigmaKm) || 0,
+    navVelocitySigmaKmS: Number(runtime.lastStep?.navVelocitySigmaKmS ?? runtime.stageNavigation?.velocitySigmaKmS) || 0,
+    navAttitudeSigmaDeg: Number(runtime.lastStep?.navAttitudeSigmaDeg ?? runtime.stageNavigation?.attitudeSigmaDeg) || 0,
+    navPositionErrorKm: cloneLaunchVectorOrNull(runtime.lastStep?.navPositionErrorKm || runtime.stageNavigation?.positionErrorKm),
+    navVelocityErrorKmS: cloneLaunchVectorOrNull(runtime.lastStep?.navVelocityErrorKmS || runtime.stageNavigation?.velocityErrorKmS),
+    navAttitudeErrorDeg: cloneLaunchVectorOrNull(runtime.lastStep?.navAttitudeErrorDeg || runtime.stageNavigation?.attitudeErrorDeg),
     boosterDistanceKm: runtime.boosterDistanceKm,
     starshipDistanceKm: runtime.starshipDistanceKm,
     hotstageActive: Boolean(runtime.hotstage.active),
+    hotstageShipReferenceActive: Boolean(
+      runtime.hotstage?.shipReferenceActive || runtime.attachedJoint?.shipReferenceActive,
+    ),
+    attachedJointShipReferenceActive: Boolean(runtime.attachedJoint?.shipReferenceActive),
     hotstageTimeSinceIgnitionSec: hotstageTimeSinceIgnitionSec(runtime.hotstage, runtime.elapsedSeconds),
     hotstageOverlapSeconds: Number(runtime.hotstage.overlapSeconds) || hotstageOverlapSeconds(),
     hotstageIgnitionStableSec: Number(runtime.hotstage.ignitionStableSec) || 0,
@@ -2572,12 +3220,41 @@ function boosterTelemetryFromState({
     comNormalized: Number(runtime.booster.lastStep?.comNormalized) || 0,
     inertiaNormalized: Number(runtime.booster.lastStep?.inertiaNormalized) || 0,
     controlAuthorityScale: Number(runtime.booster.lastStep?.controlAuthorityScale) || 0,
+    recoveryHardwareMode: String(runtime.booster.lastStep?.recoveryHardwareMode || ""),
+    recoveryControlStack: Array.isArray(runtime.booster.lastStep?.recoveryControlStack)
+      ? [...runtime.booster.lastStep.recoveryControlStack]
+      : [],
+    gridFinGeneration: String(runtime.booster.lastStep?.gridFinGeneration || ""),
+    gridFinRole: String(runtime.booster.lastStep?.gridFinRole || ""),
+    gridFinControlDominant: Boolean(runtime.booster.lastStep?.gridFinControlDominant),
+    gridFinDeploymentState: String(runtime.booster.lastStep?.gridFinDeploymentState || ""),
+    gridFinPhaseState: String(runtime.booster.lastStep?.gridFinPhaseState || ""),
+    gridFinCommandState: String(runtime.booster.lastStep?.gridFinCommandState || ""),
+    gridFinAeroLoaded: Boolean(runtime.booster.lastStep?.gridFinAeroLoaded),
+    gridFinControlActive: Boolean(runtime.booster.lastStep?.gridFinControlActive),
+    gridFinSaturated: Boolean(runtime.booster.lastStep?.gridFinSaturated),
+    gridFinMaxDeflectionDeg: Number(runtime.booster.lastStep?.gridFinMaxDeflectionDeg) || 0,
+    engineRole: String(runtime.booster.lastStep?.engineRole || ""),
+    engineSet: String(runtime.booster.lastStep?.engineSet || ""),
+    towerSensorMode: String(runtime.booster.lastStep?.towerSensorMode || ""),
+    towerSensorHealthy: Boolean(runtime.booster.lastStep?.towerSensorHealthy),
+    catchCommitState: String(runtime.booster.lastStep?.catchCommitState || ""),
     gridFinAuthority: Number(runtime.booster.lastStep?.gridFinAuthority) || 0,
     gridFinDeflectionDeg: Number(runtime.booster.lastStep?.gridFinDeflectionDeg) || 0,
+    gridFinStates: Array.isArray(runtime.booster.lastStep?.gridFinStates)
+      ? runtime.booster.lastStep.gridFinStates.map((finState) => ({ ...finState }))
+      : [],
     gridFinMomentNm: Number(runtime.booster.lastStep?.gridFinMomentNm) || 0,
     gridFinAngularAccelerationRadS2: Number(runtime.booster.lastStep?.gridFinAngularAccelerationRadS2) || 0,
     engineAsymmetryBodyTorqueNm: cloneLaunchVectorOrNull(runtime.booster.lastStep?.engineAsymmetryBodyTorqueNm),
     engineAsymmetryMomentNm: Number(runtime.booster.lastStep?.engineAsymmetryMomentNm) || 0,
+    aeroMomentNm: Number(runtime.booster.lastStep?.aeroMomentNm) || 0,
+    engineAngularAccelerationRadS2: Number(runtime.booster.lastStep?.engineAngularAccelerationRadS2) || 0,
+    rcsAngularAccelerationRadS2: Number(runtime.booster.lastStep?.rcsAngularAccelerationRadS2) || 0,
+    attitudeTorqueSources: Array.isArray(runtime.booster.lastStep?.attitudeTorqueSources)
+      ? [...runtime.booster.lastStep.attitudeTorqueSources]
+      : [],
+    attitudeTorqueSourceText: String(runtime.booster.lastStep?.attitudeTorqueSourceText || ""),
     bodyAngularRateRadS: cloneLaunchVectorOrNull(runtime.booster.lastStep?.bodyAngularRateRadS),
     terrainElevationKm: Number.isFinite(Number(surfaceSample?.terrainHeightKm))
       ? Number(surfaceSample.terrainHeightKm)
@@ -2795,6 +3472,11 @@ function zeroBoosterStep(guidanceMode = "booster-idle") {
     engineThrustNByIndex: [],
     engineAsymmetryBodyTorqueNm: { x: 0, y: 0, z: 0 },
     engineAsymmetryMomentNm: 0,
+    aeroMomentNm: 0,
+    engineAngularAccelerationRadS2: 0,
+    rcsAngularAccelerationRadS2: 0,
+    attitudeTorqueSources: [],
+    attitudeTorqueSourceText: "none",
     burnKg: 0,
     burnRateKgS: 0,
     avgChamberPressurePa: 0,
@@ -2817,6 +3499,11 @@ function zeroBoosterStep(guidanceMode = "booster-idle") {
     rcsAccelerationKmS2: { x: 0, y: 0, z: 0 },
     rcsAccelerationMagKmS2: 0,
     rcsJets: [],
+    ...resolveBoosterRecoveryHardwareState({
+      phase: "idle",
+      guidanceMode,
+      attitudeControlMode: "inactive",
+    }),
   };
 }
 
@@ -2831,6 +3518,16 @@ function caughtBoosterStep(upAxisWorld = { x: 0, y: 0, z: 1 }) {
     terminalUprightCommit: true,
     uprightTiltLimitDeg: 0,
     attitudeControlMode: "support-lock",
+    ...resolveBoosterRecoveryHardwareState({
+      phase: "caught",
+      guidanceMode: "booster-caught",
+      attitudeControlMode: "support-lock",
+      towerRelativeActive: true,
+      catchPositionSigmaKm: 0,
+      catchVelocitySigmaKmS: 0,
+      catchPointContactEligible: true,
+      catchCaptureActive: true,
+    }),
   };
 }
 
@@ -3109,9 +3806,15 @@ export function createLaunchController(options) {
     windSeed: initialWindSeed,
     boosterEngineCountOverride: defaultBoosterEngineCountSelection(),
     stageActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
+    stageAttitude: createBoosterAttitudeState({ x: 0, y: 0, z: 1 }),
     stageMassModel: createMassModelState(),
     stage1Combustion: createStage1CombustionClusterState(defaultBoosterEngineCountSelection()),
     stage2Combustion: createStage2CombustionClusterState(),
+    stageRcsCombustion: createStage2RcsCombustionClusterState(),
+    stageRcsPropellantKg: 0,
+    stageRcsInitialPropellantKg: 0,
+    stageNavigation: createStarshipNavigationState(),
+    starshipStateGuard: createStarshipStateGuardState(),
     boosterActuator: createActuatorState({ x: 0, y: 0, z: 1 }),
     boosterMassModel: createMassModelState(),
     attachedJoint: createAttachedStackJointState(),
@@ -5671,7 +6374,12 @@ export function createLaunchController(options) {
       const preHotstageStackMassKg = Math.max(MIN_ROCKET_MASS_KG, Number(rocketState.massKg) || MIN_ROCKET_MASS_KG);
       const shipMassKg = Math.max(MIN_ROCKET_MASS_KG, preHotstageStackMassKg - boosterMassKg);
       const shipCenterShiftKm = Math.max(0, Number(STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm) || 0) * 0.5;
-      rocketState.position = add(rocketState.position, scale(hotstageAxis, shipCenterShiftKm));
+      applyStarshipPositionCorrection(
+        rocketState,
+        scale(hotstageAxis, shipCenterShiftKm),
+        "hotstage_ship_reference_shift",
+        { lifecycle: true },
+      );
       rocketState.massKg = shipMassKg;
       runtime.hotstage.shipReferenceActive = true;
       runtime.hotstage.shipCenterShiftKm = shipCenterShiftKm;
@@ -5689,13 +6397,16 @@ export function createLaunchController(options) {
       );
       runtime.coastRemainingSec = 0;
       setLaunchCommandPhase("powered");
-      runtime.stageActuator = createActuatorState(normalize(
+      const nextStageAxis = normalize(
         runtime.lastStep?.bodyAxisDirectionKm
           || runtime.stageActuator?.directionActual
           || relPos,
         currentEarthAxes.pole,
-      ));
+      );
+      runtime.stageActuator = createActuatorState(nextStageAxis);
+      runtime.stageAttitude = resetAttitudeStateToAxis(nextStageAxis);
       runtime.stageMassModel = createMassModelState();
+      resetStarshipRcsRuntimeState(runtime);
       runtime.lastStep = {
         ...(runtime.lastStep && typeof runtime.lastStep === "object" ? runtime.lastStep : {}),
         accelerationKmS2: { x: 0, y: 0, z: 0 },
@@ -5743,10 +6454,11 @@ export function createLaunchController(options) {
       );
       runtime.coastRemainingSec = Math.max(0, Number(currentStage.coastAfterBurnSec) || 0);
       setLaunchCommandPhase(runtime.coastRemainingSec > 0 ? "coast" : "powered");
-      runtime.stageActuator = createActuatorState(
-        normalize(relPos, currentEarthAxes.pole),
-      );
+      const nextStageAxis = normalize(relPos, currentEarthAxes.pole);
+      runtime.stageActuator = createActuatorState(nextStageAxis);
+      runtime.stageAttitude = resetAttitudeStateToAxis(nextStageAxis);
       runtime.stageMassModel = createMassModelState();
+      resetStarshipRcsRuntimeState(runtime);
       runtime.lastStep = {
         ...(runtime.lastStep && typeof runtime.lastStep === "object" ? runtime.lastStep : {}),
         accelerationKmS2: { x: 0, y: 0, z: 0 },
@@ -5946,9 +6658,14 @@ export function createLaunchController(options) {
       defaultBoosterEngineCountSelection(),
     );
     runtime.stageActuator = createActuatorState({ x: 0, y: 0, z: 1 });
+    runtime.stageAttitude = resetAttitudeStateToAxis({ x: 0, y: 0, z: 1 });
     runtime.stageMassModel = createMassModelState();
     runtime.stage1Combustion = createStage1CombustionClusterState(runtime.boosterEngineCountOverride);
     runtime.stage2Combustion = createStage2CombustionClusterState();
+    runtime.stageRcsCombustion = createStage2RcsCombustionClusterState();
+    runtime.stageRcsPropellantKg = 0;
+    runtime.stageRcsInitialPropellantKg = 0;
+    runtime.stageNavigation = createStarshipNavigationState();
     runtime.boosterActuator = createActuatorState({ x: 0, y: 0, z: 1 });
     runtime.boosterMassModel = createMassModelState();
     runtime.attachedJoint = createAttachedStackJointState();
@@ -7039,11 +7756,155 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     return Boolean(runtime.hotstage?.shipReferenceActive || runtime.attachedJoint?.shipReferenceActive);
   }
 
+  function starshipStateGuard() {
+    if (!runtime.starshipStateGuard || typeof runtime.starshipStateGuard !== "object") {
+      runtime.starshipStateGuard = createStarshipStateGuardState();
+    }
+    return runtime.starshipStateGuard;
+  }
+
+  function markStarshipCleanFreeFlight(reason = "separation_clear") {
+    const guard = starshipStateGuard();
+    if (guard.cleanFreeFlightActive) {
+      return;
+    }
+    guard.cleanFreeFlightActive = true;
+    guard.cleanFreeFlightElapsedSec = Math.max(0, Number(runtime.elapsedSeconds) || 0);
+    guard.cleanFreeFlightReason = String(reason || "separation_clear");
+  }
+
+  function updateStarshipCleanFreeFlightState({ metrics = null, contactActive = false, reason = "" } = {}) {
+    if (
+      runtime.stageIndex < 1
+      || !runtime.booster.active
+      || runtime.booster.attached
+      || runtime.hotstage?.active
+    ) {
+      return;
+    }
+    if (contactActive) {
+      return;
+    }
+    const timeSinceSeparationSec = Math.max(
+      0,
+      (Number(runtime.elapsedSeconds) || 0) - (Number(runtime.booster.separationTimeSec) || 0),
+    );
+    const separationKm = Number(metrics?.axialGapKm ?? runtime.attachedJoint?.physicalSeparationKm);
+    const separationRateKmS = Number(metrics?.axialRateKmS ?? runtime.attachedJoint?.physicalSeparationRateKmS);
+    const clearedInterstage = (
+      Number.isFinite(separationKm)
+      && separationKm > HOTSTAGE_INTERSTAGE_CONTACT_BAND_KM * 1.05
+      && (!Number.isFinite(separationRateKmS) || separationRateKmS >= -1e-5)
+      && timeSinceSeparationSec >= 0.25
+    );
+    if (clearedInterstage || timeSinceSeparationSec > 8) {
+      markStarshipCleanFreeFlight(reason || (clearedInterstage ? "interstage_gap_clear" : "separation_contact_window_expired"));
+    }
+  }
+
+  function directStarshipCorrectionAllowed(kind, reason, options = {}) {
+    const guard = starshipStateGuard();
+    if (
+      !guard.cleanFreeFlightActive
+      || options?.contact === true
+      || options?.constraint === true
+      || options?.allowAfterCleanFreeFlight === true
+    ) {
+      return true;
+    }
+    const correctionKind = String(kind || "state");
+    if (correctionKind === "position") {
+      guard.blockedPositionCorrectionCount += 1;
+    } else if (correctionKind === "velocity") {
+      guard.blockedVelocityCorrectionCount += 1;
+    }
+    guard.lastBlockedReason = String(reason || "direct_starship_state_correction_blocked");
+    guard.lastBlockedKind = correctionKind;
+    guard.lastBlockedElapsedSec = Math.max(0, Number(runtime.elapsedSeconds) || 0);
+    emitLaunchEvent("starship_direct_state_correction_blocked", {
+      kind: guard.lastBlockedKind,
+      reason: guard.lastBlockedReason,
+      cleanFreeFlightElapsedSec: guard.cleanFreeFlightElapsedSec,
+      elapsedSec: guard.lastBlockedElapsedSec,
+    });
+    return false;
+  }
+
+  function recordDirectStarshipCorrection(kind, reason, magnitude, options = {}) {
+    const guard = starshipStateGuard();
+    const correctionKind = String(kind || "state");
+    const correctionMagnitude = Math.max(0, Number(magnitude) || 0);
+    if (correctionKind === "position") {
+      guard.directPositionCorrectionCount += 1;
+      if (guard.cleanFreeFlightActive) {
+        guard.postCleanFreeFlightPositionCorrectionCount += 1;
+        guard.maxPostCleanFreeFlightPositionCorrectionKm = Math.max(
+          guard.maxPostCleanFreeFlightPositionCorrectionKm,
+          correctionMagnitude,
+        );
+      }
+    } else if (correctionKind === "velocity") {
+      guard.directVelocityCorrectionCount += 1;
+      if (guard.cleanFreeFlightActive) {
+        guard.postCleanFreeFlightVelocityCorrectionCount += 1;
+        guard.maxPostCleanFreeFlightVelocityCorrectionKmS = Math.max(
+          guard.maxPostCleanFreeFlightVelocityCorrectionKmS,
+          correctionMagnitude,
+        );
+      }
+    }
+    guard.lastCorrectionReason = String(reason || "direct_starship_state_correction");
+    guard.lastCorrectionKind = correctionKind;
+    guard.lastCorrectionElapsedSec = Math.max(0, Number(runtime.elapsedSeconds) || 0);
+    if (guard.cleanFreeFlightActive && options?.contact !== true && options?.constraint !== true) {
+      emitLaunchEvent("starship_direct_state_correction_after_clean_freeflight", {
+        kind: correctionKind,
+        reason: guard.lastCorrectionReason,
+        magnitude: correctionMagnitude,
+        elapsedSec: guard.lastCorrectionElapsedSec,
+      });
+    }
+  }
+
+  function applyStarshipPositionCorrection(rocketState, deltaKm, reason, options = {}) {
+    if (!rocketState || !finiteVector(deltaKm) || length(deltaKm) <= 1e-12) {
+      return false;
+    }
+    if (!directStarshipCorrectionAllowed("position", reason, options)) {
+      return false;
+    }
+    rocketState.position = add(rocketState.position, deltaKm);
+    recordDirectStarshipCorrection("position", reason, length(deltaKm), options);
+    return true;
+  }
+
+  function applyStarshipVelocityCorrection(rocketState, deltaKmS, reason, options = {}) {
+    if (!rocketState || !finiteVector(deltaKmS) || length(deltaKmS) <= 1e-12) {
+      return false;
+    }
+    if (!directStarshipCorrectionAllowed("velocity", reason, options)) {
+      return false;
+    }
+    rocketState.velocity = add(
+      rocketState.velocity || { x: 0, y: 0, z: 0 },
+      deltaKmS,
+    );
+    recordDirectStarshipCorrection("velocity", reason, length(deltaKmS), options);
+    return true;
+  }
+
   function attachedBoosterCenterOffsetKm() {
     const shipHeightKm = Math.max(0, Number(STARSHIP_STACK_DIMENSIONS_KM.shipHeightKm) || 0);
     if (hotstageShipReferenceActive()) {
       const boosterHeightKm = Math.max(0, Number(STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm) || 0);
-      return -((shipHeightKm + boosterHeightKm) * 0.5);
+      const hotstageOpeningGapKm = runtime.hotstage?.active
+        ? clamp(
+          Number(runtime.hotstage.virtualSeparationKm) || 0,
+          0,
+          HOTSTAGE_INTERSTAGE_CONTACT_BAND_KM * 1.2,
+        )
+        : 0;
+      return -(((shipHeightKm + boosterHeightKm) * 0.5) + hotstageOpeningGapKm);
     }
     return -(shipHeightKm * 0.5);
   }
@@ -7484,6 +8345,13 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       attachedJointPlumeImpingementForceN: plumeImpingementForceN,
       hotstagePhysicalSeparationKm: separationMetrics ? separationMetrics.axialGapKm : 0,
       hotstagePhysicalSeparationRateKmS: separationMetrics ? separationMetrics.axialRateKmS : 0,
+      ...resolveBoosterRecoveryHardwareState({
+        phase: "attached-stack",
+        guidanceMode: "booster-attached-joint",
+        attitudeControlMode: "attached-stack",
+        boosterAttached: true,
+        dynamicPressurePa: Number(runtime.lastStep?.dynamicPressurePa) || 0,
+      }),
     };
   }
 
@@ -7522,24 +8390,31 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       target.targetVelocityKmS,
     );
     if (length(relativePositionErrorKm) > 1e-9) {
-      rocketState.position = add(
-        rocketState.position,
-        scale(relativePositionErrorKm, boosterMassKg / totalMassKg),
-      );
-      boosterState.position = add(
-        boosterState.position,
-        scale(relativePositionErrorKm, -shipMassKg / totalMassKg),
-      );
+      const shipPositionCorrectionKm = scale(relativePositionErrorKm, boosterMassKg / totalMassKg);
+      const boosterPositionCorrectionKm = scale(relativePositionErrorKm, -shipMassKg / totalMassKg);
+      if (applyStarshipPositionCorrection(
+        rocketState,
+        shipPositionCorrectionKm,
+        "attached_stack_constraint_position",
+        { constraint: true },
+      )) {
+        boosterState.position = add(boosterState.position, boosterPositionCorrectionKm);
+      }
     }
     if (length(relativeVelocityErrorKmS) > 1e-9) {
-      rocketState.velocity = add(
-        rocketState.velocity || { x: 0, y: 0, z: 0 },
-        scale(relativeVelocityErrorKmS, boosterMassKg / totalMassKg),
-      );
-      boosterState.velocity = add(
-        boosterState.velocity || { x: 0, y: 0, z: 0 },
-        scale(relativeVelocityErrorKmS, -shipMassKg / totalMassKg),
-      );
+      const shipVelocityCorrectionKmS = scale(relativeVelocityErrorKmS, boosterMassKg / totalMassKg);
+      const boosterVelocityCorrectionKmS = scale(relativeVelocityErrorKmS, -shipMassKg / totalMassKg);
+      if (applyStarshipVelocityCorrection(
+        rocketState,
+        shipVelocityCorrectionKmS,
+        "attached_stack_constraint_velocity",
+        { constraint: true },
+      )) {
+        boosterState.velocity = add(
+          boosterState.velocity || { x: 0, y: 0, z: 0 },
+          boosterVelocityCorrectionKmS,
+        );
+      }
     }
     runtime.attachedJoint.targetOffsetWorldKm = cloneVector(target.offsetWorldKm);
     runtime.attachedJoint.targetPositionKm = cloneVector(target.targetPositionKm);
@@ -7881,9 +8756,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       currentEarthAxes,
       earthRadiusKm,
     );
-    runtime.stageActuator = createActuatorState(
-      localPadUpDirection(rocketState, earthState, currentEarthAxes),
-    );
+    const padUpAxis = localPadUpDirection(rocketState, earthState, currentEarthAxes);
+    runtime.stageActuator = createActuatorState(padUpAxis);
+    runtime.stageAttitude = resetAttitudeStateToAxis(padUpAxis);
     ensureAttachedBoosterInNBody(
       state,
       rocketState,
@@ -7987,9 +8862,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       currentEarthAxes,
       Number(getEarthRadiusKm?.()) || 6371.0084,
     );
-    runtime.stageActuator = createActuatorState(
-      localPadUpDirection(rocketState, earthState, currentEarthAxes),
-    );
+    const padUpAxis = localPadUpDirection(rocketState, earthState, currentEarthAxes);
+    runtime.stageActuator = createActuatorState(padUpAxis);
+    runtime.stageAttitude = resetAttitudeStateToAxis(padUpAxis);
     ensureAttachedBoosterInNBody(
       state,
       rocketState,
@@ -8185,9 +9060,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       ? 0
       : STARSHIP_STACK_DIMENSIONS_KM.boosterHeightKm * 0.5;
     if (shipCenterShiftKm > 0) {
-      rocketState.position = add(
-        rocketState.position,
+      applyStarshipPositionCorrection(
+        rocketState,
         scale(separationAxis, shipCenterShiftKm),
+        "stage_separation_ship_reference_shift",
+        { lifecycle: true },
       );
     }
     boosterState.massKg = boosterMassKg;
@@ -8230,37 +9107,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       runtime.stage1Combustion,
       boosterCombustionClusterOptions(runtime.boosterEngineCountOverride, "separation-flip"),
     );
-	    runtime.booster.lastStep = zeroBoosterStep("booster-separation-flip");
-	    runtime.booster.attitude = createBoosterAttitudeState(stackedBodyAxis);
-	    const initialFlipTarget = normalize(
-	      scale(
-	        subtract(
-	          boosterState.velocity || { x: 0, y: 0, z: 0 },
-	          earthState.velocity || { x: 0, y: 0, z: 0 },
-	        ),
-	        -1,
-	      ),
-	      up,
-	    );
-	    const initialFlipErrors = computeBoosterAttitudeControlErrors({
-	      desiredDirection: initialFlipTarget,
-	      attitudeState: runtime.booster.attitude,
-	      referenceUpWorld: up,
-	      tangentialVectorWorld: runtime.lastStep?.requestedDirectionKm || stackedBodyAxis,
-	    });
-	    const initialFlipAxisNorm = Math.hypot(
-	      Number(initialFlipErrors.pitchErrorRad) || 0,
-	      Number(initialFlipErrors.yawErrorRad) || 0,
-	    );
-	    if (initialFlipAxisNorm > 1e-6) {
-	      const initialFlipRateRadS = rad(6.0);
-	      runtime.booster.attitude.omegaBodyRadS = {
-	        x: ((Number(initialFlipErrors.pitchErrorRad) || 0) / initialFlipAxisNorm) * initialFlipRateRadS,
-	        y: 0,
-	        z: ((Number(initialFlipErrors.yawErrorRad) || 0) / initialFlipAxisNorm) * initialFlipRateRadS,
-	      };
-	    }
-	    runtime.boosterActuator = createActuatorState(stackedBodyAxis);
+    runtime.booster.lastStep = zeroBoosterStep("booster-separation-flip");
+    runtime.booster.attitude = createBoosterAttitudeState(stackedBodyAxis);
+    runtime.boosterActuator = createActuatorState(stackedBodyAxis);
     runtime.boosterMassModel = createMassModelState();
     runtime.booster.lastSurfaceSample = null;
     runtime.booster.contactHoldSec = 0;
@@ -8310,6 +9159,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       (Number(runtime.elapsedSeconds) || 0) - (Number(runtime.booster.separationTimeSec) || 0),
     );
     if (timeSinceSeparationSec > 8) {
+      updateStarshipCleanFreeFlightState({
+        contactActive: false,
+        reason: "separation_contact_window_expired",
+      });
       return null;
     }
     const rocketState = rocketStateFromNBody(state);
@@ -8351,25 +9204,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         0.018,
       );
       if (targetDeltaV > 1e-9) {
-        rocketState.velocity = add(
-          rocketState.velocity,
-          scale(axis, targetDeltaV * (boosterMassKg / totalMassKg)),
-        );
-        boosterState.velocity = add(
-          boosterState.velocity,
-          scale(axis, -targetDeltaV * (shipMassKg / totalMassKg)),
-        );
-      }
-      if (penetrationKm > 1e-9) {
-        const correctionKm = Math.min(penetrationKm, 0.004);
-        rocketState.position = add(
-          rocketState.position,
-          scale(axis, correctionKm * (boosterMassKg / totalMassKg)),
-        );
-        boosterState.position = add(
-          boosterState.position,
-          scale(axis, -correctionKm * (shipMassKg / totalMassKg)),
-        );
+        const shipContactDeltaVKmS = scale(axis, targetDeltaV * (boosterMassKg / totalMassKg));
+        if (applyStarshipVelocityCorrection(
+          rocketState,
+          shipContactDeltaVKmS,
+          "interstage_release_contact_impulse",
+          { contact: true },
+        )) {
+          boosterState.velocity = add(
+            boosterState.velocity,
+            scale(axis, -targetDeltaV * (shipMassKg / totalMassKg)),
+          );
+        }
       }
       runtime.attachedJoint.releaseContactActive = true;
     } else {
@@ -8378,6 +9224,11 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.attachedJoint.physicalSeparationKm = metrics.axialGapKm;
     runtime.attachedJoint.physicalSeparationRateKmS = metrics.axialRateKmS;
     runtime.attachedJoint.physicalLateralOffsetKm = metrics.lateralOffsetKm;
+    updateStarshipCleanFreeFlightState({
+      metrics,
+      contactActive,
+      reason: "interstage_gap_clear",
+    });
     return {
       ...metrics,
       contactActive,
@@ -8593,7 +9444,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       guidanceOrbital.tangentialVector,
       command.directionMix,
     );
-    if (command.predictiveCatchControl && catchRelativeState && !command.predictiveCatchControl.translationOnly) {
+    if (command.predictiveCatchControl && catchRelativeState) {
       direction = composePredictiveCatchDirection(
         direction,
         catchRelativeState,
@@ -8725,16 +9576,26 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       }
       const baseMaxSiteSteeringAngleDeg = Number(command.maxSiteSteeringAngleDeg);
       const predictiveSteeringExtraDeg =
-        command.predictiveCatchControl?.enabled && !command.predictiveCatchControl?.translationOnly
+        command.predictiveCatchControl?.enabled
           ? clamp(
             10 + (28 * clamp(Number(command.predictiveCatchControl?.blend) || 0, 0, 1)),
             10,
             38,
           )
           : 0;
-      const maxSiteSteeringAngleDeg = Number.isFinite(baseMaxSiteSteeringAngleDeg)
+      let maxSiteSteeringAngleDeg = Number.isFinite(baseMaxSiteSteeringAngleDeg)
         ? Math.min(88, baseMaxSiteSteeringAngleDeg + predictiveSteeringExtraDeg)
         : Number.NaN;
+      if (String(command.phase || "").toLowerCase() === "boostback" && Number.isFinite(maxSiteSteeringAngleDeg)) {
+        const boostbackRetrogradePriorityCapDeg = clamp(
+          46
+            + (1.25 * Math.max(0, timeSinceSeparationSec - 5))
+            + (16 * clamp(Number(runtime.boosterActuator?.throttleActual) || 0, 0, 1)),
+          46,
+          92,
+        );
+        maxSiteSteeringAngleDeg = Math.min(maxSiteSteeringAngleDeg, boostbackRetrogradePriorityCapDeg);
+      }
       if (Number.isFinite(maxSiteSteeringAngleDeg) && maxSiteSteeringAngleDeg > 0) {
         direction = limitDirectionOffAxis(
           direction,
@@ -8743,7 +9604,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         );
       }
     }
-    if (command.predictiveCatchControl && catchRelativeState && !command.predictiveCatchControl.translationOnly) {
+    if (command.predictiveCatchControl && catchRelativeState) {
       direction = composePredictiveCatchDirection(
         direction,
         catchRelativeState,
@@ -8770,6 +9631,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         direction,
         currentBoosterAxis,
         rad(boostbackTargetSlewLimitDeg),
+      );
+      const boostbackRetrogradePriorityCapDeg = clamp(
+        46
+          + (1.25 * Math.max(0, timeSinceSeparationSec - 5))
+          + (16 * clamp(Number(runtime.boosterActuator?.throttleActual) || 0, 0, 1)),
+        46,
+        92,
+      );
+      direction = limitDirectionOffAxis(
+        direction,
+        normalize(scale(guidanceRelVel, -1), direction),
+        rad(boostbackRetrogradePriorityCapDeg),
       );
     }
     const pressurePa = Number(atmosphereSample?.pressurePa) || 0;
@@ -8922,10 +9795,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       const bodyRateDegS = degrees(length(runtime.booster.attitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 }));
       const noseDownBoostbackPenalty = terminalUprightCommitActive
         ? 1
-        : clamp((bodyUpAlignment + 0.05) / 0.05, 0, 1);
-      const attitudeGate = clamp((74 - ignitionAttitudeErrorDeg) / 30, 0, 1)
+        : clamp((bodyUpAlignment + 0.35) / 0.35, 0.72, 1);
+      const attitudeGate = clamp((98 - ignitionAttitudeErrorDeg) / 56, 0, 1)
         * noseDownBoostbackPenalty;
-      const rateGate = clamp((32 - bodyRateDegS) / 20, 0, 1);
+      const rateGate = clamp((42 - bodyRateDegS) / 30, 0, 1);
       requestedThrottle *= attitudeGate * rateGate;
     }
     if (
@@ -8944,15 +9817,21 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           || Number(catchRelativeState.lateralSpeedKmS) > 0.035
         )
       );
+      const landingCorridorTranslationActive = Boolean(
+        recoveryPhase === "landing-burn"
+        && catchRelativeState
+        && altitudeKm > 1.4
+        && Number(catchRelativeState.lateralRangeKm) > 1.2
+      );
       const minIgnitionAlignment = recoveryPhase === "catch-burn"
-        ? (catchCorridorStillTranslating ? 0.68 : 0.86)
+        ? (catchCorridorStillTranslating ? 0.72 : 0.86)
         : recoveryPhase === "landing-burn"
-          ? 0.68
+          ? (landingCorridorTranslationActive ? 0.72 : 0.68)
           : 0.82;
       const fullAuthorityAlignment = recoveryPhase === "catch-burn"
-        ? (catchCorridorStillTranslating ? 0.84 : 0.94)
+        ? (catchCorridorStillTranslating ? 0.90 : 0.94)
         : recoveryPhase === "landing-burn"
-          ? 0.84
+          ? (landingCorridorTranslationActive ? 0.90 : 0.84)
           : 0.92;
       const bodyRateDegS = degrees(length(runtime.booster.attitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 }));
       const attitudeGate = clamp(
@@ -8961,7 +9840,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         0,
         1,
       );
-      const rateGate = clamp((18 - bodyRateDegS) / 14, 0, 1);
+      const rateGate = landingCorridorTranslationActive
+        ? clamp((34 - bodyRateDegS) / 28, 0, 1)
+        : clamp((18 - bodyRateDegS) / 14, 0, 1);
       requestedThrottle *= attitudeGate * rateGate;
     }
 	    if (qAlphaActive) {
@@ -9003,8 +9884,8 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
 	          0.88
 	            - (0.10 * catchLateralBrakeNeed)
 	            - (0.18 * catchMissedCorridorNeed),
-	          0.60,
-	          0.90,
+	          0.86,
+	          0.92,
 	        );
       } else if (recoveryPhase === "landing-burn") {
         const landingLateralBrakeNeed = catchRelativeState
@@ -9013,7 +9894,19 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
             clamp((Number(catchRelativeState.lateralRangeKm) - 0.35) / 2.8, 0, 1),
           )
           : 0;
-        mainThrustMinUpComponent = 0.78 - (0.06 * landingLateralBrakeNeed);
+        const landingVerticalBrakeUrgency = catchRelativeState
+          ? clamp((-Number(catchRelativeState.verticalSpeedKmS) - 0.18) / 0.42, 0, 1)
+          : 1;
+        const landingMissedCorridorNeed = catchRelativeState
+          ? clamp((Number(catchRelativeState.lateralRangeKm) - 1.4) / 4.6, 0, 1)
+          : 0;
+        mainThrustMinUpComponent = clamp(
+          0.92
+            - (0.04 * landingLateralBrakeNeed)
+            - (0.08 * landingMissedCorridorNeed * (1 - landingVerticalBrakeUrgency)),
+          0.86,
+          0.94,
+        );
       }
 	      direction = enforceMinimumUpComponent(
 	        direction,
@@ -9112,35 +10005,40 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       runtime.boosterActuator.directionActual,
       direction,
     );
-    const poweredTerminalAttitudeTracksGuidance = Boolean(
+    const poweredRecoveryAttitudeTracksGuidance = Boolean(
+      recoveryPhase === "boostback"
+      || recoveryPhase === "entry-burn"
+    );
+    const poweredTerminalAttitudeHoldsUpright = Boolean(
       catchRelativeState
       && (
         recoveryPhase === "landing-burn"
         || recoveryPhase === "catch-burn"
       )
-      && (
-        Number(catchRelativeState.lateralRangeKm) > 0.18
-        || Number(catchRelativeState.lateralSpeedKmS) > 0.035
-      )
+      && terminalUprightCommitActive
     );
     const attitudeCommandDirection = (
-      poweredTerminalAttitudeTracksGuidance
-      || throttleActual <= 0.005
-      && (
-        recoveryPhase === "separation-flip"
-        || recoveryPhase === "separation-coast"
-        || recoveryPhase === "hotstage-ring-jettison"
-        || recoveryPhase === "boostback"
-        || recoveryPhase === "descent-coast"
-        || recoveryPhase === "terminal-intercept"
-        || recoveryPhase === "catch-approach"
-        || recoveryPhase === "landing-burn"
-        || recoveryPhase === "catch-burn"
-      )
-    )
-      ? direction
-      : actuatedDirection;
-    const physicalRecoveryTargetBlendFloor = BOOSTER_FULL_6DOF_RECOVERY_ENABLED && (
+      poweredTerminalAttitudeHoldsUpright
+        ? terminalUprightAxis
+        : (
+          poweredRecoveryAttitudeTracksGuidance
+          || throttleActual <= 0.005
+          && (
+            recoveryPhase === "separation-flip"
+            || recoveryPhase === "separation-coast"
+            || recoveryPhase === "hotstage-ring-jettison"
+            || recoveryPhase === "boostback"
+            || recoveryPhase === "descent-coast"
+            || recoveryPhase === "terminal-intercept"
+            || recoveryPhase === "catch-approach"
+            || recoveryPhase === "landing-burn"
+            || recoveryPhase === "catch-burn"
+          )
+        )
+          ? direction
+          : actuatedDirection
+    );
+    const physicalRecoveryTargetBlendFloor = (
       recoveryPhase === "separation-flip"
       || recoveryPhase === "separation-coast"
       || recoveryPhase === "hotstage-ring-jettison"
@@ -9363,272 +10261,22 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         engineAsymmetryBodyTorqueNm,
       ),
     );
-    let physicalFlipAngularAccelerationRadS2 = 0;
-    let physicalUprightAngularAccelerationRadS2 = 0;
-    if (
-      BOOSTER_FULL_6DOF_RECOVERY_ENABLED
-      && (
-        recoveryPhase === "separation-flip"
-        || recoveryPhase === "separation-coast"
-        || recoveryPhase === "boostback"
-      )
-      && bodyRetrogradeAlignment < 0.86
-    ) {
-      const desiredBodyDirection = normalize(
-        rotateWorldVectorToBoosterBody(direction, runtime.booster.attitude),
-        { x: 0, y: 1, z: 0 },
-      );
-      const flipAxisBody = cross({ x: 0, y: 1, z: 0 }, desiredBodyDirection);
-      const flipAxisUnitBody = unitOrNull(flipAxisBody);
-      const flipErrorRad = angleBetweenRadians({ x: 0, y: 1, z: 0 }, desiredBodyDirection);
-      if (flipAxisUnitBody && flipErrorRad > rad(4)) {
-        const omegaBody = runtime.booster.attitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 };
-        const rateAlongAxisRadS = dot(omegaBody, flipAxisUnitBody);
-        const commandedFlipAccelRadS2 = clamp(
-          (0.095 * flipErrorRad) - (0.55 * rateAlongAxisRadS),
-          -0.045,
-          0.045,
-        );
-        const inertia = boosterPrincipalInertiaKgM2(
-          Number(boosterState.massKg) || 0,
-          runtime.boosterMassModel?.inertiaNormalized,
-        );
-        const flipTorqueBodyNm = {
-          x: flipAxisUnitBody.x * commandedFlipAccelRadS2 * inertia.x,
-          y: flipAxisUnitBody.y * commandedFlipAccelRadS2 * inertia.y,
-          z: flipAxisUnitBody.z * commandedFlipAccelRadS2 * inertia.z,
-        };
-        totalBodyTorqueNm = add(totalBodyTorqueNm, flipTorqueBodyNm);
-        physicalFlipAngularAccelerationRadS2 = Math.abs(commandedFlipAccelRadS2);
-      }
-    }
-		    const terminalHighLateralBrakeReferenceActive = Boolean(
-		      recoveryPhase === "terminal-intercept"
-		      && catchRelativeState
-		      && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) > 1.6
-          && altitudeKm > 2.8
-		      && Number(catchRelativeState.lateralRangeKm) <= 8.5
-		      && Number(catchRelativeState.lateralSpeedKmS) > 0.16
-		      && bodyUpAlignment > 0.36
-		    );
-    const terminalHighSpeedCorridorBrakeActive = Boolean(
-      catchRelativeState
-      && altitudeKm > 2.8
-      && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) > 1.6
-      && Number(catchRelativeState.lateralRangeKm) <= 2.4
-      && Number(catchRelativeState.lateralSpeedKmS) > 0.16
-      && (
-        recoveryPhase === "terminal-intercept"
-        || recoveryPhase === "catch-approach"
-        || recoveryPhase === "landing-burn"
-        || recoveryPhase === "catch-burn"
-      )
-    );
-    const landingBurnCloseLateralBrakeActive = Boolean(
-      recoveryPhase === "landing-burn"
-      && catchRelativeState
-      && altitudeKm > 1.4
-      && Number(catchRelativeState.lateralSpeedKmS) > 0.045
-      && (
-        Number(catchRelativeState.lateralRangeKm) > 0.18
-        || Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) > 0.8
-      )
-    );
-		    const towerRelativeTerminalBodyUprightHoldActive = Boolean(
-		      towerClearCorridorActive
-		      && catchRelativeState
-      && !terminalHighSpeedCorridorBrakeActive
-		      && (
-	        recoveryPhase === "catch-approach"
-          && (
-            Number(catchRelativeState.totalRangeKm) <= 1.0
-            || (
-              Number(catchRelativeState.lateralRangeKm) <= 0.55
-              && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) <= 1.2
-              && Number(catchRelativeState.lateralSpeedKmS) <= 0.10
-            )
-          )
-		        || (
-		          recoveryPhase === "catch-burn"
-		          && (
-		            Number(catchRelativeState.totalRangeKm) <= 2.4
-		            || (
-		              Number(catchRelativeState.lateralRangeKm) <= 1.1
-		              && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) <= 3.2
-		            )
-	            || (
-	              altitudeKm <= 4
-	              && Number(catchRelativeState.lateralRangeKm) <= 0.75
-	              && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) <= 1.8
-	              && Number(catchRelativeState.lateralSpeedKmS) <= 0.12
-	            )
-		          )
-		        )
-	        || (
-	          recoveryPhase === "terminal-intercept"
-	          && (
-	            Number(catchRelativeState.totalRangeKm) <= 0.9
-	            || (
-                Number(catchRelativeState.lateralRangeKm) <= 0.55
-                && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) <= 1.2
-                && Number(catchRelativeState.lateralSpeedKmS) <= 0.10
-              )
-	            || (
-                altitudeKm <= 2.0
-                && Number(catchRelativeState.lateralRangeKm) <= 3.0
-                && Math.abs(Number(catchRelativeState.verticalErrorKm) || 0) <= 2.4
-                && Number(catchRelativeState.lateralSpeedKmS) <= 0.18
-              )
-	          )
-	        )
-	      )
-	    );
-	    const physicalGuidedTiltReferenceActive = Boolean(
-	      !terminalCatchHardUprightLockActive
-	      && !towerRelativeTerminalBodyUprightHoldActive
-	      && (
-	        bodyUpAlignment > (
-            recoveryPhase === "terminal-intercept" ? 0.86 : 0.78
-          )
-	        || terminalHighLateralBrakeReferenceActive
-	        || terminalHighSpeedCorridorBrakeActive
-          || landingBurnCloseLateralBrakeActive
-	      )
-	      && (
-	        recoveryPhase !== "terminal-intercept"
-	        || !catchRelativeState
-	        || Number(catchRelativeState.lateralRangeKm) > 1.2
-	        || terminalHighLateralBrakeReferenceActive
-	      )
-	      && (
-		        recoveryPhase === "terminal-intercept"
-	          && altitudeKm > 8
-	          && (
-	            Number(catchRelativeState?.lateralRangeKm) > 2.4
-	            || Number(catchRelativeState?.lateralSpeedKmS) > 0.18
-	          )
-	        || (
-	          recoveryPhase === "descent-coast"
-          && command.predictiveCatchControl?.enabled
-          && catchRelativeState
-          && altitudeKm <= 45
-          && Number(catchRelativeState.lateralRangeKm) > 2.8
-          && Number(catchRelativeState.lateralRangeKm) <= 32
-        )
-        || (
-          recoveryPhase === "catch-approach"
-          && catchRelativeState
-          && Number(catchRelativeState.lateralRangeKm) > 4
-        )
-        || (
-          recoveryPhase === "landing-burn"
-          && catchRelativeState
-          && altitudeKm > 2.2
-          && (
-            Number(catchRelativeState.lateralRangeKm) > 0.45
-            || landingBurnCloseLateralBrakeActive
-          )
-        )
-        || (
-          recoveryPhase === "catch-burn"
-          && catchRelativeState
-          && altitudeKm > 4
-          && Number(catchRelativeState.totalRangeKm) > 2.4
-        )
-      )
-    );
-    const physicalUprightReferenceWorld = normalize(
-      physicalGuidedTiltReferenceActive
-        ? desiredAttitudeDirection
-        : terminalUprightAxis,
-      terminalUprightAxis,
-    );
-    const physicalUprightReferenceAlignment = dot(currentBoosterAxis, physicalUprightReferenceWorld);
-    if (
-      BOOSTER_FULL_6DOF_RECOVERY_ENABLED
-      && terminalUprightCommitActive
-      && (
-        recoveryPhase === "entry-align"
-        || recoveryPhase === "entry-burn"
-        || recoveryPhase === "descent-coast"
-        || recoveryPhase === "terminal-intercept"
-        || recoveryPhase === "catch-approach"
-        || recoveryPhase === "catch-burn"
-        || recoveryPhase === "landing-burn"
-      )
-      && physicalUprightReferenceAlignment < 0.985
-    ) {
-      const uprightTargetBody = normalize(
-        rotateWorldVectorToBoosterBody(physicalUprightReferenceWorld, runtime.booster.attitude),
-        { x: 0, y: 1, z: 0 },
-      );
-      const uprightAxisBody = cross({ x: 0, y: 1, z: 0 }, uprightTargetBody);
-      const uprightAxisUnitBody = unitOrNull(uprightAxisBody);
-      const uprightErrorRad = angleBetweenRadians({ x: 0, y: 1, z: 0 }, uprightTargetBody);
-      if (uprightAxisUnitBody && uprightErrorRad > rad(2.0)) {
-        const omegaBody = runtime.booster.attitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 };
-        const rateAlongAxisRadS = dot(omegaBody, uprightAxisUnitBody);
-	        const highAltitudeTerminalTiltActive = Boolean(
-	          physicalGuidedTiltReferenceActive
-	          && catchRelativeState
-	          && altitudeKm > 4.0
-		          && (
-                Number(catchRelativeState.lateralRangeKm) > 2.0
-                || terminalHighLateralBrakeReferenceActive
-                || terminalHighSpeedCorridorBrakeActive
-                || landingBurnCloseLateralBrakeActive
-              )
-	          && (
-	            recoveryPhase === "catch-approach"
-	            || recoveryPhase === "landing-burn"
-	            || recoveryPhase === "catch-burn"
-	            || recoveryPhase === "terminal-intercept"
-          )
-        );
-        const terminalPoweredTiltGain = (
-          highAltitudeTerminalTiltActive
-          && (
-            recoveryPhase === "landing-burn"
-            || recoveryPhase === "catch-burn"
-          )
-        )
-          ? 6.40
-          : 3.20;
-        const terminalPoweredTiltDamping = (
-          highAltitudeTerminalTiltActive
-          && (
-            recoveryPhase === "landing-burn"
-            || recoveryPhase === "catch-burn"
-          )
-        )
-          ? 1.18
-          : 0.92;
-        const commandedUprightAccelRadS2 = clamp(
-			          (
-			            (highAltitudeTerminalTiltActive ? terminalPoweredTiltGain : 0.18) * uprightErrorRad
-			          ) - (
-			            (highAltitudeTerminalTiltActive ? terminalPoweredTiltDamping : 0.66) * rateAlongAxisRadS
-			          ),
-			          highAltitudeTerminalTiltActive ? -6.40 : -0.13,
-			          highAltitudeTerminalTiltActive ? 6.40 : 0.13,
-			        );
-        const inertia = boosterPrincipalInertiaKgM2(
-          Number(boosterState.massKg) || 0,
-          runtime.boosterMassModel?.inertiaNormalized,
-        );
-        totalBodyTorqueNm = add(totalBodyTorqueNm, {
-          x: uprightAxisUnitBody.x * commandedUprightAccelRadS2 * inertia.x,
-          y: uprightAxisUnitBody.y * commandedUprightAccelRadS2 * inertia.y,
-          z: uprightAxisUnitBody.z * commandedUprightAccelRadS2 * inertia.z,
-        });
-        physicalUprightAngularAccelerationRadS2 = Math.abs(commandedUprightAccelRadS2);
-      }
-    }
+    const aeroTorqueActive = Boolean(aeroAxis && Math.abs(aeroTorqueSignedNm) > 1e-6);
+    const attitudeTorqueSources = [
+      length(gridFinControl.bodyTorqueNm || { x: 0, y: 0, z: 0 }) > 1e-6 ? "grid-fins" : null,
+      length(engineAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 }) > 1e-6 ? "engine-gimbal" : null,
+      length(effectiveRcsAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 }) > 1e-6 ? "rcs-thrusters" : null,
+      engineAsymmetryMomentNm > 1e-6 ? "engine-asymmetry" : null,
+      aeroTorqueActive ? "aero-moment" : null,
+    ].filter(Boolean);
+    const attitudeTorqueSourceText = attitudeTorqueSources.length > 0
+      ? attitudeTorqueSources.join(" + ")
+      : "none";
     let totalTorqueWorldNm = rotateVectorByQuaternion(
       totalBodyTorqueNm,
       runtime.booster.attitude?.orientation || quaternionIdentity(),
     );
-    if (aeroAxis && Math.abs(aeroTorqueSignedNm) > 1e-6) {
+    if (aeroTorqueActive) {
       totalTorqueWorldNm = add(totalTorqueWorldNm, scale(aeroAxis, aeroTorqueSignedNm));
     }
     runtime.booster.attitude = integrateBoosterAttitudeState(runtime.booster.attitude, {
@@ -9639,16 +10287,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       maxBodyRateRadS: effectiveMaxBodyRateRadS,
       dtSeconds,
     });
-    const attitudeStabilizationTarget = terminalCatchHardUprightLockActive
-      ? terminalUprightAxis
-      : actuatedDirection;
-    if (!BOOSTER_FULL_6DOF_RECOVERY_ENABLED) {
-      runtime.booster.attitude = stabilizeBoosterAttitudeTowardDirection(runtime.booster.attitude, {
-        targetDirectionWorld: attitudeStabilizationTarget,
-        dtSeconds,
-        maxBodyRateRadS: effectiveMaxBodyRateRadS,
-      });
-    }
     const directionActual = boosterBodyAxisWorld(runtime.booster.attitude);
     runtime.boosterActuator.directionCommand = normalize(direction, directionActual);
     runtime.boosterActuator.directionActual = directionActual;
@@ -9744,15 +10382,31 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         (Math.max(0, Number(runtime.booster.rcsCombustion?.thrustN) || 0) / effectiveMassKg) / 1000,
       )
       : { x: 0, y: 0, z: 0 };
-    const corridorGuidanceActive = false;
-    const corridorCorrectionAccelerationKmS2 = { x: 0, y: 0, z: 0 };
+    const recoveryHardwareState = resolveBoosterRecoveryHardwareState({
+      phase: recoveryPhase,
+      guidanceMode: command.guidanceMode || runtime.booster.guidanceMode,
+      attitudeControlMode: command.attitudeControlMode,
+      gridFinAuthority: Number(gridFinControl.authority) || 0,
+      gridFinDeflectionDeg: Number(gridFinControl.deflectionDeg) || 0,
+      gridFinMaxDeflectionDeg: Number(gridFinControl.maxDeflectionDeg) || 0,
+      gridFinStates: Array.isArray(gridFinControl.finStates)
+        ? gridFinControl.finStates.map((finState) => ({ ...finState }))
+        : [],
+      dynamicPressurePa: Number(aero.dynamicPressurePa) || dynamicPressurePa,
+      throttle: throttleActual,
+      requestedThrottle,
+      desiredEngineCount: boosterEngineState.desiredCount,
+      activeEngineCount: boosterEngineState.activeCount,
+      towerRelativeActive: Boolean(navigationSolution?.towerRelativeActive),
+      catchPositionSigmaKm: navigationSolution?.catchPositionSigmaKm,
+      catchVelocitySigmaKmS: navigationSolution?.catchVelocitySigmaKmS,
+      catchCommitEligible: Boolean(command.phase === "catch-burn" || command.phase === "catch-approach"),
+      catchCaptureActive: Boolean(runtime.booster.capture?.active),
+    });
     runtime.booster.lastStep = {
       accelerationKmS2: add(
-        add(
-          add(scale(thrustVectorDirectionActual, accelerationMagKmS2), aero.accelerationKmS2),
-          boosterRcsAccelerationKmS2,
-        ),
-        corridorCorrectionAccelerationKmS2,
+        add(scale(thrustVectorDirectionActual, accelerationMagKmS2), aero.accelerationKmS2),
+        boosterRcsAccelerationKmS2,
       ),
       throttle: throttleActual,
       throttleCommand: requestedThrottle,
@@ -9785,25 +10439,25 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         ? [...boosterEngineState.engineThrustNByIndex]
         : [],
       burnKg,
-	      burnRateKgS,
-	      ...combustionSummaryFields(boosterEngineState),
-	      rcsBurnKg,
-	      rcsBurnRateKgS,
-	      dynamicPressurePa: aero.dynamicPressurePa,
-	      requestedDirectionKm: cloneVectorOrNull(reportedRequestedDirection),
-	      bodyAxisDirectionKm: cloneVectorOrNull(directionActual),
-	      mainThrustDirectionKm: accelerationMagKmS2 > 0
-	        ? cloneVectorOrNull(thrustVectorDirectionActual)
-	        : null,
-	      requestedThrustVerticalComponent: dot(direction, terminalUprightAxis),
-	      mainThrustVerticalComponent: accelerationMagKmS2 > 0
-	        ? dot(thrustVectorDirectionActual, terminalUprightAxis)
-	        : 0,
-	      mainThrustMinUpComponent,
-	      mainThrustVerticalFloorActive: poweredMainThrustFloorActive,
-	      bodyRetrogradeAlignment,
-	      bodyAntiTangentAlignment,
-	      bodyUpAlignment,
+      burnRateKgS,
+      ...combustionSummaryFields(boosterEngineState),
+      rcsBurnKg,
+      rcsBurnRateKgS,
+      dynamicPressurePa: aero.dynamicPressurePa,
+      requestedDirectionKm: cloneVectorOrNull(reportedRequestedDirection),
+      bodyAxisDirectionKm: cloneVectorOrNull(directionActual),
+      mainThrustDirectionKm: accelerationMagKmS2 > 0
+        ? cloneVectorOrNull(thrustVectorDirectionActual)
+        : null,
+      requestedThrustVerticalComponent: dot(direction, terminalUprightAxis),
+      mainThrustVerticalComponent: accelerationMagKmS2 > 0
+        ? dot(thrustVectorDirectionActual, terminalUprightAxis)
+        : 0,
+      mainThrustMinUpComponent,
+      mainThrustVerticalFloorActive: poweredMainThrustFloorActive,
+      bodyRetrogradeAlignment,
+      bodyAntiTangentAlignment,
+      bodyUpAlignment,
       predictiveCatchActive: Boolean(command.predictiveCatchControl?.enabled),
       catchInterceptTimeSec: Number(command.predictiveCatchControl?.interceptTimeSec) || 0,
       catchGuidanceBlend: Number(command.predictiveCatchControl?.blend) || 0,
@@ -9824,8 +10478,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rcsAuthority: boosterRcsAvailability * clamp(Number(boosterRcs.authority) || 0, 0, 1),
       rcsAccelerationKmS2: boosterRcsAccelerationKmS2,
       rcsAccelerationMagKmS2: length(boosterRcsAccelerationKmS2),
-      corridorGuidanceActive,
-      corridorCorrectionAccelerationKmS2,
       mainEngineAuthorityActive,
       rcsAuthorityAllowed,
       rcsJets: boosterRcsActive ? activeRcsJets : [],
@@ -9876,12 +10528,22 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       gridFinDeflectionDeg: Number(gridFinControl.deflectionDeg) || 0,
       gridFinMomentNm: Number(gridFinControl.momentNm) || 0,
       gridFinAngularAccelerationRadS2: Number(gridFinControl.angularAccelerationRadS2) || 0,
+      gridFinStates: Array.isArray(gridFinControl.finStates)
+        ? gridFinControl.finStates.map((finState) => ({
+          name: String(finState?.name || ""),
+          deflectionDeg: Number(finState?.deflectionDeg) || 0,
+          dynamicPressurePa: Number(finState?.dynamicPressurePa) || 0,
+          effectiveness: Number(finState?.effectiveness) || 0,
+        }))
+        : [],
+      ...recoveryHardwareState,
       engineAsymmetryBodyTorqueNm: cloneVectorOrNull(engineAsymmetryBodyTorqueNm),
       engineAsymmetryMomentNm,
+      aeroMomentNm: Math.abs(aeroTorqueSignedNm),
       engineAngularAccelerationRadS2: Number(engineAngularControl.angularAccelerationRadS2) || 0,
       rcsAngularAccelerationRadS2: Number(effectiveRcsAngularControl.angularAccelerationRadS2) || 0,
-      physicalFlipAngularAccelerationRadS2,
-      physicalUprightAngularAccelerationRadS2,
+      attitudeTorqueSources,
+      attitudeTorqueSourceText,
       bodyAngularRateRadS: cloneVectorOrNull(runtime.booster.attitude?.omegaBodyRadS),
       attitudeControlMode: String(command.attitudeControlMode || ""),
     };
@@ -10237,88 +10899,6 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     let catchPinHeightErrorKm = Number.isFinite(Number(catchRelativeState?.verticalErrorKm))
       ? Number(catchRelativeState.verticalErrorKm)
       : computeBoosterCatchPinHeightErrorKm(bodyAboveTerrainKm);
-    const towerClearCorridorOffsetEastKm = resolveTowerClearCorridorOffsetEastKm({
-      altitudeKm,
-      bodyAboveTerrainKm,
-      catchVerticalErrorKm: catchRelativeState?.verticalErrorKm,
-      catchGuidanceActive: Boolean(
-        catchFrame
-        && catchRelativeState
-        && !runtime.booster.capture?.active
-        && (
-          Boolean(navigationSolution?.towerRelativeActive)
-          || String(runtime.booster.guidanceMode || "").toLowerCase().includes("catch")
-          || String(runtime.booster.guidanceMode || "").toLowerCase().includes("terminal-intercept")
-        ),
-      ),
-      captureActive: Boolean(runtime.booster.capture?.active),
-    });
-    const towerCatchApproachGuidanceActive =
-      Boolean(catchFrame)
-      && Boolean(navigationSolution?.towerRelativeActive)
-      && (
-        String(runtime.booster.guidanceMode || "").includes("descent-coast")
-        || String(runtime.booster.guidanceMode || "").includes("terminal-intercept")
-        || String(runtime.booster.guidanceMode || "").includes("catch-approach")
-        || String(runtime.booster.guidanceMode || "").includes("catch-burn")
-      )
-      && Number.isFinite(Number(catchRelativeState?.totalRangeKm))
-      && Number(catchRelativeState.totalRangeKm) <= 34;
-    if (
-      BOOSTER_KINEMATIC_CATCH_ASSIST_ENABLED
-      && towerCatchApproachGuidanceActive
-      && !runtime.booster.capture?.active
-    ) {
-      const guidanceModeText = String(runtime.booster.guidanceMode || "").toLowerCase();
-      const lateralRangeKm = Math.max(0, Number(catchRelativeState?.lateralRangeKm) || 0);
-      const lateralSpeedKmS = Math.max(0, Number(catchRelativeState?.lateralSpeedKmS) || 0);
-      const verticalErrorKm = Number.isFinite(Number(catchRelativeState?.verticalErrorKm))
-        ? Number(catchRelativeState.verticalErrorKm)
-        : 0;
-      const correctionDemandNorm = clamp(
-        Math.max(
-          lateralRangeKm / 12,
-          lateralSpeedKmS / 0.55,
-        ),
-        0,
-        1,
-      );
-      const approachConstraint = computeBoosterCatchConstraintStep({
-        boosterState,
-        catchFrame,
-        dtSeconds,
-        contactProgress: guidanceModeText.includes("catch-burn")
-          ? (0.58 + (0.32 * correctionDemandNorm))
-          : guidanceModeText.includes("catch-approach")
-            ? (0.22 + (0.16 * correctionDemandNorm))
-            : (0.12 + (0.10 * correctionDemandNorm)),
-        captureProgress: 0,
-        targetOffsetUpKm: verticalErrorKm > 0.8
-          ? Math.max(0, verticalErrorKm - clamp(0.18 + (0.015 * verticalErrorKm), 0.18, 0.45))
-          : guidanceModeText.includes("catch-burn")
-            ? 0
-            : guidanceModeText.includes("catch-approach")
-              ? 0.0025
-              : 0.006,
-        maxCorrectionAccelKmS2: guidanceModeText.includes("catch-burn")
-          ? (0.160 + (0.080 * correctionDemandNorm))
-          : guidanceModeText.includes("catch-approach")
-            ? (0.080 + (0.040 * correctionDemandNorm))
-            : (0.040 + (0.016 * correctionDemandNorm)),
-        targetOffsetEastKm: towerClearCorridorOffsetEastKm,
-      });
-      if (approachConstraint) {
-        boosterState.position = { ...approachConstraint.position };
-        boosterState.velocity = { ...approachConstraint.velocity };
-        catchRelativeState = computeBoosterCatchRelativeState({
-          boosterState,
-          catchFrame,
-        });
-        catchPinHeightErrorKm = Number.isFinite(Number(catchRelativeState?.verticalErrorKm))
-          ? Number(catchRelativeState.verticalErrorKm)
-          : computeBoosterCatchPinHeightErrorKm(bodyAboveTerrainKm);
-      }
-    }
     const catchGuidanceActive = !caughtSupportLocked
       && String(runtime.booster.guidanceMode || "").startsWith("booster-catch");
     const catchAlignmentEligible = shouldFinalizeBoosterCatch({
@@ -11011,6 +11591,24 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           && orbital.altitudeKm <= PRIMARY_QALPHA_ACTIVE_MAX_ALTITUDE_KM
           && Number(dynamicPressurePa) >= qAlphaDynamicPressureThresholdPa
         );
+        const qAlphaReferenceAirVelocityKmS = (() => {
+          const launchPlaneNormal = unitOrNull(runtime.launchPlaneNormal);
+          if (
+            runtime.stageIndex === 0
+            && launchPlaneNormal
+            && Number.isFinite(Number(launchClearanceAltitudeKm))
+            && Number(launchClearanceAltitudeKm) < 35
+          ) {
+            const projectedRelAir = subtract(
+              relAirVelocityKmS,
+              scale(launchPlaneNormal, dot(relAirVelocityKmS, launchPlaneNormal)),
+            );
+            if (length(projectedRelAir) > 1e-9) {
+              return projectedRelAir;
+            }
+          }
+          return relAirVelocityKmS;
+        })();
         const qAlphaSteering = lowAltitudeQAlphaBypass || !qAlphaAtmosphereActive
           ? {
             direction: directionRequested,
@@ -11021,7 +11619,7 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           }
           : applyQAlphaSteeringLimit({
             desiredDirection: directionRequested,
-            relAirVelocityKmS,
+            relAirVelocityKmS: qAlphaReferenceAirVelocityKmS,
             dynamicPressurePa,
             bodyKind,
           });
@@ -11106,24 +11704,16 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         runtime.moonBurnAttitudeGateDirection = moonAttitudeGate.latchedDirection;
         runtime.moonBurnAttitudeGateAlignSec = moonAttitudeGate.alignStableSec;
 
-        runtime.stageActuator = applyActuatorModel(runtime.stageActuator, {
+        runtime.stageActuator = updateStageThrottleState(runtime.stageActuator, {
           requestedThrottle: canThrust ? throttleCommand : 0,
-          requestedDirection: steeringDirection,
           dtSeconds,
-          config: LAUNCH_REALISM_CONFIG.actuator.stage,
           massModel: runtime.stageMassModel,
-          angularAccelerationRadS2: commandedAngularAccelerationRadS2,
-          angularDampingPerS: commandedAngularDampingPerS,
-          maxBodyRateRadS: Number.isFinite(commandedMaxBodyRateDegS)
-            ? rad(commandedMaxBodyRateDegS)
-            : null,
         });
         const throttleActual = canThrust
           ? clamp(Number(runtime.stageActuator.throttleActual) || 0, 0, 1)
           : 0;
-        const directionActual = normalize(
-          runtime.stageActuator.directionActual,
-          steeringDirection,
+        runtime.stageAttitude = runtime.stageAttitude || resetAttitudeStateToAxis(
+          runtime.stageActuator?.directionActual || steeringDirection,
         );
         const stageCombustionState = stageForStep
           ? updateEngineCombustionClusterState(
@@ -11149,8 +11739,131 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           MIN_ROCKET_MASS_KG,
           (Number(rocketState.massKg) || MIN_ROCKET_MASS_KG) - (0.5 * burnKg),
         );
+        const directionBeforeAttitudeStep = boosterBodyAxisWorld(runtime.stageAttitude);
+        const stageOmegaBodyRadS = {
+          x: finiteNumber(runtime.stageAttitude?.omegaBodyRadS?.x, 0),
+          y: finiteNumber(runtime.stageAttitude?.omegaBodyRadS?.y, 0),
+          z: finiteNumber(runtime.stageAttitude?.omegaBodyRadS?.z, 0),
+        };
+        const stageControlErrorsBody = computeBoosterAttitudeControlErrors({
+          desiredDirection: steeringDirection,
+          attitudeState: runtime.stageAttitude,
+          referenceUpWorld: orbital.up,
+          tangentialVectorWorld: orbital.tangentialVector,
+        });
+        const aeroForTorque = computeAerodynamicResponse({
+          bodyKind,
+          atmosphereSample: atmo,
+          relPos,
+          relVel,
+          earthPole: currentEarthAxes.pole,
+          windVectorKmS: windSample.vectorKmS,
+          bodyAxisDirection: directionBeforeAttitudeStep,
+          referenceAreaM2: Number(LAUNCH_VEHICLE_CONFIG.referenceAreaM2) || 0,
+          massKg: effectiveMassKg,
+          massModel: runtime.stageMassModel,
+          throttle: throttleActual,
+        });
+        const stageEngineAngularControl = computeStageEngineAngularControlState({
+          bodyKind,
+          controlErrorsBody: stageControlErrorsBody,
+          omegaBodyRadS: stageOmegaBodyRadS,
+          throttle: throttleActual,
+          massKg: effectiveMassKg,
+          massModel: runtime.stageMassModel,
+          engineState: stageCombustionState,
+        });
+        const starshipRcsControl = runtime.stageIndex >= 1
+          ? computeStarshipRcsControlState({
+            runtimeState: runtime,
+            stageIndex: runtime.stageIndex,
+            bodyKind,
+            desiredDirection: steeringDirection,
+            relPos,
+            relVel,
+            up: orbital.up,
+            attitudeState: runtime.stageAttitude,
+            controlErrorsBody: stageControlErrorsBody,
+            omegaBodyRadS: stageOmegaBodyRadS,
+            controlAuthorityScale: runtime.stageMassModel.controlAuthorityScale,
+            aeroAuthority: Math.max(0, Number(aeroForTorque.authority) || 0),
+            massKg: effectiveMassKg,
+            massModel: runtime.stageMassModel,
+            pressurePa,
+            dtSeconds,
+          })
+          : zeroStarshipRcsControlState();
+        const stageRcsAngularControl = runtime.stageIndex >= 1
+          ? starshipRcsControl
+          : zeroAngularControlState({ jets: [] });
+        const relAirDirection = normalize(
+          aeroForTorque.relAirVelocityKmS || scale(relVel, -1),
+          directionBeforeAttitudeStep,
+        );
+        const aeroAxis = unitOrNull(cross(directionBeforeAttitudeStep, relAirDirection));
+        const aeroTorqueSignedNm =
+          (Number(aeroForTorque.dynamicPressurePa) || 0)
+          * Math.max(0, Number(LAUNCH_VEHICLE_CONFIG.referenceAreaM2) || 0)
+          * stageBodyLengthMeters(bodyKind)
+          * (-(Number(aeroForTorque.momentCoefficient) || 0));
+        const engineAsymmetryBodyTorqueNm = computeEngineClusterBodyTorqueNm({
+          descriptors: stageCombustionState?.descriptors,
+          activeDescriptors: stageCombustionState?.activeDescriptors,
+          activeIndices: stageCombustionState?.activeIndices,
+          engineThrustNByIndex: stageCombustionState?.engineThrustNByIndex,
+          activeEngineThrustsN: stageCombustionState?.activeEngineThrustsN,
+          fallbackPerEngineThrustN: (Number(stageCombustionState?.thrustN) || 0)
+            / Math.max(1, Number(stageCombustionState?.activeCount) || 0),
+          forceDirectionBody: { x: 0, y: 1, z: 0 },
+          fallbackY: -stageBodyLengthMeters(bodyKind) * 0.46,
+        });
+        let totalStageBodyTorqueNm = add(
+          add(
+            stageEngineAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 },
+            stageRcsAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 },
+          ),
+          engineAsymmetryBodyTorqueNm,
+        );
+        let totalStageTorqueWorldNm = rotateVectorByQuaternion(
+          totalStageBodyTorqueNm,
+          runtime.stageAttitude?.orientation || quaternionIdentity(),
+        );
+        const stageAeroTorqueActive = Boolean(aeroAxis && Math.abs(aeroTorqueSignedNm) > 1e-6);
+        if (stageAeroTorqueActive) {
+          totalStageTorqueWorldNm = add(totalStageTorqueWorldNm, scale(aeroAxis, aeroTorqueSignedNm));
+        }
+        const effectiveStageMaxBodyRateRadS = Number.isFinite(commandedMaxBodyRateDegS)
+          ? rad(commandedMaxBodyRateDegS)
+          : null;
+        if (STAGE_FULL_6DOF_ASCENT_ENABLED) {
+          runtime.stageAttitude = integrateBoosterAttitudeState(runtime.stageAttitude, {
+            torqueWorldNm: totalStageTorqueWorldNm,
+            bodyKind,
+            massKg: effectiveMassKg,
+            inertiaNormalized: runtime.stageMassModel?.inertiaNormalized,
+            angularDampingPerS: Number.isFinite(commandedAngularDampingPerS)
+              ? commandedAngularDampingPerS
+              : 0,
+            maxBodyRateRadS: effectiveStageMaxBodyRateRadS,
+            dtSeconds,
+          });
+        }
+        const directionActual = boosterBodyAxisWorld(runtime.stageAttitude);
+        const thrustVectorDirectionActual = thrustN > 0
+          ? normalize(
+            rotateVectorByQuaternion(
+              stageEngineAngularControl.thrustDirectionBody || { x: 0, y: 1, z: 0 },
+              runtime.stageAttitude?.orientation || quaternionIdentity(),
+            ),
+            directionActual,
+          )
+          : directionActual;
+        runtime.stageActuator.directionCommand = normalize(steeringDirection, directionActual);
+        runtime.stageActuator.directionActual = directionActual;
+        runtime.stageActuator.gimbalErrorDeg = degrees(angleBetweenRadians(directionActual, steeringDirection));
+        runtime.stageActuator.angularRateRadS = length(runtime.stageAttitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 });
         const thrustAccelerationKmS2 = thrustN > 0
-          ? scale(directionActual, (thrustN / effectiveMassKg) / 1000)
+          ? scale(thrustVectorDirectionActual, (thrustN / effectiveMassKg) / 1000)
           : { x: 0, y: 0, z: 0 };
         const aero = computeAerodynamicResponse({
           bodyKind,
@@ -11165,28 +11878,9 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           massModel: runtime.stageMassModel,
           throttle: throttleActual,
         });
-        const moonCoastRcsAssist = (
-          moonAttitudePolicy.passiveMoonCoastPointing
-          && moonAttitudePolicy.passiveMoonCoastAttitudeAssist?.active
-          && !(throttleActual > 1e-3)
-        )
-          ? {
-            accelerationKmS2: { x: 0, y: 0, z: 0 },
-            active: true,
-            errorDeg: Number(moonAttitudePolicy.passiveMoonCoastAttitudeAssist.errorDeg) || 0,
-            authority: Number(moonAttitudePolicy.passiveMoonCoastAttitudeAssist.authority) || 0,
-            jets: Array.isArray(moonAttitudePolicy.passiveMoonCoastAttitudeAssist.jets)
-              ? [...moonAttitudePolicy.passiveMoonCoastAttitudeAssist.jets]
-              : [],
-          }
-          : null;
-        const rcs = moonCoastRcsAssist || computeRcsAssist({
-          stageIndex: runtime.stageIndex,
-          desiredDirection: steeringDirection,
-          relVel,
-          up: orbital.up,
-          controlAuthorityScale: runtime.stageMassModel.controlAuthorityScale,
-        });
+        const rcs = runtime.stageIndex >= 1
+          ? starshipRcsControl
+          : zeroStarshipRcsControlState();
         let guidanceModeLabel = qAlphaSteering.limited
           ? `${effectiveGuidanceMode}+qalpha-limit`
           : effectiveGuidanceMode;
@@ -11197,6 +11891,19 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         if (requestedPhase === "powered" && !burnActive && !guidanceModeLabel.includes("coast-fallback")) {
           guidanceModeLabel = `${guidanceModeLabel}+coast-fallback`;
         }
+        const stageEngineAsymmetryMomentNm = Math.hypot(
+          Number(engineAsymmetryBodyTorqueNm.x) || 0,
+          Number(engineAsymmetryBodyTorqueNm.z) || 0,
+        );
+        const stageAttitudeTorqueSources = [
+          length(stageEngineAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 }) > 1e-6 ? "engine-gimbal" : null,
+          length(stageRcsAngularControl.bodyTorqueNm || { x: 0, y: 0, z: 0 }) > 1e-6 ? "rcs-thrusters" : null,
+          stageEngineAsymmetryMomentNm > 1e-6 ? "engine-asymmetry" : null,
+          stageAeroTorqueActive ? "aero-moment" : null,
+        ].filter(Boolean);
+        const stageAttitudeTorqueSourceText = stageAttitudeTorqueSources.length > 0
+          ? stageAttitudeTorqueSources.join(" + ")
+          : "none";
         runtime.lastStep = {
           accelerationKmS2: add(add(thrustAccelerationKmS2, aero.accelerationKmS2), rcs.accelerationKmS2),
           effectiveMassKg,
@@ -11239,13 +11946,47 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           guidanceMode: guidanceModeLabel,
           requestedDirectionKm: cloneVectorOrNull(steeringDirection),
           bodyAxisDirectionKm: cloneVectorOrNull(directionActual),
+          thrustVectorDirectionKm: cloneVectorOrNull(thrustVectorDirectionActual),
           thrustAccelerationKmS2: cloneVectorOrNull(thrustAccelerationKmS2),
           aeroAccelerationKmS2: cloneVectorOrNull(aero.accelerationKmS2),
           rcsAccelerationKmS2: cloneVectorOrNull(rcs.accelerationKmS2),
+          rcsAccelerationMagKmS2: length(rcs.accelerationKmS2 || { x: 0, y: 0, z: 0 }),
           rcsActive: rcs.active,
           rcsErrorDeg: rcs.errorDeg,
           rcsAuthority: rcs.authority,
-          rcsJets: rcs.jets,
+          rcsLinearAuthority: Number(rcs.linearAuthority) || 0,
+          rcsAngularAuthority: Number(rcs.angularAuthority) || 0,
+          rcsJets: Array.isArray(rcs.jets) ? [...rcs.jets] : [],
+          rcsCommandedThrusterIds: Array.isArray(rcs.commandedThrusterIds) ? [...rcs.commandedThrusterIds] : [],
+          rcsCommandedThrusterIndices: Array.isArray(rcs.commandedThrusterIndices) ? [...rcs.commandedThrusterIndices] : [],
+          rcsActiveThrusterIds: Array.isArray(rcs.activeThrusterIds) ? [...rcs.activeThrusterIds] : [],
+          rcsActiveThrusterIndices: Array.isArray(rcs.activeThrusterIndices) ? [...rcs.activeThrusterIndices] : [],
+          rcsThrustN: Number(rcs.thrustN) || 0,
+          rcsBurnKg: Number(rcs.burnKg) || 0,
+          rcsBurnRateKgS: Number(rcs.burnRateKgS) || 0,
+          rcsPropellantKg: Number(rcs.propellantKg) || 0,
+          rcsInitialPropellantKg: Number(rcs.initialPropellantKg) || 0,
+          rcsFuelFraction: Number.isFinite(Number(rcs.fuelFraction)) ? Number(rcs.fuelFraction) : null,
+          rcsBodyForceN: cloneVectorOrNull(rcs.bodyForceN),
+          rcsBodyTorqueNm: cloneVectorOrNull(rcs.bodyTorqueNm),
+          rcsThrusterThrustNByIndex: Array.isArray(rcs.thrusterThrustNByIndex) ? [...rcs.thrusterThrustNByIndex] : [],
+          rcsChamberPressurePaByIndex: Array.isArray(rcs.chamberPressurePaByIndex) ? [...rcs.chamberPressurePaByIndex] : [],
+          rcsExhaustTemperatureKByIndex: Array.isArray(rcs.exhaustTemperatureKByIndex) ? [...rcs.exhaustTemperatureKByIndex] : [],
+          rcsCombustionEfficiencyByIndex: Array.isArray(rcs.combustionEfficiencyByIndex) ? [...rcs.combustionEfficiencyByIndex] : [],
+          rcsTurbopumpNormByIndex: Array.isArray(rcs.turbopumpNormByIndex) ? [...rcs.turbopumpNormByIndex] : [],
+          rcsAvgChamberPressurePa: Number(rcs.avgChamberPressurePa) || 0,
+          rcsMaxChamberPressurePa: Number(rcs.maxChamberPressurePa) || 0,
+          rcsAvgCombustionEfficiency: Number(rcs.avgCombustionEfficiency) || 0,
+          rcsAvgTurbopumpNorm: Number(rcs.avgTurbopumpNorm) || 0,
+          rcsMaxExhaustTemperatureK: Number(rcs.maxExhaustTemperatureK) || 0,
+          navSource: String(rcs.navSource || ""),
+          navSensorNoiseActive: Boolean(rcs.navSensorNoiseActive),
+          navPositionSigmaKm: Number(rcs.navPositionSigmaKm) || 0,
+          navVelocitySigmaKmS: Number(rcs.navVelocitySigmaKmS) || 0,
+          navAttitudeSigmaDeg: Number(rcs.navAttitudeSigmaDeg) || 0,
+          navPositionErrorKm: cloneVectorOrNull(rcs.navPositionErrorKm),
+          navVelocityErrorKmS: cloneVectorOrNull(rcs.navVelocityErrorKmS),
+          navAttitudeErrorDeg: cloneVectorOrNull(rcs.navAttitudeErrorDeg),
           angleOfAttackDeg: aero.angleOfAttackDeg,
           qAlphaPaRad: aero.qAlphaPaRad,
           machNumber: aero.machNumber,
@@ -11253,6 +11994,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           liftCoefficient: aero.liftCoefficient,
           momentCoefficient: aero.momentCoefficient,
           gimbalErrorDeg: runtime.stageActuator.gimbalErrorDeg,
+          attitudeTorqueSources: stageAttitudeTorqueSources,
+          attitudeTorqueSourceText: stageAttitudeTorqueSourceText,
+          engineGimbalAuthority: Number(stageEngineAngularControl.authority) || 0,
+          rcsAngularAuthority: Number(stageRcsAngularControl.angularAuthority ?? stageRcsAngularControl.authority) || 0,
+          aeroMomentActive: stageAeroTorqueActive,
+          bodyAngularRateRadS: cloneVectorOrNull(runtime.stageAttitude?.omegaBodyRadS),
           windSpeedKmS: windSample.speedKmS,
           windEastMS: windSample.eastMS,
           windNorthMS: windSample.northMS,
@@ -11859,13 +12606,17 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
     runtime.elapsedSeconds += dtSeconds;
 
     const burnKg = Number(runtime.lastStep?.burnKg) || 0;
+    const rcsBurnKg = Number(runtime.lastStep?.rcsBurnKg) || 0;
     const sustainedOrbitReserveActive = missionUsesSustainedOrbitReserve(runtime);
     const appliedBurnKg = sustainedOrbitReserveActive ? 0 : burnKg;
-    if (appliedBurnKg > 0) {
+    const appliedMassLossKg = Math.max(0, appliedBurnKg) + Math.max(0, rcsBurnKg);
+    if (appliedMassLossKg > 0) {
       rocketState.massKg = Math.max(
         MIN_ROCKET_MASS_KG,
-        rocketState.massKg - appliedBurnKg,
+        rocketState.massKg - appliedMassLossKg,
       );
+    }
+    if (appliedBurnKg > 0) {
       runtime.stagePropellantKg = Math.max(0, runtime.stagePropellantKg - appliedBurnKg);
     }
     if (runtime.booster.attached && !runtime.booster.active) {
@@ -12020,9 +12771,27 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           runtime.stagePropellantKg = 0;
           setLaunchCommandPhase("coast");
           runtime.autopilotMode = "ballistic-coast";
-          runtime.stageActuator = createActuatorState(
+          const currentBodyAxis = normalize(
+            boosterBodyAxisWorld(runtime.stageAttitude),
             normalize(subtract(rocketState.position, earthState.position), currentEarthAxes.pole),
           );
+          const currentCommandAxis = normalize(
+            runtime.stageActuator?.directionCommand || currentBodyAxis,
+            currentBodyAxis,
+          );
+          // Dry-out is not an attitude event. Preserve the rigid-body state and let
+          // later coast/RCS/aero steps move it through physics.
+          runtime.stageActuator = {
+            ...createActuatorState(currentBodyAxis),
+            ...(runtime.stageActuator || {}),
+            throttleCommand: 0,
+            throttleActual: 0,
+            directionCommand: currentCommandAxis,
+            directionActual: currentBodyAxis,
+            gimbalErrorDeg: degrees(angleBetweenRadians(currentBodyAxis, currentCommandAxis)),
+            angularRateRadS: length(runtime.stageAttitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 }),
+          };
+          runtime.stageAttitude = runtime.stageAttitude || createBoosterAttitudeState(currentBodyAxis);
           runtime.stageMassModel = createMassModelState();
         }
       } else {
@@ -12052,8 +12821,35 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           )
             ? "navsys:orbital-refuel-await-target"
             : (stableOrbit ? "autopilot-ballistic-hold" : "ballistic-coast");
-          runtime.stageActuator = createActuatorState(normalize(relPos, currentEarthAxes.pole));
-          runtime.stageMassModel = createMassModelState();
+          const currentBodyAxis = normalize(
+            boosterBodyAxisWorld(runtime.stageAttitude),
+            normalize(relPos, currentEarthAxes.pole),
+          );
+          const currentCommandAxis = normalize(
+            runtime.stageActuator?.directionCommand || currentBodyAxis,
+            currentBodyAxis,
+          );
+          // Terminal dry-out switches propulsion authority off; it must not snap the
+          // Starship attitude to local vertical.
+          runtime.stageActuator = {
+            ...createActuatorState(currentBodyAxis),
+            ...(runtime.stageActuator || {}),
+            throttleCommand: 0,
+            throttleActual: 0,
+            directionCommand: currentCommandAxis,
+            directionActual: currentBodyAxis,
+            gimbalErrorDeg: degrees(angleBetweenRadians(currentBodyAxis, currentCommandAxis)),
+            angularRateRadS: length(runtime.stageAttitude?.omegaBodyRadS || { x: 0, y: 0, z: 0 }),
+          };
+          runtime.stageAttitude = runtime.stageAttitude || createBoosterAttitudeState(currentBodyAxis);
+          runtime.stageMassModel = updateMassModelState(runtime.stageMassModel, {
+            propellantFraction: 0,
+            bodyKind: stageBodyKindFromStageIndex(runtime.stageIndex),
+            dtSeconds: 0,
+            dryMassKg: Number(stage?.dryMassKg) || 0,
+            propellantMassKg: Number(stage?.propellantMassKg) || 0,
+            attachedMassKg: 0,
+          });
           emitLaunchEvent("terminal_stage_propellant_depleted", {
             missionId: runtime.mission.selectedId,
             missionPhase: runtime.mission.phase,
@@ -12337,6 +13133,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         guidanceAdvisoryResolvedPhase: String(runtime.guidanceAdvisory?.resolvedPhase || "idle"),
         guidanceAdvisoryRequestedThrottle: clamp(Number(runtime.guidanceAdvisory?.requestedThrottle) || 0, 0, 1),
         guidanceAdvisoryRequestedMode: String(runtime.guidanceAdvisory?.requestedMode || ""),
+        ascentCorridorName: String(LAUNCH_VEHICLE_CONFIG.guidance?.ascentCorridorName || ""),
+        ascentHeadingDegFromEast: finiteOrNull(LAUNCH_VEHICLE_CONFIG.guidance?.ascentHeadingDegFromEast),
+        commandedPitchFromVerticalDeg: null,
+        bodyPitchFromVerticalDeg: null,
+        guidanceRequestedDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.requestedDirectionKm),
+        bodyAxisDirectionKm: cloneLaunchVectorOrNull(runtime.lastStep?.bodyAxisDirectionKm),
         launchElapsedSeconds: finiteOrNull(
           Boolean(runtime.launchSequence?.active)
             ? Math.max(
@@ -12545,12 +13347,41 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
           ? Number(runtime.booster.telemetry?.bodyOffRetrogradeDeg)
           : null,
         boosterBodyAngularRateRadS: cloneLaunchVectorOrNull(runtime.booster.lastStep?.bodyAngularRateRadS),
+        boosterRecoveryHardwareMode: String(runtime.booster.lastStep?.recoveryHardwareMode || ""),
+        boosterRecoveryControlStack: Array.isArray(runtime.booster.lastStep?.recoveryControlStack)
+          ? [...runtime.booster.lastStep.recoveryControlStack]
+          : [],
+        boosterGridFinGeneration: String(runtime.booster.lastStep?.gridFinGeneration || ""),
+        boosterGridFinRole: String(runtime.booster.lastStep?.gridFinRole || ""),
+        boosterGridFinControlDominant: Boolean(runtime.booster.lastStep?.gridFinControlDominant),
+        boosterGridFinDeploymentState: String(runtime.booster.lastStep?.gridFinDeploymentState || ""),
+        boosterGridFinPhaseState: String(runtime.booster.lastStep?.gridFinPhaseState || ""),
+        boosterGridFinCommandState: String(runtime.booster.lastStep?.gridFinCommandState || ""),
+        boosterGridFinAeroLoaded: Boolean(runtime.booster.lastStep?.gridFinAeroLoaded),
+        boosterGridFinControlActive: Boolean(runtime.booster.lastStep?.gridFinControlActive),
+        boosterGridFinSaturated: Boolean(runtime.booster.lastStep?.gridFinSaturated),
+        boosterGridFinMaxDeflectionDeg: Number(runtime.booster.lastStep?.gridFinMaxDeflectionDeg) || 0,
+        boosterEngineRole: String(runtime.booster.lastStep?.engineRole || ""),
+        boosterEngineSet: String(runtime.booster.lastStep?.engineSet || ""),
+        boosterTowerSensorMode: String(runtime.booster.lastStep?.towerSensorMode || ""),
+        boosterTowerSensorHealthy: Boolean(runtime.booster.lastStep?.towerSensorHealthy),
+        boosterCatchCommitState: String(runtime.booster.lastStep?.catchCommitState || ""),
         boosterGridFinAuthority: Number(runtime.booster.lastStep?.gridFinAuthority) || 0,
         boosterGridFinDeflectionDeg: Number(runtime.booster.lastStep?.gridFinDeflectionDeg) || 0,
+        boosterGridFinStates: Array.isArray(runtime.booster.lastStep?.gridFinStates)
+          ? runtime.booster.lastStep.gridFinStates.map((finState) => ({ ...finState }))
+          : [],
         boosterGridFinMomentNm: Number(runtime.booster.lastStep?.gridFinMomentNm) || 0,
         boosterGridFinAngularAccelerationRadS2: Number(runtime.booster.lastStep?.gridFinAngularAccelerationRadS2) || 0,
         boosterEngineAsymmetryBodyTorqueNm: cloneLaunchVectorOrNull(runtime.booster.lastStep?.engineAsymmetryBodyTorqueNm),
         boosterEngineAsymmetryMomentNm: Number(runtime.booster.lastStep?.engineAsymmetryMomentNm) || 0,
+        boosterAeroMomentNm: Number(runtime.booster.lastStep?.aeroMomentNm) || 0,
+        boosterEngineAngularAccelerationRadS2: Number(runtime.booster.lastStep?.engineAngularAccelerationRadS2) || 0,
+        boosterRcsAngularAccelerationRadS2: Number(runtime.booster.lastStep?.rcsAngularAccelerationRadS2) || 0,
+        boosterAttitudeTorqueSources: Array.isArray(runtime.booster.lastStep?.attitudeTorqueSources)
+          ? [...runtime.booster.lastStep.attitudeTorqueSources]
+          : [],
+        boosterAttitudeTorqueSourceText: String(runtime.booster.lastStep?.attitudeTorqueSourceText || ""),
         boosterEarthRelativeSpeedKmS: Number(runtime.booster.telemetry?.earthRelativeSpeedKmS) || null,
         boosterGroundRelativeSpeedKmS: Number(runtime.booster.telemetry?.groundRelativeSpeedKmS) || null,
         boosterAirRelativeSpeedKmS: Number(runtime.booster.telemetry?.airRelativeSpeedKmS) || null,
@@ -12597,6 +13428,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         boosterNavVelocitySigmaKmS: Number(runtime.booster.telemetry?.navVelocitySigmaKmS) || null,
         boosterNavTowerRelativeActive: Boolean(runtime.booster.telemetry?.navTowerRelativeActive),
         hotstageActive: Boolean(runtime.hotstage.active),
+        hotstageShipReferenceActive: Boolean(
+          runtime.hotstage?.shipReferenceActive || runtime.attachedJoint?.shipReferenceActive,
+        ),
+        attachedJointShipReferenceActive: Boolean(runtime.attachedJoint?.shipReferenceActive),
         hotstageTimeSinceIgnitionSec: hotstageSinceIgnitionSec,
         hotstageOverlapSeconds: Number(runtime.hotstage.overlapSeconds) || hotstageOverlapSeconds(),
         hotstageIgnitionStableSec: Number(runtime.hotstage.ignitionStableSec) || 0,
@@ -12683,6 +13518,15 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       dragCoefficient: telemetry.dragCoefficient,
       liftCoefficient: telemetry.liftCoefficient,
       gimbalErrorDeg: telemetry.gimbalErrorDeg,
+      attitudeTorqueSources: Array.isArray(telemetry.attitudeTorqueSources)
+        ? [...telemetry.attitudeTorqueSources]
+        : [],
+      attitudeTorqueSourceText: String(telemetry.attitudeTorqueSourceText || ""),
+      bodyAngularRateRadS: cloneLaunchVectorOrNull(telemetry.bodyAngularRateRadS),
+      thrustVectorDirectionKm: cloneLaunchVectorOrNull(telemetry.thrustVectorDirectionKm),
+      engineGimbalAuthority: Number(telemetry.engineGimbalAuthority) || 0,
+      rcsAngularAuthority: Number(telemetry.rcsAngularAuthority) || 0,
+      aeroMomentActive: Boolean(telemetry.aeroMomentActive),
       windSpeedKmS: telemetry.windSpeedKmS,
       windEastMS: telemetry.windEastMS,
       windNorthMS: telemetry.windNorthMS,
@@ -12690,6 +13534,12 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       inertiaNormalized: telemetry.inertiaNormalized,
       controlAuthorityScale: telemetry.controlAuthorityScale,
       guidanceMode: telemetryGuidanceMode,
+      ascentCorridorName: String(telemetry.ascentCorridorName || ""),
+      ascentHeadingDegFromEast: finiteOrNull(telemetry.ascentHeadingDegFromEast),
+      commandedPitchFromVerticalDeg: finiteOrNull(telemetry.commandedPitchFromVerticalDeg),
+      bodyPitchFromVerticalDeg: finiteOrNull(telemetry.bodyPitchFromVerticalDeg),
+      guidanceRequestedDirectionKm: cloneLaunchVectorOrNull(telemetry.guidanceRequestedDirectionKm),
+      bodyAxisDirectionKm: cloneLaunchVectorOrNull(telemetry.bodyAxisDirectionKm),
       missionId: telemetry.missionId,
       missionName: telemetry.missionName,
       missionPhase: telemetry.missionPhase,
@@ -12791,7 +13641,61 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       rcsActive: telemetryRcsActive,
       rcsErrorDeg: telemetry.rcsErrorDeg,
       rcsAuthority: telemetryRcsAuthority,
+      rcsLinearAuthority: Number(telemetry.rcsLinearAuthority) || 0,
+      rcsAngularAuthority: Number(telemetry.rcsAngularAuthority) || 0,
+      rcsAccelerationKmS2: cloneLaunchVectorOrNull(telemetry.rcsAccelerationKmS2),
+      rcsAccelerationMagKmS2: Number(telemetry.rcsAccelerationMagKmS2) || 0,
+      rcsThrustN: Number(telemetry.rcsThrustN) || 0,
+      rcsBurnKg: Number(telemetry.rcsBurnKg) || 0,
+      rcsBurnRateKgS: Number(telemetry.rcsBurnRateKgS) || 0,
+      rcsPropellantKg: Number(telemetry.rcsPropellantKg) || 0,
+      rcsInitialPropellantKg: Number(telemetry.rcsInitialPropellantKg) || 0,
+      rcsFuelFraction: Number.isFinite(Number(telemetry.rcsFuelFraction))
+        ? clamp(Number(telemetry.rcsFuelFraction), 0, 1)
+        : null,
       rcsJets: telemetryRcsJets,
+      rcsCommandedThrusterIds: Array.isArray(telemetry.rcsCommandedThrusterIds)
+        ? [...telemetry.rcsCommandedThrusterIds]
+        : [],
+      rcsCommandedThrusterIndices: Array.isArray(telemetry.rcsCommandedThrusterIndices)
+        ? [...telemetry.rcsCommandedThrusterIndices]
+        : [],
+      rcsActiveThrusterIds: Array.isArray(telemetry.rcsActiveThrusterIds)
+        ? [...telemetry.rcsActiveThrusterIds]
+        : [],
+      rcsActiveThrusterIndices: Array.isArray(telemetry.rcsActiveThrusterIndices)
+        ? [...telemetry.rcsActiveThrusterIndices]
+        : [],
+      rcsBodyForceN: cloneLaunchVectorOrNull(telemetry.rcsBodyForceN),
+      rcsBodyTorqueNm: cloneLaunchVectorOrNull(telemetry.rcsBodyTorqueNm),
+      rcsThrusterThrustNByIndex: Array.isArray(telemetry.rcsThrusterThrustNByIndex)
+        ? [...telemetry.rcsThrusterThrustNByIndex]
+        : [],
+      rcsChamberPressurePaByIndex: Array.isArray(telemetry.rcsChamberPressurePaByIndex)
+        ? [...telemetry.rcsChamberPressurePaByIndex]
+        : [],
+      rcsExhaustTemperatureKByIndex: Array.isArray(telemetry.rcsExhaustTemperatureKByIndex)
+        ? [...telemetry.rcsExhaustTemperatureKByIndex]
+        : [],
+      rcsCombustionEfficiencyByIndex: Array.isArray(telemetry.rcsCombustionEfficiencyByIndex)
+        ? [...telemetry.rcsCombustionEfficiencyByIndex]
+        : [],
+      rcsTurbopumpNormByIndex: Array.isArray(telemetry.rcsTurbopumpNormByIndex)
+        ? [...telemetry.rcsTurbopumpNormByIndex]
+        : [],
+      rcsAvgChamberPressurePa: Number(telemetry.rcsAvgChamberPressurePa) || 0,
+      rcsMaxChamberPressurePa: Number(telemetry.rcsMaxChamberPressurePa) || 0,
+      rcsAvgCombustionEfficiency: Number(telemetry.rcsAvgCombustionEfficiency) || 0,
+      rcsAvgTurbopumpNorm: Number(telemetry.rcsAvgTurbopumpNorm) || 0,
+      rcsMaxExhaustTemperatureK: Number(telemetry.rcsMaxExhaustTemperatureK) || 0,
+      navSource: String(telemetry.navSource || ""),
+      navSensorNoiseActive: Boolean(telemetry.navSensorNoiseActive),
+      navPositionSigmaKm: Number(telemetry.navPositionSigmaKm) || 0,
+      navVelocitySigmaKmS: Number(telemetry.navVelocitySigmaKmS) || 0,
+      navAttitudeSigmaDeg: Number(telemetry.navAttitudeSigmaDeg) || 0,
+      navPositionErrorKm: cloneLaunchVectorOrNull(telemetry.navPositionErrorKm),
+      navVelocityErrorKmS: cloneLaunchVectorOrNull(telemetry.navVelocityErrorKmS),
+      navAttitudeErrorDeg: cloneLaunchVectorOrNull(telemetry.navAttitudeErrorDeg),
       targetOrbitAltitudeKm: telemetry.targetOrbitAltitudeKm,
       radialSpeedKmS: telemetry.radialSpeedKmS,
       tangentialSpeedKmS: telemetry.tangentialSpeedKmS,
@@ -13016,8 +13920,30 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         : null,
       boosterBodyAngularRateRadS: cloneLaunchVectorOrNull(runtime.booster.telemetry?.bodyAngularRateRadS)
         || cloneLaunchVectorOrNull(runtime.booster.lastStep?.bodyAngularRateRadS),
+      boosterRecoveryHardwareMode: String(runtime.booster.telemetry?.recoveryHardwareMode || runtime.booster.lastStep?.recoveryHardwareMode || ""),
+      boosterRecoveryControlStack: Array.isArray(runtime.booster.telemetry?.recoveryControlStack)
+        ? [...runtime.booster.telemetry.recoveryControlStack]
+        : (Array.isArray(runtime.booster.lastStep?.recoveryControlStack) ? [...runtime.booster.lastStep.recoveryControlStack] : []),
+      boosterGridFinGeneration: String(runtime.booster.telemetry?.gridFinGeneration || runtime.booster.lastStep?.gridFinGeneration || ""),
+      boosterGridFinRole: String(runtime.booster.telemetry?.gridFinRole || runtime.booster.lastStep?.gridFinRole || ""),
+      boosterGridFinControlDominant: Boolean(runtime.booster.telemetry?.gridFinControlDominant ?? runtime.booster.lastStep?.gridFinControlDominant),
+      boosterGridFinDeploymentState: String(runtime.booster.telemetry?.gridFinDeploymentState || runtime.booster.lastStep?.gridFinDeploymentState || ""),
+      boosterGridFinPhaseState: String(runtime.booster.telemetry?.gridFinPhaseState || runtime.booster.lastStep?.gridFinPhaseState || ""),
+      boosterGridFinCommandState: String(runtime.booster.telemetry?.gridFinCommandState || runtime.booster.lastStep?.gridFinCommandState || ""),
+      boosterGridFinAeroLoaded: Boolean(runtime.booster.telemetry?.gridFinAeroLoaded ?? runtime.booster.lastStep?.gridFinAeroLoaded),
+      boosterGridFinControlActive: Boolean(runtime.booster.telemetry?.gridFinControlActive ?? runtime.booster.lastStep?.gridFinControlActive),
+      boosterGridFinSaturated: Boolean(runtime.booster.telemetry?.gridFinSaturated ?? runtime.booster.lastStep?.gridFinSaturated),
+      boosterGridFinMaxDeflectionDeg: Number(runtime.booster.telemetry?.gridFinMaxDeflectionDeg) || Number(runtime.booster.lastStep?.gridFinMaxDeflectionDeg) || 0,
+      boosterEngineRole: String(runtime.booster.telemetry?.engineRole || runtime.booster.lastStep?.engineRole || ""),
+      boosterEngineSet: String(runtime.booster.telemetry?.engineSet || runtime.booster.lastStep?.engineSet || ""),
+      boosterTowerSensorMode: String(runtime.booster.telemetry?.towerSensorMode || runtime.booster.lastStep?.towerSensorMode || ""),
+      boosterTowerSensorHealthy: Boolean(runtime.booster.telemetry?.towerSensorHealthy ?? runtime.booster.lastStep?.towerSensorHealthy),
+      boosterCatchCommitState: String(runtime.booster.telemetry?.catchCommitState || runtime.booster.lastStep?.catchCommitState || ""),
       boosterGridFinAuthority: Number(runtime.booster.telemetry?.gridFinAuthority) || 0,
       boosterGridFinDeflectionDeg: Number(runtime.booster.telemetry?.gridFinDeflectionDeg) || 0,
+      boosterGridFinStates: Array.isArray(runtime.booster.telemetry?.gridFinStates)
+        ? runtime.booster.telemetry.gridFinStates.map((finState) => ({ ...finState }))
+        : (Array.isArray(runtime.booster.lastStep?.gridFinStates) ? runtime.booster.lastStep.gridFinStates.map((finState) => ({ ...finState })) : []),
       boosterGridFinMomentNm: Number(runtime.booster.telemetry?.gridFinMomentNm) || 0,
       boosterGridFinAngularAccelerationRadS2: Number(runtime.booster.telemetry?.gridFinAngularAccelerationRadS2) || 0,
       boosterEngineAsymmetryBodyTorqueNm: cloneLaunchVectorOrNull(runtime.booster.telemetry?.engineAsymmetryBodyTorqueNm)
@@ -13025,6 +13951,27 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterEngineAsymmetryMomentNm: Number(runtime.booster.telemetry?.engineAsymmetryMomentNm)
         || Number(runtime.booster.lastStep?.engineAsymmetryMomentNm)
         || 0,
+      boosterAeroMomentNm: Number(runtime.booster.telemetry?.aeroMomentNm)
+        || Number(runtime.booster.lastStep?.aeroMomentNm)
+        || 0,
+      boosterEngineAngularAccelerationRadS2: Number(runtime.booster.telemetry?.engineAngularAccelerationRadS2)
+        || Number(runtime.booster.lastStep?.engineAngularAccelerationRadS2)
+        || 0,
+      boosterRcsAngularAccelerationRadS2: Number(runtime.booster.telemetry?.rcsAngularAccelerationRadS2)
+        || Number(runtime.booster.lastStep?.rcsAngularAccelerationRadS2)
+        || 0,
+      boosterAttitudeTorqueSources: Array.isArray(runtime.booster.telemetry?.attitudeTorqueSources)
+        ? [...runtime.booster.telemetry.attitudeTorqueSources]
+        : (
+          Array.isArray(runtime.booster.lastStep?.attitudeTorqueSources)
+            ? [...runtime.booster.lastStep.attitudeTorqueSources]
+            : []
+        ),
+      boosterAttitudeTorqueSourceText: String(
+        runtime.booster.telemetry?.attitudeTorqueSourceText
+        || runtime.booster.lastStep?.attitudeTorqueSourceText
+        || "",
+      ),
       boosterEarthRelativeSpeedKmS: Number(runtime.booster.telemetry?.earthRelativeSpeedKmS) || null,
       boosterGroundRelativeSpeedKmS: Number(runtime.booster.telemetry?.groundRelativeSpeedKmS) || null,
       boosterAirRelativeSpeedKmS: Number(runtime.booster.telemetry?.airRelativeSpeedKmS) || null,
@@ -13069,6 +14016,10 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       boosterNavVelocitySigmaKmS: Number(runtime.booster.telemetry?.navVelocitySigmaKmS) || null,
       boosterNavTowerRelativeActive: Boolean(runtime.booster.telemetry?.navTowerRelativeActive),
       hotstageActive: Boolean(telemetry.hotstageActive),
+      hotstageShipReferenceActive: Boolean(telemetry.hotstageShipReferenceActive)
+        || Boolean(runtime.hotstage?.shipReferenceActive || runtime.attachedJoint?.shipReferenceActive),
+      attachedJointShipReferenceActive: Boolean(telemetry.attachedJointShipReferenceActive)
+        || Boolean(runtime.attachedJoint?.shipReferenceActive),
       hotstageTimeSinceIgnitionSec: telemetry.hotstageTimeSinceIgnitionSec,
       hotstageOverlapSeconds: telemetry.hotstageOverlapSeconds,
       hotstageIgnitionStableSec: telemetry.hotstageIgnitionStableSec,
@@ -13264,12 +14215,18 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
         defaultBoosterEngineCountSelection(),
       ),
       stageActuator: cloneJson(runtime.stageActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
+      stageAttitude: cloneJson(runtime.stageAttitude, createBoosterAttitudeState({ x: 0, y: 0, z: 1 })),
       stageMassModel: cloneJson(runtime.stageMassModel, createMassModelState()),
       stage1Combustion: cloneJson(
         runtime.stage1Combustion,
         createStage1CombustionClusterState(runtime.boosterEngineCountOverride),
       ),
       stage2Combustion: cloneJson(runtime.stage2Combustion, createStage2CombustionClusterState()),
+      stageRcsCombustion: cloneJson(runtime.stageRcsCombustion, createStage2RcsCombustionClusterState()),
+      stageRcsPropellantKg: Math.max(0, finiteNumber(runtime.stageRcsPropellantKg, 0)),
+      stageRcsInitialPropellantKg: Math.max(0, finiteNumber(runtime.stageRcsInitialPropellantKg, 0)),
+      stageNavigation: cloneJson(runtime.stageNavigation, createStarshipNavigationState()),
+      starshipStateGuard: cloneJson(runtime.starshipStateGuard, createStarshipStateGuardState()),
       boosterActuator: cloneJson(runtime.boosterActuator, createActuatorState({ x: 0, y: 0, z: 1 })),
       boosterMassModel: cloneJson(runtime.boosterMassModel, createMassModelState()),
       attachedJoint: cloneJson(runtime.attachedJoint, createAttachedStackJointState()),
@@ -13419,6 +14376,14 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       snapshot.stageActuator,
       { x: 0, y: 0, z: 1 },
     );
+    runtime.stageAttitude = applyBoosterAttitudeSnapshot(
+      snapshot.stageAttitude,
+      normalize(
+        snapshot.stageActuator?.directionActual
+          || boosterBodyAxisWorld(runtime.stageAttitude || createBoosterAttitudeState({ x: 0, y: 0, z: 1 })),
+        { x: 0, y: 0, z: 1 },
+      ),
+    );
     runtime.stageMassModel = applyMassModelSnapshot(runtime.stageMassModel, snapshot.stageMassModel);
     runtime.stage1Combustion = hydrateEngineCombustionClusterState(
       snapshot.stage1Combustion,
@@ -13428,6 +14393,67 @@ function startDeferredLocalMoonOrbitInjectLaunchSolve(key, payload) {
       snapshot.stage2Combustion,
       stage2CombustionClusterOptions(),
     );
+    runtime.stageRcsCombustion = hydrateEngineCombustionClusterState(
+      snapshot.stageRcsCombustion,
+      stage2RcsCombustionClusterOptions(),
+    );
+    runtime.stageRcsInitialPropellantKg = Math.max(
+      0,
+      finiteNumber(snapshot.stageRcsInitialPropellantKg, runtime.stageRcsInitialPropellantKg),
+    );
+    runtime.stageRcsPropellantKg = Math.max(
+      0,
+      finiteNumber(snapshot.stageRcsPropellantKg, runtime.stageRcsPropellantKg),
+    );
+    if (runtime.stageRcsInitialPropellantKg > 0) {
+      runtime.stageRcsPropellantKg = Math.min(runtime.stageRcsPropellantKg, runtime.stageRcsInitialPropellantKg);
+    }
+    runtime.stageNavigation = resetStarshipNavigationState(snapshot.stageNavigation);
+    runtime.starshipStateGuard = {
+      ...createStarshipStateGuardState(),
+      ...(cloneJson(snapshot.starshipStateGuard, {}) || {}),
+    };
+    runtime.starshipStateGuard.cleanFreeFlightActive = Boolean(runtime.starshipStateGuard.cleanFreeFlightActive);
+    runtime.starshipStateGuard.cleanFreeFlightElapsedSec = finiteOrNull(runtime.starshipStateGuard.cleanFreeFlightElapsedSec);
+    runtime.starshipStateGuard.cleanFreeFlightReason = String(runtime.starshipStateGuard.cleanFreeFlightReason || "");
+    runtime.starshipStateGuard.directPositionCorrectionCount = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.starshipStateGuard.directPositionCorrectionCount, 0)),
+    );
+    runtime.starshipStateGuard.directVelocityCorrectionCount = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.starshipStateGuard.directVelocityCorrectionCount, 0)),
+    );
+    runtime.starshipStateGuard.blockedPositionCorrectionCount = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.starshipStateGuard.blockedPositionCorrectionCount, 0)),
+    );
+    runtime.starshipStateGuard.blockedVelocityCorrectionCount = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.starshipStateGuard.blockedVelocityCorrectionCount, 0)),
+    );
+    runtime.starshipStateGuard.postCleanFreeFlightPositionCorrectionCount = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.starshipStateGuard.postCleanFreeFlightPositionCorrectionCount, 0)),
+    );
+    runtime.starshipStateGuard.postCleanFreeFlightVelocityCorrectionCount = Math.max(
+      0,
+      Math.floor(finiteNumber(runtime.starshipStateGuard.postCleanFreeFlightVelocityCorrectionCount, 0)),
+    );
+    runtime.starshipStateGuard.maxPostCleanFreeFlightPositionCorrectionKm = Math.max(
+      0,
+      finiteNumber(runtime.starshipStateGuard.maxPostCleanFreeFlightPositionCorrectionKm, 0),
+    );
+    runtime.starshipStateGuard.maxPostCleanFreeFlightVelocityCorrectionKmS = Math.max(
+      0,
+      finiteNumber(runtime.starshipStateGuard.maxPostCleanFreeFlightVelocityCorrectionKmS, 0),
+    );
+    runtime.starshipStateGuard.lastCorrectionReason = String(runtime.starshipStateGuard.lastCorrectionReason || "");
+    runtime.starshipStateGuard.lastCorrectionKind = String(runtime.starshipStateGuard.lastCorrectionKind || "");
+    runtime.starshipStateGuard.lastCorrectionElapsedSec = finiteOrNull(runtime.starshipStateGuard.lastCorrectionElapsedSec);
+    runtime.starshipStateGuard.lastBlockedReason = String(runtime.starshipStateGuard.lastBlockedReason || "");
+    runtime.starshipStateGuard.lastBlockedKind = String(runtime.starshipStateGuard.lastBlockedKind || "");
+    runtime.starshipStateGuard.lastBlockedElapsedSec = finiteOrNull(runtime.starshipStateGuard.lastBlockedElapsedSec);
     runtime.boosterActuator = applyActuatorSnapshot(
       runtime.boosterActuator,
       snapshot.boosterActuator,

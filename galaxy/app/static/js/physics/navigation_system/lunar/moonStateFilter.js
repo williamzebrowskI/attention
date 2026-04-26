@@ -23,6 +23,48 @@ function axisKalmanGain(predictedVar, measuredVar) {
   return clamp(numerator / denominator, 0.01, 0.98);
 }
 
+function hashStringToUnit(value = "") {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) / 0xffffffff) * 2 - 1;
+}
+
+function resolveImuBiasAccelKmS2(filterState, metrics = {}, estimatorConfig = {}) {
+  if (finiteVector(filterState?.imuBiasAccelKmS2)) {
+    return filterState.imuBiasAccelKmS2;
+  }
+  const magnitude = Math.max(0, finiteNumber(estimatorConfig.imuAccelBiasKmS2, 1.2e-8));
+  const seed = String(metrics.bodyId || "starship-moon-mission");
+  const bias = {
+    x: hashStringToUnit(`${seed}:x`) * magnitude,
+    y: hashStringToUnit(`${seed}:y`) * magnitude,
+    z: hashStringToUnit(`${seed}:z`) * magnitude,
+  };
+  filterState.imuBiasAccelKmS2 = bias;
+  return bias;
+}
+
+function covarianceSigmaSummary(covariance = {}) {
+  return {
+    positionSigmaKm: Math.sqrt(Math.max(
+      0,
+      finiteNumber(covariance.px, 0),
+      finiteNumber(covariance.py, 0),
+      finiteNumber(covariance.pz, 0),
+    )),
+    velocitySigmaKmS: Math.sqrt(Math.max(
+      0,
+      finiteNumber(covariance.vx, 0),
+      finiteNumber(covariance.vy, 0),
+      finiteNumber(covariance.vz, 0),
+    )),
+  };
+}
+
 function componentVarianceMap(positionSigmaKm = {}, velocitySigmaKmS = {}) {
   return {
     px: Math.max(1e-12, finiteNumber(positionSigmaKm.radial, 0.2) ** 2),
@@ -47,7 +89,9 @@ export function createMoonNavigationFilterState() {
     },
     lastTimestampSec: null,
     lastMeasurement: null,
+    lastMeasurementTimestampSec: null,
     lastControlAccelKmS2: { x: 0, y: 0, z: 0 },
+    imuBiasAccelKmS2: null,
   };
 }
 
@@ -79,6 +123,7 @@ export function updateMoonNavigationFilter({
   };
 
   if (filterState.estimate && dtSec > 1e-6) {
+    const imuBiasAccelKmS2 = resolveImuBiasAccelKmS2(filterState, metrics, estimatorConfig);
     const predicted = propagateMoonGuidanceState({
       initialState: filterState.estimate,
       durationSec: dtSec,
@@ -93,16 +138,25 @@ export function updateMoonNavigationFilter({
       },
     });
     if (predicted?.finalState) {
-      filterState.estimate = predicted.finalState;
+      const inertialPositionDriftKm = scale(imuBiasAccelKmS2, 0.5 * (dtSec ** 2));
+      const inertialVelocityDriftKmS = scale(imuBiasAccelKmS2, dtSec);
+      filterState.estimate = {
+        ...predicted.finalState,
+        positionKm: add(predicted.finalState.positionKm, inertialPositionDriftKm),
+        velocityKmS: add(predicted.finalState.velocityKmS, inertialVelocityDriftKmS),
+      };
       const positionProcessVar = Math.max(1e-10, finiteNumber(estimatorConfig.processPositionSigmaKmPerSec, 0.00005) ** 2 * dtSec);
       const velocityProcessVar = Math.max(1e-12, finiteNumber(estimatorConfig.processVelocitySigmaKmSPerSec, 0.000004) ** 2 * dtSec);
+      const imuAccelNoiseKmS2 = Math.max(0, finiteNumber(estimatorConfig.imuAccelNoiseKmS2, 2.8e-8));
+      const imuPositionVar = 0.25 * (imuAccelNoiseKmS2 ** 2) * (dtSec ** 4);
+      const imuVelocityVar = (imuAccelNoiseKmS2 ** 2) * (dtSec ** 2);
       filterState.covariance = {
-        px: filterState.covariance.px + positionProcessVar,
-        py: filterState.covariance.py + positionProcessVar,
-        pz: filterState.covariance.pz + positionProcessVar,
-        vx: filterState.covariance.vx + velocityProcessVar,
-        vy: filterState.covariance.vy + velocityProcessVar,
-        vz: filterState.covariance.vz + velocityProcessVar,
+        px: filterState.covariance.px + positionProcessVar + imuPositionVar,
+        py: filterState.covariance.py + positionProcessVar + imuPositionVar,
+        pz: filterState.covariance.pz + positionProcessVar + imuPositionVar,
+        vx: filterState.covariance.vx + velocityProcessVar + imuVelocityVar,
+        vy: filterState.covariance.vy + velocityProcessVar + imuVelocityVar,
+        vz: filterState.covariance.vz + velocityProcessVar + imuVelocityVar,
       };
     }
   }
@@ -113,8 +167,30 @@ export function updateMoonNavigationFilter({
     moonEarthPositionKm: targetVectors.moonEarthPositionKm,
     timestampSec: nowSec,
     estimatorConfig,
+    previousMeasurementTimestampSec: filterState.lastMeasurementTimestampSec === null
+      ? Number.NaN
+      : filterState.lastMeasurementTimestampSec,
   });
   if (!measurement) {
+    return filterState.estimate;
+  }
+  if (measurement.fresh === false) {
+    const sigma = covarianceSigmaSummary(filterState.covariance);
+    filterState.lastMeasurement = {
+      ...(filterState.lastMeasurement || {}),
+      ...(measurement.diagnostics || {}),
+      positionResidualKm: null,
+      velocityResidualKmS: null,
+      positionSigmaKm: sigma.positionSigmaKm,
+      velocitySigmaKmS: sigma.velocitySigmaKmS,
+      imuPropagationAgeSec: Math.max(
+        0,
+        Number.isFinite(nowSec) && Number.isFinite(Number(filterState.lastMeasurementTimestampSec))
+          ? nowSec - Number(filterState.lastMeasurementTimestampSec)
+          : 0,
+      ),
+    };
+    filterState.lastTimestampSec = Number.isFinite(nowSec) ? nowSec : filterState.lastTimestampSec;
     return filterState.estimate;
   }
 
@@ -125,6 +201,9 @@ export function updateMoonNavigationFilter({
     };
     filterState.covariance = componentVarianceMap(measurement.positionSigmaKm, measurement.velocitySigmaKmS);
     filterState.lastMeasurement = measurement.diagnostics;
+    filterState.lastMeasurementTimestampSec = Number.isFinite(Number(measurement.diagnostics?.measurementTimestampSec))
+      ? Number(measurement.diagnostics.measurementTimestampSec)
+      : (Number.isFinite(nowSec) ? nowSec : filterState.lastMeasurementTimestampSec);
     filterState.lastTimestampSec = Number.isFinite(nowSec) ? nowSec : filterState.lastTimestampSec;
     return filterState.estimate;
   }
@@ -169,6 +248,9 @@ export function updateMoonNavigationFilter({
     positionSigmaKm: Math.sqrt(Math.max(filterState.covariance.px, filterState.covariance.py, filterState.covariance.pz)),
     velocitySigmaKmS: Math.sqrt(Math.max(filterState.covariance.vx, filterState.covariance.vy, filterState.covariance.vz)),
   };
+  filterState.lastMeasurementTimestampSec = Number.isFinite(Number(measurement.diagnostics?.measurementTimestampSec))
+    ? Number(measurement.diagnostics.measurementTimestampSec)
+    : (Number.isFinite(nowSec) ? nowSec : filterState.lastMeasurementTimestampSec);
   filterState.lastTimestampSec = Number.isFinite(nowSec) ? nowSec : filterState.lastTimestampSec;
   return filterState.estimate;
 }

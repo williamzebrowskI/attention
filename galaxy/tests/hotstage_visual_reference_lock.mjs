@@ -1,4 +1,4 @@
-import { applyInlineStarshipVisualStage } from "../app/static/js/physics/launch/starshipInlineVisual.js";
+import { applyStarshipVisualStage } from "../app/static/js/physics/launch/launchVisuals.js";
 
 function assert(condition, message) {
   if (!condition) {
@@ -18,7 +18,7 @@ function makeStageState() {
 
 function main() {
   const attached = makeStageState();
-  applyInlineStarshipVisualStage(attached, 0, {
+  applyStarshipVisualStage(attached, 0, {
     stageIndex: 0,
     hotstageActive: false,
     boosterActive: false,
@@ -28,19 +28,34 @@ function main() {
     `expected stacked ship visual before hotstage, got ${attached.shipGroup.position.y}`,
   );
 
-  const hotstage = makeStageState();
-  applyInlineStarshipVisualStage(hotstage, 1, {
+  const hotstageBeforeReferenceSwitch = makeStageState();
+  applyStarshipVisualStage(hotstageBeforeReferenceSwitch, 1, {
     stageIndex: 1,
     hotstageActive: true,
     boosterActive: false,
+    hotstageShipReferenceActive: false,
+    attachedJointShipReferenceActive: false,
   });
   assert(
-    hotstage.shipGroup.position.y === hotstage.detachedShipCenterY,
-    `expected ship-reference visual during hotstage, got ${hotstage.shipGroup.position.y}`,
+    hotstageBeforeReferenceSwitch.shipGroup.position.y === hotstageBeforeReferenceSwitch.fullShipCenterY,
+    `expected no fake hotstage visual gap before reference switch, got ${hotstageBeforeReferenceSwitch.shipGroup.position.y}`,
+  );
+
+  const hotstageAfterReferenceSwitch = makeStageState();
+  applyStarshipVisualStage(hotstageAfterReferenceSwitch, 1, {
+    stageIndex: 1,
+    hotstageActive: true,
+    boosterActive: false,
+    hotstageShipReferenceActive: true,
+    attachedJointShipReferenceActive: true,
+  });
+  assert(
+    hotstageAfterReferenceSwitch.shipGroup.position.y === hotstageAfterReferenceSwitch.detachedShipCenterY,
+    `expected ship-reference visual during hotstage, got ${hotstageAfterReferenceSwitch.shipGroup.position.y}`,
   );
 
   const detached = makeStageState();
-  applyInlineStarshipVisualStage(detached, 1, {
+  applyStarshipVisualStage(detached, 1, {
     stageIndex: 1,
     hotstageActive: false,
     boosterActive: true,

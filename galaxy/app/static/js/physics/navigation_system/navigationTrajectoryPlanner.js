@@ -41,12 +41,22 @@ function snapshotMoonFilter(filter = null) {
     lastTimestampSec: Number.isFinite(Number(filter.lastTimestampSec))
       ? Number(filter.lastTimestampSec)
       : null,
+    lastMeasurementTimestampSec: Number.isFinite(Number(filter.lastMeasurementTimestampSec))
+      ? Number(filter.lastMeasurementTimestampSec)
+      : null,
     lastMeasurement: filter.lastMeasurement ? { ...filter.lastMeasurement } : null,
     lastControlAccelKmS2: {
       x: Number(filter.lastControlAccelKmS2?.x) || 0,
       y: Number(filter.lastControlAccelKmS2?.y) || 0,
       z: Number(filter.lastControlAccelKmS2?.z) || 0,
     },
+    imuBiasAccelKmS2: filter.imuBiasAccelKmS2
+      ? {
+        x: Number(filter.imuBiasAccelKmS2.x) || 0,
+        y: Number(filter.imuBiasAccelKmS2.y) || 0,
+        z: Number(filter.imuBiasAccelKmS2.z) || 0,
+      }
+      : null,
   };
 }
 
@@ -99,9 +109,33 @@ function snapshotMoonGnc(gnc = null) {
           : null,
       }
       : null,
+    solutionStatePositionKm: gnc.solutionStatePositionKm
+      ? {
+        x: Number(gnc.solutionStatePositionKm.x) || 0,
+        y: Number(gnc.solutionStatePositionKm.y) || 0,
+        z: Number(gnc.solutionStatePositionKm.z) || 0,
+      }
+      : null,
+    solutionStateVelocityKmS: gnc.solutionStateVelocityKmS
+      ? {
+        x: Number(gnc.solutionStateVelocityKmS.x) || 0,
+        y: Number(gnc.solutionStateVelocityKmS.y) || 0,
+        z: Number(gnc.solutionStateVelocityKmS.z) || 0,
+      }
+      : null,
+    solutionStateTimestampSec: Number.isFinite(Number(gnc.solutionStateTimestampSec))
+      ? Number(gnc.solutionStateTimestampSec)
+      : null,
     predictedMissDistanceKm: Number.isFinite(Number(gnc.predictedMissDistanceKm))
       ? Number(gnc.predictedMissDistanceKm)
       : null,
+    solutionStateDriftKm: Number.isFinite(Number(gnc.solutionStateDriftKm))
+      ? Number(gnc.solutionStateDriftKm)
+      : null,
+    solutionStateDriftKmS: Number.isFinite(Number(gnc.solutionStateDriftKmS))
+      ? Number(gnc.solutionStateDriftKmS)
+      : null,
+    solutionInvalidatedForStateDrift: Boolean(gnc.solutionInvalidatedForStateDrift),
     predictedPeriluneAltitudeKm: Number.isFinite(Number(gnc.predictedPeriluneAltitudeKm))
       ? Number(gnc.predictedPeriluneAltitudeKm)
       : null,

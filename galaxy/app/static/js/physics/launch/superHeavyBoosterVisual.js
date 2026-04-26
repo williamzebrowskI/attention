@@ -1,4 +1,11 @@
 import { createSuperHeavyEngineDescriptors } from "./launchEngineLayout.js";
+import {
+  BOOSTER_CURRENT_GRID_FIN_CHORD_M,
+  BOOSTER_CURRENT_GRID_FIN_RADIAL_SPAN_M,
+  BOOSTER_CURRENT_GRID_FIN_THICKNESS_M,
+  BOOSTER_CURRENT_GRID_FIN_Y_M,
+  LAUNCH_REALISM_CONFIG,
+} from "./launchRealismConfig.js";
 import { addRaptorReplicaCluster } from "./raptorEngineReplica.js?v=20260421a";
 
 function clamp(value, min, max) {
@@ -40,6 +47,89 @@ function addTrussStrut(THREE, hostGroup, material, start, end, width, depth) {
   strut.position.copy(start).add(end).multiplyScalar(0.5);
   strut.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
   hostGroup.add(strut);
+}
+
+function createCurrentGridFinAssembly(THREE, {
+  darkSteel,
+  radialSpan,
+  chordSpan,
+  thickness,
+  angle,
+  name,
+  deflectionSign,
+  catchPinRadius,
+  catchPinLength,
+} = {}) {
+  const finAssembly = new THREE.Group();
+  const finActuator = new THREE.Group();
+  const frameBar = clamp(chordSpan * 0.06, thickness * 0.72, chordSpan * 0.10);
+  const ribHeight = thickness * 0.92;
+  const rootOffset = radialSpan * 0.04;
+  const outerX = radialSpan;
+  const midX = radialSpan * 0.52;
+
+  const hinge = new THREE.Mesh(
+    new THREE.CylinderGeometry(thickness * 0.62, thickness * 0.62, chordSpan * 1.08, 16, 1, false),
+    darkSteel,
+  );
+  hinge.rotation.x = Math.PI * 0.5;
+  hinge.position.x = rootOffset;
+  finActuator.add(hinge);
+
+  const makeBar = (width, barHeight, depth, x, y = 0, z = 0) => {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(width, barHeight, depth), darkSteel);
+    bar.position.set(x, y, z);
+    finActuator.add(bar);
+    return bar;
+  };
+
+  makeBar(frameBar, ribHeight, chordSpan, rootOffset);
+  makeBar(frameBar, ribHeight, chordSpan * 0.94, outerX);
+  makeBar(radialSpan, ribHeight, frameBar, midX, 0, chordSpan * 0.5);
+  makeBar(radialSpan, ribHeight, frameBar, midX, 0, -chordSpan * 0.5);
+
+  for (let ribIndex = 1; ribIndex <= 5; ribIndex += 1) {
+    const ribX = rootOffset + ((outerX - rootOffset) * (ribIndex / 6));
+    makeBar(frameBar * 0.58, ribHeight * 0.82, chordSpan * 0.86, ribX);
+  }
+
+  for (let barIndex = -2; barIndex <= 2; barIndex += 1) {
+    makeBar(radialSpan * 0.86, ribHeight * 0.76, frameBar * 0.56, midX, 0, barIndex * (chordSpan * 0.16));
+  }
+
+  const pod = new THREE.Mesh(
+    new THREE.BoxGeometry(radialSpan * 0.36, thickness * 1.9, chordSpan * 0.28),
+    darkSteel,
+  );
+  pod.position.x = -(radialSpan * 0.08);
+  finAssembly.add(pod);
+
+  const actuatorCover = new THREE.Mesh(
+    new THREE.BoxGeometry(radialSpan * 0.18, thickness * 1.45, chordSpan * 0.64),
+    darkSteel,
+  );
+  actuatorCover.position.x = radialSpan * 0.08;
+  finAssembly.add(actuatorCover);
+
+  const catchPin = new THREE.Mesh(
+    new THREE.CylinderGeometry(catchPinRadius, catchPinRadius, catchPinLength, 14, 1, false),
+    darkSteel,
+  );
+  catchPin.rotation.x = Math.PI * 0.5;
+  catchPin.position.set(radialSpan * 0.28, -thickness * 1.55, 0);
+  finAssembly.add(catchPin);
+
+  finAssembly.add(finActuator);
+  finAssembly.rotation.y = -angle;
+  finAssembly.userData.baseRotationY = -angle;
+  finAssembly.userData.baseRotationZ = 0;
+  finAssembly.userData.deflectionSign = deflectionSign;
+  finAssembly.userData.gridFinName = name;
+  finAssembly.userData.gridFinOrientation = "horizontal-radial-grid";
+  finAssembly.userData.actuator = finActuator;
+  finActuator.userData.baseRotationZ = 0;
+
+  return finAssembly;
 }
 
 export function addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
@@ -209,87 +299,49 @@ export function addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
     boosterGroup.add(rib);
   }
 
-  const gridFinWidth = clamp(radius * 1.24, radius * 0.76, radius * 1.5);
-  const gridFinHeight = clamp(radius * 0.96, radius * 0.46, radius * 1.22);
-  const gridFinDepth = clamp(radius * 0.19, radius * 0.09, radius * 0.28);
-  const gridFinY = (0.5 * boosterHeight) - (radius * 1.04);
-  const gridFinCount = 3;
-  const gridFinPhase = Math.PI * 0.5;
+  const scenePerMeter = boosterHeight / Math.max(1, (Number(LAUNCH_REALISM_CONFIG.gridFins?.booster?.bodyLengthM) || 71));
+  const gridFinRadialSpan = BOOSTER_CURRENT_GRID_FIN_RADIAL_SPAN_M * scenePerMeter;
+  const gridFinChordSpan = BOOSTER_CURRENT_GRID_FIN_CHORD_M * scenePerMeter;
+  const gridFinThickness = BOOSTER_CURRENT_GRID_FIN_THICKNESS_M * scenePerMeter;
+  const gridFinY = BOOSTER_CURRENT_GRID_FIN_Y_M * scenePerMeter;
+  const gridFinProfile = LAUNCH_REALISM_CONFIG.gridFins?.booster || {};
+  const gridFinLayout = Array.isArray(gridFinProfile.fins)
+    ? gridFinProfile.fins.map((fin, index) => {
+      const x = Number(fin?.positionBodyM?.x) || 0;
+      const z = Number(fin?.positionBodyM?.z) || 0;
+      const angle = Math.atan2(z, x);
+      return {
+        angle,
+        name: String(fin?.name || `grid-fin-${index}`),
+        deflectionSign: (Number(fin?.controlMix?.roll) || 0) >= 0 ? 1 : -1,
+      };
+    })
+    : [];
   const gridFinAssemblies = [];
-  for (let i = 0; i < gridFinCount; i += 1) {
-    const angle = ((i / gridFinCount) * Math.PI * 2) + gridFinPhase;
-    const finAssembly = new THREE.Group();
-    const frame = new THREE.Mesh(
-      new THREE.BoxGeometry(gridFinWidth, gridFinHeight, gridFinDepth),
+  for (let i = 0; i < gridFinLayout.length; i += 1) {
+    const { angle, deflectionSign, name } = gridFinLayout[i];
+    const catchPinRadius = clamp(radius * 0.026, radius * 0.013, radius * 0.039);
+    const catchPinLength = clamp(radius * 0.25, radius * 0.12, radius * 0.34);
+    const finAssembly = createCurrentGridFinAssembly(THREE, {
       darkSteel,
-    );
-    finAssembly.add(frame);
-
-    const panel = new THREE.Mesh(
-      new THREE.BoxGeometry(gridFinWidth * 0.84, gridFinHeight * 0.82, gridFinDepth * 0.62),
-      darkSteel,
-    );
-    const panelMaterial = darkSteel.clone();
-    enforceSolidOpaqueMaterial(THREE, panelMaterial);
-    panel.material = panelMaterial;
-    finAssembly.add(panel);
-
-    const latticeBarWidth = gridFinWidth * 0.026;
-    const latticeBarHeight = gridFinHeight * 0.86;
-    const latticeBarDepth = gridFinDepth * 0.68;
-    for (let barIndex = -3; barIndex <= 3; barIndex += 1) {
-      const verticalBar = new THREE.Mesh(
-        new THREE.BoxGeometry(latticeBarWidth, latticeBarHeight, latticeBarDepth),
-        darkSteel,
-      );
-      verticalBar.position.x = barIndex * (gridFinWidth * 0.11);
-      finAssembly.add(verticalBar);
-    }
-    const crossBarWidth = gridFinWidth * 0.84;
-    const crossBarHeight = gridFinHeight * 0.03;
-    for (let barIndex = -2; barIndex <= 2; barIndex += 1) {
-      const horizontalBar = new THREE.Mesh(
-        new THREE.BoxGeometry(crossBarWidth, crossBarHeight, latticeBarDepth),
-        darkSteel,
-      );
-      horizontalBar.position.y = barIndex * (gridFinHeight * 0.16);
-      finAssembly.add(horizontalBar);
-    }
-
-    const finPod = new THREE.Mesh(
-      new THREE.BoxGeometry(gridFinWidth * 0.34, gridFinHeight * 0.3, gridFinDepth * 1.55),
-      darkSteel,
-    );
-    finPod.position.x = -(gridFinWidth * 0.4);
-    finAssembly.add(finPod);
+      radialSpan: gridFinRadialSpan,
+      chordSpan: gridFinChordSpan,
+      thickness: gridFinThickness,
+      angle,
+      name,
+      deflectionSign,
+      catchPinRadius,
+      catchPinLength,
+    });
 
     finAssembly.position.set(
-      Math.cos(angle) * (radius + (gridFinDepth * 0.42)),
+      Math.cos(angle) * (radius + (radius * 0.03)),
       gridFinY,
-      Math.sin(angle) * (radius + (gridFinDepth * 0.42)),
+      Math.sin(angle) * (radius + (radius * 0.03)),
     );
-    finAssembly.rotation.y = angle;
-    finAssembly.userData.baseRotationY = angle;
-    finAssembly.userData.baseRotationZ = 0;
-    finAssembly.userData.deflectionSign = i === 0 ? 1 : (i === 1 ? -1 : 1);
     finAssembly.userData.gridFinIndex = i;
     boosterGroup.add(finAssembly);
     gridFinAssemblies.push(finAssembly);
-
-    const catchPinRadius = clamp(radius * 0.026, radius * 0.013, radius * 0.039);
-    const catchPinLength = clamp(radius * 0.25, radius * 0.12, radius * 0.34);
-    const catchPin = new THREE.Mesh(
-      new THREE.CylinderGeometry(catchPinRadius, catchPinRadius, catchPinLength, 14, 1, false),
-      darkSteel,
-    );
-    catchPin.rotation.z = Math.PI * 0.5;
-    catchPin.rotation.y = angle;
-    catchPin.position.set(
-      Math.cos(angle) * (radius + (catchPinLength * 0.34)),
-      gridFinY + (gridFinHeight * 0.35),
-      Math.sin(angle) * (radius + (catchPinLength * 0.34)),
-    );
-    boosterGroup.add(catchPin);
   }
 
   const chineCount = 3;
@@ -298,7 +350,7 @@ export function addSharedSuperHeavyBoosterVisuals(THREE, boosterGroup, {
   const chineDepth = clamp(radius * 0.05, radius * 0.022, radius * 0.078);
   const chineY = (0.5 * boosterHeight) - (chineHeight * 0.62);
   for (let i = 0; i < chineCount; i += 1) {
-    const angle = ((i / chineCount) * Math.PI * 2) + (gridFinPhase + (Math.PI / 3));
+    const angle = ((i / chineCount) * Math.PI * 2) + ((Math.PI * 0.5) + (Math.PI / 3));
     const chine = new THREE.Mesh(
       new THREE.BoxGeometry(chineWidth, chineHeight, chineDepth),
       darkSteel,

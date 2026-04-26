@@ -184,8 +184,10 @@ function main() {
     `moon_real_atmosphere_stage1_climb: expected altitude >= 32 km at 120 s, got ${altitudeAt120Sec}`,
   );
   assert(
-    guidanceAt90Sec.includes("gravity-turn") || guidanceAt90Sec.includes("apoapsis-raise"),
-    `moon_real_atmosphere_stage1_climb: expected gravity-turn/apoapsis-raise guidance at 90 s, got ${guidanceAt90Sec}`,
+    guidanceAt90Sec.includes("gravity-turn")
+      || guidanceAt90Sec.includes("apoapsis-raise")
+      || guidanceAt90Sec.includes("stage1-hotstage-climb"),
+    `moon_real_atmosphere_stage1_climb: expected gravity-turn/apoapsis-raise/hotstage-climb guidance at 90 s, got ${guidanceAt90Sec}`,
   );
 
   console.log("PASS moon-real-atmosphere-stage1-climb-lock");

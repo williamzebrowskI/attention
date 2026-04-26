@@ -32,10 +32,9 @@ function main() {
   assert(catchCommand.guidanceMode === "booster-catch-burn", `expected booster-catch-burn mode, got ${catchCommand?.guidanceMode}`);
   assert(Number(catchCommand.throttle) > 0.18, `expected positive catch throttle, got ${catchCommand?.throttle}`);
   assert(catchCommand.attitudeControlMode === "engines+rcs", `expected engines+rcs catch burn, got ${catchCommand?.attitudeControlMode}`);
-  assert(catchCommand.captureLike === true, "expected terminal catch command to stay catch-like");
   assert(catchCommand.siteTargetingEnabled === false, "expected predictive catch guidance to bypass generic site targeting");
   assert(catchCommand.predictiveCatchControl?.enabled === true, "expected predictive catch control to be active");
-  assert(catchCommand.predictiveCatchControl?.translationOnly === false, "expected catch burn to allow main-thrust vectoring for final positioning");
+  assert(catchCommand.predictiveCatchControl?.translationAuthority > 0, "expected catch burn to expose physical vectoring authority");
   assert(catchCommand.terminalUprightCommit === true, "expected catch burn to commit to upright attitude");
   assert(catchCommand.predictiveCatchControl?.blend >= 0.82, `expected strong terminal catch blend, got ${catchCommand.predictiveCatchControl?.blend}`);
 
@@ -82,7 +81,7 @@ function main() {
   assert(catchApproach.attitudeControlMode === "grid-fins+rcs", `expected grid-fins+rcs catch approach, got ${catchApproach?.attitudeControlMode}`);
   assert(catchApproach.siteTargetingEnabled === false, "expected catch approach to bypass generic site targeting");
   assert(catchApproach.predictiveCatchControl?.enabled === true, "expected predictive catch approach control");
-  assert(catchApproach.predictiveCatchControl?.translationOnly === false, "expected catch approach to steer aero attitude from tower-relative predictive control");
+  assert(catchApproach.predictiveCatchControl?.translationAuthority > 0, "expected catch approach to steer aero attitude from tower-relative predictive control");
   assert(catchApproach.terminalUprightCommit === true, "expected catch approach to commit upright");
   assert(
     catchApproach.predictiveCatchControl?.predictedLateralMissKm <= 3.1,

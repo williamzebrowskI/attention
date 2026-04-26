@@ -79,6 +79,12 @@ export function requestMoonClosedLoopTransferSolve({
   runtime.workerError = "";
   runtime.workerSolveReason = "";
   runtime.workerSolvedAtSec = Number.NaN;
+  runtime.workerInitialStatePositionKm = payload?.initialState?.positionKm
+    ? { ...payload.initialState.positionKm }
+    : null;
+  runtime.workerInitialStateVelocityKmS = payload?.initialState?.velocityKmS
+    ? { ...payload.initialState.velocityKmS }
+    : null;
   pendingCallbacks.set(requestId, (message = {}) => {
     runtime.workerPending = false;
     runtime.workerRequestId = null;
@@ -105,6 +111,8 @@ export function requestMoonClosedLoopTransferSolve({
     runtime.workerError = "worker-post-failed";
     runtime.workerSolveReason = "";
     runtime.workerSolvedAtSec = Number.NaN;
+    runtime.workerInitialStatePositionKm = null;
+    runtime.workerInitialStateVelocityKmS = null;
     return false;
   }
   return true;
@@ -122,11 +130,19 @@ export function consumeMoonClosedLoopTransferSolveResult(runtime = null) {
     error: String(runtime.workerError || ""),
     solveReason: String(runtime.workerSolveReason || ""),
     solvedAtSec: Number(runtime.workerSolvedAtSec),
+    initialStatePositionKm: runtime.workerInitialStatePositionKm
+      ? { ...runtime.workerInitialStatePositionKm }
+      : null,
+    initialStateVelocityKmS: runtime.workerInitialStateVelocityKmS
+      ? { ...runtime.workerInitialStateVelocityKmS }
+      : null,
   };
   runtime.workerResult = null;
   runtime.workerResponseReady = false;
   runtime.workerError = "";
   runtime.workerSolveReason = "";
   runtime.workerSolvedAtSec = Number.NaN;
+  runtime.workerInitialStatePositionKm = null;
+  runtime.workerInitialStateVelocityKmS = null;
   return response;
 }
